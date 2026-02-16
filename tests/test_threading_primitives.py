@@ -10,17 +10,19 @@ depending on whether the scheduler hits the race condition in a particular run.
 Some tests may timeout/deadlock, demonstrating the need for cooperative wrappers.
 """
 
-import threading
 import queue
-from interlace.bytecode import explore_interleavings
+import threading
 
+from interlace.bytecode import explore_interleavings
 
 # ---------------------------------------------------------------------------
 # Test: threading.RLock
 # ---------------------------------------------------------------------------
 
+
 class RLockCounter:
     """Counter using RLock that can be acquired multiple times by same thread."""
+
     def __init__(self):
         self.value = 0
         self._lock = threading.RLock()
@@ -63,8 +65,10 @@ def test_rlock_race_condition():
 # Test: threading.Semaphore
 # ---------------------------------------------------------------------------
 
+
 class SemaphoreResource:
     """Resource pool protected by a Semaphore."""
+
     def __init__(self, max_resources=2):
         self.in_use = 0
         self.max_in_use = 0
@@ -116,8 +120,10 @@ def test_semaphore_race_condition():
 # Test: threading.BoundedSemaphore
 # ---------------------------------------------------------------------------
 
+
 class BoundedSemaphoreResource:
     """Resource with strict bounds on acquire/release pairs."""
+
     def __init__(self):
         self.semaphore = threading.BoundedSemaphore(2)
         self.acquired_count = 0
@@ -159,8 +165,10 @@ def test_bounded_semaphore_race_condition():
 # Test: threading.Event
 # ---------------------------------------------------------------------------
 
+
 class EventCoordinator:
     """Coordinates threads using an Event."""
+
     def __init__(self):
         self.event = threading.Event()
         self.ready_count = 0
@@ -210,8 +218,10 @@ def test_event_race_condition():
 # Test: threading.Condition
 # ---------------------------------------------------------------------------
 
+
 class ConditionQueue:
     """Simple queue using Condition for wait/notify."""
+
     def __init__(self):
         self.items = []
         self.condition = threading.Condition()
@@ -261,8 +271,10 @@ def test_condition_race_condition():
 # Test: queue.Queue (get operation)
 # ---------------------------------------------------------------------------
 
+
 class QueueConsumer:
     """Consumer that gets items from a queue."""
+
     def __init__(self):
         self.queue = queue.Queue(maxsize=2)
         self.consumed = []
@@ -304,8 +316,10 @@ def test_queue_get_race_condition():
 # Test: queue.Queue (put operation)
 # ---------------------------------------------------------------------------
 
+
 class QueueProducer:
     """Producer that puts items in a bounded queue."""
+
     def __init__(self):
         self.queue = queue.Queue(maxsize=1)  # Small queue to force blocking
         self.produced = []
@@ -351,8 +365,10 @@ def test_queue_put_race_condition():
 # Test: Multiple primitives interacting
 # ---------------------------------------------------------------------------
 
+
 class MultiPrimitiveSystem:
     """System using multiple threading primitives together."""
+
     def __init__(self):
         self.lock = threading.RLock()
         self.event = threading.Event()

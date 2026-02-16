@@ -17,6 +17,8 @@ dev = [
     "hypothesis>=6.0",
     "sphinx>=4.0",
     "sphinx-rtd-theme>=1.0",
+    "ruff>=0.1.0",
+    "pyright>=1.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -25,3 +27,24 @@ addopts = "--tb=short"
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[tool.ruff]
+target-version = "py38"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "A", "C4", "ISC", "PIE", "Q", "LOG", "PERF"]
+ignore = [
+    "E402",   # Module level import not at top of file (valid in conftest.py)
+    "F841",   # Unused variable (often intentional in test setup)
+    "C408",   # Unnecessary dict() call (dict() with kwargs is more readable)
+    "PERF203",  # try-except in loop (performance suggestion, acceptable for test code)
+]
+
+[tool.pyright]
+include = ["interlace"]
+exclude = ["**/node_modules", "**/__pycache__"]
+typeCheckingMode = "strict"
+pythonVersion = "3.8"
+reportMissingTypeStubs = false
+reportPrivateImportUsage = false

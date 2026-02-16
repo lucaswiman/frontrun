@@ -7,18 +7,19 @@ Demonstrates both:
 """
 
 import threading
-from interlace.bytecode import (
-    OpcodeScheduler,
-    BytecodeInterlace,
-    controlled_interleaving,
-    run_with_schedule,
-    explore_interleavings,
-)
 
+from interlace.bytecode import (
+    BytecodeInterlace,
+    OpcodeScheduler,
+    controlled_interleaving,
+    explore_interleavings,
+    run_with_schedule,
+)
 
 # ---------------------------------------------------------------------------
 # Test fixtures: classes with race conditions
 # ---------------------------------------------------------------------------
+
 
 class BankAccount:
     def __init__(self, balance=0):
@@ -40,6 +41,7 @@ class Counter:
 
 class SafeCounter:
     """Counter protected by a lock — should be race-free."""
+
     def __init__(self, value=0):
         self.value = value
         self._lock = threading.Lock()
@@ -54,15 +56,16 @@ class SafeCounter:
 # Unit tests: OpcodeScheduler
 # ---------------------------------------------------------------------------
 
+
 def test_scheduler_basic_round_robin():
     """Two threads alternate opcode execution."""
     scheduler = OpcodeScheduler([0, 1, 0, 1], num_threads=2)
 
-    assert scheduler.wait_for_turn(0) is True   # schedule[0] = 0
-    assert scheduler.wait_for_turn(1) is True   # schedule[1] = 1
-    assert scheduler.wait_for_turn(0) is True   # schedule[2] = 0
-    assert scheduler.wait_for_turn(1) is True   # schedule[3] = 1
-    assert scheduler.wait_for_turn(0) is False   # exhausted
+    assert scheduler.wait_for_turn(0) is True  # schedule[0] = 0
+    assert scheduler.wait_for_turn(1) is True  # schedule[1] = 1
+    assert scheduler.wait_for_turn(0) is True  # schedule[2] = 0
+    assert scheduler.wait_for_turn(1) is True  # schedule[3] = 1
+    assert scheduler.wait_for_turn(0) is False  # exhausted
     assert scheduler._finished is True
 
 
@@ -81,23 +84,24 @@ def test_scheduler_skips_done_threads():
 # Integration tests: BytecodeInterlace with exact schedules
 # ---------------------------------------------------------------------------
 
+
 def test_controlled_interleaving_basic():
     """Run two simple functions under a controlled schedule."""
     results = []
 
     def func_a():
-        results.append('a')
+        results.append("a")
 
     def func_b():
-        results.append('b')
+        results.append("b")
 
     # Long enough schedule that both functions complete
     schedule = [0] * 50 + [1] * 50
     with controlled_interleaving(schedule, num_threads=2) as runner:
         runner.run([func_a, func_b])
 
-    assert 'a' in results
-    assert 'b' in results
+    assert "a" in results
+    assert "b" in results
 
 
 def test_bank_account_sequential_correct():
@@ -152,6 +156,7 @@ def test_bank_account_race_reproduced():
 # Property-based tests: explore_interleavings
 # ---------------------------------------------------------------------------
 
+
 def test_explore_finds_counter_race():
     """Random exploration should find an interleaving that breaks the counter."""
     result = explore_interleavings(
@@ -167,8 +172,7 @@ def test_explore_finds_counter_race():
     )
 
     assert not result.property_holds, (
-        f"Expected to find a race condition, but invariant held "
-        f"across {result.num_explored} interleavings"
+        f"Expected to find a race condition, but invariant held across {result.num_explored} interleavings"
     )
     assert result.counterexample is not None
 
@@ -196,8 +200,7 @@ def test_cooperative_locks_prevent_deadlock():
     )
 
     assert result.property_holds, (
-        f"SafeCounter with lock should not have races, but got "
-        f"counterexample at attempt {result.num_explored}"
+        f"SafeCounter with lock should not have races, but got counterexample at attempt {result.num_explored}"
     )
 
 
@@ -216,8 +219,7 @@ def test_explore_bank_account_race():
     )
 
     assert not result.property_holds, (
-        f"Expected to find lost-update race, but invariant held "
-        f"across {result.num_explored} interleavings"
+        f"Expected to find lost-update race, but invariant held across {result.num_explored} interleavings"
     )
 
 

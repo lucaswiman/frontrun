@@ -69,10 +69,10 @@ Or using the convenience function:
 """
 
 import asyncio
-from typing import List, Dict, Callable, Optional, Any, Awaitable
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from interlace.async_scheduler import InterleavedLoop
-from interlace.common import Step, Schedule
+from interlace.common import Schedule
 
 
 class AsyncTaskCoordinator(InterleavedLoop):
@@ -148,8 +148,10 @@ class AsyncTraceExecutor:
                 await write(x)
                 await mark('after_write')
         """
+
         async def _mark(marker_name: str):
             await self.coordinator.pause(execution_name, marker_name)
+
         return _mark
 
     async def run(self, tasks: Dict[str, Callable[[], Awaitable[None]]]):
@@ -165,14 +167,18 @@ class AsyncTraceExecutor:
             Any exception that occurred in a task during execution
         """
         # Wrap tasks to capture individual exceptions
-        wrapped_tasks = {}
+        wrapped_tasks: Dict[str, Callable[..., Awaitable[None]]] = {}
         for execution_name, task in tasks.items():
-            async def _wrapped_task(task=task, execution_name=execution_name):
+
+            async def _wrapped_task(
+                task: Callable[..., Awaitable[None]] = task, execution_name: str = execution_name
+            ) -> None:  # type: ignore[assignment]
                 try:
                     await task()
                 except Exception as e:
                     self.task_errors[execution_name] = e
                     raise
+
             wrapped_tasks[execution_name] = _wrapped_task
 
         await self.coordinator.run_all(wrapped_tasks)
@@ -190,11 +196,11 @@ class AsyncTraceExecutor:
 
 async def async_interlace(
     schedule: Schedule,
-    tasks: Dict[str, Callable],
-    task_args: Optional[Dict[str, tuple]] = None,
-    task_kwargs: Optional[Dict[str, dict]] = None,
-    timeout: Optional[float] = None
-):
+    tasks: Dict[str, Callable[..., Awaitable[None]]],
+    task_args: Optional[Dict[str, Tuple[Any, ...]]] = None,
+    task_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
+    timeout: Optional[float] = None,
+) -> "AsyncTraceExecutor":
     """Convenience function to run multiple async tasks with a schedule.
 
     This function automatically creates marker functions for each task and
@@ -235,14 +241,19 @@ async def async_interlace(
     executor = AsyncTraceExecutor(schedule)
 
     # Create wrapped tasks that inject the marker function
-    wrapped_tasks = {}
+    wrapped_tasks: Dict[str, Callable[..., Awaitable[None]]] = {}
     for execution_name, target in tasks.items():
         mark = executor.marker(execution_name)
         args = task_args.get(execution_name, ())
         kwargs = task_kwargs.get(execution_name, {})
 
         # Create a coroutine that calls the target with mark as first arg
-        async def make_task(target=target, mark=mark, args=args, kwargs=kwargs):
+        async def make_task(
+            target: Callable[..., Awaitable[None]] = target,
+            mark: Callable[[str], Awaitable[None]] = mark,
+            args: Tuple[Any, ...] = args,
+            kwargs: Dict[str, Any] = kwargs,
+        ) -> None:  # type: ignore[assignment]
             return await target(mark, *args, **kwargs)
 
         wrapped_tasks[execution_name] = make_task

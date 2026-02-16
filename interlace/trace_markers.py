@@ -25,15 +25,15 @@ Example usage:
     ```
 """
 
-import sys
-import threading
 import linecache
 import re
-from typing import List, Dict, Callable, Optional, Any
+import sys
+import threading
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from interlace.common import Step, Schedule
+from interlace.common import Schedule
 
-MARKER_PATTERN = re.compile(r'#\s*interlace:\s*(\w+)')
+MARKER_PATTERN = re.compile(r"#\s*interlace:\s*(\w+)")
 
 
 class MarkerRegistry:
@@ -44,10 +44,10 @@ class MarkerRegistry:
     """
 
     def __init__(self):
-        self._markers: Dict[tuple, str] = {}  # (filename, lineno) -> marker_name
-        self._scanned_files: set = set()
+        self._markers: Dict[Tuple[str, int], str] = {}  # (filename, lineno) -> marker_name
+        self._scanned_files: Set[str] = set()
 
-    def scan_frame(self, frame):
+    def scan_frame(self, frame: Any) -> None:  # type: ignore[name-defined]
         """Scan the source file for the given frame to find all markers.
 
         Args:
@@ -133,8 +133,7 @@ class ThreadCoordinator:
                 expected_step = self.schedule.steps[self.current_step]
 
                 # Is it our turn?
-                if (expected_step.execution_name == execution_name and
-                    expected_step.marker_name == marker_name):
+                if expected_step.execution_name == execution_name and expected_step.marker_name == marker_name:
                     # It's our turn! Advance and notify others
                     self.current_step += 1
                     self.condition.notify_all()
@@ -178,7 +177,7 @@ class TraceExecutor:
         self.threads: List[threading.Thread] = []
         self.thread_errors: Dict[str, Exception] = {}
 
-    def _create_trace_function(self, execution_name: str):
+    def _create_trace_function(self, execution_name: str) -> Callable[[Any, str, Any], Any]:  # type: ignore[return-value]
         """Create a trace function for a specific execution unit.
 
         Args:
@@ -187,10 +186,11 @@ class TraceExecutor:
         Returns:
             A trace function suitable for sys.settrace
         """
-        def trace_function(frame, event, arg):
+
+        def trace_function(frame: Any, event: str, arg: Any) -> Any:  # type: ignore[name-defined]
             try:
                 # Only care about 'line' events
-                if event != 'line':
+                if event != "line":
                     return trace_function
 
                 # Scan this file for markers if we haven't already
@@ -217,7 +217,13 @@ class TraceExecutor:
 
         return trace_function
 
-    def _thread_wrapper(self, execution_name: str, target: Callable, args: tuple, kwargs: dict):
+    def _thread_wrapper(
+        self,
+        execution_name: str,
+        target: Callable[..., None],
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> None:
         """Wrapper function that sets up tracing for an execution unit.
 
         Args:
@@ -241,7 +247,13 @@ class TraceExecutor:
             # Clean up trace function
             sys.settrace(None)
 
-    def run(self, execution_name: str, target: Callable, args: tuple = (), kwargs: dict = None):
+    def run(
+        self,
+        execution_name: str,
+        target: Callable[..., None],
+        args: Tuple[Any, ...] = (),
+        kwargs: Optional[Dict[str, Any]] = None,
+    ):
         """Start a new thread with tracing enabled.
 
         Args:
@@ -254,10 +266,7 @@ class TraceExecutor:
             kwargs = {}
 
         thread = threading.Thread(
-            target=self._thread_wrapper,
-            args=(execution_name, target, args, kwargs),
-            name=execution_name,
-            daemon=True
+            target=self._thread_wrapper, args=(execution_name, target, args, kwargs), name=execution_name, daemon=True
         )
         self.threads.append(thread)
         thread.start()
@@ -288,10 +297,13 @@ class TraceExecutor:
         self.marker_registry = MarkerRegistry()
 
 
-def interlace(schedule: Schedule, threads: Dict[str, Callable],
-              thread_args: Optional[Dict[str, tuple]] = None,
-              thread_kwargs: Optional[Dict[str, dict]] = None,
-              timeout: Optional[float] = None):
+def interlace(
+    schedule: Schedule,
+    threads: Dict[str, Callable[..., None]],
+    thread_args: Optional[Dict[str, Tuple[Any, ...]]] = None,
+    thread_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
+    timeout: Optional[float] = None,
+) -> "TraceExecutor":
     """Convenience function to run multiple threads with a schedule.
 
     Args:

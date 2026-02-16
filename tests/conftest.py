@@ -11,30 +11,26 @@ Usage:
     - Fixtures will automatically patch threading.Lock for those tests
 """
 
-import sys
 import os
+import sys
 import threading
+
 import pytest
 
 # Add parent directory to path so we can import interlace
-_interlace_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+_interlace_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _interlace_path not in sys.path:
     sys.path.insert(0, _interlace_path)
 
 from interlace.bytecode import (
-    BytecodeInterlace,
-    OpcodeScheduler,
-    controlled_interleaving,
-    run_with_schedule,
-    explore_interleavings,
-    _real_lock,  # Import the real lock before any patching
     _CooperativeLock,  # Import cooperative lock for patching
+    controlled_interleaving,
+    explore_interleavings,
 )
 from interlace.trace_markers import (
-    TraceExecutor,
     Schedule,
     Step,
-    interlace,
+    TraceExecutor,
 )
 
 
@@ -43,9 +39,7 @@ def pytest_configure(config):
 
     Registers pytest markers for interlace tests.
     """
-    config.addinivalue_line(
-        "markers", "interlace: mark test as using interlace concurrency testing"
-    )
+    config.addinivalue_line("markers", "interlace: mark test as using interlace concurrency testing")
 
 
 @pytest.fixture

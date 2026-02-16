@@ -11,12 +11,11 @@ and operations to demonstrate four classes of concurrency bugs:
 """
 
 import threading
-import time
-
 
 # ============================================================================
 # Bug Class 1: Atomicity Violation (threading)
 # ============================================================================
+
 
 class BuggyCounter:
     """
@@ -63,6 +62,7 @@ class BuggyCounterBytecode:
 # ============================================================================
 # Bug Class 2: Order Violation (threading)
 # ============================================================================
+
 
 class BuggyResourceManager:
     """
@@ -120,6 +120,7 @@ class BuggyResourceManagerBytecode:
 # ============================================================================
 # Bug Class 3: Deadlock (threading)
 # ============================================================================
+
 
 class BuggyBankWithDeadlock:
     """
@@ -185,19 +186,17 @@ class BuggyBankWithDeadlockBytecode:
 
     def transfer_a_to_b(self, amount):
         """Transfer from account A to account B. Acquires lock_a then lock_b."""
-        with self.lock_a:
-            with self.lock_b:
-                self.account_a -= amount
-                self.account_b += amount
-                self.transfer_a_to_b_completed = True
+        with self.lock_a, self.lock_b:
+            self.account_a -= amount
+            self.account_b += amount
+            self.transfer_a_to_b_completed = True
 
     def transfer_b_to_a(self, amount):
         """Transfer from account B to account A. Acquires lock_b then lock_a (opposite order!)."""
-        with self.lock_b:
-            with self.lock_a:
-                self.account_b -= amount
-                self.account_a += amount
-                self.transfer_b_to_a_completed = True
+        with self.lock_b, self.lock_a:
+            self.account_b -= amount
+            self.account_a += amount
+            self.transfer_b_to_a_completed = True
 
     @property
     def completed(self):
@@ -208,6 +207,7 @@ class BuggyBankWithDeadlockBytecode:
 # ============================================================================
 # Bug Class 4: Async Suspension-Point Race
 # ============================================================================
+
 
 class AsyncBuggyCounter:
     """
@@ -225,10 +225,10 @@ class AsyncBuggyCounter:
     async def increment(self, mark):
         """Increment the counter (not atomic due to await in the middle)."""
         current = self.value
-        await mark('read_value')
+        await mark("read_value")
 
         new_value = current + 1
-        await mark('write_value')
+        await mark("write_value")
 
         self.value = new_value
 
@@ -273,12 +273,12 @@ class AsyncBuggyResourceManager:
 
     async def init_resource(self, value, mark):
         """Initialize the resource - should be called before use."""
-        await mark('init_resource')
+        await mark("init_resource")
         self.resource = value
 
     async def use_resource(self, mark):
         """Use the resource - assumes it's been initialized."""
-        await mark('use_resource')
+        await mark("use_resource")
         if self.resource is None:
             self.used_before_init = True
             return None
@@ -297,12 +297,14 @@ class AsyncBuggyResourceManagerBytecode:
     async def init_resource(self, value):
         """Initialize the resource."""
         from interlace.async_bytecode import await_point
+
         await await_point()
         self.resource = value
 
     async def use_resource(self):
         """Use the resource - assumes it's been initialized."""
         from interlace.async_bytecode import await_point
+
         await await_point()
         # Check if resource is None (order violation)
         if self.resource is None:

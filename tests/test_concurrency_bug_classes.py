@@ -14,39 +14,43 @@ Bug classes covered:
 """
 
 import asyncio
-from hypothesis import given, settings, Phase
 
-from interlace.trace_markers import TraceExecutor
+from hypothesis import Phase, given, settings
+
+from interlace.async_bytecode import (
+    explore_interleavings as async_explore_interleavings,
+)
+from interlace.async_bytecode import (
+    run_with_schedule as async_run_with_schedule,
+)
+from interlace.async_bytecode import (
+    schedule_strategy as async_schedule_strategy,
+)
 from interlace.async_trace_markers import AsyncTraceExecutor
-from interlace.common import Step, Schedule
 from interlace.bytecode import (
     explore_interleavings,
     run_with_schedule,
     schedule_strategy,
 )
-from interlace.async_bytecode import (
-    explore_interleavings as async_explore_interleavings,
-    run_with_schedule as async_run_with_schedule,
-    schedule_strategy as async_schedule_strategy,
-)
-
+from interlace.common import Schedule, Step
+from interlace.trace_markers import TraceExecutor
 from tests.buggy_programs import (
-    BuggyCounter,
-    BuggyCounterBytecode,
-    BuggyResourceManager,
-    BuggyResourceManagerBytecode,
-    BuggyBankWithDeadlock,
-    BuggyBankWithDeadlockBytecode,
     AsyncBuggyCounter,
     AsyncBuggyCounterBytecode,
     AsyncBuggyResourceManager,
     AsyncBuggyResourceManagerBytecode,
+    BuggyBankWithDeadlock,
+    BuggyBankWithDeadlockBytecode,
+    BuggyCounter,
+    BuggyCounterBytecode,
+    BuggyResourceManager,
+    BuggyResourceManagerBytecode,
 )
-
 
 # ============================================================================
 # Bug Class 1: Atomicity Violation Tests
 # ============================================================================
+
 
 def test_atomicity_violation_exact_schedule():
     """
@@ -59,12 +63,14 @@ def test_atomicity_violation_exact_schedule():
 
     # Schedule that causes lost update:
     # T1 reads (0), T2 reads (0), T1 writes (1), T2 writes (1)
-    schedule = Schedule([
-        Step("thread1", "read_value"),
-        Step("thread2", "read_value"),
-        Step("thread1", "write_value"),
-        Step("thread2", "write_value"),
-    ])
+    schedule = Schedule(
+        [
+            Step("thread1", "read_value"),
+            Step("thread2", "read_value"),
+            Step("thread1", "write_value"),
+            Step("thread2", "write_value"),
+        ]
+    )
 
     executor = TraceExecutor(schedule)
     executor.run("thread1", lambda: counter.increment())
@@ -124,6 +130,7 @@ def test_atomicity_violation_hypothesis(schedule):
 # Bug Class 2: Order Violation Tests
 # ============================================================================
 
+
 def test_order_violation_exact_schedule():
     """
     Test order violation with exact schedule using trace_markers.
@@ -134,10 +141,12 @@ def test_order_violation_exact_schedule():
     manager = BuggyResourceManager()
 
     # Schedule that violates order: use before init
-    schedule = Schedule([
-        Step("user_thread", "use_resource"),
-        Step("init_thread", "init_resource"),
-    ])
+    schedule = Schedule(
+        [
+            Step("user_thread", "use_resource"),
+            Step("init_thread", "init_resource"),
+        ]
+    )
 
     executor = TraceExecutor(schedule)
     executor.run("init_thread", lambda: manager.init_resource("hello"))
@@ -155,6 +164,7 @@ def test_order_violation_exploration():
     Explores interleavings where use_resource() might run before init_resource().
     The invariant checks that the resource wasn't used before initialization.
     """
+
     def invariant(manager):
         # Check if resource was used before init (should be False)
         return not manager.used_before_init
@@ -207,6 +217,7 @@ def test_order_violation_hypothesis(schedule):
 # Bug Class 3: Deadlock Tests
 # ============================================================================
 
+
 def test_deadlock_exact_schedule():
     """
     Test deadlock with exact schedule using trace_markers.
@@ -221,12 +232,14 @@ def test_deadlock_exact_schedule():
 
     # Schedule that causes deadlock:
     # T1 gets lock_a, T2 gets lock_b, then both wait forever
-    schedule = Schedule([
-        Step("thread1", "acquire_lock_a"),
-        Step("thread2", "acquire_lock_b_reverse"),
-        Step("thread1", "acquire_lock_b"),
-        Step("thread2", "acquire_lock_a_reverse"),
-    ])
+    schedule = Schedule(
+        [
+            Step("thread1", "acquire_lock_a"),
+            Step("thread2", "acquire_lock_b_reverse"),
+            Step("thread1", "acquire_lock_b"),
+            Step("thread2", "acquire_lock_a_reverse"),
+        ]
+    )
 
     executor = TraceExecutor(schedule)
     executor.run("thread1", lambda: bank.transfer_a_to_b(10))
@@ -305,13 +318,13 @@ def test_deadlock_hypothesis(schedule):
     # Some schedules will deadlock (completed=False), others won't
     # We just verify the state is consistent
     if bank.completed:
-        assert bank.account_a == 100 and bank.account_b == 100, \
-            "Total should be conserved after both transfers"
+        assert bank.account_a == 100 and bank.account_b == 100, "Total should be conserved after both transfers"
 
 
 # ============================================================================
 # Bug Class 4: Async Suspension-Point Race Tests
 # ============================================================================
+
 
 def test_async_suspension_point_race_exact_schedule():
     """
@@ -319,25 +332,30 @@ def test_async_suspension_point_race_exact_schedule():
 
     Forces both tasks to read before either writes, causing lost update.
     """
+
     async def run_test():
         counter = AsyncBuggyCounter()
 
         # Schedule that causes lost update in async context
-        schedule = Schedule([
-            Step("task1", "read_value"),
-            Step("task2", "read_value"),
-            Step("task1", "write_value"),
-            Step("task2", "write_value"),
-        ])
+        schedule = Schedule(
+            [
+                Step("task1", "read_value"),
+                Step("task2", "read_value"),
+                Step("task1", "write_value"),
+                Step("task2", "write_value"),
+            ]
+        )
 
         executor = AsyncTraceExecutor(schedule)
         mark1 = executor.marker("task1")
         mark2 = executor.marker("task2")
 
-        await executor.run({
-            "task1": lambda: counter.increment(mark1),
-            "task2": lambda: counter.increment(mark2),
-        })
+        await executor.run(
+            {
+                "task1": lambda: counter.increment(mark1),
+                "task2": lambda: counter.increment(mark2),
+            }
+        )
 
         # Bug manifests: both increments happened but value is only 1
         assert counter.value == 1, "Lost update in async - expected 2 but got 1"
@@ -351,6 +369,7 @@ def test_async_suspension_point_race_exploration():
 
     Explores task interleavings to find the race condition.
     """
+
     async def run_exploration():
         result = await async_explore_interleavings(
             setup=lambda: AsyncBuggyCounterBytecode(),
@@ -378,6 +397,7 @@ def test_async_suspension_point_race_hypothesis(schedule):
 
     Hypothesis generates random task schedules.
     """
+
     async def run_with_hypothesis_schedule():
         counter = await async_run_with_schedule(
             schedule,
@@ -399,6 +419,7 @@ def test_async_suspension_point_race_hypothesis(schedule):
 # Additional Test: Async Order Violation
 # ============================================================================
 
+
 def test_async_order_violation_exact_schedule():
     """
     Test async order violation with exact schedule.
@@ -406,23 +427,28 @@ def test_async_order_violation_exact_schedule():
     Forces use_resource() to run before init_resource(). The user task
     sees resource=None because init hasn't happened yet.
     """
+
     async def run_test():
         manager = AsyncBuggyResourceManager()
 
         # Schedule that violates order: use before init
-        schedule = Schedule([
-            Step("user_task", "use_resource"),
-            Step("init_task", "init_resource"),
-        ])
+        schedule = Schedule(
+            [
+                Step("user_task", "use_resource"),
+                Step("init_task", "init_resource"),
+            ]
+        )
 
         executor = AsyncTraceExecutor(schedule)
         mark_init = executor.marker("init_task")
         mark_user = executor.marker("user_task")
 
-        await executor.run({
-            "init_task": lambda: manager.init_resource("hello", mark_init),
-            "user_task": lambda: manager.use_resource(mark_user),
-        })
+        await executor.run(
+            {
+                "init_task": lambda: manager.init_resource("hello", mark_init),
+                "user_task": lambda: manager.use_resource(mark_user),
+            }
+        )
 
         assert manager.used_before_init, "Resource should have been used before initialization"
 
@@ -433,6 +459,7 @@ def test_async_order_violation_exploration():
     """
     Test async order violation using async_bytecode exploration.
     """
+
     async def run_exploration():
         def invariant(manager):
             # Check if resource was used before init (should be False)

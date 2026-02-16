@@ -47,19 +47,14 @@ import asyncio
 import contextvars
 import random
 from contextlib import asynccontextmanager
-from typing import Callable, Dict, List, Optional, Any
+from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, List, Optional, Tuple
 
 from interlace.async_scheduler import InterleavedLoop
 from interlace.common import InterleavingResult
 
-
 # Context variable to track the active scheduler and task ID
-_scheduler_var: contextvars.ContextVar[Optional['AwaitScheduler']] = (
-    contextvars.ContextVar('_scheduler', default=None)
-)
-_task_id_var: contextvars.ContextVar[Optional[int]] = (
-    contextvars.ContextVar('_task_id', default=None)
-)
+_scheduler_var: contextvars.ContextVar[Optional["AwaitScheduler"]] = contextvars.ContextVar("_scheduler", default=None)
+_task_id_var: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("_task_id", default=None)
 
 
 async def await_point():
@@ -121,10 +116,9 @@ class AwaitScheduler(InterleavedLoop):
             self._index += 1
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
-        needed = self.schedule[self._index] if self._index < len(self.schedule) else '?'
+        needed = self.schedule[self._index] if self._index < len(self.schedule) else "?"
         self._error = TimeoutError(
-            f"Deadlock: schedule wants task {needed} "
-            f"at index {self._index}/{len(self.schedule)}"
+            f"Deadlock: schedule wants task {needed} at index {self._index}/{len(self.schedule)}"
         )
         self._condition.notify_all()
 
@@ -156,9 +150,9 @@ class AsyncBytecodeInterlace:
 
     async def run(
         self,
-        funcs: List[Callable],
-        args: Optional[List[tuple]] = None,
-        kwargs: Optional[List[dict]] = None,
+        funcs: List[Callable[..., Coroutine[Any, Any, None]]],
+        args: Optional[List[Tuple[Any, ...]]] = None,
+        kwargs: Optional[List[Dict[str, Any]]] = None,
         timeout: float = 10.0,
     ):
         """Run async functions concurrently with controlled interleaving.
@@ -174,19 +168,21 @@ class AsyncBytecodeInterlace:
         if kwargs is None:
             kwargs = [{} for _ in funcs]
 
-        task_funcs = {
-            i: (lambda f=func, a=a, kw=kw: f(*a, **kw))
+        task_funcs: Dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
+            i: (lambda f=func, a=a, kw=kw: f(*a, **kw))  # type: ignore[assignment]
             for i, (func, a, kw) in enumerate(zip(funcs, args, kwargs))
         }
 
         try:
-            await self.scheduler.run_all(task_funcs, timeout=timeout)
+            await self.scheduler.run_all(task_funcs, timeout=timeout)  # type: ignore[arg-type]
         except TimeoutError:
             pass  # match original behavior: swallow timeout in runner
 
 
 @asynccontextmanager
-async def controlled_interleaving(schedule: List[int], num_tasks: int = 2):
+async def controlled_interleaving(
+    schedule: List[int], num_tasks: int = 2
+) -> AsyncGenerator[AsyncBytecodeInterlace, None]:
     """Context manager for running async code under a specific interleaving.
 
     Args:
@@ -212,8 +208,8 @@ async def controlled_interleaving(schedule: List[int], num_tasks: int = 2):
 
 async def run_with_schedule(
     schedule: List[int],
-    setup: Callable,
-    tasks: List[Callable],
+    setup: Callable[[], Any],
+    tasks: List[Callable[[Any], Coroutine[Any, Any, None]]],
     timeout: float = 5.0,
 ) -> Any:
     """Run one async interleaving and return the state object.
@@ -231,7 +227,7 @@ async def run_with_schedule(
     runner = AsyncBytecodeInterlace(scheduler)
 
     state = setup()
-    funcs = [lambda s=state, t=t: t(s) for t in tasks]
+    funcs: List[Callable[..., Coroutine[Any, Any, None]]] = [lambda s=state, t=t: t(s) for t in tasks]  # type: ignore[assignment]
 
     try:
         await runner.run(funcs, timeout=timeout)
@@ -242,8 +238,8 @@ async def run_with_schedule(
 
 
 async def explore_interleavings(
-    setup: Callable,
-    tasks: List[Callable],
+    setup: Callable[[], Any],
+    tasks: List[Callable[[Any], Coroutine[Any, Any, None]]],
     invariant: Callable[[Any], bool],
     max_attempts: int = 200,
     max_ops: int = 100,
@@ -295,7 +291,7 @@ async def explore_interleavings(
     return result
 
 
-def schedule_strategy(num_tasks: int, max_ops: int = 100):
+def schedule_strategy(num_tasks: int, max_ops: int = 100) -> Any:  # type: ignore[name-defined]
     """Hypothesis strategy for generating await-point schedules.
 
     For use with hypothesis @given decorator in your own tests:
@@ -313,10 +309,10 @@ def schedule_strategy(num_tasks: int, max_ops: int = 100):
     code has far fewer interleaving points. Each schedule entry corresponds
     to one await_point() call, not one bytecode opcode.
     """
-    from hypothesis import strategies as st
+    from hypothesis import strategies as st  # type: ignore[import-not-found]
 
-    return st.lists(
-        st.integers(min_value=0, max_value=num_tasks - 1),
+    return st.lists(  # type: ignore[attr-defined,return-value]
+        st.integers(min_value=0, max_value=num_tasks - 1),  # type: ignore[attr-defined]
         min_size=1,
         max_size=max_ops,
     )

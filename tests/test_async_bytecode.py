@@ -7,21 +7,21 @@ Demonstrates both:
 """
 
 import asyncio
-import contextvars
-from interlace.async_bytecode import (
-    AwaitScheduler,
-    AsyncBytecodeInterlace,
-    controlled_interleaving,
-    run_with_schedule,
-    explore_interleavings,
-    await_point,
-    _task_id_var,
-)
 
+from interlace.async_bytecode import (
+    AsyncBytecodeInterlace,
+    AwaitScheduler,
+    _task_id_var,
+    await_point,
+    controlled_interleaving,
+    explore_interleavings,
+    run_with_schedule,
+)
 
 # ---------------------------------------------------------------------------
 # Test fixtures: classes with race conditions
 # ---------------------------------------------------------------------------
+
 
 class BankAccount:
     def __init__(self, balance=0):
@@ -45,6 +45,7 @@ class Counter:
 
 class SafeCounter:
     """Counter protected by asyncio.Lock — should be race-free."""
+
     def __init__(self, value=0):
         self.value = value
         self._lock = asyncio.Lock()
@@ -60,8 +61,10 @@ class SafeCounter:
 # Unit tests: AwaitScheduler
 # ---------------------------------------------------------------------------
 
+
 def test_scheduler_basic_round_robin():
     """Two tasks alternate await-point execution."""
+
     async def _test():
         scheduler = AwaitScheduler([0, 1, 0, 1], num_tasks=2)
 
@@ -95,6 +98,7 @@ def test_scheduler_basic_round_robin():
 
 def test_scheduler_skips_done_tasks():
     """If a scheduled task is already done, skip to next step."""
+
     async def _test():
         scheduler = AwaitScheduler([0, 1, 0], num_tasks=2)
 
@@ -122,17 +126,19 @@ def test_scheduler_skips_done_tasks():
 # Integration tests: AsyncBytecodeInterlace with exact schedules
 # ---------------------------------------------------------------------------
 
+
 def test_controlled_interleaving_basic():
     """Run two simple async functions under a controlled schedule."""
+
     async def _test():
         results = []
 
         async def func_a():
-            results.append('a')
+            results.append("a")
             await await_point()
 
         async def func_b():
-            results.append('b')
+            results.append("b")
             await await_point()
 
         # Schedule that allows both functions to complete
@@ -140,14 +146,15 @@ def test_controlled_interleaving_basic():
         async with controlled_interleaving(schedule, num_tasks=2) as runner:
             await runner.run([func_a, func_b])
 
-        assert 'a' in results
-        assert 'b' in results
+        assert "a" in results
+        assert "b" in results
 
     asyncio.run(_test())
 
 
 def test_bank_account_sequential_correct():
     """Sequential schedule ensures no race."""
+
     async def _test():
         account = BankAccount(balance=100)
 
@@ -173,6 +180,7 @@ def test_bank_account_race_reproduced():
     With alternation, we can force both tasks to read the same
     balance before either writes.
     """
+
     async def _test():
         found_race = False
 
@@ -205,8 +213,10 @@ def test_bank_account_race_reproduced():
 # Property-based tests: explore_interleavings
 # ---------------------------------------------------------------------------
 
+
 def test_explore_finds_counter_race():
     """Random exploration should find an interleaving that breaks the counter."""
+
     async def _test():
         result = await explore_interleavings(
             setup=lambda: Counter(value=0),
@@ -221,8 +231,7 @@ def test_explore_finds_counter_race():
         )
 
         assert not result.property_holds, (
-            f"Expected to find a race condition, but invariant held "
-            f"across {result.num_explored} interleavings"
+            f"Expected to find a race condition, but invariant held across {result.num_explored} interleavings"
         )
         assert result.counterexample is not None
 
@@ -231,6 +240,7 @@ def test_explore_finds_counter_race():
 
 def test_explore_bank_account_race():
     """Random exploration should find a lost-update in BankAccount."""
+
     async def _test():
         result = await explore_interleavings(
             setup=lambda: BankAccount(balance=100),
@@ -245,8 +255,7 @@ def test_explore_bank_account_race():
         )
 
         assert not result.property_holds, (
-            f"Expected to find lost-update race, but invariant held "
-            f"across {result.num_explored} interleavings"
+            f"Expected to find lost-update race, but invariant held across {result.num_explored} interleavings"
         )
 
     asyncio.run(_test())
@@ -254,6 +263,7 @@ def test_explore_bank_account_race():
 
 def test_explore_three_tasks():
     """Three tasks incrementing a counter — exploration finds the race."""
+
     async def _test():
         result = await explore_interleavings(
             setup=lambda: Counter(value=0),
@@ -275,6 +285,7 @@ def test_explore_three_tasks():
 
 def test_run_with_schedule_returns_state():
     """run_with_schedule returns the state object for inspection."""
+
     async def _test():
         state = await run_with_schedule(
             schedule=[0] * 20 + [1] * 20,
@@ -292,6 +303,7 @@ def test_run_with_schedule_returns_state():
 
 def test_explore_with_seed_is_reproducible():
     """Same seed should produce the same exploration outcome."""
+
     async def _test():
         kwargs = dict(
             setup=lambda: Counter(value=0),
@@ -315,6 +327,7 @@ def test_explore_with_seed_is_reproducible():
 
 def test_scheduler_had_error():
     """Test that AwaitScheduler tracks errors correctly."""
+
     async def _test():
         scheduler = AwaitScheduler([0, 1], num_tasks=2)
 

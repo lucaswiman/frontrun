@@ -1,10 +1,19 @@
-.PHONY: test clean docs docs-clean docs-html docs-clean-build
+.PHONY: test clean docs docs-clean docs-html docs-clean-build lint type-check
 
 # Include reusable venv setup from parent directory
 include ../venv.mk
 
 test: $(VENV_BIN)activate
 	timeout 300 $(PYTEST)
+
+lint: $(VENV_BIN)activate
+	$(VENV_BIN)ruff check .
+	$(VENV_BIN)ruff format --check .
+
+type-check: $(VENV_BIN)activate
+	$(VENV_BIN)pyright
+
+check: lint type-check
 
 # Read The Docs documentation targets
 docs: docs-html

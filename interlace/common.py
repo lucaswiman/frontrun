@@ -12,6 +12,7 @@ class Step:
         execution_name: The name of the execution unit (thread/task) that should execute this step
         marker_name: The marker name that identifies this synchronization point
     """
+
     execution_name: str
     marker_name: str
 
@@ -53,6 +54,7 @@ class InterleavingResult:
         counterexample: A schedule that violated the invariant (if any).
         num_explored: How many interleavings were tested.
     """
+
     property_holds: bool
     counterexample: Optional[List[int]] = None
     num_explored: int = 0

@@ -37,15 +37,14 @@ import random
 import sys
 import threading
 from contextlib import contextmanager
-from typing import Callable, List, Optional, Dict, Any, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from interlace.common import InterleavingResult
-
 
 # Directories to never trace into (stdlib, site-packages, threading internals)
 _SKIP_DIRS: Set[str] = set()
 for _p in sys.path:
-    if 'lib/python' in _p or 'site-packages' in _p:
+    if "lib/python" in _p or "site-packages" in _p:
         _SKIP_DIRS.add(_p)
 _THREADING_FILE = threading.__file__
 _THIS_FILE = os.path.abspath(__file__)
@@ -55,7 +54,7 @@ def _should_trace_file(filename: str) -> bool:
     """Check whether a file is user code that should be traced."""
     if filename == _THREADING_FILE or filename == _THIS_FILE:
         return False
-    if filename.startswith('<'):
+    if filename.startswith("<"):
         return False
     for skip_dir in _SKIP_DIRS:
         if filename.startswith(skip_dir):
@@ -110,8 +109,7 @@ class OpcodeScheduler:
                     if needed in self._threads_done:
                         continue
                     self._error = TimeoutError(
-                        f"Deadlock: schedule wants thread {needed} "
-                        f"at index {self._index}/{len(self.schedule)}"
+                        f"Deadlock: schedule wants thread {needed} at index {self._index}/{len(self.schedule)}"
                     )
                     self._condition.notify_all()
                     return False
@@ -147,7 +145,7 @@ class _CooperativeLock:
     def __init__(self):
         self._lock = _real_lock()
 
-    def acquire(self, blocking=True, timeout=-1):
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         if not blocking:
             return self._lock.acquire(blocking=False)
 
@@ -156,8 +154,8 @@ class _CooperativeLock:
             return True
 
         # Slow path: lock is held. Get our scheduler context from TLS.
-        scheduler = getattr(_active_scheduler, 'scheduler', None)
-        thread_id = getattr(_active_scheduler, 'thread_id', None)
+        scheduler = getattr(_active_scheduler, "scheduler", None)
+        thread_id = getattr(_active_scheduler, "thread_id", None)
         if scheduler is None:
             # Not in a managed thread — fall back to real blocking
             return self._lock.acquire(blocking=blocking, timeout=timeout)
@@ -180,7 +178,7 @@ class _CooperativeLock:
         self.acquire()
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: Any) -> None:
         self.release()
 
     def __repr__(self):
@@ -216,7 +214,7 @@ class _CooperativeRLock:
         self._owner = None
         self._count = 0
 
-    def acquire(self, blocking=True, timeout=-1):
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         me = threading.get_ident()
         if self._owner == me:
             self._count += 1
@@ -236,8 +234,8 @@ class _CooperativeRLock:
             return True
 
         # Slow path: spin-yield
-        scheduler = getattr(_active_scheduler, 'scheduler', None)
-        thread_id = getattr(_active_scheduler, 'thread_id', None)
+        scheduler = getattr(_active_scheduler, "scheduler", None)
+        thread_id = getattr(_active_scheduler, "thread_id", None)
         if scheduler is None:
             result = self._lock.acquire(blocking=blocking, timeout=timeout)
             if result:
@@ -270,7 +268,7 @@ class _CooperativeRLock:
         self.acquire()
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: Any) -> None:
         self.release()
 
     def _is_owned(self):
@@ -289,13 +287,16 @@ class _CooperativeSemaphore:
     Condition/Lock from threading's globals which may be patched.
     """
 
-    def __init__(self, value=1):
+    _value: int
+    _lock: Any
+
+    def __init__(self, value: int = 1) -> None:
         if value < 0:
             raise ValueError("semaphore initial value must be >= 0")
         self._value = value
         self._lock = _real_lock()
 
-    def acquire(self, blocking=True, timeout=None):
+    def acquire(self, blocking: bool = True, timeout: Optional[float] = None) -> bool:
         # Fast path: try to decrement counter
         self._lock.acquire()
         if self._value > 0:
@@ -307,12 +308,13 @@ class _CooperativeSemaphore:
         if not blocking:
             return False
 
-        scheduler = getattr(_active_scheduler, 'scheduler', None)
-        thread_id = getattr(_active_scheduler, 'thread_id', None)
+        scheduler = getattr(_active_scheduler, "scheduler", None)
+        thread_id = getattr(_active_scheduler, "thread_id", None)
         if scheduler is None:
             # Fall back to spinning with real lock (non-managed thread)
             if timeout is not None:
                 import time
+
                 deadline = time.monotonic() + timeout
                 while True:
                     self._lock.acquire()
@@ -332,6 +334,7 @@ class _CooperativeSemaphore:
                     return True
                 self._lock.release()
                 import time
+
                 time.sleep(0.001)
 
         # Spin-yield loop for managed threads
@@ -346,6 +349,7 @@ class _CooperativeSemaphore:
                 # Schedule exhausted — spin without scheduler to let
                 # threads complete naturally (same pattern as _CooperativeLock)
                 import time
+
                 deadline = time.monotonic() + 1.0
                 while time.monotonic() < deadline:
                     self._lock.acquire()
@@ -358,9 +362,9 @@ class _CooperativeSemaphore:
                 return False
             scheduler.wait_for_turn(thread_id)
 
-    def release(self, n=1):
+    def release(self, n: int = 1) -> None:
         if n < 1:
-            raise ValueError('n must be one or more')
+            raise ValueError("n must be one or more")
         self._lock.acquire()
         self._value += n
         self._lock.release()
@@ -369,7 +373,7 @@ class _CooperativeSemaphore:
         self.acquire()
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: Any) -> None:
         self.release()
 
     def __repr__(self):
@@ -382,13 +386,15 @@ class _CooperativeBoundedSemaphore(_CooperativeSemaphore):
     Like _CooperativeSemaphore but raises ValueError on over-release.
     """
 
-    def __init__(self, value=1):
+    _initial_value: int
+
+    def __init__(self, value: int = 1) -> None:
         super().__init__(value)
         self._initial_value = value
 
-    def release(self, n=1):
+    def release(self, n: int = 1) -> None:
         if n < 1:
-            raise ValueError('n must be one or more')
+            raise ValueError("n must be one or more")
         self._lock.acquire()
         if self._value + n > self._initial_value:
             self._lock.release()
@@ -406,18 +412,19 @@ class _CooperativeEvent:
     def __init__(self):
         self._event = _real_event()
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: Optional[float] = None) -> bool:
         if self._event.is_set():
             return True
 
-        scheduler = getattr(_active_scheduler, 'scheduler', None)
-        thread_id = getattr(_active_scheduler, 'thread_id', None)
+        scheduler = getattr(_active_scheduler, "scheduler", None)
+        thread_id = getattr(_active_scheduler, "thread_id", None)
         if scheduler is None:
             return self._event.wait(timeout=timeout)
 
         if timeout is not None:
             import time
-            deadline = time.monotonic() + timeout
+
+            deadline: float = time.monotonic() + timeout
             while not self._event.is_set():
                 if scheduler._finished or scheduler._error:
                     return self._event.wait(timeout=1.0)
@@ -452,7 +459,7 @@ class _CooperativeCondition:
     itself uses _real_condition internally.
     """
 
-    def __init__(self, lock=None):
+    def __init__(self, lock: Optional[_CooperativeLock] = None) -> None:
         if lock is None:
             lock = _CooperativeLock()
         self._lock = lock
@@ -460,32 +467,33 @@ class _CooperativeCondition:
         # Track waiters so notify can wake them
         self._waiters = 0
 
-    def acquire(self, *args, **kwargs):
-        return self._lock.acquire(*args, **kwargs)
+    def acquire(self, *args: Any, **kwargs: Any) -> bool:  # type: ignore[no-untyped-def]
+        return self._lock.acquire(*args, **kwargs)  # type: ignore[arg-type]
 
-    def release(self):
+    def release(self) -> None:
         self._lock.release()
 
     def __enter__(self):
         self._lock.acquire()
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: Any) -> None:
         self._lock.release()
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: Optional[float] = None) -> bool:
         # Release the user lock, spin-yield, then re-acquire
         self._waiters += 1
         self._lock.release()
         try:
-            scheduler = getattr(_active_scheduler, 'scheduler', None)
-            thread_id = getattr(_active_scheduler, 'thread_id', None)
+            scheduler = getattr(_active_scheduler, "scheduler", None)
+            thread_id = getattr(_active_scheduler, "thread_id", None)
             if scheduler is None:
                 with self._real_cond:
                     return self._real_cond.wait(timeout=timeout)
 
             if timeout is not None:
                 import time
+
                 deadline = time.monotonic() + timeout
                 # Spin-yield checking if we've been notified
                 with self._real_cond:
@@ -515,7 +523,7 @@ class _CooperativeCondition:
             self._waiters -= 1
             self._lock.acquire()
 
-    def wait_for(self, predicate, timeout=None):
+    def wait_for(self, predicate: Callable[[], bool], timeout: Optional[float] = None) -> bool:
         result = predicate()
         while not result:
             self.wait(timeout=timeout)
@@ -524,11 +532,11 @@ class _CooperativeCondition:
                 break
         return result
 
-    def notify(self, n=1):
+    def notify(self, n: int = 1) -> None:
         with self._real_cond:
             self._real_cond.notify(n)
 
-    def notify_all(self):
+    def notify_all(self) -> None:
         with self._real_cond:
             self._real_cond.notify_all()
 
@@ -537,25 +545,27 @@ class _CooperativeQueue:
     """A Queue that yields scheduler turns instead of blocking on get()/put()."""
 
     _queue_class = _real_queue
+    _queue: Any  # type: ignore[assignment]
 
-    def __init__(self, maxsize=0):
+    def __init__(self, maxsize: int = 0) -> None:
         self._queue = self._queue_class(maxsize)
 
-    def get(self, block=True, timeout=None):
+    def get(self, block: bool = True, timeout: Optional[float] = None) -> Any:
         try:
             return self._queue.get(block=False)
         except queue.Empty:
             if not block:
                 raise
 
-        scheduler = getattr(_active_scheduler, 'scheduler', None)
-        thread_id = getattr(_active_scheduler, 'thread_id', None)
+        scheduler = getattr(_active_scheduler, "scheduler", None)
+        thread_id = getattr(_active_scheduler, "thread_id", None)
         if scheduler is None:
             return self._queue.get(block=True, timeout=timeout)
 
         if timeout is not None:
             import time
-            deadline = time.monotonic() + timeout
+
+            deadline: float = time.monotonic() + timeout
             while True:
                 try:
                     return self._queue.get(block=False)
@@ -576,7 +586,7 @@ class _CooperativeQueue:
                 return self._queue.get(block=True, timeout=1.0)
             scheduler.wait_for_turn(thread_id)
 
-    def put(self, item, block=True, timeout=None):
+    def put(self, item: Any, block: bool = True, timeout: Optional[float] = None) -> None:
         try:
             self._queue.put(item, block=False)
             return
@@ -584,15 +594,16 @@ class _CooperativeQueue:
             if not block:
                 raise
 
-        scheduler = getattr(_active_scheduler, 'scheduler', None)
-        thread_id = getattr(_active_scheduler, 'thread_id', None)
+        scheduler = getattr(_active_scheduler, "scheduler", None)
+        thread_id = getattr(_active_scheduler, "thread_id", None)
         if scheduler is None:
             self._queue.put(item, block=True, timeout=timeout)
             return
 
         if timeout is not None:
             import time
-            deadline = time.monotonic() + timeout
+
+            deadline: float = time.monotonic() + timeout
             while True:
                 try:
                     self._queue.put(item, block=False)
@@ -626,26 +637,28 @@ class _CooperativeQueue:
     def full(self):
         return self._queue.full()
 
-    def get_nowait(self):
+    def get_nowait(self) -> Any:
         return self._queue.get(block=False)
 
-    def put_nowait(self, item):
+    def put_nowait(self, item: Any) -> None:
         self._queue.put(item, block=False)
 
-    def task_done(self):
+    def task_done(self) -> None:
         self._queue.task_done()
 
-    def join(self):
+    def join(self) -> None:
         self._queue.join()
 
 
 class _CooperativeLifoQueue(_CooperativeQueue):
     """LifoQueue variant of the cooperative queue."""
+
     _queue_class = _real_lifo_queue
 
 
 class _CooperativePriorityQueue(_CooperativeQueue):
     """PriorityQueue variant of the cooperative queue."""
+
     _queue_class = _real_priority_queue
 
 
@@ -700,21 +713,21 @@ class BytecodeInterlace:
             queue.PriorityQueue = _real_priority_queue
             self._lock_patched = False
 
-    def _make_trace(self, thread_id: int):
+    def _make_trace(self, thread_id: int) -> Callable[[Any, str, Any], Any]:  # type: ignore[return-value]
         """Create a sys.settrace function for the given thread."""
         scheduler = self.scheduler
 
-        def trace(frame, event, arg):
+        def trace(frame: Any, event: str, arg: Any) -> Any:  # type: ignore[name-defined]
             if scheduler._finished or scheduler._error:
                 return None
 
-            if event == 'call':
+            if event == "call":
                 if _should_trace_file(frame.f_code.co_filename):
                     frame.f_trace_opcodes = True
                     return trace
                 return None
 
-            if event == 'opcode':
+            if event == "opcode":
                 scheduler.wait_for_turn(thread_id)
                 return trace
 
@@ -722,7 +735,9 @@ class BytecodeInterlace:
 
         return trace
 
-    def _run_thread(self, thread_id: int, func: Callable, args: tuple, kwargs: dict):
+    def _run_thread(
+        self, thread_id: int, func: Callable[..., None], args: Tuple[Any, ...], kwargs: Dict[str, Any]
+    ) -> None:
         """Thread entry point. Installs tracing, runs func, cleans up."""
         try:
             # Store scheduler context in TLS for cooperative wrappers
@@ -743,11 +758,11 @@ class BytecodeInterlace:
 
     def run(
         self,
-        funcs: List[Callable],
-        args: Optional[List[tuple]] = None,
-        kwargs: Optional[List[dict]] = None,
+        funcs: List[Callable[..., None]],
+        args: Optional[List[Tuple[Any, ...]]] = None,
+        kwargs: Optional[List[Dict[str, Any]]] = None,
         timeout: float = 10.0,
-    ):
+    ) -> None:
         """Run functions concurrently with controlled interleaving.
 
         Args:

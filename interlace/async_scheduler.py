@@ -41,7 +41,7 @@ Example — a simple round-robin scheduler:
 """
 
 import asyncio
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Union
 
 
 class InterleavedLoop:
@@ -94,7 +94,6 @@ class InterleavedLoop:
             task_id: Identity of the task that is proceeding.
             marker: Same marker value passed to should_proceed.
         """
-        pass
 
     # ------------------------------------------------------------------
     # Per-task context hooks — override if needed
@@ -105,14 +104,12 @@ class InterleavedLoop:
 
         Override to set context variables, thread-locals, etc.
         """
-        pass
 
     def _cleanup_task_context(self, task_id: Any) -> None:
         """Called when a task finishes, after running user code.
 
         Override to clean up context set in _setup_task_context.
         """
-        pass
 
     # ------------------------------------------------------------------
     # Yield point
@@ -140,9 +137,7 @@ class InterleavedLoop:
                     return
 
                 try:
-                    await asyncio.wait_for(
-                        self._condition.wait(), timeout=5.0
-                    )
+                    await asyncio.wait_for(self._condition.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     self._handle_timeout(task_id, marker)
                     return
@@ -152,10 +147,7 @@ class InterleavedLoop:
 
         Override to provide a more informative error message.
         """
-        self._error = TimeoutError(
-            f"Deadlock: task {task_id!r} timed out waiting "
-            f"at marker {marker!r}"
-        )
+        self._error = TimeoutError(f"Deadlock: task {task_id!r} timed out waiting at marker {marker!r}")
         self._condition.notify_all()
 
     # ------------------------------------------------------------------
@@ -177,7 +169,7 @@ class InterleavedLoop:
 
     async def run_all(
         self,
-        task_funcs: Union[Dict[Any, Callable], List[Callable]],
+        task_funcs: Union[Dict[Any, Callable[..., Awaitable[None]]], List[Callable[..., Awaitable[None]]]],
         timeout: float = 10.0,
     ) -> None:
         """Run tasks with controlled interleaving.
@@ -193,7 +185,7 @@ class InterleavedLoop:
 
         errors: Dict[Any, Exception] = {}
 
-        async def _run(task_id: Any, func: Callable) -> None:
+        async def _run(task_id: Any, func: Callable[..., Awaitable[None]]) -> None:
             try:
                 self._setup_task_context(task_id)
                 await func()
@@ -204,10 +196,7 @@ class InterleavedLoop:
                 self._cleanup_task_context(task_id)
                 await self._mark_done(task_id)
 
-        tasks = [
-            asyncio.create_task(_run(tid, func), name=str(tid))
-            for tid, func in task_funcs.items()
-        ]
+        tasks = [asyncio.create_task(_run(tid, func), name=str(tid)) for tid, func in task_funcs.items()]
 
         try:
             await asyncio.wait_for(
@@ -219,10 +208,7 @@ class InterleavedLoop:
                 if not t.done():
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            raise TimeoutError(
-                "Tasks did not complete within timeout. "
-                "Check for deadlocks in your schedule."
-            )
+            raise TimeoutError("Tasks did not complete within timeout. Check for deadlocks in your schedule.")
 
         if errors:
             raise next(iter(errors.values()))

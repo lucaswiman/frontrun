@@ -4,18 +4,15 @@ Tests for the interlace trace_markers module.
 Demonstrates deterministic thread interleaving using sys.settrace and comment markers.
 """
 
-import sys
 import os
+import sys
 
 # Add parent directory to path so we can import interlace
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from interlace.trace_markers import (
-    Schedule, Step, TraceExecutor, interlace,
-    MarkerRegistry, ThreadCoordinator
-)
 import threading
-import time
+
+from interlace.trace_markers import MarkerRegistry, Schedule, Step, ThreadCoordinator, TraceExecutor, interlace
 
 
 class BankAccount:
@@ -52,12 +49,14 @@ def test_race_condition_buggy_schedule():
     account = BankAccount(balance=100)
 
     # Define the buggy schedule: both threads read before either writes
-    schedule = Schedule([
-        Step("thread1", "read_balance"),
-        Step("thread2", "read_balance"),
-        Step("thread1", "write_balance"),
-        Step("thread2", "write_balance"),
-    ])
+    schedule = Schedule(
+        [
+            Step("thread1", "read_balance"),
+            Step("thread2", "read_balance"),
+            Step("thread1", "write_balance"),
+            Step("thread2", "write_balance"),
+        ]
+    )
 
     def worker1():
         account.transfer(50)
@@ -70,10 +69,10 @@ def test_race_condition_buggy_schedule():
     executor.run("thread2", worker2)
     executor.wait(timeout=5.0)
 
-    print(f"Initial balance: 100")
-    print(f"Thread 1 transfer: +50")
-    print(f"Thread 2 transfer: +50")
-    print(f"Expected (buggy): 150")
+    print("Initial balance: 100")
+    print("Thread 1 transfer: +50")
+    print("Thread 2 transfer: +50")
+    print("Expected (buggy): 150")
     print(f"Actual balance: {account.balance}")
 
     # With the buggy schedule, we expect a lost update
@@ -93,12 +92,14 @@ def test_race_condition_correct_schedule():
     account = BankAccount(balance=100)
 
     # Define the correct schedule: each thread completes before the next starts
-    schedule = Schedule([
-        Step("thread1", "read_balance"),
-        Step("thread1", "write_balance"),
-        Step("thread2", "read_balance"),
-        Step("thread2", "write_balance"),
-    ])
+    schedule = Schedule(
+        [
+            Step("thread1", "read_balance"),
+            Step("thread1", "write_balance"),
+            Step("thread2", "read_balance"),
+            Step("thread2", "write_balance"),
+        ]
+    )
 
     def worker1():
         account.transfer(50)
@@ -111,10 +112,10 @@ def test_race_condition_correct_schedule():
     executor.run("thread2", worker2)
     executor.wait(timeout=5.0)
 
-    print(f"Initial balance: 100")
-    print(f"Thread 1 transfer: +50")
-    print(f"Thread 2 transfer: +50")
-    print(f"Expected (correct): 200")
+    print("Initial balance: 100")
+    print("Thread 1 transfer: +50")
+    print("Thread 2 transfer: +50")
+    print("Expected (correct): 200")
     print(f"Actual balance: {account.balance}")
 
     # With the correct schedule, we expect the right result
@@ -133,11 +134,13 @@ def test_multiple_markers_same_thread():
         results.append("step2")  # interlace: step2
         results.append("step3")  # interlace: step3
 
-    schedule = Schedule([
-        Step("main", "step1"),
-        Step("main", "step2"),
-        Step("main", "step3"),
-    ])
+    schedule = Schedule(
+        [
+            Step("main", "step1"),
+            Step("main", "step2"),
+            Step("main", "step3"),
+        ]
+    )
 
     executor = TraceExecutor(schedule)
     executor.run("main", worker_with_markers)
@@ -172,12 +175,14 @@ def test_alternating_execution():
         append_safe("t2_b")
 
     # Alternate between threads at each marker
-    schedule = Schedule([
-        Step("thread1", "marker_a"),
-        Step("thread2", "marker_a"),
-        Step("thread1", "marker_b"),
-        Step("thread2", "marker_b"),
-    ])
+    schedule = Schedule(
+        [
+            Step("thread1", "marker_a"),
+            Step("thread2", "marker_a"),
+            Step("thread1", "marker_b"),
+            Step("thread2", "marker_b"),
+        ]
+    )
 
     executor = TraceExecutor(schedule)
     executor.run("thread1", worker1)
@@ -209,16 +214,14 @@ def test_convenience_function():
         x = 1  # interlace: mark
         append_safe("t2")
 
-    schedule = Schedule([
-        Step("t1", "mark"),
-        Step("t2", "mark"),
-    ])
-
-    interlace(
-        schedule=schedule,
-        threads={"t1": worker1, "t2": worker2},
-        timeout=5.0
+    schedule = Schedule(
+        [
+            Step("t1", "mark"),
+            Step("t2", "mark"),
+        ]
     )
+
+    interlace(schedule=schedule, threads={"t1": worker1, "t2": worker2}, timeout=5.0)
 
     print(f"Results: {results}")
     assert results == ["t1", "t2"]
@@ -237,6 +240,7 @@ def test_marker_registry():
 
     # Get a frame from the function
     import inspect
+
     frame = None
 
     def get_frame():
@@ -247,7 +251,7 @@ def test_marker_registry():
     found_markers = []
 
     def trace_func(frame, event, arg):
-        if event == 'line':
+        if event == "line":
             registry.scan_frame(frame)
             marker = registry.get_marker(frame.f_code.co_filename, frame.f_lineno)
             if marker:
@@ -270,11 +274,13 @@ def test_thread_coordinator():
     """Test the ThreadCoordinator synchronization logic."""
     print("\n=== Test: ThreadCoordinator ===")
 
-    schedule = Schedule([
-        Step("t1", "m1"),
-        Step("t2", "m1"),
-        Step("t1", "m2"),
-    ])
+    schedule = Schedule(
+        [
+            Step("t1", "m1"),
+            Step("t2", "m1"),
+            Step("t1", "m2"),
+        ]
+    )
 
     coordinator = ThreadCoordinator(schedule)
     results = []
@@ -334,14 +340,16 @@ def test_complex_race_scenario():
 
     # Three threads, each incrementing twice
     # We'll interleave them to maximize the race condition
-    schedule = Schedule([
-        Step("t1", "read_counter"),
-        Step("t2", "read_counter"),
-        Step("t3", "read_counter"),
-        Step("t1", "write_counter"),
-        Step("t2", "write_counter"),
-        Step("t3", "write_counter"),
-    ])
+    schedule = Schedule(
+        [
+            Step("t1", "read_counter"),
+            Step("t2", "read_counter"),
+            Step("t3", "read_counter"),
+            Step("t1", "write_counter"),
+            Step("t2", "write_counter"),
+            Step("t3", "write_counter"),
+        ]
+    )
 
     def worker():
         counter.increment_racy()
@@ -352,9 +360,9 @@ def test_complex_race_scenario():
     executor.run("t3", worker)
     executor.wait(timeout=5.0)
 
-    print(f"Initial counter: 0")
-    print(f"Three threads each increment once")
-    print(f"Expected (with race): 1")
+    print("Initial counter: 0")
+    print("Three threads each increment once")
+    print("Expected (with race): 1")
     print(f"Actual counter: {counter.value}")
 
     # With this schedule, all three threads read 0, then all write 1
@@ -379,7 +387,7 @@ def test_multiline_statements_with_markers():
             results.append(value)
 
     # Use exec with string literal to preserve exact formatting
-    code_template = '''
+    code_template = """
 def worker_{name}():
     append_safe(
         "thread{name}_step1"
@@ -387,7 +395,7 @@ def worker_{name}():
     append_safe(
         "thread{name}_step2"
     )  # interlace: step2
-'''
+"""
 
     # Create worker1 and worker2 with exact formatting preserved
     namespace1 = {"append_safe": append_safe}
@@ -399,12 +407,14 @@ def worker_{name}():
     worker2 = namespace2["worker_2"]
 
     # Define schedule to interleave the threads
-    schedule = Schedule([
-        Step("thread1", "step1"),
-        Step("thread2", "step1"),
-        Step("thread1", "step2"),
-        Step("thread2", "step2"),
-    ])
+    schedule = Schedule(
+        [
+            Step("thread1", "step1"),
+            Step("thread2", "step1"),
+            Step("thread1", "step2"),
+            Step("thread2", "step2"),
+        ]
+    )
 
     executor = TraceExecutor(schedule)
     executor.run("thread1", worker1)
@@ -430,7 +440,7 @@ def test_multiline_with_nested_calls():
     results = []
 
     # Code with nested multiline calls
-    code = '''
+    code = """
 def worker():
     results.append(
         some_func(
@@ -441,16 +451,18 @@ def worker():
 
 def some_func(a, b):
     return f"{a}-{b}"
-'''
+"""
 
     namespace = {"results": results}
     exec(code, namespace)
     worker = namespace["worker"]
     some_func = namespace["some_func"]
 
-    schedule = Schedule([
-        Step("main", "nested_call"),
-    ])
+    schedule = Schedule(
+        [
+            Step("main", "nested_call"),
+        ]
+    )
 
     executor = TraceExecutor(schedule)
     executor.run("main", worker)
@@ -488,7 +500,7 @@ def test_markers_on_empty_lines():
             results.append(value)
 
     # Use exec to create a function with markers on empty lines
-    code = '''
+    code = """
 def worker1():
     # interlace: before_read
     val = get_value()
@@ -503,7 +515,7 @@ def worker2():
 
 def get_value():
     return 42
-'''
+"""
 
     namespace = {
         "append_safe": append_safe,
@@ -513,12 +525,14 @@ def get_value():
     worker2 = namespace["worker2"]
 
     # Define schedule to interleave threads at markers on empty lines
-    schedule = Schedule([
-        Step("thread1", "before_read"),
-        Step("thread2", "before_read"),
-        Step("thread1", "after_read"),
-        Step("thread2", "after_read"),
-    ])
+    schedule = Schedule(
+        [
+            Step("thread1", "before_read"),
+            Step("thread2", "before_read"),
+            Step("thread1", "after_read"),
+            Step("thread2", "after_read"),
+        ]
+    )
 
     executor = TraceExecutor(schedule)
     executor.run("thread1", worker1)
@@ -571,6 +585,7 @@ def run_all_tests():
             print(f"✗ TEST FAILED: {test.__name__}")
             print(f"  Error: {e}")
             import traceback
+
             traceback.print_exc()
 
     print("\n" + "=" * 60)
