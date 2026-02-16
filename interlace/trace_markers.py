@@ -30,50 +30,10 @@ import threading
 import linecache
 import re
 from typing import List, Dict, Callable, Optional, Any
-from dataclasses import dataclass
 
+from interlace.common import Step, Schedule
 
 MARKER_PATTERN = re.compile(r'#\s*interlace:\s*(\w+)')
-
-
-@dataclass
-class Step:
-    """Represents a single step in the execution schedule.
-
-    Attributes:
-        thread_name: The name of the thread that should execute this step
-        marker_name: The marker name that identifies this synchronization point
-    """
-    thread_name: str
-    marker_name: str
-
-    def __repr__(self):
-        return f"Step({self.thread_name!r}, {self.marker_name!r})"
-
-
-class Schedule:
-    """Defines the execution order for threads at synchronization points.
-
-    A schedule is a linear sequence of steps that specify which thread should
-    execute which marker in order.
-    """
-
-    def __init__(self, steps: List[Step]):
-        """Initialize a schedule with a list of steps.
-
-        Args:
-            steps: Ordered list of Step objects defining the execution sequence
-        """
-        self.steps = steps
-        self._validate()
-
-    def _validate(self):
-        """Validate that the schedule is well-formed."""
-        if not self.steps:
-            raise ValueError("Schedule must contain at least one step")
-
-    def __repr__(self):
-        return f"Schedule({self.steps!r})"
 
 
 class MarkerRegistry:
@@ -150,11 +110,11 @@ class ThreadCoordinator:
         self.completed = False
         self.error: Optional[Exception] = None
 
-    def wait_for_turn(self, thread_name: str, marker_name: str):
-        """Block until it's this thread's turn to execute this marker.
+    def wait_for_turn(self, execution_name: str, marker_name: str):
+        """Block until it's this execution unit's turn to execute this marker.
 
         Args:
-            thread_name: The name of the calling thread
+            execution_name: The name of the calling execution unit
             marker_name: The marker that was hit
         """
         with self.condition:
@@ -173,7 +133,7 @@ class ThreadCoordinator:
                 expected_step = self.schedule.steps[self.current_step]
 
                 # Is it our turn?
-                if (expected_step.thread_name == thread_name and
+                if (expected_step.execution_name == execution_name and
                     expected_step.marker_name == marker_name):
                     # It's our turn! Advance and notify others
                     self.current_step += 1
@@ -218,11 +178,11 @@ class TraceExecutor:
         self.threads: List[threading.Thread] = []
         self.thread_errors: Dict[str, Exception] = {}
 
-    def _create_trace_function(self, thread_name: str):
-        """Create a trace function for a specific thread.
+    def _create_trace_function(self, execution_name: str):
+        """Create a trace function for a specific execution unit.
 
         Args:
-            thread_name: The name of the thread this trace function is for
+            execution_name: The name of the execution unit this trace function is for
 
         Returns:
             A trace function suitable for sys.settrace
@@ -243,9 +203,9 @@ class TraceExecutor:
 
                 if marker_name:
                     # We hit a marker! Wait for our turn
-                    self.coordinator.wait_for_turn(thread_name, marker_name)
+                    self.coordinator.wait_for_turn(execution_name, marker_name)
 
-                    # Check if an error occurred in another thread
+                    # Check if an error occurred in another execution unit
                     if self.coordinator.error:
                         raise self.coordinator.error
 
@@ -257,35 +217,35 @@ class TraceExecutor:
 
         return trace_function
 
-    def _thread_wrapper(self, thread_name: str, target: Callable, args: tuple, kwargs: dict):
-        """Wrapper function that sets up tracing for a thread.
+    def _thread_wrapper(self, execution_name: str, target: Callable, args: tuple, kwargs: dict):
+        """Wrapper function that sets up tracing for an execution unit.
 
         Args:
-            thread_name: The name of this thread
+            execution_name: The name of this execution unit
             target: The function to execute
             args: Positional arguments for the target
             kwargs: Keyword arguments for the target
         """
         try:
-            # Install trace function for this thread
-            trace_fn = self._create_trace_function(thread_name)
+            # Install trace function for this execution unit
+            trace_fn = self._create_trace_function(execution_name)
             sys.settrace(trace_fn)
 
             # Execute the target function
             target(*args, **kwargs)
         except Exception as e:
             # Store the error
-            self.thread_errors[thread_name] = e
+            self.thread_errors[execution_name] = e
             self.coordinator.report_error(e)
         finally:
             # Clean up trace function
             sys.settrace(None)
 
-    def run(self, thread_name: str, target: Callable, args: tuple = (), kwargs: dict = None):
+    def run(self, execution_name: str, target: Callable, args: tuple = (), kwargs: dict = None):
         """Start a new thread with tracing enabled.
 
         Args:
-            thread_name: The name for this thread (must match schedule)
+            execution_name: The name for this execution unit (must match schedule)
             target: The function to execute in the thread
             args: Positional arguments for the target function
             kwargs: Keyword arguments for the target function
@@ -295,8 +255,8 @@ class TraceExecutor:
 
         thread = threading.Thread(
             target=self._thread_wrapper,
-            args=(thread_name, target, args, kwargs),
-            name=thread_name,
+            args=(execution_name, target, args, kwargs),
+            name=execution_name,
             daemon=True
         )
         self.threads.append(thread)
@@ -336,9 +296,9 @@ def interlace(schedule: Schedule, threads: Dict[str, Callable],
 
     Args:
         schedule: The Schedule defining execution order
-        threads: Dictionary mapping thread names to their target functions
-        thread_args: Optional dictionary mapping thread names to argument tuples
-        thread_kwargs: Optional dictionary mapping thread names to keyword argument dicts
+        threads: Dictionary mapping execution unit names to their target functions
+        thread_args: Optional dictionary mapping execution unit names to argument tuples
+        thread_kwargs: Optional dictionary mapping execution unit names to keyword argument dicts
         timeout: Optional timeout for waiting
 
     Returns:
@@ -359,10 +319,10 @@ def interlace(schedule: Schedule, threads: Dict[str, Callable],
 
     executor = TraceExecutor(schedule)
 
-    for thread_name, target in threads.items():
-        args = thread_args.get(thread_name, ())
-        kwargs = thread_kwargs.get(thread_name, {})
-        executor.run(thread_name, target, args, kwargs)
+    for execution_name, target in threads.items():
+        args = thread_args.get(execution_name, ())
+        kwargs = thread_kwargs.get(execution_name, {})
+        executor.run(execution_name, target, args, kwargs)
 
     executor.wait(timeout=timeout)
     return executor

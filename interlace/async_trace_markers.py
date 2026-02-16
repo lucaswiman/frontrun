@@ -7,7 +7,7 @@ execution schedule. This is the async/await adaptation of the threading-based
 trace_markers module.
 
 Built on the shared InterleavedLoop abstraction, using step-based scheduling
-(list of Step(task_name, marker_name) entries) as its policy.
+(list of Step(execution_name, marker_name) entries) as its policy.
 
 Key Insight: In async code, race conditions ONLY happen at await points
 ============================================================================
@@ -70,58 +70,18 @@ Or using the convenience function:
 
 import asyncio
 from typing import List, Dict, Callable, Optional, Any, Awaitable
-from dataclasses import dataclass
 
 from interlace.async_scheduler import InterleavedLoop
-
-
-@dataclass
-class Step:
-    """Represents a single step in the execution schedule.
-
-    Attributes:
-        task_name: The name of the task that should execute this step
-        marker_name: The marker name that identifies this synchronization point
-    """
-    task_name: str
-    marker_name: str
-
-    def __repr__(self):
-        return f"Step({self.task_name!r}, {self.marker_name!r})"
-
-
-class Schedule:
-    """Defines the execution order for tasks at synchronization points.
-
-    A schedule is a linear sequence of steps that specify which task should
-    execute which marker in order.
-    """
-
-    def __init__(self, steps: List[Step]):
-        """Initialize a schedule with a list of steps.
-
-        Args:
-            steps: Ordered list of Step objects defining the execution sequence
-        """
-        self.steps = steps
-        self._validate()
-
-    def _validate(self):
-        """Validate that the schedule is well-formed."""
-        if not self.steps:
-            raise ValueError("Schedule must contain at least one step")
-
-    def __repr__(self):
-        return f"Schedule({self.steps!r})"
+from interlace.common import Step, Schedule
 
 
 class AsyncTaskCoordinator(InterleavedLoop):
     """Coordinates async task execution according to a schedule.
 
     Built on InterleavedLoop, using step-based scheduling: the schedule
-    is a list of Step(task_name, marker_name) entries.  Tasks call
-    wait_for_turn(task_name, marker_name) at marker points and block
-    until the schedule says it's their turn.
+    is a list of Step(execution_name, marker_name) entries.  Tasks call
+    pause(execution_name, marker_name) at marker points and block until
+    the schedule says it's their turn.
     """
 
     def __init__(self, schedule: Schedule):
@@ -142,46 +102,11 @@ class AsyncTaskCoordinator(InterleavedLoop):
             return True
 
         step = self.schedule.steps[self.current_step]
-        return step.task_name == task_id and step.marker_name == marker
+        return step.execution_name == task_id and step.marker_name == marker
 
     def on_proceed(self, task_id: Any, marker: Any = None) -> None:
         if self.current_step < len(self.schedule.steps):
             self.current_step += 1
-
-    # -- Public API (backward-compatible) -------------------------------
-
-    @property
-    def completed(self) -> bool:
-        return self._finished
-
-    @property
-    def error(self) -> Optional[Exception]:
-        return self._error
-
-    async def wait_for_turn(self, task_name: str, marker_name: str):
-        """Block (yield control) until it's this task's turn to execute this marker.
-
-        This is the async equivalent of the threading version's synchronization.
-        Instead of blocking a thread, we yield control back to the event loop
-        until it's our turn.
-
-        Args:
-            task_name: The name of the calling task
-            marker_name: The marker that was hit
-        """
-        await self.pause(task_name, marker_name)
-
-    async def report_error(self, error: Exception):
-        """Report an error and wake up all waiting tasks.
-
-        Args:
-            error: The exception that occurred
-        """
-        await self._report_error(error)
-
-    def is_finished(self) -> bool:
-        """Check if the schedule has completed or encountered an error."""
-        return self._finished or self._error is not None
 
 
 class AsyncTraceExecutor:
@@ -201,19 +126,19 @@ class AsyncTraceExecutor:
         self.coordinator = AsyncTaskCoordinator(schedule)
         self.task_errors: Dict[str, Exception] = {}
 
-    def marker(self, task_name: str) -> Callable[[str], Awaitable[None]]:
-        """Returns a marker function for the given task.
+    def marker(self, execution_name: str) -> Callable[[str], Awaitable[None]]:
+        """Returns a marker function for the given execution unit.
 
         The returned function is an async function that the task calls at
         synchronization points. This is the async equivalent of placing
         # interlace: marker_name comments in threaded code.
 
         Args:
-            task_name: The name of the task this marker function is for
+            execution_name: The name of the execution unit (task/thread) this marker function is for
 
         Returns:
             An async function that takes a marker name and waits for the
-            task's turn to execute
+            execution unit's turn to execute
 
         Usage:
             mark = executor.marker('task1')
@@ -224,7 +149,7 @@ class AsyncTraceExecutor:
                 await mark('after_write')
         """
         async def _mark(marker_name: str):
-            await self.coordinator.wait_for_turn(task_name, marker_name)
+            await self.coordinator.pause(execution_name, marker_name)
         return _mark
 
     async def run(self, tasks: Dict[str, Callable[[], Awaitable[None]]]):
@@ -239,7 +164,23 @@ class AsyncTraceExecutor:
         Raises:
             Any exception that occurred in a task during execution
         """
-        await self.coordinator.run_all(tasks)
+        # Wrap tasks to capture individual exceptions
+        wrapped_tasks = {}
+        for execution_name, task in tasks.items():
+            async def _wrapped_task(task=task, execution_name=execution_name):
+                try:
+                    await task()
+                except Exception as e:
+                    self.task_errors[execution_name] = e
+                    raise
+            wrapped_tasks[execution_name] = _wrapped_task
+
+        await self.coordinator.run_all(wrapped_tasks)
+
+        # If any task had an error, raise the first one
+        if self.task_errors:
+            first_error = next(iter(self.task_errors.values()))
+            raise first_error
 
     def reset(self):
         """Reset the executor for another run (for testing purposes)."""
@@ -262,9 +203,9 @@ async def async_interlace(
 
     Args:
         schedule: The Schedule defining execution order
-        tasks: Dictionary mapping task names to their async target functions
-        task_args: Optional dictionary mapping task names to argument tuples
-        task_kwargs: Optional dictionary mapping task names to keyword argument dicts
+        tasks: Dictionary mapping execution unit names to their async target functions
+        task_args: Optional dictionary mapping execution unit names to argument tuples
+        task_kwargs: Optional dictionary mapping execution unit names to keyword argument dicts
         timeout: Optional timeout in seconds for the entire execution
 
     Returns:
@@ -295,16 +236,16 @@ async def async_interlace(
 
     # Create wrapped tasks that inject the marker function
     wrapped_tasks = {}
-    for task_name, target in tasks.items():
-        mark = executor.marker(task_name)
-        args = task_args.get(task_name, ())
-        kwargs = task_kwargs.get(task_name, {})
+    for execution_name, target in tasks.items():
+        mark = executor.marker(execution_name)
+        args = task_args.get(execution_name, ())
+        kwargs = task_kwargs.get(execution_name, {})
 
         # Create a coroutine that calls the target with mark as first arg
         async def make_task(target=target, mark=mark, args=args, kwargs=kwargs):
             return await target(mark, *args, **kwargs)
 
-        wrapped_tasks[task_name] = make_task
+        wrapped_tasks[execution_name] = make_task
 
     # Run with optional timeout
     if timeout is not None:

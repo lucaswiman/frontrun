@@ -47,10 +47,10 @@ import asyncio
 import contextvars
 import random
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Any, Set
+from typing import Callable, Dict, List, Optional, Any
 
 from interlace.async_scheduler import InterleavedLoop
+from interlace.common import InterleavingResult
 
 
 # Context variable to track the active scheduler and task ID
@@ -78,7 +78,9 @@ async def await_point():
     """
     scheduler = _scheduler_var.get()
     if scheduler is not None:
-        await scheduler.wait_for_turn()
+        task_id = _task_id_var.get()
+        if task_id is not None:
+            await scheduler.pause(task_id)
 
 
 class AwaitScheduler(InterleavedLoop):
@@ -134,28 +136,9 @@ class AwaitScheduler(InterleavedLoop):
         _scheduler_var.set(None)
         _task_id_var.set(None)
 
-    # -- Backward-compatible convenience methods ------------------------
-
-    async def wait_for_turn(self) -> None:
-        """Block until it's the calling task's turn.
-
-        Called by await_point().  Reads the task ID from contextvars.
-        """
-        task_id = _task_id_var.get()
-        if task_id is None:
-            return
-        await self.pause(task_id)
-
-    async def mark_done(self, task_id: int) -> None:
-        """Mark a task as finished."""
-        await self._mark_done(task_id)
-
-    async def report_error(self, error: Exception) -> None:
-        """Report an error and unblock all tasks."""
-        await self._report_error(error)
-
     @property
     def had_error(self) -> bool:
+        """Check if an error occurred during execution."""
         return self._error is not None
 
 
@@ -225,19 +208,6 @@ async def controlled_interleaving(schedule: List[int], num_tasks: int = 2):
 # ---------------------------------------------------------------------------
 # Property-based testing
 # ---------------------------------------------------------------------------
-
-@dataclass
-class InterleavingResult:
-    """Result of exploring async interleavings.
-
-    Attributes:
-        property_holds: True if the invariant held under all tested interleavings.
-        counterexample: A schedule that violated the invariant (if any).
-        num_explored: How many interleavings were tested.
-    """
-    property_holds: bool
-    counterexample: Optional[List[int]] = None
-    num_explored: int = 0
 
 
 async def run_with_schedule(

@@ -36,8 +36,9 @@ import random
 import sys
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Callable, List, Optional, Dict, Any, Set
+
+from interlace.common import InterleavingResult
 
 
 # Directories to never trace into (stdlib, site-packages, threading internals)
@@ -329,19 +330,6 @@ def controlled_interleaving(schedule: List[int], num_threads: int = 2):
 # ---------------------------------------------------------------------------
 # Property-based testing
 # ---------------------------------------------------------------------------
-
-@dataclass
-class InterleavingResult:
-    """Result of exploring interleavings.
-
-    Attributes:
-        property_holds: True if the invariant held under all tested interleavings.
-        counterexample: A schedule that violated the invariant (if any).
-        num_explored: How many interleavings were tested.
-    """
-    property_holds: bool
-    counterexample: Optional[List[int]] = None
-    num_explored: int = 0
 
 
 def run_with_schedule(

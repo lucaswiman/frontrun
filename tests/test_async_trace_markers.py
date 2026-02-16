@@ -279,14 +279,14 @@ def test_async_task_coordinator():
 
         async def task1_work():
             results.append("t1_start")
-            await coordinator.wait_for_turn("t1", "m1")
+            await coordinator.pause("t1", "m1")
             results.append("t1_m1")
-            await coordinator.wait_for_turn("t1", "m2")
+            await coordinator.pause("t1", "m2")
             results.append("t1_m2")
 
         async def task2_work():
             results.append("t2_start")
-            await coordinator.wait_for_turn("t2", "m1")
+            await coordinator.pause("t2", "m1")
             results.append("t2_m1")
 
         # Run both tasks concurrently
@@ -445,6 +445,42 @@ def test_exception_propagation():
     asyncio.run(run_test())
 
 
+def test_task_errors_tracked():
+    """Test that task_errors is properly populated when tasks raise exceptions."""
+    print("\n=== Test: Task Errors Tracked ===")
+
+    async def run_test():
+        schedule = Schedule([
+            Step("t1", "marker1"),
+            Step("t2", "marker1"),
+        ])
+
+        async def worker1(mark):
+            await mark('marker1')
+            raise ValueError("Error in task1")
+
+        async def worker2(mark):
+            await mark('marker1')
+
+        executor = AsyncTraceExecutor(schedule)
+        mark1 = executor.marker('t1')
+        mark2 = executor.marker('t2')
+
+        try:
+            await executor.run({
+                't1': lambda: worker1(mark1),
+                't2': lambda: worker2(mark2),
+            })
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert str(e) == "Error in task1"
+            assert "t1" in executor.task_errors
+            assert isinstance(executor.task_errors["t1"], ValueError)
+            print("✓ Task errors properly tracked!")
+
+    asyncio.run(run_test())
+
+
 def run_all_tests():
     """Run all tests and report results."""
     print("\n" + "=" * 60)
@@ -461,6 +497,7 @@ def run_all_tests():
         test_complex_race_scenario,
         test_timeout,
         test_exception_propagation,
+        test_task_errors_tracked,
     ]
 
     passed = 0

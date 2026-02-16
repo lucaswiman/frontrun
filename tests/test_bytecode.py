@@ -271,3 +271,16 @@ def test_explore_with_seed_is_reproducible():
 
     assert r1.property_holds == r2.property_holds
     assert r1.num_explored == r2.num_explored
+
+
+def test_scheduler_had_error():
+    """Test that OpcodeScheduler tracks errors correctly."""
+    scheduler = OpcodeScheduler([0, 1], num_threads=2)
+
+    assert not scheduler.had_error
+
+    error = RuntimeError("Test error")
+    scheduler.report_error(error)
+
+    assert scheduler.had_error
+    assert scheduler._error is error

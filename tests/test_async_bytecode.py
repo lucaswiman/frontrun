@@ -67,27 +67,27 @@ def test_scheduler_basic_round_robin():
 
         # Set up context vars for task 0
         _task_id_var.set(0)
-        await scheduler.wait_for_turn()  # schedule[0] = 0
+        await scheduler.pause(0)  # schedule[0] = 0
         assert scheduler._index == 1
 
         # Set up context vars for task 1
         _task_id_var.set(1)
-        await scheduler.wait_for_turn()  # schedule[1] = 1
+        await scheduler.pause(1)  # schedule[1] = 1
         assert scheduler._index == 2
 
         # Back to task 0
         _task_id_var.set(0)
-        await scheduler.wait_for_turn()  # schedule[2] = 0
+        await scheduler.pause(0)  # schedule[2] = 0
         assert scheduler._index == 3
 
         # Back to task 1
         _task_id_var.set(1)
-        await scheduler.wait_for_turn()  # schedule[3] = 1
+        await scheduler.pause(1)  # schedule[3] = 1
         assert scheduler._index == 4
 
         # Schedule exhausted
         _task_id_var.set(0)
-        await scheduler.wait_for_turn()
+        await scheduler.pause(0)
         assert scheduler._finished is True
 
     asyncio.run(_test())
@@ -100,19 +100,19 @@ def test_scheduler_skips_done_tasks():
 
         # Task 0 runs
         _task_id_var.set(0)
-        await scheduler.wait_for_turn()
+        await scheduler.pause(0)
         assert scheduler._index == 1
 
         # Mark task 0 as done
-        await scheduler.mark_done(0)
+        await scheduler._mark_done(0)
 
         # Task 1 runs
         _task_id_var.set(1)
-        await scheduler.wait_for_turn()
+        await scheduler.pause(1)
         assert scheduler._index == 2
 
         # schedule[2] = 0, but task 0 is done — should skip past it
-        await scheduler.wait_for_turn()  # Still task 1
+        await scheduler.pause(1)  # Still task 1
         assert scheduler._finished is True
 
     asyncio.run(_test())
@@ -309,5 +309,21 @@ def test_explore_with_seed_is_reproducible():
 
         assert r1.property_holds == r2.property_holds
         assert r1.num_explored == r2.num_explored
+
+    asyncio.run(_test())
+
+
+def test_scheduler_had_error():
+    """Test that AwaitScheduler tracks errors correctly."""
+    async def _test():
+        scheduler = AwaitScheduler([0, 1], num_tasks=2)
+
+        assert not scheduler.had_error
+
+        error = RuntimeError("Test error")
+        await scheduler._report_error(error)
+
+        assert scheduler.had_error
+        assert scheduler._error is error
 
     asyncio.run(_test())
