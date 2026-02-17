@@ -128,10 +128,47 @@ Execute your code with a specific schedule:
 Async Support
 -------------
 
-.. warning::
+Async trace markers use the same comment-based syntax. Race conditions in async
+code only occur at ``await`` points:
 
-   **WIP**: Async trace marker syntax and semantics are still being finalized.
-   See :doc:`future_work` for planned improvements to async marking syntax.
+.. code-block:: python
+
+   import asyncio
+   from interlace.async_trace_markers import AsyncTraceExecutor
+   from interlace.common import Schedule, Step
+
+   class AsyncCounter:
+       def __init__(self):
+           self.value = 0
+
+       async def increment(self):
+           # interlace: after_read
+           temp = self.value
+           await asyncio.sleep(0)  # Yield point for marker
+           # interlace: before_write
+           await asyncio.sleep(0)  # Yield point for marker
+           self.value = temp + 1
+
+   async def main():
+       counter = AsyncCounter()
+
+       # Same schedule syntax as sync version
+       schedule = Schedule([
+           Step("task1", "after_read"),
+           Step("task2", "after_read"),
+           Step("task1", "before_write"),
+           Step("task2", "before_write"),
+       ])
+
+       executor = AsyncTraceExecutor(schedule)
+       await executor.run({
+           "task1": counter.increment,
+           "task2": counter.increment,
+       })
+
+       assert counter.value == 1, "Race condition detected!"
+
+   asyncio.run(main())
 
 
 Next Steps

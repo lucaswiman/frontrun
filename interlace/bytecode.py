@@ -785,6 +785,7 @@ class BytecodeInterlace:
                 target=self._run_thread,
                 args=(i, func, a, kw),
                 name=f"interlace-{i}",
+                daemon=True,
             )
             self.threads.append(t)
 

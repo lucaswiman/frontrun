@@ -14,56 +14,39 @@ Instead of relying on timing-based race detection (which is unreliable), Interla
 
 ## Quick Start: Bank Account Race Condition
 
-Here's a simple example showing how to use Interlace to detect a race condition:
+Here's a simple example showing how to use Interlace to detect a race condition using trace markers:
 
 ```python
-import threading
-from interlace.mock_events import Interlace
+from interlace.trace_markers import Schedule, Step, TraceExecutor
 
 class BankAccount:
-    _interlace = None
-
     def __init__(self, balance=0):
         self.balance = balance
 
     def transfer(self, amount):
         # This method has a race condition: read-modify-write without synchronization
+        # interlace: after_read
         current = self.balance  # READ
-        if self._interlace:
-            self._interlace.checkpoint('transfer', 'after_read')
-
         new_balance = current + amount  # COMPUTE
-
-        if self._interlace:
-            self._interlace.checkpoint('transfer', 'before_write')
+        # interlace: before_write
         self.balance = new_balance  # WRITE
-        return new_balance
 
 # Demonstrate the race condition
 account = BankAccount(balance=100)
 
-with Interlace() as il:
-    BankAccount._interlace = il
+# Define an interleaving that triggers the race:
+# Both threads read before either writes
+schedule = Schedule([
+    Step("thread1", "after_read"),    # T1 reads 100
+    Step("thread2", "after_read"),    # T2 reads 100 (both see same value!)
+    Step("thread1", "before_write"),  # T1 writes 150
+    Step("thread2", "before_write"),  # T2 writes 150 (overwrites T1's update!)
+])
 
-    @il.task('thread1')
-    def task1():
-        account.transfer(50)
-
-    @il.task('thread2')
-    def task2():
-        account.transfer(50)
-
-    # Define an interleaving that triggers the race:
-    # Both threads read before either writes
-    il.order([
-        ('thread1', 'transfer', 'after_read'),    # T1 reads 100
-        ('thread2', 'transfer', 'after_read'),    # T2 reads 100 (both see same value!)
-        ('thread1', 'transfer', 'before_write'),  # T1 writes 150
-        ('thread2', 'transfer', 'before_write'),  # T2 writes 150 (overwrites T1's update!)
-    ])
-
-    il.run()
-    BankAccount._interlace = None
+executor = TraceExecutor(schedule)
+executor.run("thread1", lambda: account.transfer(50))
+executor.run("thread2", lambda: account.transfer(50))
+executor.wait(timeout=5.0)
 
 # Result: balance is 150, not 200 - one update was lost!
 assert account.balance == 150, "Race condition detected!"
@@ -241,7 +224,8 @@ Both approaches have async variants. Trace marker async support is stable, while
 
 ```python
 import asyncio
-from interlace.async_trace_markers import AsyncSchedule, AsyncStep, AsyncTraceExecutor
+from interlace.async_trace_markers import AsyncTraceExecutor
+from interlace.common import Schedule, Step
 
 class Counter:
     def __init__(self):
@@ -250,32 +234,28 @@ class Counter:
     async def increment(self):
         # interlace: after_read
         temp = self.value
-        await asyncio.sleep(0)  # Simulate async work
+        await asyncio.sleep(0)  # Yield point for marker
         # interlace: before_write
+        await asyncio.sleep(0)  # Yield point for marker
         self.value = temp + 1
 
 async def test():
     counter = Counter()
 
     # Define execution order using markers
-    schedule = AsyncSchedule([
-        AsyncStep("task1", "after_read"),
-        AsyncStep("task2", "after_read"),
-        AsyncStep("task1", "before_write"),
-        AsyncStep("task2", "before_write"),
+    schedule = Schedule([
+        Step("task1", "after_read"),
+        Step("task2", "after_read"),
+        Step("task1", "before_write"),
+        Step("task2", "before_write"),
     ])
-
-    async def worker1():
-        await counter.increment()
-
-    async def worker2():
-        await counter.increment()
 
     # Run with controlled interleaving
     executor = AsyncTraceExecutor(schedule)
-    executor.run("task1", worker1)
-    executor.run("task2", worker2)
-    await executor.wait(timeout=5.0)
+    await executor.run({
+        "task1": counter.increment,
+        "task2": counter.increment,
+    })
 
     assert counter.value == 1  # Race condition!
 
@@ -296,34 +276,42 @@ make test
 make test-interlace
 ```
 
-All tests pass successfully (40 tests total):
+All tests pass successfully:
 
 ```
-tests/test_bytecode.py ............... (11 tests)
-tests/test_async_bytecode.py ......... (9 tests)
-tests/test_trace_markers.py .......... (9 tests)
-tests/test_async_trace_markers.py .... (9 tests)
-tests/test_interlace.py .............. (2 tests)
+tests/test_trace_markers.py .............. (Sync trace markers)
+tests/test_async_trace_markers.py ........ (Async trace markers)
+tests/test_bytecode.py ................... (Bytecode instrumentation)
+tests/test_async_bytecode.py ............. (Async bytecode instrumentation)
+tests/test_threading_primitives.py ....... (Threading primitive wrappers)
+tests/test_concurrency_bug_classes.py .... (Concurrency bug detection)
+tests/test_interlace.py .................. (Integration tests)
 ```
 
 ### Project Structure
 
 ```
 interlace/
-├── Makefile                    # Project build targets
-├── pyproject.toml              # Python packaging configuration
-├── README.md                   # This file
-├── docs/                       # Documentation (Sphinx/ReadTheDocs)
-├── interlace/                  # Python package
+├── Makefile                          # Project build targets
+├── pyproject.toml                    # Python packaging configuration
+├── README.md                         # This file
+├── docs/                             # Documentation (Sphinx/ReadTheDocs)
+├── interlace/                        # Python package
 │   ├── __init__.py
-│   ├── trace_markers.py        # Trace marker approach (recommended)
-│   ├── async_trace_markers.py  # Async trace markers (recommended)
-│   ├── bytecode.py             # Bytecode instrumentation (experimental)
-│   ├── async_bytecode.py       # Async bytecode instrumentation (experimental)
-│   └── async_scheduler.py      # Async scheduling utilities
-└── tests/                      # Test suite
+│   ├── common.py                     # Shared types (Schedule, Step)
+│   ├── trace_markers.py              # Trace marker approach (recommended)
+│   ├── async_trace_markers.py        # Async trace markers (recommended)
+│   ├── bytecode.py                   # Bytecode instrumentation (experimental)
+│   ├── async_bytecode.py             # Async bytecode instrumentation (experimental)
+│   └── async_scheduler.py            # Async scheduling utilities
+└── tests/                            # Test suite
+    ├── conftest.py                   # Pytest configuration
+    ├── buggy_programs.py             # Test programs with known bugs
     ├── test_trace_markers.py
     ├── test_async_trace_markers.py
-    ├── test_bytecode.py        # Bytecode tests (experimental)
-    └── test_async_bytecode.py  # Async bytecode tests (experimental)
+    ├── test_bytecode.py
+    ├── test_async_bytecode.py
+    ├── test_threading_primitives.py
+    ├── test_concurrency_bug_classes.py
+    └── test_interlace.py             # Integration tests
 ```

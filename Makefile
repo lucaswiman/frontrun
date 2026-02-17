@@ -4,7 +4,7 @@
 include ../venv.mk
 
 test: $(VENV_BIN)activate
-	timeout 300 $(PYTEST)
+	$(PYTEST)
 
 lint: $(VENV_BIN)activate
 	$(VENV_BIN)ruff check .

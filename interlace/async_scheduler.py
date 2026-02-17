@@ -14,8 +14,7 @@ happen ONLY at await points. InterleavedLoop exploits this by gating each
 yield point through an asyncio.Condition — tasks wait until the scheduling
 policy says it's their turn.
 
-All three async POCs build on this abstraction:
-- async_mock_events (explicit decorator): checkpoint-based scheduling
+Both async approaches build on this abstraction:
 - async_trace_markers (comment annotations): marker-based scheduling
 - async_bytecode (property-based): index-based scheduling
 

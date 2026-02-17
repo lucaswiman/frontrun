@@ -153,10 +153,52 @@ Testing a simple producer-consumer queue:
 Example 4: Async Concurrency Control
 -------------------------------------
 
-.. note::
+Testing race conditions in async code using async trace markers:
 
-   **WIP**: Async trace marker examples coming soon. Async marking syntax and semantics
-   are still being finalized. See :doc:`future_work` for details.
+.. code-block:: python
+
+   import asyncio
+   from interlace.async_trace_markers import AsyncTraceExecutor
+   from interlace.common import Schedule, Step
+
+   class AsyncBankAccount:
+       def __init__(self, balance=0):
+           self.balance = balance
+
+       async def transfer(self, amount):
+           """Transfer funds (has a race condition at await points)."""
+           # interlace: after_read
+           current = self.balance
+           await asyncio.sleep(0)  # Yield point for marker
+
+           new_balance = current + amount
+
+           # interlace: before_write
+           await asyncio.sleep(0)  # Yield point for marker
+           self.balance = new_balance
+
+   async def main():
+       account = AsyncBankAccount(balance=100)
+
+       # Define a schedule that triggers the race condition
+       schedule = Schedule([
+           Step("task1", "after_read"),    # Task1 reads 100
+           Step("task2", "after_read"),    # Task2 reads 100
+           Step("task1", "before_write"),  # Task1 writes 150
+           Step("task2", "before_write"),  # Task2 writes 150
+       ])
+
+       executor = AsyncTraceExecutor(schedule)
+       await executor.run({
+           "task1": lambda: account.transfer(50),
+           "task2": lambda: account.transfer(50),
+       })
+
+       # Race condition: one transfer was lost
+       assert account.balance == 150, f"Expected 150, got {account.balance}"
+       print("Async race condition detected!")
+
+   asyncio.run(main())
 
 
 Example 5: Finding Race Conditions Automatically (Experimental)

@@ -37,6 +37,10 @@ def pytest_configure(config):
     Registers pytest markers for interlace tests.
     """
     config.addinivalue_line("markers", "interlace: mark test as using interlace concurrency testing")
+    config.addinivalue_line(
+        "markers",
+        "intentionally_leaves_dangling_threads: mark test as intentionally leaving threads alive (e.g., deadlock tests that cannot be cleaned up)",
+    )
 
 
 @pytest.fixture
@@ -70,6 +74,53 @@ def _patch_locks_for_marked_tests(request):
             threading.Lock = original_lock
     else:
         yield
+
+
+@pytest.fixture(autouse=True)
+def _check_thread_cleanup(request):
+    """Auto-used fixture that verifies all non-daemon threads are cleaned up after each test.
+
+    This catches tests that start threads but don't properly join them, which would
+    otherwise cause pytest to hang at exit. By checking explicitly, we get clear
+    error messages instead of silent hangs.
+
+    Also prints diagnostic info about daemon threads that are still alive (these won't
+    block exit but may indicate tests that create intentionally deadlocked threads).
+    """
+    # Record threads before test
+    initial_threads = set(threading.enumerate())
+
+    yield
+
+    # Check for lingering threads after test
+    final_threads = set(threading.enumerate())
+    new_threads = final_threads - initial_threads
+
+    # Separate into daemon and non-daemon threads (excluding main thread)
+    main_thread = threading.main_thread()
+    alive_threads = [t for t in new_threads if t != main_thread and t.is_alive()]
+
+    daemon_threads = [t for t in alive_threads if t.daemon]
+    non_daemon_threads = [t for t in alive_threads if not t.daemon]
+
+    # Print diagnostic info for all alive threads
+    if alive_threads:
+        print(f"\n[THREAD CLEANUP] Test: {request.node.nodeid}")
+        for t in alive_threads:
+            status = "daemon" if t.daemon else "NON-DAEMON"
+            print(f"  - {t.name} (ident={t.ident}, {status}, alive={t.is_alive()})")
+
+    # Fail on ANY lingering threads unless explicitly marked as intentional
+    if alive_threads and not request.node.get_closest_marker("intentionally_leaves_dangling_threads"):
+        thread_info = ", ".join(
+            f"{t.name} ({'daemon' if t.daemon else 'NON-DAEMON'}, ident={t.ident})" for t in alive_threads
+        )
+        pytest.fail(
+            f"Test {request.node.nodeid} left {len(alive_threads)} thread(s) running: {thread_info}. "
+            f"All threads must be joined before test completion. "
+            f"If this is intentional (e.g., testing deadlocks that cannot be cleaned up), "
+            f"mark the test with @pytest.mark.intentionally_leaves_dangling_threads"
+        )
 
 
 @pytest.fixture

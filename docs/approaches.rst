@@ -45,10 +45,27 @@ without changing any executable code — markers are just comments.
 
 **Async Support:**
 
-.. warning::
+Async trace markers use the same comment-based syntax as sync trace markers. Race
+conditions in async code only occur at ``await`` points, so markers should be
+placed before awaits to define synchronization boundaries.
 
-   **WIP**: Async trace marker syntax and semantics are still being finalized.
-   See :doc:`future_work` for planned improvements.
+.. code-block:: python
+
+   import asyncio
+   from interlace.async_trace_markers import AsyncTraceExecutor
+   from interlace.common import Schedule, Step
+
+   class AsyncCounter:
+       def __init__(self):
+           self.value = 0
+
+       async def increment(self):
+           # interlace: after_read
+           temp = self.value
+           await asyncio.sleep(0)  # Yield point for marker
+           # interlace: before_write
+           await asyncio.sleep(0)  # Yield point for marker
+           self.value = temp + 1
 
 
 Bytecode Instrumentation (Experimental)

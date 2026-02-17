@@ -216,20 +216,28 @@ class AsyncBuggyCounter:
     Bug: Between reading self.value and writing it back, there's an await.
     Another task can interleave and cause a lost update.
 
-    Version for use with async_trace_markers - takes mark parameter.
+    Version for use with async_trace_markers - uses # interlace: comments.
     """
 
     def __init__(self):
         self.value = 0
 
-    async def increment(self, mark):
-        """Increment the counter (not atomic due to await in the middle)."""
+    async def increment(self):
+        """Increment the counter (not atomic due to await in the middle).
+
+        Marker pattern: the ``# interlace:`` comment and ``await`` come BEFORE
+        the operation they gate, so the scheduler can control when each
+        operation executes.
+        """
+        import asyncio
+
+        # interlace: read_value
+        await asyncio.sleep(0)
         current = self.value
-        await mark("read_value")
 
         new_value = current + 1
-        await mark("write_value")
-
+        # interlace: write_value
+        await asyncio.sleep(0)
         self.value = new_value
 
 
@@ -264,25 +272,32 @@ class AsyncBuggyResourceManager:
     Bug: use_resource() assumes init_resource() has completed,
     but there's no synchronization between async tasks.
 
-    Version for use with async_trace_markers - takes mark parameter.
+    Version for use with async_trace_markers - uses # interlace: comments.
     """
 
     def __init__(self):
         self.resource = None
         self.used_before_init = False
 
-    async def init_resource(self, value, mark):
+    async def init_resource(self, value):
         """Initialize the resource - should be called before use."""
-        await mark("init_resource")
+        import asyncio
+
+        # interlace: init_resource
+        await asyncio.sleep(0)
         self.resource = value
 
-    async def use_resource(self, mark):
+    async def use_resource(self):
         """Use the resource - assumes it's been initialized."""
-        await mark("use_resource")
-        if self.resource is None:
+        import asyncio
+
+        # interlace: use_resource
+        await asyncio.sleep(0)
+        val = self.resource
+        if val is None:
             self.used_before_init = True
             return None
-        return self.resource.upper()
+        return val.upper()
 
 
 class AsyncBuggyResourceManagerBytecode:

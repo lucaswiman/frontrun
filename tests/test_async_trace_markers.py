@@ -1,7 +1,7 @@
 """
 Tests for the interlace async_trace_markers module.
 
-Demonstrates deterministic async task interleaving using explicit marker await points.
+Demonstrates deterministic async task interleaving using comment-based markers.
 
 These tests mirror the structure of test_trace_markers.py but adapted for async/await.
 Each test uses asyncio.run() to execute the async test logic.
@@ -22,29 +22,35 @@ class BankAccount:
     """A simple bank account class with a race condition vulnerability.
 
     This async version demonstrates how race conditions occur at await points.
-    The transfer method requires a marker function to control execution order.
+    Uses # interlace: comments to mark synchronization points.
     """
 
     def __init__(self, balance=0):
         self.balance = balance
 
-    async def transfer(self, amount, mark):
+    async def transfer(self, amount):
         """Transfer money to this account (intentionally racy).
 
         This method has a race condition: it reads the balance, then writes
-        a new balance without locking. The marker calls allow us to
-        deterministically trigger the race at the await points.
+        a new balance without locking. The # interlace: comments mark where
+        the race can occur.
+
+        Marker pattern: the marker comment and ``await`` come BEFORE the
+        operation they gate. The marker is detected when the trace function
+        fires on the ``await`` line (via the previous-line check). After
+        the coordinator approves this task, the operation runs in the next
+        ``send()`` call, with no intervening yield to the event loop.
 
         Args:
             amount: The amount to transfer
-            mark: The marker function (async) for synchronization
         """
-        current = self.balance  # interlace: read_balance
-        await mark("read_balance")
-        # Simulate some async work
+        # interlace: read_balance
+        await asyncio.sleep(0)
+        current = self.balance
         new_balance = current + amount
-        await mark("write_balance")
-        self.balance = new_balance  # interlace: write_balance
+        # interlace: write_balance
+        await asyncio.sleep(0)
+        self.balance = new_balance
 
 
 def test_race_condition_buggy_schedule():
@@ -70,19 +76,11 @@ def test_race_condition_buggy_schedule():
         )
 
         executor = AsyncTraceExecutor(schedule)
-        mark1 = executor.marker("task1")
-        mark2 = executor.marker("task2")
-
-        async def worker1():
-            await account.transfer(50, mark1)
-
-        async def worker2():
-            await account.transfer(50, mark2)
 
         await executor.run(
             {
-                "task1": worker1,
-                "task2": worker2,
+                "task1": lambda: account.transfer(50),
+                "task2": lambda: account.transfer(50),
             }
         )
 
@@ -122,19 +120,11 @@ def test_race_condition_correct_schedule():
         )
 
         executor = AsyncTraceExecutor(schedule)
-        mark1 = executor.marker("task1")
-        mark2 = executor.marker("task2")
-
-        async def worker1():
-            await account.transfer(50, mark1)
-
-        async def worker2():
-            await account.transfer(50, mark2)
 
         await executor.run(
             {
-                "task1": worker1,
-                "task2": worker2,
+                "task1": lambda: account.transfer(50),
+                "task2": lambda: account.transfer(50),
             }
         )
 
@@ -158,13 +148,16 @@ def test_multiple_markers_same_task():
     async def run_test():
         results = []
 
-        async def worker_with_markers(mark):
+        async def worker_with_markers():
+            # interlace: step1
+            await asyncio.sleep(0)
             results.append("step1")
-            await mark("step1")
+            # interlace: step2
+            await asyncio.sleep(0)
             results.append("step2")
-            await mark("step2")
+            # interlace: step3
+            await asyncio.sleep(0)
             results.append("step3")
-            await mark("step3")
 
         schedule = Schedule(
             [
@@ -175,11 +168,10 @@ def test_multiple_markers_same_task():
         )
 
         executor = AsyncTraceExecutor(schedule)
-        mark = executor.marker("main")
 
         await executor.run(
             {
-                "main": lambda: worker_with_markers(mark),
+                "main": worker_with_markers,
             }
         )
 
@@ -197,20 +189,20 @@ def test_alternating_execution():
     async def run_test():
         results = []
 
-        async def worker1(mark):
-            x = 1
-            await mark("marker_a")
+        async def worker1():
+            # interlace: marker_a
+            await asyncio.sleep(0)
             results.append("t1_a")
-            y = 2
-            await mark("marker_b")
+            # interlace: marker_b
+            await asyncio.sleep(0)
             results.append("t1_b")
 
-        async def worker2(mark):
-            x = 1
-            await mark("marker_a")
+        async def worker2():
+            # interlace: marker_a
+            await asyncio.sleep(0)
             results.append("t2_a")
-            y = 2
-            await mark("marker_b")
+            # interlace: marker_b
+            await asyncio.sleep(0)
             results.append("t2_b")
 
         # Alternate between tasks at each marker
@@ -224,13 +216,11 @@ def test_alternating_execution():
         )
 
         executor = AsyncTraceExecutor(schedule)
-        mark1 = executor.marker("task1")
-        mark2 = executor.marker("task2")
 
         await executor.run(
             {
-                "task1": lambda: worker1(mark1),
-                "task2": lambda: worker2(mark2),
+                "task1": worker1,
+                "task2": worker2,
             }
         )
 
@@ -249,14 +239,14 @@ def test_convenience_function():
     async def run_test():
         results = []
 
-        async def worker1(mark):
-            x = 1
-            await mark("mark")
+        async def worker1():
+            # interlace: mark
+            await asyncio.sleep(0)
             results.append("t1")
 
-        async def worker2(mark):
-            x = 1
-            await mark("mark")
+        async def worker2():
+            # interlace: mark
+            await asyncio.sleep(0)
             results.append("t2")
 
         schedule = Schedule(
@@ -339,12 +329,14 @@ def test_complex_race_scenario():
             def __init__(self):
                 self.value = 0
 
-            async def increment_racy(self, mark):
-                temp = self.value  # interlace: read_counter
-                await mark("read_counter")
+            async def increment_racy(self):
+                # interlace: read_counter
+                await asyncio.sleep(0)
+                temp = self.value
                 temp = temp + 1
-                await mark("write_counter")
-                self.value = temp  # interlace: write_counter
+                # interlace: write_counter
+                await asyncio.sleep(0)
+                self.value = temp
 
         counter = SharedCounter()
 
@@ -362,24 +354,12 @@ def test_complex_race_scenario():
         )
 
         executor = AsyncTraceExecutor(schedule)
-        mark1 = executor.marker("t1")
-        mark2 = executor.marker("t2")
-        mark3 = executor.marker("t3")
-
-        async def worker1():
-            await counter.increment_racy(mark1)
-
-        async def worker2():
-            await counter.increment_racy(mark2)
-
-        async def worker3():
-            await counter.increment_racy(mark3)
 
         await executor.run(
             {
-                "t1": worker1,
-                "t2": worker2,
-                "t3": worker3,
+                "t1": counter.increment_racy,
+                "t2": counter.increment_racy,
+                "t3": counter.increment_racy,
             }
         )
 
@@ -411,15 +391,19 @@ def test_timeout():
             ]
         )
 
-        async def worker1(mark):
-            await mark("marker1")
+        async def worker1():
+            # interlace: marker1
+            await asyncio.sleep(0)
             # This task will sleep and delay hitting marker2
             await asyncio.sleep(10)
-            await mark("marker2")
+            # interlace: marker2
+            await asyncio.sleep(0)
 
-        async def worker2(mark):
-            await mark("marker1")
-            await mark("marker2")
+        async def worker2():
+            # interlace: marker1
+            await asyncio.sleep(0)
+            # interlace: marker2
+            await asyncio.sleep(0)
 
         try:
             await async_interlace(
@@ -446,12 +430,14 @@ def test_exception_propagation():
             ]
         )
 
-        async def worker1(mark):
-            await mark("marker1")
+        async def worker1():
+            # interlace: marker1
+            await asyncio.sleep(0)
             raise ValueError("Intentional error in task1")
 
-        async def worker2(mark):
-            await mark("marker1")
+        async def worker2():
+            # interlace: marker1
+            await asyncio.sleep(0)
 
         try:
             await async_interlace(schedule=schedule, tasks={"t1": worker1, "t2": worker2}, timeout=5.0)
@@ -475,22 +461,22 @@ def test_task_errors_tracked():
             ]
         )
 
-        async def worker1(mark):
-            await mark("marker1")
+        async def worker1():
+            # interlace: marker1
+            await asyncio.sleep(0)
             raise ValueError("Error in task1")
 
-        async def worker2(mark):
-            await mark("marker1")
+        async def worker2():
+            # interlace: marker1
+            await asyncio.sleep(0)
 
         executor = AsyncTraceExecutor(schedule)
-        mark1 = executor.marker("t1")
-        mark2 = executor.marker("t2")
 
         try:
             await executor.run(
                 {
-                    "t1": lambda: worker1(mark1),
-                    "t2": lambda: worker2(mark2),
+                    "t1": worker1,
+                    "t2": worker2,
                 }
             )
             assert False, "Should have raised ValueError"

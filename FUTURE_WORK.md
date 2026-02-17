@@ -66,32 +66,50 @@ below for the principled solution.
 
 ---
 
-## Async Trace Markers: Finalize Syntax and Semantics
+## Async Trace Markers: Comment-Based Syntax
 
-**Priority: High** — The async trace marker API is currently experimental and uses explicit `await mark()` function calls, which is verbose and departs from the sync API's elegant comment-based approach.
+**Priority: High** — Implemented! Async trace markers now use `# interlace: marker_name` comments matching the sync API.
 
-**Goal**: Design and implement a comment-based marking syntax for async code that mirrors the synchronous trace markers approach, eliminating the need to pass marker functions to tasks.
+**Status**:
+- [x] Design coroutine-driving approach with `sys.settrace`
+- [x] Implement `_drive_with_markers()` driver that wraps user coroutines
+- [x] Reuse `MarkerRegistry` from sync trace markers
+- [x] Update tests to remove explicit `await mark()` calls
+- [ ] Add optional marker validation (warn if two markers with no `await` between)
+- [ ] Add comprehensive documentation and examples
 
-### Current Issues
+### Implementation: Coroutine-Driving with settrace
 
-1. **Explicit function calls are verbose**: Users must:
-   - Get a marker function from `executor.marker('task_name')`
-   - Pass it to every task that needs markers
-   - Call `await mark('marker_name')` at each synchronization point
+**Key insight**: `sys.settrace` fires line events during coroutine execution but you can't `await` from a trace function. Solution: wrap each user coroutine in a "driver" that manually steps it with `coro.send()`, checking for markers between each yield.
 
-2. **Inconsistent API**: The sync API uses `# interlace: marker_name` comments (non-invasive), while async requires explicit `await mark()` calls (invasive to function signatures).
+**Driver flow for each task**:
+1. Install `sys.settrace` (marker-detecting trace function)
+2. `coro.send(value)` — runs coroutine until next await/return
+3. Uninstall `sys.settrace`
+4. For each marker detected during step 2:
+   - `await coordinator.pause(task_id, marker_name)`
+5. Await the yielded value (the thing the coroutine awaited)
+6. Feed result back to step 2
 
-3. **Not user-friendly**: For new users coming from the sync API, the async approach feels like a step backward.
+**Why this works**:
+- Async is single-threaded, so `coro.send()` is synchronous — no trace function conflicts between tasks
+- Reuses `MarkerRegistry` from sync for comment detection
+- Reuses `InterleavedLoop`/`AsyncTaskCoordinator` for scheduling
+- Works with any awaitable (sleep, I/O, sub-coroutines)
 
-### Proposed Solutions: Implicit Marker Injection via `sys.settrace`
-- Use `sys.settrace` with line-level tracing.
-- Insert implicit checkpoints at `await` boundaries, triggered by comments. This could be implemented in two ways:
-  1. Allow continued execution in that context until the next "await" statement or opcode. (With pure async code, race conditions only happen at await/etc. Can we identify this? Probably by using our own event loop.)
-  2. Throw a configuration error unless the next statement is an await, since races cannot take place in (pure) async code _except_ by await statements.
+**Marker semantics**: A `# interlace: name` comment marks the beginning of an atomic block that extends to the next `await`. The scheduler gates when the task resumes after that await. This correctly models async race conditions, which only occur at await points.
 
 ---
 
 ## Explicit Cooperative Primitives (Loom-Style)
+
+**Priority: Low** — Alternative to monkey-patching for production use.
+
+**Status**:
+- [ ] Design `interlace.sync` module API (mirror `threading` and `queue`)
+- [ ] Implement thin dispatch wrappers over existing cooperative primitives
+- [ ] Add mode detection (controlled vs. production)
+- [ ] Create migration guide for users
 
 An alternative to monkey-patching is providing explicit cooperative replacements
 that users opt into, inspired by the Rust
@@ -147,6 +165,17 @@ thin dispatch wrappers over them.
 ---
 
 ## Dynamic Partial Order Reduction (DPOR)
+
+**Priority: Medium** — Future work for exhaustive async/thread interleaving exploration.
+
+**Status**:
+- [ ] Design conflict detection for memory locations (object attributes, dict keys, list indices)
+- [ ] Implement happens-before tracking based on synchronization
+- [ ] Implement backtrack set computation for classic DPOR
+- [ ] Add execution replay support
+- [ ] For async DPOR: Create custom `InterlaceEventLoop(asyncio.SelectorEventLoop)` subclass
+- [ ] Integrate coroutine-driving from async trace markers into custom event loop
+- [ ] Research and potentially implement Optimal DPOR (Abdulla et al., 2014)
 
 The current exploration strategy in `explore_interleavings()` generates random
 schedules — essentially a random walk through the interleaving space. This works
@@ -212,6 +241,15 @@ provides no way to know if you've missed a rare interleaving. DPOR gives
 It becomes especially valuable as program complexity and interleaving space size
 grow.
 
+### Custom Event Loop for Async DPOR
+
+For async code, the custom `InterlaceEventLoop` approach offers lower-level control than the current `asyncio.Condition`-based scheduler:
+
+- Subclass `asyncio.SelectorEventLoop` to intercept all task scheduling decisions
+- Observe all task interactions (not just marked points), enabling conflict detection
+- The coroutine-driving approach from async trace markers can be integrated into the event loop for unified control
+- This becomes the foundation for async DPOR implementation
+
 ### References
 
 - Flanagan, C. and Godefroid, P. "Dynamic Partial-Order Reduction for Model
@@ -219,3 +257,17 @@ grow.
 - Abdulla, P. et al. "Optimal Dynamic Partial Order Reduction." POPL 2014.
 - The [loom](https://github.com/tokio-rs/loom) Rust library implements a variant
   of DPOR for exhaustive async interleaving exploration.
+
+---
+
+## Documentation Bugs
+
+**Priority: High** — These bugs were discovered during the async marker implementation and should be fixed.
+
+**Status**:
+- [ ] **README Quick Start** (line 22): `from interlace.mock_events import Interlace` — `mock_events` module doesn't exist. Should use trace markers example instead.
+- [ ] **README Async Example** (line 244): Uses nonexistent `AsyncSchedule`, `AsyncStep` (should be `Schedule`, `Step` from `interlace.common`)
+- [ ] **README Async Example** (lines 268-278): Shows wrong API — `executor.run("task1", worker1)` + `await executor.wait()` don't exist. Actual API is `await executor.run({"task1": ...})`
+- [ ] **async_scheduler.py docstring** (line 18): References nonexistent `async_mock_events` module
+- [ ] **README test count** (lines 299-306): Lists 40 tests, missing newer test files
+- [ ] **README project structure** (lines 309-328): Missing `common.py`, `conftest.py`, `test_concurrency_bug_classes.py`, `buggy_programs.py`, `test_threading_primitives.py`

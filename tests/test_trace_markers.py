@@ -298,8 +298,8 @@ def test_thread_coordinator():
         coordinator.wait_for_turn("t2", "m1")
         results.append("t2_m1")
 
-    t1 = threading.Thread(target=thread1_work)
-    t2 = threading.Thread(target=thread2_work)
+    t1 = threading.Thread(target=thread1_work, daemon=True)
+    t2 = threading.Thread(target=thread2_work, daemon=True)
 
     t1.start()
     t2.start()

@@ -10,13 +10,13 @@ Trace Markers (Recommended)
    :show-inheritance:
 
 
-Async Trace Markers (WIP)
---------------------------
+Async Trace Markers
+--------------------
 
-.. warning::
-
-   **WIP**: Async trace marker syntax and semantics are still being finalized.
-   This API is subject to significant changes. See :doc:`future_work` for details.
+.. automodule:: interlace.async_trace_markers
+   :members:
+   :undoc-members:
+   :show-inheritance:
 
 
 Bytecode Instrumentation (Experimental)

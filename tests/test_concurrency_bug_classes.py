@@ -15,6 +15,7 @@ Bug classes covered:
 
 import asyncio
 
+import pytest
 from hypothesis import Phase, given, settings
 
 from interlace.async_bytecode import (
@@ -218,6 +219,7 @@ def test_order_violation_hypothesis(schedule):
 # ============================================================================
 
 
+@pytest.mark.intentionally_leaves_dangling_threads
 def test_deadlock_exact_schedule():
     """
     Test deadlock with exact schedule using trace_markers.
@@ -246,13 +248,20 @@ def test_deadlock_exact_schedule():
     executor.run("thread2", lambda: bank.transfer_b_to_a(10))
 
     # Wait with a short timeout - threads won't complete due to deadlock
-    executor.wait(timeout=1.0)
+    # The wait() method now raises TimeoutError when threads don't complete
+    try:
+        executor.wait(timeout=1.0)
+        assert False, "Should have timed out due to deadlock"
+    except TimeoutError:
+        # Expected - deadlock occurred
+        pass
 
     # Verify that threads are still alive (deadlocked)
     alive_count = sum(1 for t in executor.threads if t.is_alive())
     assert alive_count > 0, "At least one thread should be deadlocked"
 
 
+@pytest.mark.intentionally_leaves_dangling_threads
 def test_deadlock_exploration():
     """
     Test deadlock using bytecode exploration with cooperative_locks=False.
@@ -292,6 +301,7 @@ def test_deadlock_exploration():
     assert found_deadlock, "Should find a schedule that causes deadlock"
 
 
+@pytest.mark.intentionally_leaves_dangling_threads
 @given(schedule=schedule_strategy(num_threads=2, max_ops=50))
 @settings(max_examples=20, phases=[Phase.generate], deadline=None)
 def test_deadlock_hypothesis(schedule):
@@ -347,13 +357,11 @@ def test_async_suspension_point_race_exact_schedule():
         )
 
         executor = AsyncTraceExecutor(schedule)
-        mark1 = executor.marker("task1")
-        mark2 = executor.marker("task2")
 
         await executor.run(
             {
-                "task1": lambda: counter.increment(mark1),
-                "task2": lambda: counter.increment(mark2),
+                "task1": counter.increment,
+                "task2": counter.increment,
             }
         )
 
@@ -440,13 +448,11 @@ def test_async_order_violation_exact_schedule():
         )
 
         executor = AsyncTraceExecutor(schedule)
-        mark_init = executor.marker("init_task")
-        mark_user = executor.marker("user_task")
 
         await executor.run(
             {
-                "init_task": lambda: manager.init_resource("hello", mark_init),
-                "user_task": lambda: manager.use_resource(mark_user),
+                "init_task": lambda: manager.init_resource("hello"),
+                "user_task": manager.use_resource,
             }
         )
 

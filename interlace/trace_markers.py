@@ -47,6 +47,7 @@ class MarkerRegistry:
     def __init__(self):
         self._markers: dict[tuple[str, int], str] = {}  # (filename, lineno) -> marker_name
         self._scanned_files: set[str] = set()
+        self._lock = threading.Lock()
 
     def scan_frame(self, frame: Any) -> None:  # type: ignore[name-defined]
         """Scan the source file for the given frame to find all markers.
@@ -56,32 +57,39 @@ class MarkerRegistry:
         """
         filename = frame.f_code.co_filename
 
-        # Skip if already scanned
+        # Fast path: Skip if already scanned (no lock needed)
         if filename in self._scanned_files:
             return
 
-        self._scanned_files.add(filename)
+        # Double-checked locking: acquire lock and re-check
+        with self._lock:
+            # Re-check inside the lock in case another thread finished scanning
+            if filename in self._scanned_files:
+                return
 
-        # Read all lines from the file
-        try:
-            # Use linecache to read the file
-            linecache.checkcache(filename)
-            line_num = 1
-            while True:
-                line = linecache.getline(filename, line_num)
-                if not line:
-                    break
+            # Read all lines from the file
+            try:
+                # Use linecache to read the file
+                linecache.checkcache(filename)
+                line_num = 1
+                while True:
+                    line = linecache.getline(filename, line_num)
+                    if not line:
+                        break
 
-                # Check for marker comment
-                match = MARKER_PATTERN.search(line)
-                if match:
-                    marker_name = match.group(1)
-                    self._markers[(filename, line_num)] = marker_name
+                    # Check for marker comment
+                    match = MARKER_PATTERN.search(line)
+                    if match:
+                        marker_name = match.group(1)
+                        self._markers[(filename, line_num)] = marker_name
 
-                line_num += 1
-        except Exception:
-            # If we can't read the file, just skip it
-            pass
+                    line_num += 1
+            except Exception:
+                # If we can't read the file, just skip it
+                pass
+
+            # Mark as scanned AFTER we've populated all markers
+            self._scanned_files.add(filename)
 
     def get_marker(self, filename: str, lineno: int) -> str | None:
         """Get the marker name for a specific file location.
@@ -279,10 +287,17 @@ class TraceExecutor:
             timeout: Optional timeout in seconds
 
         Raises:
+            TimeoutError: If threads don't complete within the timeout
             Any exception that occurred in a thread during execution
         """
         for thread in self.threads:
             thread.join(timeout=timeout)
+
+        # Check if any threads are still alive after timeout
+        alive_threads = [thread for thread in self.threads if thread.is_alive()]
+        if alive_threads:
+            thread_names = ", ".join(thread.name for thread in alive_threads)
+            raise TimeoutError(f"Threads did not complete within timeout: {thread_names}")
 
         # If any thread had an error, raise it
         if self.thread_errors:
