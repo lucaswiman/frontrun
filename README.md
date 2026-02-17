@@ -170,37 +170,6 @@ if not result.property_holds:
     print(f"Expected value: 2, Got: {result.counterexample.value}")
 ```
 
-Or use controlled interleaving with explicit schedules:
-
-```python
-from interlace.bytecode import controlled_interleaving, OpcodeScheduler, BytecodeInterlace
-
-counter = Counter(value=0)
-
-def thread1():
-    counter.increment()
-
-def thread2():
-    counter.increment()
-
-# Sequential schedule: thread 1 completes before thread 2 starts
-schedule = [0] * 200 + [1] * 200
-with controlled_interleaving(schedule, num_threads=2) as runner:
-    runner.run([thread1, thread2])
-
-print(f"Sequential result: {counter.value}")  # Correct: 2
-
-# Interleaved schedule: rapidly alternate between threads
-counter2 = Counter(value=0)
-schedule = [0, 1] * 150  # Alternate rapidly
-with controlled_interleaving(schedule, num_threads=2) as runner:
-    runner.run([
-        lambda: counter2.increment(),
-        lambda: counter2.increment(),
-    ])
-
-print(f"Interleaved result: {counter2.value}")  # Might be wrong due to race
-```
 
 **Advantages (Experimental):**
 - No manual checkpoint insertion needed

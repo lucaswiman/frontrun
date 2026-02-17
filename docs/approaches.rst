@@ -169,25 +169,22 @@ deterministic reproduction.
 - You need to explore many possible interleavings
 - Performance is not a critical concern
 
-**Controlled Interleaving:**
+**Controlled Interleaving (Internal/Advanced):**
 
-You can also use explicit schedules with bytecode instrumentation:
+The ``controlled_interleaving`` context manager and ``run_with_schedule`` function allow
+running threads under a specific opcode-level schedule. These are primarily intended for
+debugging this library or building tooling on top of it, rather than for general use in tests.
 
-.. code-block:: python
+.. note::
 
-   from interlace.bytecode import controlled_interleaving
+   Opcode-level schedules are not stable across Python versions. CPython does not guarantee
+   that the same source code will compile to the same bytecode between minor releases, so a
+   specific schedule that reproduces a race on Python 3.12 may not reproduce the same
+   interleaving on 3.13. Counterexample schedules returned by ``explore_interleavings``
+   are likewise best treated as ephemeral debugging artifacts rather than long-lived test fixtures.
 
-   counter = Counter(value=0)
-
-   # Sequential schedule: thread 1 completes before thread 2
-   schedule = [0] * 200 + [1] * 200
-   with controlled_interleaving(schedule, num_threads=2) as runner:
-       runner.run([
-           lambda: counter.increment(),
-           lambda: counter.increment(),
-       ])
-
-   print(f"Sequential result: {counter.value}")  # Correct: 2
+   The async variant (``interlace.async_bytecode``) uses ``await_point()`` markers rather
+   than opcodes, so its schedules are stable — see that module for details.
 
 **Limitations and Caveats:**
 
