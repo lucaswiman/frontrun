@@ -14,6 +14,7 @@ Interlace provides tools for controlling thread interleaving at a fine-grained l
    approaches
    api_reference
    examples
+   CASE_STUDIES
 
 
 Key Features

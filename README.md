@@ -52,6 +52,20 @@ executor.wait(timeout=5.0)
 assert account.balance == 150, "Race condition detected!"
 ```
 
+## Real-World Case Studies
+
+See how Interlace finds concurrency bugs in real-world libraries:
+
+**[Interlace Case Studies](docs/CASE_STUDIES.rst)** — Five detailed case studies demonstrating how Interlace discovers and reproduces race conditions in unmodified production code:
+
+- **TPool**: TOCTOU race in thread pool shutdown (20/20 seeds, 1-3 attempts)
+- **threadpoolctl**: TOCTOU in libc initialization (20/20 seeds, **1 attempt average**)
+- **cachetools**: Lost update in cache size tracking (20/20 seeds, 4 attempts)
+- **PyDispatcher**: Lost signal registrations (20/20 seeds, 1.3 attempts)
+- **pydis**: Lost Redis operations (20/20 seeds, 1.25 attempts)
+
+Run the full test suite: `PYTHONPATH=interlace python interlace/docs/tests/run_external_tests.py`
+
 ## Usage Approaches
 
 Interlace provides two different ways to control thread interleaving:
