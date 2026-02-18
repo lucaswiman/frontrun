@@ -40,3 +40,7 @@ Thumbs.db
 
 # Docs build
 docs/_build/
+
+# External repos (cloned for case study tests)
+docs/case_studies/external_repos/
+docs/external_repos/

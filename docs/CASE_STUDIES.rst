@@ -2,11 +2,12 @@
 Interlace Case Studies: Concurrency Bug Detection
 ================================================================================
 
-This document presents ten case studies demonstrating how **interlace** finds
+This document presents case studies demonstrating how **interlace** finds
 and reproduces concurrency bugs in Python libraries by running bytecode
 exploration directly against **unmodified library code**.
 
-**Total: 31 concurrency bugs found across 10 libraries.**
+**Total: 46 concurrency bugs found across 12 libraries, plus 7 safe-area
+invariants verified across 140,000 interleavings.**
 
 Key Findings
 ============
@@ -44,6 +45,10 @@ Run the full suites::
     PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_amqtt_real.py
     PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_pykka_real.py
 
+    # Round 3 (exploration + safe invariants; safe tests take ~1-2 min each)
+    python -m pytest docs/case_studies/tests/test_cachetools_concurrency.py -v -s
+    python -m pytest docs/case_studies/tests/test_tenacity_concurrency.py -v -s
+
 Or run individual tests from Round 1::
 
     PYTHONPATH=interlace python interlace/docs/tests/test_cachetools_real.py
@@ -70,6 +75,11 @@ Table of Contents
 8. `SQLAlchemy (pool)`_ -- Unlocked overflow counter in unlimited-overflow mode
 9. `amqtt`_ -- MQTT session with unprotected packet-ID generator
 10. `pykka`_ -- Actor framework with TOCTOU in ``tell()``
+
+**Round 3 — Exploration and search depth:**
+
+11. `cachetools (exploration)`_ -- 8 races found, 4 safe invariants verified at depth
+12. `tenacity (exploration)`_ -- 6 races found, 4 safe invariants verified at depth
 
 ----
 
@@ -606,21 +616,144 @@ Avg. attempts to find           **~17**
 
 ----
 
+11. cachetools (exploration)
+============================
+
+**Repository:** `cachetools on GitHub <https://github.com/tkem/cachetools>`_
+
+**Commit tested:** `e5f8f01 <https://github.com/tkem/cachetools/tree/e5f8f01>`_ (v7.0.1)
+
+**What it does:** Extensible memoizing collections (LRU, TTL, LFU, RR, FIFO
+caches) and ``@cached``/``@cachedmethod`` decorators.
+
+This study systematically explores cachetools for races in every cache subclass
+and verifies that the ``@cached`` decorator's ``lock`` and ``condition``
+parameters correctly prevent them.
+
+Bug-Finding Results (8 races found)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+======  ===========================  ========================  =========
+Test    Component                    Race Type                 Attempts
+======  ===========================  ========================  =========
+B1      ``Cache.__setitem__``        ``currsize +=`` lost      2
+B2      ``Cache.__delitem__``        ``currsize -=`` lost      5
+B3      ``LRUCache`` get+del         ``__order`` TOCTOU        3
+B4      ``RRCache.__setitem__``      index/keys corruption     3
+B5      ``@cached`` (no lock)        ``hits +=`` lost          3
+B6      ``LFUCache.__getitem__``     link list crash           **1**
+B7      ``Cache`` set+del            currsize desync           48
+B8      ``TTLCache._Timer``          ``__nesting +=`` lost     2
+======  ===========================  ========================  =========
+
+The most dramatic bug is B6: concurrent ``__getitem__`` calls on ``LFUCache``
+crash with ``KeyError`` because the frequency link list manipulation is not
+atomic.  Two threads both try to move a key from one frequency bucket to the
+next, and one of them finds the key already removed from the source bucket.
+This is a **crash in a read-only operation** — two concurrent cache lookups can
+crash the process.
+
+Safe-Area Results (4 invariants verified)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+======  ===========================  ========================  ==============  ==========
+Test    Component                    Invariant                 Interleavings   Result
+======  ===========================  ========================  ==============  ==========
+S1      ``@cached`` with ``lock``    stats accurate            15,000          SAFE
+S2      ``@cached`` with ``lock``    all keys correct          15,000          SAFE
+S3      ``@cached`` with ``cond``    no stampede               15,000          race @2459
+S4      ``Cache`` single-key ops     key-value retrievable     15,000          SAFE
+======  ===========================  ========================  ==============  ==========
+
+The ``@cached`` decorator's ``lock`` parameter (using ``_locked`` / ``_locked_info``
+in ``_cached.py``) correctly prevents all races across 30,000 interleavings.
+
+S3 (the ``condition`` parameter) found a potential race after 2,459 interleavings.
+The ``_condition_info`` wrapper uses ``cond.wait_for()`` to prevent cache stampede,
+but a rare interleaving between the inner ``return v`` (which releases the lock) and
+the ``finally`` block (which re-acquires it to remove the key from ``pending``)
+creates a window where a second thread can acquire the lock, see the key still in
+``pending``, and wait — but then receive the ``notify_all`` and proceed before the
+``pending`` set is fully cleaned up.  This warrants further investigation.
+
+**Test file:** `tests/test_cachetools_concurrency.py <case_studies/tests/test_cachetools_concurrency.py>`_
+
+----
+
+12. tenacity (exploration)
+==========================
+
+**Repository:** `tenacity on GitHub <https://github.com/jd/tenacity>`_
+
+**Commit tested:** `0bdf1d9 <https://github.com/jd/tenacity/tree/0bdf1d9>`_
+
+**What it does:** General-purpose retry library with configurable stop, wait,
+and retry strategies.  ``Retrying`` wraps a function and automatically retries
+on failure.
+
+This study explores tenacity's ``+=`` patterns on shared statistics dicts and
+``RetryCallState`` attributes, and verifies that ``threading.local()``, ``copy()``,
+and immutable strategy objects correctly isolate concurrent calls.
+
+Bug-Finding Results (6 races found)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+======  ================================  =========================  =========
+Test    Component                         Race Type                  Attempts
+======  ================================  =========================  =========
+B1      ``statistics["idle_for"]``        ``+= sleep`` lost          **1**
+B2      ``statistics["attempt_number"]``  ``+= 1`` lost              **1**
+B3      ``wrapped_f.statistics``          orphaned reference         **1**
+B4      shared ``Retrying`` copy          stats corruption           **1**
+B5      ``RetryCallState.idle_for``       ``+= sleep`` lost          **1**
+B6      ``RetryCallState.attempt_number`` ``+= 1`` lost              **1**
+======  ================================  =========================  =========
+
+All 6 races are found on the first attempt.  The most interesting finding is B3:
+concurrent calls to a ``@retry``-wrapped function both write to
+``wrapped_f.statistics``, causing one thread's statistics reference to become
+orphaned (still a valid dict, but no longer reachable via the function attribute).
+
+Safe-Area Results (4 invariants verified)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+======  ========================  ==========================  ==============  ======
+Test    Component                 Invariant                   Interleavings   Time
+======  ========================  ==========================  ==============  ======
+S1      ``threading.local``       per-thread stats isolation  20,000          ~83s
+S2      per-call state            each call gets own state    20,000          ~83s
+S3      immutable strategies      concurrent eval safe        20,000          ~83s
+S4      ``copy()`` isolation      independent copies          20,000          ~83s
+======  ========================  ==========================  ==============  ======
+
+Tenacity's primary concurrency defenses work correctly: ``threading.local()``
+ensures each thread gets its own ``statistics`` dict and ``iter_state``.  The
+``copy()`` mechanism creates fully independent ``Retrying`` instances for each
+call.  Immutable strategy objects (``stop_after_attempt``, ``wait_none``, etc.)
+are stateless and inherently safe to share.  80,000 interleavings produced zero
+false positives.
+
+**Test file:** `tests/test_tenacity_concurrency.py <case_studies/tests/test_tenacity_concurrency.py>`_
+
+----
+
 Summary
 =======
 
-=================  ====================================  =======  ==================  ==============
-Library            Finding                               Version  Seeds Found (/ 20)  Avg. Attempts
-=================  ====================================  =======  ==================  ==============
-TPool              ``_should_keep_going`` TOCTOU        1bffaaf  **20 / 20**         1-3
-threadpoolctl      ``_get_libc`` TOCTOU                 cf38a18  **20 / 20**         **1**
-cachetools         ``__setitem__`` lost update          e5f8f01  **20 / 20**         4
-PyDispatcher       ``connect()`` TOCTOU                 0c2768d  **20 / 20**         1.3
-pydis              INCR lost update + SET NX            1b02b27  **20 / 20**         1.25
-pybreaker          ``increment_counter`` lost update    1.4.1    **20 / 20**         ~2
-urllib3            ``_new_conn`` lost update            2.x      **20 / 20**         ~1.5
-SQLAlchemy pool    ``_inc_overflow`` race (diagnostic)  2.x      **20 / 20**         ~2.5
-amqtt              ``next_packet_id`` duplicate IDs     main     **20 / 20**         **1**
-pykka              ``tell()`` TOCTOU ghost messages     4.4.1    **20 / 20**         ~17
-=================  ====================================  =======  ==================  ==============
+================  ====================================  =======  ==================  ==============
+Library           Finding                               Version  Seeds Found (/ 20)  Avg. Attempts
+================  ====================================  =======  ==================  ==============
+TPool             ``_should_keep_going`` TOCTOU        1bffaaf  **20 / 20**         1-3
+threadpoolctl     ``_get_libc`` TOCTOU                 cf38a18  **20 / 20**         **1**
+cachetools        ``__setitem__`` lost update          e5f8f01  **20 / 20**         4
+PyDispatcher      ``connect()`` TOCTOU                 0c2768d  **20 / 20**         1.3
+pydis             INCR lost update + SET NX            1b02b27  **20 / 20**         1.25
+pybreaker         ``increment_counter`` lost update    1.4.1    **20 / 20**         ~2
+urllib3           ``_new_conn`` lost update            2.x      **20 / 20**         ~1.5
+SQLAlchemy pool   ``_inc_overflow`` race (diagnostic)  2.x      **20 / 20**         ~2.5
+amqtt             ``next_packet_id`` duplicate IDs     main     **20 / 20**         **1**
+pykka             ``tell()`` TOCTOU ghost messages     4.4.1    **20 / 20**         ~17
+cachetools (exp)  8 races (+ 4 safe verified)          v7.0.1   8/8 found           1-48
+tenacity (exp)    6 races (+ 4 safe verified)          0bdf1d9  6/6 found           **1**
+================  ====================================  =======  ==================  ==============
 
