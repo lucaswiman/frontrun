@@ -8,8 +8,8 @@ execution schedule using Python's tracing facilities.
 Example usage:
     ```python
     def worker_function():
-        x = read_data()  # interlace: read
-        write_data(x)    # interlace: write
+        x = read_data()  # frontrun: read
+        write_data(x)    # frontrun: write
 
     schedule = Schedule([
         Step("thread1", "read"),
@@ -34,13 +34,13 @@ from typing import Any
 
 from frontrun.common import Schedule
 
-MARKER_PATTERN = re.compile(r"#\s*interlace:\s*(\w+)")
+MARKER_PATTERN = re.compile(r"#\s*frontrun:\s*(\w+)")
 
 
 class MarkerRegistry:
     """Tracks marker locations in source code for efficient lookup.
 
-    This class scans source files to find lines with interlace markers and
+    This class scans source files to find lines with frontrun markers and
     maintains a mapping from (filename, line_number) to marker names.
     """
 

@@ -14,9 +14,9 @@ class BankAccount:
         self.balance = balance
 
     def transfer(self, amount):
-        current = self.balance  # interlace: read_balance
+        current = self.balance  # frontrun: read_balance
         new_balance = current + amount
-        self.balance = new_balance  # interlace: write_balance
+        self.balance = new_balance  # frontrun: write_balance
 
 
 def test_race_condition_buggy_schedule():
@@ -66,9 +66,9 @@ def test_multiple_markers_same_thread():
     results = []
 
     def worker_with_markers():
-        results.append("step1")  # interlace: step1
-        results.append("step2")  # interlace: step2
-        results.append("step3")  # interlace: step3
+        results.append("step1")  # frontrun: step1
+        results.append("step2")  # frontrun: step2
+        results.append("step3")  # frontrun: step3
 
     schedule = Schedule(
         [
@@ -95,15 +95,15 @@ def test_alternating_execution():
             results.append(value)
 
     def worker1():
-        x = 1  # interlace: marker_a
+        x = 1  # frontrun: marker_a
         append_safe("t1_a")
-        y = 2  # interlace: marker_b
+        y = 2  # frontrun: marker_b
         append_safe("t1_b")
 
     def worker2():
-        x = 1  # interlace: marker_a
+        x = 1  # frontrun: marker_a
         append_safe("t2_a")
-        y = 2  # interlace: marker_b
+        y = 2  # frontrun: marker_b
         append_safe("t2_b")
 
     schedule = Schedule(
@@ -133,11 +133,11 @@ def test_convenience_function():
             results.append(value)
 
     def worker1():
-        x = 1  # interlace: mark
+        x = 1  # frontrun: mark
         append_safe("t1")
 
     def worker2():
-        x = 1  # interlace: mark
+        x = 1  # frontrun: mark
         append_safe("t2")
 
     schedule = Schedule(
@@ -156,8 +156,8 @@ def test_marker_registry():
     """MarkerRegistry scans frames and finds markers."""
 
     def test_function():
-        x = 1  # interlace: marker1
-        y = 2  # interlace: marker2
+        x = 1  # frontrun: marker1
+        y = 2  # frontrun: marker2
         return x + y
 
     registry = MarkerRegistry()
@@ -234,9 +234,9 @@ def test_complex_race_scenario():
             self.value = 0
 
         def increment_racy(self):
-            temp = self.value  # interlace: read_counter
+            temp = self.value  # frontrun: read_counter
             temp = temp + 1
-            self.value = temp  # interlace: write_counter
+            self.value = temp  # frontrun: write_counter
 
     counter = SharedCounter()
 
@@ -274,10 +274,10 @@ def test_multiline_statements_with_markers():
 def worker_{name}():
     append_safe(
         "thread{name}_step1"
-    )  # interlace: step1
+    )  # frontrun: step1
     append_safe(
         "thread{name}_step2"
-    )  # interlace: step2
+    )  # frontrun: step2
 """
 
     namespace1 = {"append_safe": append_safe}
@@ -319,7 +319,7 @@ def worker():
             "arg1",
             "arg2",
         )
-    )  # interlace: nested_call
+    )  # frontrun: nested_call
 
 def some_func(a, b):
     return f"{a}-{b}"
@@ -347,10 +347,10 @@ def test_markers_on_standalone_lines():
 
     Both styles work:
         # Inline with code:
-        val = get()  # interlace: read_value
+        val = get()  # frontrun: read_value
 
         # Standalone line (marker gates the next statement):
-        # interlace: read_value
+        # frontrun: read_value
         val = get()
     """
     results = []
@@ -362,15 +362,15 @@ def test_markers_on_standalone_lines():
 
     code = """
 def worker1():
-    # interlace: read_value
+    # frontrun: read_value
     val = get_value()
-    # interlace: process_value
+    # frontrun: process_value
     append_safe("t1_processed")
 
 def worker2():
-    # interlace: read_value
+    # frontrun: read_value
     val = get_value()
-    # interlace: process_value
+    # frontrun: process_value
     append_safe("t2_processed")
 
 def get_value():

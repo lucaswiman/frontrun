@@ -24,7 +24,7 @@ class BuggyCounter:
     Bug: The increment operation reads self.value, computes new_value,
     then writes back. Two threads can interleave and cause a lost update.
 
-    Version for use with trace_markers - has # interlace: comments.
+    Version for use with trace_markers - has # frontrun: comments.
     """
 
     def __init__(self):
@@ -32,13 +32,13 @@ class BuggyCounter:
 
     def increment(self):
         # Read current value
-        current = self.value  # interlace: read_value
+        current = self.value  # frontrun: read_value
 
         # Compute new value
         new_value = current + 1
 
         # Write back (this can get interleaved with another thread)
-        self.value = new_value  # interlace: write_value
+        self.value = new_value  # frontrun: write_value
 
 
 class BuggyCounterBytecode:
@@ -72,7 +72,7 @@ class BuggyResourceManager:
     been called, but there's no synchronization ensuring this order.
     If use_resource() runs before init_resource(), it will see None.
 
-    Version for use with trace_markers - has # interlace: comments.
+    Version for use with trace_markers - has # frontrun: comments.
     """
 
     def __init__(self):
@@ -81,11 +81,11 @@ class BuggyResourceManager:
 
     def init_resource(self, value):
         """Initialize the resource - should be called before use."""
-        self.resource = value  # interlace: init_resource
+        self.resource = value  # frontrun: init_resource
 
     def use_resource(self):
         """Use the resource - assumes it's been initialized."""
-        val = self.resource  # interlace: use_resource
+        val = self.resource  # frontrun: use_resource
         if val is None:
             self.used_before_init = True
             return None
@@ -130,7 +130,7 @@ class BuggyBankWithDeadlock:
          transfer_b_to_a acquires lock_b then lock_a.
          If these run concurrently, they can deadlock.
 
-    Version for use with trace_markers - has # interlace: comments.
+    Version for use with trace_markers - has # frontrun: comments.
     """
 
     def __init__(self):
@@ -141,9 +141,9 @@ class BuggyBankWithDeadlock:
 
     def transfer_a_to_b(self, amount):
         """Transfer from account A to account B."""
-        self.lock_a.acquire()  # interlace: acquire_lock_a
+        self.lock_a.acquire()  # frontrun: acquire_lock_a
         try:
-            self.lock_b.acquire()  # interlace: acquire_lock_b
+            self.lock_b.acquire()  # frontrun: acquire_lock_b
             try:
                 self.account_a -= amount
                 self.account_b += amount
@@ -154,9 +154,9 @@ class BuggyBankWithDeadlock:
 
     def transfer_b_to_a(self, amount):
         """Transfer from account B to account A."""
-        self.lock_b.acquire()  # interlace: acquire_lock_b_reverse
+        self.lock_b.acquire()  # frontrun: acquire_lock_b_reverse
         try:
-            self.lock_a.acquire()  # interlace: acquire_lock_a_reverse
+            self.lock_a.acquire()  # frontrun: acquire_lock_a_reverse
             try:
                 self.account_b -= amount
                 self.account_a += amount
@@ -216,7 +216,7 @@ class AsyncBuggyCounter:
     Bug: Between reading self.value and writing it back, there's an await.
     Another task can interleave and cause a lost update.
 
-    Version for use with async_trace_markers - uses # interlace: comments.
+    Version for use with async_trace_markers - uses # frontrun: comments.
     """
 
     def __init__(self):
@@ -232,9 +232,9 @@ class AsyncBuggyCounter:
 
     async def increment(self):
         """Increment the counter (not atomic due to await in the middle)."""
-        # interlace: read_value
+        # frontrun: read_value
         current = await self.get_value()
-        # interlace: write_value
+        # frontrun: write_value
         await self.set_value(current + 1)
 
 
@@ -269,7 +269,7 @@ class AsyncBuggyResourceManager:
     Bug: use_resource() assumes init_resource() has completed,
     but there's no synchronization between async tasks.
 
-    Version for use with async_trace_markers - uses # interlace: comments.
+    Version for use with async_trace_markers - uses # frontrun: comments.
     """
 
     def __init__(self):
@@ -286,12 +286,12 @@ class AsyncBuggyResourceManager:
 
     async def init_resource(self, value):
         """Initialize the resource - should be called before use."""
-        # interlace: init_resource
+        # frontrun: init_resource
         await self._write_resource(value)
 
     async def use_resource(self):
         """Use the resource - assumes it's been initialized."""
-        # interlace: use_resource
+        # frontrun: use_resource
         val = await self._read_resource()
         if val is None:
             self.used_before_init = True

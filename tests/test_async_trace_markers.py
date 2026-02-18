@@ -21,9 +21,9 @@ class BankAccount:
         self.balance = new_balance
 
     async def transfer(self, amount):
-        # interlace: read_balance
+        # frontrun: read_balance
         current = await self.get_balance()
-        # interlace: write_balance
+        # frontrun: write_balance
         await self.set_balance(current + amount)
 
 
@@ -80,13 +80,13 @@ def test_multiple_markers_same_task():
     results = []
 
     async def worker_with_markers():
-        # interlace: step1
+        # frontrun: step1
         await asyncio.sleep(0)
         results.append("step1")
-        # interlace: step2
+        # frontrun: step2
         await asyncio.sleep(0)
         results.append("step2")
-        # interlace: step3
+        # frontrun: step3
         await asyncio.sleep(0)
         results.append("step3")
 
@@ -109,18 +109,18 @@ def test_alternating_execution():
     results = []
 
     async def worker1():
-        # interlace: marker_a
+        # frontrun: marker_a
         await asyncio.sleep(0)
         results.append("t1_a")
-        # interlace: marker_b
+        # frontrun: marker_b
         await asyncio.sleep(0)
         results.append("t1_b")
 
     async def worker2():
-        # interlace: marker_a
+        # frontrun: marker_a
         await asyncio.sleep(0)
         results.append("t2_a")
-        # interlace: marker_b
+        # frontrun: marker_b
         await asyncio.sleep(0)
         results.append("t2_b")
 
@@ -144,12 +144,12 @@ def test_convenience_function():
     results = []
 
     async def worker1():
-        # interlace: mark
+        # frontrun: mark
         await asyncio.sleep(0)
         results.append("t1")
 
     async def worker2():
-        # interlace: mark
+        # frontrun: mark
         await asyncio.sleep(0)
         results.append("t2")
 
@@ -179,9 +179,9 @@ def test_complex_race_scenario():
             self.value = value
 
         async def increment_racy(self):
-            # interlace: read_counter
+            # frontrun: read_counter
             temp = await self.get_value()
-            # interlace: write_counter
+            # frontrun: write_counter
             await self.set_value(temp + 1)
 
     counter = SharedCounter()
@@ -223,9 +223,9 @@ def test_synchronous_function_bodies():
             self.value = new_value
 
         async def increment(self):
-            # interlace: read_value
+            # frontrun: read_value
             current = await self.get_value()
-            # interlace: write_value
+            # frontrun: write_value
             await self.set_value(current + 1)
 
     counter = Counter()
@@ -266,16 +266,16 @@ def test_timeout():
     )
 
     async def worker1():
-        # interlace: marker1
+        # frontrun: marker1
         await asyncio.sleep(0)
         await asyncio.sleep(10)
-        # interlace: marker2
+        # frontrun: marker2
         await asyncio.sleep(0)
 
     async def worker2():
-        # interlace: marker1
+        # frontrun: marker1
         await asyncio.sleep(0)
-        # interlace: marker2
+        # frontrun: marker2
         await asyncio.sleep(0)
 
     with pytest.raises(TimeoutError):
@@ -296,12 +296,12 @@ def test_exception_propagation():
     )
 
     async def worker1():
-        # interlace: marker1
+        # frontrun: marker1
         await asyncio.sleep(0)
         raise ValueError("Intentional error in task1")
 
     async def worker2():
-        # interlace: marker1
+        # frontrun: marker1
         await asyncio.sleep(0)
 
     with pytest.raises(ValueError, match="Intentional error in task1"):
@@ -318,12 +318,12 @@ def test_task_errors_tracked():
     )
 
     async def worker1():
-        # interlace: marker1
+        # frontrun: marker1
         await asyncio.sleep(0)
         raise ValueError("Error in task1")
 
     async def worker2():
-        # interlace: marker1
+        # frontrun: marker1
         await asyncio.sleep(0)
 
     executor = AsyncTraceExecutor(schedule)
