@@ -5,78 +5,22 @@ on:
     branches:
       - main
     paths:
-      - 'tokens_regex/**'
       - 'interlace/**'
       - 'Makefile'
+      - 'venv.mk'
+      - 'pyproject.toml'
       - '.github/workflows/ci.yml'
   pull_request:
     paths:
-      - 'tokens_regex/**'
       - 'interlace/**'
       - 'Makefile'
+      - 'venv.mk'
+      - 'pyproject.toml'
       - '.github/workflows/ci.yml'
 
 jobs:
-  detect-changes:
-    runs-on: ubuntu-latest
-    outputs:
-      tokens_regex: ${{ steps.changes.outputs.tokens_regex }}
-      interlace: ${{ steps.changes.outputs.interlace }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Detect changed packages
-        id: changes
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # For PRs, compare with the base branch
-            CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
-          else
-            # For pushes to main, run all tests
-            echo "tokens_regex=true" >> $GITHUB_OUTPUT
-            echo "interlace=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          if echo "$CHANGED_FILES" | grep -q '^tokens_regex/'; then
-            echo "tokens_regex=true" >> $GITHUB_OUTPUT
-          else
-            echo "tokens_regex=false" >> $GITHUB_OUTPUT
-          fi
-
-          if echo "$CHANGED_FILES" | grep -q '^interlace/'; then
-            echo "interlace=true" >> $GITHUB_OUTPUT
-          else
-            echo "interlace=false" >> $GITHUB_OUTPUT
-          fi
-
-  test-tokens-regex:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.tokens_regex == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Run tests for tokens_regex
-        run: make test-tokens-regex
-
-  test-interlace:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.interlace == 'true'
+  test:
+    name: Tests, Linting & Checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -94,21 +38,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Run linting and type checks
-        run: make -C interlace check
+        run: make check
 
-      - name: Run tests for interlace
+      - name: Run tests
         run: make test-interlace
-
-  test-complete:
-    name: Tests, Linting & Checks
-    needs: [test-tokens-regex, test-interlace]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check test and linting results
-        run: |
-          if [[ "${{ needs.test-tokens-regex.result }}" == "failure" || "${{ needs.test-interlace.result }}" == "failure" ]]; then
-            echo "One or more test/lint jobs failed"
-            exit 1
-          fi
-          echo "All tests, linting, and checks passed or were skipped"
