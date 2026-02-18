@@ -341,7 +341,7 @@ def test_closed_state_double_fail_lost_update():
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_closed_double_fail_invariant,
             max_attempts=500,
-            max_ops=200,
+            max_ops=400,
             seed=0,
         )
     print_exploration_result(result)
@@ -473,44 +473,65 @@ def test_state_property_toctou():
 
 
 # ===========================================================================
-# 8. Race in opened_at: two breakers open() on shared storage
+# 8. Race between close() and open() on shared storage
 # ===========================================================================
-# CircuitBreaker.open() (under its own lock) sets opened_at then sets state.
-# Two breakers sharing storage: both call open(), both write opened_at.
-# opened_at should not be None when done.
+# Two breakers share storage. One calls close() (resets success counter,
+# sets state=closed, resets fail counter). The other calls open() (sets
+# opened_at, sets state=open, resets success counter). When interleaved,
+# the final state and counters may be inconsistent.
+# For example: close() resets fail counter to 0 and sets state to closed,
+# then open() sets state to open. But open() also resets success_counter.
+# If close() resets success_counter AFTER open() already reset it and
+# the state is open, that's fine. But close() also resets fail_counter,
+# and if that happens AFTER open() has set the state to open, we can end
+# up with state=open but fail_counter=0 and opened_at=None -- a circuit
+# that's "open" but has no record of why or when.
 
 
-class OpenedAtRaceState:
-    """Two breakers both call open() on shared storage."""
+class CloseVsOpenRaceState:
+    """One breaker closes, the other opens, on shared storage."""
 
     def __init__(self):
-        self.storage = CircuitMemoryStorage(STATE_CLOSED)
-        self.breaker1 = _make_breaker(self.storage, fail_max=1, state=STATE_CLOSED)
-        self.breaker2 = _make_breaker(self.storage, fail_max=1, state=STATE_CLOSED)
+        self.storage = CircuitMemoryStorage(STATE_HALF_OPEN)
+        # Start with some fail history to detect stale resets
+        self.storage._fail_counter = 3
+        self.breaker1 = _make_breaker(
+            self.storage, fail_max=5, reset_timeout=60, state=STATE_HALF_OPEN,
+        )
+        self.breaker2 = _make_breaker(
+            self.storage, fail_max=5, reset_timeout=60, state=STATE_HALF_OPEN,
+        )
 
     def thread1(self):
-        self.breaker1.open()
+        self.breaker1.close()
 
     def thread2(self):
         self.breaker2.open()
 
 
-def _opened_at_invariant(s: OpenedAtRaceState) -> bool:
-    # After two open() calls, state must be open and opened_at must be set.
-    if s.storage.state != STATE_OPEN:
+def _close_vs_open_invariant(s: CloseVsOpenRaceState) -> bool:
+    # The storage state and the breaker's cached _state should agree.
+    # After both complete, if state is open, opened_at should be set.
+    # If state is closed, fail counter should have been reset to 0.
+    state = s.storage.state
+    if state == STATE_OPEN:
+        return s.storage.opened_at is not None
+    elif state == STATE_CLOSED:
+        return s.storage.counter == 0
+    else:
+        # Half-open should not be the result of close() + open()
         return False
-    return s.storage.opened_at is not None
 
 
-def test_opened_at_race():
-    """Detect race in opened_at during concurrent open() from two breakers."""
+def test_close_vs_open_race():
+    """Detect race between close() and open() on shared storage."""
     with timeout_minutes(10):
         result = explore_interleavings(
-            setup=lambda: OpenedAtRaceState(),
+            setup=lambda: CloseVsOpenRaceState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
-            invariant=_opened_at_invariant,
+            invariant=_close_vs_open_invariant,
             max_attempts=500,
-            max_ops=200,
+            max_ops=400,
             seed=0,
         )
     print_exploration_result(result)
@@ -775,7 +796,7 @@ if __name__ == "__main__":
         ("5. Closed state double fail (shared storage)", test_closed_state_double_fail_lost_update),
         ("6. Half-open success/fail race", test_half_open_success_fail_race),
         ("7. State property TOCTOU", test_state_property_toctou),
-        ("8. Opened-at race (shared storage)", test_opened_at_race),
+        ("8. Close vs open race (shared storage)", test_close_vs_open_race),
         ("9. Three-thread fail counter lost update", test_three_thread_fail_counter_lost_update),
         ("10. Circuit stays closed when should open", test_circuit_stays_closed_when_should_open),
         ("11. Half-open success counter lost update", test_half_open_success_counter_lost_update),
