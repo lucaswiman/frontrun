@@ -13,4 +13,4 @@ def test_import():
 def test_version():
     """Test that version is set."""
     assert hasattr(interlace, "__version__")
-    assert interlace.__version__ == "0.1.0"
+    assert interlace.__version__ == "0.0.1"
