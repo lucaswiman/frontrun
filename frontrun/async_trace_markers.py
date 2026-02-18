@@ -79,7 +79,7 @@ from frontrun.trace_markers import MarkerRegistry, ThreadCoordinator
 class AsyncTraceExecutor:
     """Executes async tasks with interlaced execution according to a schedule.
 
-    This is the main interface for the async interlace library. It uses
+    This is the main interface for the async frontrun library. It uses
     comment-based markers (# frontrun: marker_name) to control task
     execution order.
 
