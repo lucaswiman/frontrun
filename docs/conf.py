@@ -11,9 +11,9 @@ copyright = "2025, Interlace Contributors"  # noqa: A001
 author = "Interlace Contributors"
 
 # The short X.Y version
-version = "0.1"
+version = "0.0"
 # The full version
-release = "0.1.0"
+release = "0.0.1"
 
 # Sphinx extensions
 extensions = [
@@ -35,7 +35,6 @@ html_theme = "sphinx_rtd_theme"
 # Theme options are theme-specific and used by html_theme_path
 html_theme_options = {
     "canonical_url": "https://lucaswiman.github.io/interlace",
-    "analytics_id": "",
     "logo_only": False,
     "display_version": True,
     "prev_next_buttons_location": "bottom",
@@ -72,7 +71,7 @@ on_rtd = True
 html_context = {
     "display_github": True,
     "github_user": "lucaswiman",
-    "github_repo": "projects",
+    "github_repo": "interlace",
     "github_version": "main",
-    "conf_py_path": "/interlace/docs/",
+    "conf_py_path": "/docs/",
 }

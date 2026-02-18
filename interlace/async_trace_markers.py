@@ -40,16 +40,16 @@ it only executes after the scheduler approves this task at this marker.
 Example usage::
 
     async def worker_function():
-        # interlace: before_read
+        # interlace: read_data
         x = await read_data()
-        # interlace: before_write
+        # interlace: write_data
         await write_data(x)
 
     schedule = Schedule([
-        Step("task1", "before_read"),
-        Step("task2", "before_read"),
-        Step("task1", "before_write"),
-        Step("task2", "before_write"),
+        Step("task1", "read_data"),
+        Step("task2", "read_data"),
+        Step("task1", "write_data"),
+        Step("task2", "write_data"),
     ])
 
     executor = AsyncTraceExecutor(schedule)
