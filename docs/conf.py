@@ -34,7 +34,7 @@ html_theme = "sphinx_rtd_theme"
 
 # Theme options are theme-specific and used by html_theme_path
 html_theme_options = {
-    "canonical_url": "https://interlace.readthedocs.io/",
+    "canonical_url": "https://lucaswiman.github.io/interlace",
     "analytics_id": "",
     "logo_only": False,
     "display_version": True,

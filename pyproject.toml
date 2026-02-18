@@ -7,7 +7,7 @@ packages = ["interlace"]
 
 [project]
 name = "interlace"
-version = "0.1.0"
+version = "0.0.1"
 description = "A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,7 +32,7 @@ dependencies = []
 [project.urls]
 Homepage = "https://github.com/lucaswiman/interlace"
 Repository = "https://github.com/lucaswiman/interlace.git"
-Documentation = "https://interlace.readthedocs.io/"
+Documentation = "https://lucaswiman.github.io/interlace"
 Changelog = "https://github.com/lucaswiman/interlace/blob/main/CHANGELOG.rst"
 Issues = "https://github.com/lucaswiman/interlace/issues"
 
