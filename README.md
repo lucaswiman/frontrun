@@ -54,7 +54,7 @@ assert account.balance == 150, "Race condition detected!"
 
 ## Case Studies
 
-See [detailed case studies](docs/CASE_STUDIES.rst) of concurrency bugs found in ten libraries: TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3, SQLAlchemy, amqtt, and pykka. Run the test suites with: `PYTHONPATH=interlace python interlace/docs/tests/run_external_tests.py`
+See [detailed case studies](docs/CASE_STUDIES.rst) of searching for concurrency bugs in ten libraries: TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3, SQLAlchemy, amqtt, and pykka. Run the test suites with: `PYTHONPATH=interlace python interlace/docs/tests/run_external_tests.py`
 
 ## Usage Approaches
 
