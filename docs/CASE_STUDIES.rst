@@ -1,21 +1,12 @@
 ================================================================================
-Interlace Case Studies: Concurrency Bug Detection in External Libraries
+Interlace Case Studies: Concurrency Bug Detection
 ================================================================================
 
-**A note on intent:** The goal of these case studies is not to pick on any of
-these libraries.  Concurrency is hard!  We chose small, approachable codebases
-that haven't been hardened by years of production multi-threaded use, or that
-are explicitly labeled as not thread-safe, precisely because they're good
-candidates for demonstrating what interlace can do.  The bugs we find are the
-kind that lurk in almost any Python code that touches shared mutable state
-without careful synchronization.
+This document presents five case studies demonstrating how **interlace** finds
+and reproduces concurrency bugs in Python libraries by running bytecode
+exploration directly against **unmodified library code**.
 
-This document presents five case studies demonstrating how **interlace** can
-find, reproduce, and test concurrency bugs in real-world open-source Python
-libraries by running bytecode exploration directly against **unmodified library
-code** — no models, no simplifications.
-
-**Total: 16 passing PoC tests across 5 libraries.**
+**Total: 16 passing tests across 5 libraries.**
 
 Run the full suite::
 
@@ -306,22 +297,15 @@ pydis              INCR lost update + SET NX      1b02b27   **20 / 20**         
 Key Findings
 ============
 
-1. **Real-code exploration works remarkably well.** Every library's bug was
-   found on **all 20 seeds tested**, typically in **1-4 attempts**.  The race
-   windows in real code are wide enough at the bytecode level that random
-   schedules trigger them almost immediately.  No models needed — interlace
-   runs directly against unmodified library code.
+1. **Exploration is effective.** Every library's bug was found on all 20 seeds,
+   typically in 1-4 attempts. Race windows are wide enough at the bytecode level
+   that random schedules reliably trigger them.
 
-2. **Deterministic reproduction is 100% reliable.** Once a counterexample
-   schedule is found, ``run_with_schedule`` reproduces the bug **10/10 times**
-   across all 5 libraries.  This makes the schedules suitable as regression
-   tests.
+2. **Reproduction is reliable.** Once a counterexample schedule is found,
+   ``run_with_schedule`` reproduces the bug 10/10 times across all libraries.
 
-3. **Zero-lock libraries are common.** Three of five libraries (threadpoolctl,
-   PyDispatcher, pydis) use no synchronization whatsoever.  The other two
-   (TPool, cachetools) use locks but have gaps in their synchronization.
+3. **Synchronization gaps are common.** Three of five libraries use no locks.
+   The other two have gaps in their synchronization strategies.
 
-4. **The bugs are real.** Every bug demonstrated here represents an actual
-   concurrency hazard in the library's current codebase.  They range from
-   data corruption (cachetools currsize, pydis lost writes) to complete
-   functionality failure (TPool task loss, PyDispatcher lost registrations).
+4. **Bugs are actionable.** Each bug represents a real concurrency hazard
+   causing data corruption or functionality failure.
