@@ -8,10 +8,33 @@ packages = ["interlace"]
 [project]
 name = "interlace"
 version = "0.1.0"
-description = "A library for concurrency testing"
+description = "A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MPL-2.0"}
+authors = [
+    {name = "Lucas Wiman", email = "lucas.wiman@gmail.com"},
+]
+keywords = ["concurrency", "testing", "race-conditions", "threads", "async"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/lucaswiman/interlace"
+Repository = "https://github.com/lucaswiman/interlace.git"
+Documentation = "https://interlace.readthedocs.io/"
+Changelog = "https://github.com/lucaswiman/interlace/blob/main/CHANGELOG.rst"
+Issues = "https://github.com/lucaswiman/interlace/issues"
 
 [project.optional-dependencies]
 dev = [

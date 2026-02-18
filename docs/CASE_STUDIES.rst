@@ -1,27 +1,26 @@
 ================================================================================
-Interlace Case Studies: Concurrency Bug Detection in External Libraries
+Interlace Case Studies: Concurrency Bug Detection
 ================================================================================
 
-**A note on intent:** The goal of these case studies is not to pick on any of
-these libraries.  Concurrency is hard!  We chose small, approachable codebases
-that haven't been hardened by years of production multi-threaded use, or that
-are explicitly labeled as not thread-safe, precisely because they're good
-candidates for demonstrating what interlace can do.  The bugs we find are the
-kind that lurk in almost any Python code that touches shared mutable state
-without careful synchronization.
+This document presents ten case studies demonstrating how **interlace** finds
+and reproduces concurrency bugs in Python libraries by running bytecode
+exploration directly against **unmodified library code**.
 
-This document presents five case studies demonstrating how **interlace** can
-find, reproduce, and test concurrency bugs in real-world open-source Python
-libraries by running bytecode exploration directly against **unmodified library
-code** — no models, no simplifications.
+**Total: 31 passing tests across 10 libraries.**
 
-**Total: 16 passing PoC tests across 5 libraries.**
+Run the full suites::
 
-Run the full suite::
-
+    # Round 1
     PYTHONPATH=interlace python interlace/docs/tests/run_external_tests.py
 
-Or run individual tests::
+    # Round 2
+    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_pybreaker_real.py
+    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_urllib3_real.py
+    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_sqlalchemy_pool_real.py
+    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_amqtt_real.py
+    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_pykka_real.py
+
+Or run individual tests from Round 1::
 
     PYTHONPATH=interlace python interlace/docs/tests/test_cachetools_real.py
     PYTHONPATH=interlace python interlace/docs/tests/test_threadpoolctl_real.py
@@ -32,11 +31,21 @@ Or run individual tests::
 Table of Contents
 ==================
 
+**Round 1:**
+
 1. `TPool (WildPool)`_ -- Thread pool with shutdown races
 2. `threadpoolctl`_ -- Native library thread control with no locking
 3. `cachetools`_ -- Caching library with unprotected data structures
 4. `PyDispatcher`_ -- Signal dispatch with global mutable state
 5. `pydis`_ -- Redis clone with shared global state
+
+**Round 2:**
+
+6. `pybreaker`_ -- Circuit breaker with unprotected fail counter
+7. `urllib3`_ -- Connection pool with unprotected connection counter
+8. `SQLAlchemy (pool)`_ -- Unlocked overflow counter in unlimited-overflow mode
+9. `amqtt`_ -- MQTT session with unprotected packet-ID generator
+10. `pykka`_ -- Actor framework with TOCTOU in ``tell()``
 
 ----
 
@@ -290,38 +299,341 @@ scheduler has very few choices to make, and almost all of them trigger the bug.
 
 ----
 
+6. pybreaker
+============
+
+**Repository:** `pybreaker on GitHub <https://github.com/danielfm/pybreaker>`_
+
+**Version tested:** 1.4.1
+
+**What it does:** Python implementation of the Circuit Breaker pattern.
+``CircuitMemoryStorage`` tracks failure and success counters for a breaker
+stored entirely in process memory.
+
+Bug: ``CircuitMemoryStorage.increment_counter()`` Lost Update (Critical)
+------------------------------------------------------------------------
+
+.. code-block:: python
+
+    # pybreaker/__init__.py
+    def increment_counter(self) -> None:
+        self._fail_counter += 1   # ← not atomic!
+
+The ``+=`` operator compiles to three separate bytecode instructions
+(``LOAD_ATTR`` / ``BINARY_OP`` / ``STORE_ATTR`` in Python 3.11+).
+Two threads calling ``increment_counter()`` concurrently can both read
+the same ``_fail_counter`` value, both compute ``value + 1``, and one
+write overwrites the other.
+
+**Impact:** The circuit breaker under-counts failures.  A service that
+is actually failing fast may never trip the breaker because its fail
+counter stays permanently lower than the threshold.
+
+Exploration Results
+~~~~~~~~~~~~~~~~~~~
+
+Bytecode exploration was run directly against the real
+``CircuitMemoryStorage.increment_counter()`` method.
+
+==============================  ===============================
+Metric                          Result
+==============================  ===============================
+Seeds that found bug            **20 / 20**
+Avg. attempts to find           **~2**
+Deterministic reproduction      **10/10**
+==============================  ===============================
+
+**Test file:** `tests/test_pybreaker_real.py <case_studies/tests/test_pybreaker_real.py>`_
+
+----
+
+7. urllib3
+==========
+
+**Repository:** `urllib3 on GitHub <https://github.com/urllib3/urllib3>`_
+
+**Version tested:** main branch (post-2.x)
+
+**What it does:** The foundational HTTP client library used by Requests and
+many other Python projects.  ``HTTPConnectionPool`` manages a pool of
+persistent connections to a single host.
+
+Bug: ``HTTPConnectionPool._new_conn()`` Lost Update (Critical)
+--------------------------------------------------------------
+
+.. code-block:: python
+
+    # urllib3/connectionpool.py
+    def _new_conn(self) -> BaseHTTPConnection:
+        self.num_connections += 1   # ← not atomic!
+        conn = self.ConnectionCls(
+            host=self._proxy_host or self.host,
+            port=self.port,
+            ...
+        )
+        return conn
+
+``num_connections`` is a plain integer attribute incremented with ``+=``,
+which is not atomic.  Two threads each calling ``_new_conn()`` (e.g. both
+finding the pool empty and creating a new connection) can both read the same
+counter, both write ``value + 1``, and one increment is lost.
+
+**Impact:** ``num_connections`` is used for logging and debugging pool
+behaviour.  An under-counted value makes it impossible to diagnose
+connection-exhaustion issues.  If the counter is ever used for pool
+limits, under-counting could allow more connections than intended.
+
+Exploration Results
+~~~~~~~~~~~~~~~~~~~
+
+==============================  ===============================
+Metric                          Result
+==============================  ===============================
+Seeds that found bug            **20 / 20**
+Avg. attempts to find           **~1.5**
+Deterministic reproduction      **10/10**
+==============================  ===============================
+
+**Test file:** `tests/test_urllib3_real.py <case_studies/tests/test_urllib3_real.py>`_
+
+----
+
+8. SQLAlchemy (pool)
+====================
+
+**Repository:** `SQLAlchemy on GitHub <https://github.com/sqlalchemy/sqlalchemy>`_
+
+**Version tested:** 2.x main branch
+
+**What it does:** The most widely-used Python SQL toolkit and ORM.
+``QueuePool`` (the default pool) maintains a fixed number of idle
+connections plus an optional "overflow" of temporary connections.
+
+Finding: ``QueuePool._inc_overflow()`` skips the lock in unlimited mode
+-----------------------------------------------------------------------
+
+.. note::
+
+    After closer analysis this is **intentional behaviour**, not a bug.
+    It is included here as a case study in how interlace can surface
+    deliberate design decisions that look like races — and as a reminder
+    to verify *impact* before filing an issue.
+
+.. code-block:: python
+
+    # sqlalchemy/pool/impl.py
+    def _do_get(self) -> ConnectionPoolEntry:
+        use_overflow = self._max_overflow > -1        # False when unlimited
+        wait = use_overflow and self._overflow >= self._max_overflow
+        ...
+        if self._inc_overflow():
+            return self._create_connection()
+
+    def _inc_overflow(self) -> bool:
+        if self._max_overflow == -1:
+            self._overflow += 1   # ← no lock
+            return True
+        with self._overflow_lock:          # lock only needed for finite limit
+            if self._overflow < self._max_overflow:
+                self._overflow += 1
+                return True
+            return False
+
+When ``max_overflow == -1`` (unlimited overflow), the method skips
+``_overflow_lock`` and increments the counter bare.  Interlace detects this
+and flags a lost-update race.
+
+**Why the lock is deliberately omitted:**
+
+* ``use_overflow = self._max_overflow > -1`` evaluates to ``False``, so
+  ``_overflow`` is **never consulted** for pool admission control in unlimited
+  mode.  The lock exists solely to protect the ``_overflow < _max_overflow``
+  comparison; without a finite limit there is nothing to compare against.
+* ``max_overflow`` cannot be changed at runtime (no setter; ``recreate()``
+  constructs a new pool from original params), so the mode is fixed for the
+  pool's lifetime.
+* The only downstream consumers of ``_overflow`` in unlimited mode are the
+  diagnostic methods ``overflow()`` and ``checkedout()``.  A transiently
+  incorrect diagnostic counter is an acceptable trade-off for avoiding a
+  contended lock on every connection checkout.
+
+**What interlace tells us here:**
+
+Interlace correctly identifies that the ``+=`` is non-atomic at the bytecode
+level and that a concurrent schedule can produce a wrong count.  The
+follow-up question — *does this wrong count affect correctness?* — requires
+reading the call-site logic, which shows it does not.  This is a good
+example of a **true race / no-impact** finding: interlace is right that the
+memory model is unsound, but the library is also right that the impact is
+bounded to a slightly stale diagnostic counter.
+
+Exploration Results
+~~~~~~~~~~~~~~~~~~~
+
+==============================  ===============================
+Metric                          Result
+==============================  ===============================
+Seeds that found race           **20 / 20**
+Avg. attempts to find           **~2.5**
+Deterministic reproduction      **10/10**
+==============================  ===============================
+
+**Test file:** `tests/test_sqlalchemy_pool_real.py <case_studies/tests/test_sqlalchemy_pool_real.py>`_
+
+----
+
+9. amqtt
+=========
+
+**Repository:** `amqtt on GitHub <https://github.com/Yakifo/amqtt>`_
+
+**Version tested:** main branch
+
+**What it does:** An MQTT 3.1.1 broker and client library built on asyncio.
+``Session`` represents a single MQTT client session and provides
+``next_packet_id`` to allocate unique IDs for in-flight messages.
+
+Bug: ``Session.next_packet_id`` Duplicate Packet IDs (Critical)
+---------------------------------------------------------------
+
+.. code-block:: python
+
+    # amqtt/session.py
+    @property
+    def next_packet_id(self) -> int:
+        self._packet_id = (self._packet_id % 65535) + 1   # WRITE
+        limit = self._packet_id                             # READ (shared!)
+        while self._packet_id in self.inflight_in or \
+              self._packet_id in self.inflight_out:
+            self._packet_id = (self._packet_id % 65535) + 1
+            if self._packet_id == limit:
+                raise AMQTTError("More than 65535 messages pending")
+        return self._packet_id
+
+No lock protects ``_packet_id``.  Two threads/tasks calling this property
+concurrently on the same ``Session`` interleave their writes and reads of
+``_packet_id``, and can both return the same integer.
+
+**Impact:** The MQTT protocol requires in-flight QoS 1/2 messages to have
+unique packet IDs.  Duplicate IDs cause message delivery corruption.
+
+Exploration Results
+~~~~~~~~~~~~~~~~~~~
+
+==============================  ============================================
+Metric                          Result
+==============================  ============================================
+Seeds that found bug            **20 / 20**
+Avg. attempts to find           **1** (every seed, every first attempt!)
+Deterministic reproduction      **10/10**
+==============================  ============================================
+
+**Test file:** `tests/test_amqtt_real.py <case_studies/tests/test_amqtt_real.py>`_
+
+----
+
+10. pykka
+==========
+
+**Repository:** `pykka on GitHub <https://github.com/jodal/pykka>`_
+
+**Version tested:** 4.4.1
+
+**What it does:** A Python actor framework providing thread-based actors.
+Each actor runs in its own thread and communicates via message-passing.
+``ActorRef.tell()`` sends a fire-and-forget message to an actor.
+
+Bug: ``ActorRef.tell()`` TOCTOU — Ghost Messages (High)
+-------------------------------------------------------
+
+.. code-block:: python
+
+    # pykka/_ref.py
+    def tell(self, message: Any) -> None:
+        if not self.is_alive():                             # CHECK
+            raise ActorDeadError(f"{self} is dead")
+        self.actor_inbox.put(                               # ACT
+            Envelope(message=message, reply_to=None),
+            block=False,
+        )
+
+There is no lock between the ``is_alive()`` check (which reads
+``actor_stopped.is_set()``) and the ``actor_inbox.put()``.  A concurrent
+``stop()`` call can set ``actor_stopped`` in the window between the check
+and the put.
+
+When this race fires:
+
+1. ``tell()`` checks ``is_alive()`` — returns **True** (actor not yet stopped).
+2. Another thread calls ``stop()`` — actor loop processes ``_ActorStop``,
+   calls ``actor_stopped.set()``, and exits its loop.
+3. ``tell()`` puts the message into the inbox — succeeds without raising
+   ``ActorDeadError``.
+4. **Nobody reads the message.** The actor loop has exited; the inbox is
+   never drained again.  The message is silently lost — a *ghost message*.
+
+**Impact:** From the caller's perspective ``tell()`` returned successfully,
+implying the message was delivered.  In reality the message is silently
+dropped.  This violates the implicit contract that a non-raising ``tell()``
+guarantees delivery to a live actor.
+
+Exploration Results
+~~~~~~~~~~~~~~~~~~~
+
+==============================  ===============================
+Metric                          Result
+==============================  ===============================
+Seeds that found bug            **20 / 20**
+Avg. attempts to find           **~17**
+Deterministic reproduction      **10/10**
+==============================  ===============================
+
+**Test file:** `tests/test_pykka_real.py <case_studies/tests/test_pykka_real.py>`_
+
+----
+
 Summary
 =======
 
-=================  =============================  ========  ==================  ==============  =========
-Library            Bug Tested                     Commit    Seeds Found (/ 20)  Avg. Attempts   Reproduce
-=================  =============================  ========  ==================  ==============  =========
-TPool              ``_should_keep_going`` TOCTOU  1bffaaf   **20 / 20**         1-3             10/10
-threadpoolctl      ``_get_libc`` TOCTOU           cf38a18   **20 / 20**         **1**           10/10
-cachetools         ``__setitem__`` lost update    e5f8f01   **20 / 20**         4               10/10
-PyDispatcher       ``connect()`` TOCTOU           0c2768d   **20 / 20**         1.3             10/10
-pydis              INCR lost update + SET NX      1b02b27   **20 / 20**         1.25            10/10
-=================  =============================  ========  ==================  ==============  =========
+=================  ====================================  =======  ==================  ==============  =========
+Library            Finding                               Version  Seeds Found (/ 20)  Avg. Attempts   Reproduce
+=================  ====================================  =======  ==================  ==============  =========
+TPool              ``_should_keep_going`` TOCTOU        1bffaaf  **20 / 20**         1-3             10/10
+threadpoolctl      ``_get_libc`` TOCTOU                 cf38a18  **20 / 20**         **1**           10/10
+cachetools         ``__setitem__`` lost update          e5f8f01  **20 / 20**         4               10/10
+PyDispatcher       ``connect()`` TOCTOU                 0c2768d  **20 / 20**         1.3             10/10
+pydis              INCR lost update + SET NX            1b02b27  **20 / 20**         1.25            10/10
+pybreaker          ``increment_counter`` lost update    1.4.1    **20 / 20**         ~2              10/10
+urllib3            ``_new_conn`` lost update            2.x      **20 / 20**         ~1.5            10/10
+SQLAlchemy pool    ``_inc_overflow`` race (diagnostic)  2.x      **20 / 20**         ~2.5            10/10
+amqtt              ``next_packet_id`` duplicate IDs     main     **20 / 20**         **1**           10/10
+pykka              ``tell()`` TOCTOU ghost messages     4.4.1    **20 / 20**         ~17             10/10
+=================  ====================================  =======  ==================  ==============  =========
 
 Key Findings
 ============
 
-1. **Real-code exploration works remarkably well.** Every library's bug was
-   found on **all 20 seeds tested**, typically in **1-4 attempts**.  The race
-   windows in real code are wide enough at the bytecode level that random
-   schedules trigger them almost immediately.  No models needed — interlace
-   runs directly against unmodified library code.
+1. **Exploration is highly effective.** All 31 tests found their target bugs on
+   all 20 seeds. Simple counter races are found in 1-4 attempts; more complex
+   TOCTOU patterns take ~17 attempts on average. No models or simplifications
+   needed — interlace runs directly against real library code.
 
 2. **Deterministic reproduction is 100% reliable.** Once a counterexample
-   schedule is found, ``run_with_schedule`` reproduces the bug **10/10 times**
-   across all 5 libraries.  This makes the schedules suitable as regression
-   tests.
+   schedule is found, ``run_with_schedule`` reproduces the bug 10/10 times
+   across all 10 libraries. These schedules are suitable as regression tests.
 
-3. **Zero-lock libraries are common.** Three of five libraries (threadpoolctl,
-   PyDispatcher, pydis) use no synchronization whatsoever.  The other two
-   (TPool, cachetools) use locks but have gaps in their synchronization.
+3. **Plain ``+=`` without locks is a universal vulnerability.** Five of ten
+   libraries fail on simple counter increments: pybreaker, urllib3, SQLAlchemy,
+   cachetools, and pydis. Any unsynchronized counter is at risk.
 
-4. **The bugs are real.** Every bug demonstrated here represents an actual
-   concurrency hazard in the library's current codebase.  They range from
-   data corruption (cachetools currsize, pydis lost writes) to complete
-   functionality failure (TPool task loss, PyDispatcher lost registrations).
+4. **Synchronization gaps vary in severity.** Three of five Round 1 libraries
+   use no synchronization primitives at all. Round 2 shows that even modern
+   libraries like urllib3 and amqtt have races in critical paths. Not all races
+   have equal impact — SQLAlchemy's race is cosmetic, while amqtt's corrupts
+   the MQTT protocol.
+
+5. **Impact assessment requires code reading.** Interlace correctly identifies
+   all non-atomic operations, but whether a race matters depends on its
+   call-site. The SQLAlchemy overflow counter is demonstrably racy, yet benign
+   in practice. This shows interlace's role: find the race, then reason about
+   whether it affects correctness.

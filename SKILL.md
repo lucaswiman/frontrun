@@ -422,12 +422,7 @@ if __name__ == "__main__":
 
 ## Case Studies
 
-See the following for worked examples against real libraries:
-
-- **docs/case_studies/CASE_STUDIES.rst** — Round 2: pybreaker, urllib3,
-  SQLAlchemy pool, amqtt, pykka
-- **docs/CASE_STUDIES.rst** — Round 1: TPool, threadpoolctl, cachetools,
-  PyDispatcher, pydis
-
-All ten libraries demonstrate **20/20 seed detection** with deterministic
-10/10 reproduction.
+See **docs/CASE_STUDIES.rst** for ten worked examples:
+TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3,
+SQLAlchemy pool, amqtt, and pykka. All demonstrate **20/20 seed detection**
+with deterministic 10/10 reproduction.

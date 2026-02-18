@@ -52,19 +52,9 @@ executor.wait(timeout=5.0)
 assert account.balance == 150, "Race condition detected!"
 ```
 
-## Real-World Case Studies
+## Case Studies
 
-See how Interlace finds concurrency bugs in real-world libraries:
-
-**[Interlace Case Studies](docs/CASE_STUDIES.rst)** — Five detailed case studies demonstrating how Interlace discovers and reproduces race conditions in unmodified production code:
-
-- **TPool**: TOCTOU race in thread pool shutdown (20/20 seeds, 1-3 attempts)
-- **threadpoolctl**: TOCTOU in libc initialization (20/20 seeds, **1 attempt average**)
-- **cachetools**: Lost update in cache size tracking (20/20 seeds, 4 attempts)
-- **PyDispatcher**: Lost signal registrations (20/20 seeds, 1.3 attempts)
-- **pydis**: Lost Redis operations (20/20 seeds, 1.25 attempts)
-
-Run the full test suite: `PYTHONPATH=interlace python interlace/docs/tests/run_external_tests.py`
+See [detailed case studies](docs/CASE_STUDIES.rst) of searching for concurrency bugs in ten libraries: TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3, SQLAlchemy, amqtt, and pykka. Run the test suites with: `PYTHONPATH=interlace python interlace/docs/tests/run_external_tests.py`
 
 ## Usage Approaches
 
@@ -72,9 +62,11 @@ Interlace provides two different ways to control thread interleaving:
 
 ### 1. Trace Markers
 
-Use comment-based markers for reproducing known race conditions or investigating whether a particular race condition is possible. Markers can be placed inline with code or on empty lines.
+Trace markers are special comments (`# interlace: <marker-name>`) which mark particular synchronization points in multithreaded or async code. These are intended to make it easier to reproduce race conditions in test cases and inspect whether some race conditions are possible.
 
-**How it works:** Each thread is run with a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback that fires on every source line. The callback scans each line for `# interlace: <name>` comments. When a marker is hit, the thread pauses and waits for a `ThreadCoordinator` to grant it the next turn according to the schedule. This gives you deterministic control over the order threads reach each synchronization point, without changing any executable code — markers are just comments.
+The execution ordering is controlled with a "schedule" object that says what order the threads / markers should run in.
+
+Each thread runs with a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback that pauses at markers and waits for a schedule to grant the next execution turn. This gives deterministic control over execution order without modifying code semantics — markers are just comments placed on empty lines or inline.
 
 ```python
 from interlace.trace_markers import Schedule, Step, TraceExecutor
@@ -120,25 +112,13 @@ executor.wait(timeout=5.0)
 assert counter.value == 1  # Race condition!
 ```
 
-**Advantages:**
-- Lightweight - just comments in code
-- Two placement styles: empty lines (cleaner) or inline (compact)
-- Automatic execution tracing
-- Simple and readable
-- No semantic code changes required
-- Stable and well-tested
-
 ### 2. Bytecode Manipulation (Experimental)
 
-> ⚠️ **Warning:** Bytecode instrumentation is **experimental**. It requires monkey-patching basic concurrency primitives during test execution and relies on `f_trace_opcodes` (available since Python 3.7). Use with caution.
+> ⚠️ **Experimental:** Bytecode instrumentation is experimental and may change. It requires monkey-patching concurrency primitives and relies on `f_trace_opcodes` (Python 3.7+). Use with caution.
 
-Automatically instrument functions using bytecode rewriting. No checkpoints needed!
+Automatically instrument functions using bytecode rewriting — no markers needed. Each thread fires a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback at every bytecode instruction, pausing at each one to wait for its scheduler turn. This gives fine-grained control but requires monkey-patching standard threading primitives (`Lock`, `Semaphore`, `Event`, `Queue`, etc.) to prevent deadlocks.
 
-**How it works:** Each thread is run with a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback that sets `f_trace_opcodes = True` on every frame, so the callback fires at every *bytecode instruction* rather than every source line. At each opcode, the thread calls `scheduler.wait_for_turn()` which blocks until the schedule says it's that thread's turn. This gives complete control over interleaving at the finest granularity CPython offers.
-
-Because the scheduler controls which thread runs each opcode, any blocking call that happens in C code (like `threading.Lock.acquire()`) would deadlock — the blocked thread holds a scheduler turn but can't make progress. To prevent this, all standard threading and queue primitives (`Lock`, `RLock`, `Semaphore`, `BoundedSemaphore`, `Event`, `Condition`, `Queue`, `LifoQueue`, `PriorityQueue`) are monkey-patched with cooperative versions that spin-yield via the scheduler instead of blocking.
-
-For property-based exploration, `explore_interleavings()` generates random schedules and checks that an invariant holds under each one. If any schedule violates the invariant, it returns the counterexample schedule for deterministic reproduction.
+For property-based exploration, `explore_interleavings()` generates random schedules and checks invariants, returning any counterexample schedule for deterministic reproduction.
 
 ```python
 from interlace.bytecode import explore_interleavings
@@ -170,40 +150,17 @@ if not result.property_holds:
     print(f"Expected value: 2, Got: {result.counterexample.value}")
 ```
 
+### Choosing an Approach
 
-**Advantages (Experimental):**
-- No manual checkpoint insertion needed
-- Can test unmodified third-party code
-- Property-based exploration finds edge cases
-- Automatic bytecode instrumentation
+**Trace markers** are stable and straightforward — add comments at synchronization points to control execution order. Use this for targeted testing of specific race conditions and when you can modify the code under test.
 
-**Limitations:**
-- Results may vary across Python versions
-- Some bytecode patterns may not be instrumented correctly
-- Performance impact is higher than trace markers
-- Less predictable behavior than explicit markers
-- **API may change in future versions**
-
-### When to Use Each Approach
-
-**Use Trace Markers (recommended) if:**
-- You want stable, predictable behavior
-- You're comfortable adding comments to code
-- You have specific synchronization points in mind
-- You need deterministic test results
-- You're testing code you can modify
-
-**Use Bytecode Instrumentation (with caution) if:**
-- You need to test unmodified third-party code
-- You want automatic race condition discovery
-- You're comfortable with experimental features
-- You have time to handle potential API changes
+**Bytecode instrumentation** requires no markers and can test unmodified third-party code, but it's experimental and may change. The results depend on Python version and bytecode patterns, performance overhead is higher, and threading primitives must be monkey-patched. Use only if you need property-based exploration or must test unmodified library code.
 
 ## Async Support
 
-Both approaches have async variants. Trace marker async support is stable, while bytecode instrumentation async support is experimental (see above).
+Both approaches have async variants. Trace markers have stable async support, while bytecode instrumentation async support is experimental.
 
-### Async Trace Markers (Recommended)
+### Async Trace Markers
 
 ```python
 import asyncio
@@ -279,10 +236,10 @@ interlace/
 ├── interlace/                        # Python package
 │   ├── __init__.py
 │   ├── common.py                     # Shared types (Schedule, Step)
-│   ├── trace_markers.py              # Trace marker approach (recommended)
-│   ├── async_trace_markers.py        # Async trace markers (recommended)
+│   ├── trace_markers.py              # Trace marker approach
+│   ├── async_trace_markers.py        # Async trace markers
 │   ├── bytecode.py                   # Bytecode instrumentation (experimental)
-│   ├── async_bytecode.py             # Async bytecode instrumentation (experimental)
+│   ├── async_bytecode.py             # Async bytecode (experimental)
 │   └── async_scheduler.py            # Async scheduling utilities
 └── tests/                            # Test suite
     ├── conftest.py                   # Pytest configuration
