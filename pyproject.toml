@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -11,7 +11,7 @@ version = "0.0.1"
 description = "A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MPL-2.0"}
+license = "MPL-2.0"
 authors = [
     {name = "Lucas Wiman", email = "lucas.wiman@gmail.com"},
 ]
@@ -19,7 +19,6 @@ keywords = ["concurrency", "testing", "race-conditions", "threads", "async"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
