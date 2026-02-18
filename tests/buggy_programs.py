@@ -1,5 +1,5 @@
 """
-Buggy concurrent programs for testing interlace's ability to detect common concurrency bugs.
+Buggy concurrent programs for testing frontrun's ability to detect common concurrency bugs.
 
 This module contains intentionally buggy implementations of concurrent data structures
 and operations to demonstrate four classes of concurrency bugs:
@@ -251,7 +251,7 @@ class AsyncBuggyCounterBytecode:
     async def increment(self):
         """Increment the counter with explicit suspension point."""
         # Import here to avoid import errors if async_bytecode not available
-        from interlace.async_bytecode import await_point
+        from frontrun.async_bytecode import await_point
 
         current = self.value
         await await_point()
@@ -310,14 +310,14 @@ class AsyncBuggyResourceManagerBytecode:
 
     async def init_resource(self, value):
         """Initialize the resource."""
-        from interlace.async_bytecode import await_point
+        from frontrun.async_bytecode import await_point
 
         await await_point()
         self.resource = value
 
     async def use_resource(self):
         """Use the resource - assumes it's been initialized."""
-        from interlace.async_bytecode import await_point
+        from frontrun.async_bytecode import await_point
 
         await await_point()
         # Check if resource is None (order violation)

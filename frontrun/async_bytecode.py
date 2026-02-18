@@ -17,7 +17,7 @@ and there are far fewer of them than in threaded code.
 Example — find a race condition with random schedule exploration:
 
     >>> import asyncio
-    >>> from interlace.async_bytecode import explore_interleavings, await_point
+    >>> from frontrun.async_bytecode import explore_interleavings, await_point
     >>>
     >>> class Counter:
     ...     def __init__(self):
@@ -50,8 +50,8 @@ from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from interlace.async_scheduler import InterleavedLoop
-from interlace.common import InterleavingResult
+from frontrun.async_scheduler import InterleavedLoop
+from frontrun.common import InterleavingResult
 
 # Context variable to track the active scheduler and task ID
 _scheduler_var: contextvars.ContextVar[Optional["AwaitScheduler"]] = contextvars.ContextVar("_scheduler", default=None)
@@ -69,7 +69,7 @@ async def await_point():
     switch point. For testing race conditions, replace strategic awaits
     with `await await_point()` to allow the scheduler to control ordering.
 
-    If no scheduler is active (i.e., not running under AsyncBytecodeInterlace),
+    If no scheduler is active (i.e., not running under AsyncBytecodeShuffler),
     this function returns immediately without blocking.
     """
     scheduler = _scheduler_var.get()
@@ -137,7 +137,7 @@ class AwaitScheduler(InterleavedLoop):
         return self._error is not None
 
 
-class AsyncBytecodeInterlace:
+class AsyncBytecodeShuffler:
     """Run concurrent async functions with await-point-level interleaving control.
 
     Creates asyncio tasks for each function and delegates to the
@@ -183,7 +183,7 @@ class AsyncBytecodeInterlace:
 @asynccontextmanager
 async def controlled_interleaving(
     schedule: list[int], num_tasks: int = 2
-) -> AsyncGenerator[AsyncBytecodeInterlace, None]:
+) -> AsyncGenerator[AsyncBytecodeShuffler, None]:
     """Context manager for running async code under a specific interleaving.
 
     Args:
@@ -191,14 +191,14 @@ async def controlled_interleaving(
         num_tasks: Number of tasks.
 
     Yields:
-        AsyncBytecodeInterlace runner.
+        AsyncBytecodeShuffler runner.
 
     Example:
         >>> async with controlled_interleaving([0, 1, 0, 1], num_tasks=2) as runner:
         ...     await runner.run([coro1, coro2])
     """
     scheduler = AwaitScheduler(schedule, num_tasks)
-    runner = AsyncBytecodeInterlace(scheduler)
+    runner = AsyncBytecodeShuffler(scheduler)
     yield runner
 
 
@@ -225,7 +225,7 @@ async def run_with_schedule(
         The state object after execution.
     """
     scheduler = AwaitScheduler(schedule, len(tasks))
-    runner = AsyncBytecodeInterlace(scheduler)
+    runner = AsyncBytecodeShuffler(scheduler)
 
     state = setup()
     funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [lambda s=state, t=t: t(s) for t in tasks]  # type: ignore[assignment]
@@ -298,7 +298,7 @@ def schedule_strategy(num_tasks: int, max_ops: int = 100) -> Any:  # type: ignor
     For use with hypothesis @given decorator in your own tests:
 
         >>> from hypothesis import given
-        >>> from interlace.async_bytecode import schedule_strategy, run_with_schedule
+        >>> from frontrun.async_bytecode import schedule_strategy, run_with_schedule
         >>> import asyncio
         >>>
         >>> @given(schedule=schedule_strategy(2))

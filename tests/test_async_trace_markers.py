@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from interlace.async_trace_markers import AsyncTraceExecutor, async_interlace
-from interlace.common import Schedule, Step
+from frontrun.async_trace_markers import AsyncTraceExecutor, async_interlace
+from frontrun.common import Schedule, Step
 
 
 class BankAccount:

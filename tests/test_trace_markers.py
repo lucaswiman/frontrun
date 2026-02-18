@@ -1,10 +1,10 @@
-"""Tests for the interlace trace_markers module."""
+"""Tests for the frontrun trace_markers module."""
 
 import sys
 import threading
 
-from interlace.common import Schedule, Step
-from interlace.trace_markers import MarkerRegistry, ThreadCoordinator, TraceExecutor, interlace
+from frontrun.common import Schedule, Step
+from frontrun.trace_markers import MarkerRegistry, ThreadCoordinator, TraceExecutor, interlace
 
 
 class BankAccount:

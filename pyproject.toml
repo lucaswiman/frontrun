@@ -3,10 +3,10 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["interlace"]
+packages = ["frontrun"]
 
 [project]
-name = "interlace"
+name = "frontrun"
 version = "0.0.1"
 description = "A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions"
 readme = "README.md"
@@ -68,7 +68,7 @@ ignore = [
 ]
 
 [tool.pyright]
-include = ["interlace"]
+include = ["frontrun"]
 exclude = ["**/node_modules", "**/__pycache__"]
 typeCheckingMode = "strict"
 pythonVersion = "3.10"

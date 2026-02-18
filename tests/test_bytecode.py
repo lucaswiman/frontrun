@@ -8,8 +8,8 @@ Demonstrates both:
 
 import threading
 
-from interlace.bytecode import (
-    BytecodeInterlace,
+from frontrun.bytecode import (
+    BytecodeShuffler,
     OpcodeScheduler,
     controlled_interleaving,
     explore_interleavings,
@@ -81,7 +81,7 @@ def test_scheduler_skips_done_threads():
 
 
 # ---------------------------------------------------------------------------
-# Integration tests: BytecodeInterlace with exact schedules
+# Integration tests: BytecodeShuffler with exact schedules
 # ---------------------------------------------------------------------------
 
 
@@ -141,7 +141,7 @@ def test_bank_account_race_reproduced():
         # Alternate rapidly to maximize chance of interleaving within transfer()
         schedule = [0, 1] * 150
         scheduler = OpcodeScheduler(schedule, num_threads=2)
-        runner = BytecodeInterlace(scheduler)
+        runner = BytecodeShuffler(scheduler)
         runner.run([t1, t2])
 
         if account.balance != 200:

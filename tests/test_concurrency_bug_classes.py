@@ -1,5 +1,5 @@
 """
-Tests demonstrating interlace's ability to detect four classes of concurrency bugs.
+Tests demonstrating frontrun's ability to detect four classes of concurrency bugs.
 
 For each bug class, we have three types of tests:
 1. Exact reproduction using trace_markers/async_trace_markers with a specific Schedule
@@ -18,23 +18,23 @@ import asyncio
 import pytest
 from hypothesis import Phase, given, settings
 
-from interlace.async_bytecode import (
+from frontrun.async_bytecode import (
     explore_interleavings as async_explore_interleavings,
 )
-from interlace.async_bytecode import (
+from frontrun.async_bytecode import (
     run_with_schedule as async_run_with_schedule,
 )
-from interlace.async_bytecode import (
+from frontrun.async_bytecode import (
     schedule_strategy as async_schedule_strategy,
 )
-from interlace.async_trace_markers import AsyncTraceExecutor
-from interlace.bytecode import (
+from frontrun.async_trace_markers import AsyncTraceExecutor
+from frontrun.bytecode import (
     explore_interleavings,
     run_with_schedule,
     schedule_strategy,
 )
-from interlace.common import Schedule, Step
-from interlace.trace_markers import TraceExecutor
+from frontrun.common import Schedule, Step
+from frontrun.trace_markers import TraceExecutor
 from tests.buggy_programs import (
     AsyncBuggyCounter,
     AsyncBuggyCounterBytecode,

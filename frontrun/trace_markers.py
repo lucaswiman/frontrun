@@ -1,5 +1,5 @@
 """
-Interlace: Deterministic thread interleaving using sys.settrace and comment markers.
+Frontrun: Deterministic thread interleaving using sys.settrace and comment markers.
 
 This module provides a mechanism to control thread execution order by marking
 synchronization points in code with special comments and enforcing a predefined
@@ -32,7 +32,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from interlace.common import Schedule
+from frontrun.common import Schedule
 
 MARKER_PATTERN = re.compile(r"#\s*interlace:\s*(\w+)")
 

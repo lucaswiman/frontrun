@@ -14,7 +14,7 @@ the full space of possible interleavings.
 
 Example — find a race condition with random schedule exploration:
 
-    >>> from interlace.bytecode import explore_interleavings
+    >>> from frontrun.bytecode import explore_interleavings
     >>>
     >>> class Counter:
     ...     def __init__(self):
@@ -40,7 +40,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, TypeVar
 
-from interlace.common import InterleavingResult
+from frontrun.common import InterleavingResult
 
 # Type variable for the shared state passed between setup and thread functions
 T = TypeVar("T")
@@ -666,7 +666,7 @@ class _CooperativePriorityQueue(_CooperativeQueue):
     _queue_class = _real_priority_queue
 
 
-class BytecodeInterlace:
+class BytecodeShuffler:
     """Run concurrent functions with bytecode-level interleaving control.
 
     Sets up per-thread trace functions that intercept every bytecode
@@ -808,14 +808,14 @@ def controlled_interleaving(schedule: list[int], num_threads: int = 2):
         num_threads: Number of threads.
 
     Yields:
-        BytecodeInterlace runner.
+        BytecodeShuffler runner.
 
     Example:
         >>> with controlled_interleaving([0, 1, 0, 1], num_threads=2) as runner:
         ...     runner.run([func1, func2])
     """
     scheduler = OpcodeScheduler(schedule, num_threads)
-    runner = BytecodeInterlace(scheduler)
+    runner = BytecodeShuffler(scheduler)
     yield runner
 
 
@@ -845,7 +845,7 @@ def run_with_schedule(
         The state object after execution.
     """
     scheduler = OpcodeScheduler(schedule, len(threads))
-    runner = BytecodeInterlace(scheduler, cooperative_locks=cooperative_locks)
+    runner = BytecodeShuffler(scheduler, cooperative_locks=cooperative_locks)
 
     # Patch locks BEFORE setup() so any locks created there are cooperative
     runner._patch_locks()
@@ -924,7 +924,7 @@ def schedule_strategy(num_threads: int, max_ops: int = 300):
     For use with hypothesis @given decorator in your own tests:
 
         >>> from hypothesis import given
-        >>> from interlace.bytecode import schedule_strategy, run_with_schedule
+        >>> from frontrun.bytecode import schedule_strategy, run_with_schedule
         >>>
         >>> @given(schedule=schedule_strategy(2))
         ... def test_my_invariant(schedule):

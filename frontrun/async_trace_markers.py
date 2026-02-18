@@ -1,5 +1,5 @@
 """
-Interlace: Deterministic async task interleaving using comment-based markers.
+Frontrun: Deterministic async task interleaving using comment-based markers.
 
 This module provides a mechanism to control async task execution order by marking
 synchronization points in code with ``# interlace: marker_name`` comments,
@@ -72,8 +72,8 @@ import threading
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from interlace.common import Schedule
-from interlace.trace_markers import MarkerRegistry, ThreadCoordinator
+from frontrun.common import Schedule
+from frontrun.trace_markers import MarkerRegistry, ThreadCoordinator
 
 
 class AsyncTraceExecutor:

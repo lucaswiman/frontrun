@@ -1,4 +1,4 @@
-.PHONY: test test-interlace test-tokens-regex clean docs docs-clean docs-html docs-clean-build lint type-check check
+.PHONY: test test-frontrun test-tokens-regex clean docs docs-clean docs-html docs-clean-build lint type-check check
 
 # Virtual environment setup
 VENV_BIN := .venv/bin/
@@ -21,7 +21,7 @@ $(VENV_BIN)activate: .venv pyproject.toml
 test: $(VENV_BIN)activate
 	$(PYTEST)
 
-test-interlace: $(VENV_BIN)activate
+test-frontrun: $(VENV_BIN)activate
 	$(PYTEST) tests/
 
 test-tokens-regex:
@@ -29,8 +29,8 @@ test-tokens-regex:
 	@exit 0
 
 lint: $(VENV_BIN)activate
-	$(VENV_BIN)ruff check interlace tests
-	$(VENV_BIN)ruff format --check interlace tests
+	$(VENV_BIN)ruff check frontrun tests
+	$(VENV_BIN)ruff format --check frontrun tests
 
 type-check: $(VENV_BIN)activate
 	$(VENV_BIN)pyright

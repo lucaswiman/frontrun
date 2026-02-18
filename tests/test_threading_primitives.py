@@ -13,7 +13,7 @@ Some tests may timeout/deadlock, demonstrating the need for cooperative wrappers
 import queue
 import threading
 
-from interlace.bytecode import explore_interleavings
+from frontrun.bytecode import explore_interleavings
 
 # ---------------------------------------------------------------------------
 # Test: threading.RLock

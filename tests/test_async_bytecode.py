@@ -8,8 +8,8 @@ Demonstrates both:
 
 import asyncio
 
-from interlace.async_bytecode import (
-    AsyncBytecodeInterlace,
+from frontrun.async_bytecode import (
+    AsyncBytecodeShuffler,
     AwaitScheduler,
     _task_id_var,
     await_point,
@@ -123,7 +123,7 @@ def test_scheduler_skips_done_tasks():
 
 
 # ---------------------------------------------------------------------------
-# Integration tests: AsyncBytecodeInterlace with exact schedules
+# Integration tests: AsyncBytecodeShuffler with exact schedules
 # ---------------------------------------------------------------------------
 
 
@@ -196,7 +196,7 @@ def test_bank_account_race_reproduced():
             # Alternate rapidly to maximize chance of interleaving within transfer()
             schedule = [0, 1] * 15
             scheduler = AwaitScheduler(schedule, num_tasks=2)
-            runner = AsyncBytecodeInterlace(scheduler)
+            runner = AsyncBytecodeShuffler(scheduler)
             await runner.run([t1, t2])
 
             if account.balance != 200:
