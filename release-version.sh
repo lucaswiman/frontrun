@@ -30,7 +30,7 @@ check_prerequisites() {
     local missing_tools=()
 
     # Check for required tools
-    for tool in git python pip; do
+    for tool in git python uv; do
         if ! command -v "$tool" &> /dev/null; then
             missing_tools+=("$tool")
         fi
@@ -39,18 +39,6 @@ check_prerequisites() {
     if [ ${#missing_tools[@]} -gt 0 ]; then
         print_error "Missing required tools: ${missing_tools[*]}"
         exit 1
-    fi
-
-    # Check if twine is installed
-    if ! python -m pip show twine &> /dev/null; then
-        print_warning "twine not found. Installing twine..."
-        python -m pip install twine
-    fi
-
-    # Check if build is installed
-    if ! python -m pip show build &> /dev/null; then
-        print_warning "build not found. Installing build..."
-        python -m pip install build
     fi
 
     print_success "All prerequisites met"
@@ -119,8 +107,8 @@ build_distribution() {
     # Clean previous builds
     rm -rf dist/ build/ *.egg-info 2>/dev/null || true
 
-    # Build using python -m build
-    python -m build
+    # Build using uvx
+    uvx --from build pyproject-build
     print_success "Built distribution packages"
 }
 
@@ -161,7 +149,7 @@ upload_to_pypi() {
         exit 1
     fi
 
-    python -m twine upload dist/*
+    uvx twine upload dist/*
     print_success "Successfully uploaded to PyPI"
 }
 
