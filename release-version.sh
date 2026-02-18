@@ -49,29 +49,6 @@ get_current_version() {
     grep '^version = ' pyproject.toml | sed 's/version = "//' | sed 's/".*//'
 }
 
-# Prompt for new version
-prompt_for_version() {
-    local current_version=$(get_current_version)
-    echo "" >&2
-    print_info "Current version: $current_version"
-    echo -n "Enter new version (or press Enter to keep current): " >&2
-    read -r new_version
-
-    if [ -z "$new_version" ]; then
-        new_version="$current_version"
-    fi
-
-    echo "$new_version"
-}
-
-# Update version in pyproject.toml
-update_version() {
-    local version=$1
-    sed -i.bak "s/^version = .*/version = \"$version\"/" pyproject.toml
-    rm -f pyproject.toml.bak
-    print_success "Updated version to $version in pyproject.toml"
-}
-
 # Check git status
 check_git_status() {
     if ! git diff-index --quiet HEAD --; then
@@ -172,19 +149,18 @@ main() {
     print_success "Working tree is clean"
     echo ""
 
-    # Step 3: Get version
-    version=$(prompt_for_version)
+    # Step 3: Get version from pyproject.toml
+    version=$(get_current_version)
+    print_info "Version from pyproject.toml: $version"
     echo ""
 
     # Step 4: Confirm before proceeding
     echo "Release Summary:"
     echo "  Version: $version"
     echo "  Actions:"
-    echo "    1. Update version in pyproject.toml"
-    echo "    2. Commit changes"
-    echo "    3. Create and push git tag"
-    echo "    4. Build distribution"
-    echo "    5. Upload to PyPI"
+    echo "    1. Create and push git tag v$version"
+    echo "    2. Build distribution"
+    echo "    3. Upload to PyPI"
     echo ""
     read -p "Proceed with release? (yes/no): " confirm
 
@@ -194,25 +170,15 @@ main() {
     fi
     echo ""
 
-    # Step 5: Update version
-    update_version "$version"
-
-    # Step 6: Commit version change
-    print_info "Committing version update..."
-    git add pyproject.toml
-    git commit -m "Release version $version"
-    print_success "Committed version update"
-    echo ""
-
-    # Step 7: Create and push tag
+    # Step 5: Create and push tag
     create_and_push_tag "$version"
     echo ""
 
-    # Step 8: Build distribution
+    # Step 6: Build distribution
     build_distribution
     echo ""
 
-    # Step 9: Prompt for credentials and upload
+    # Step 7: Prompt for credentials and upload
     prompt_for_credentials
     echo ""
     upload_to_pypi
