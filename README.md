@@ -18,7 +18,7 @@ Instead of relying on timing-based race detection (which is unreliable), Interla
 
 ## Quick Start: Bank Account Race Condition
 
-Here's a simple example showing how to use Interlace to trigger a race condition using trace markers:
+Here's a pytest test that uses Interlace to trigger a race condition:
 
 ```python
 from interlace.trace_markers import Schedule, Step, TraceExecutor
@@ -28,30 +28,28 @@ class BankAccount:
         self.balance = balance
 
     def transfer(self, amount):
-        # This method has a race condition: read-modify-write without synchronization
         current = self.balance  # interlace: read_balance
         new_balance = current + amount
         self.balance = new_balance  # interlace: write_balance
 
-# Demonstrate the race condition
-account = BankAccount(balance=100)
+def test_transfer_lost_update():
+    account = BankAccount(balance=100)
 
-# Define an interleaving that triggers the race:
-# Both threads read before either writes
-schedule = Schedule([
-    Step("thread1", "read_balance"),    # T1 reads 100
-    Step("thread2", "read_balance"),    # T2 reads 100 (both see same value!)
-    Step("thread1", "write_balance"),   # T1 writes 150
-    Step("thread2", "write_balance"),   # T2 writes 150 (overwrites T1's update!)
-])
+    # Both threads read before either writes
+    schedule = Schedule([
+        Step("thread1", "read_balance"),    # T1 reads 100
+        Step("thread2", "read_balance"),    # T2 reads 100 (both see same value!)
+        Step("thread1", "write_balance"),   # T1 writes 150
+        Step("thread2", "write_balance"),   # T2 writes 150 (overwrites T1's update!)
+    ])
 
-executor = TraceExecutor(schedule)
-executor.run("thread1", lambda: account.transfer(50))
-executor.run("thread2", lambda: account.transfer(50))
-executor.wait(timeout=5.0)
+    executor = TraceExecutor(schedule)
+    executor.run("thread1", lambda: account.transfer(50))
+    executor.run("thread2", lambda: account.transfer(50))
+    executor.wait(timeout=5.0)
 
-# Result: balance is 150, not 200 - one update was lost!
-assert account.balance == 150, "Race condition triggered!"
+    # One update was lost: balance is 150, not 200
+    assert account.balance == 150
 ```
 
 ## Case Studies
@@ -84,29 +82,22 @@ class Counter:
         temp += 1
         self.value = temp  # interlace: write_value
 
-counter = Counter()
+def test_counter_lost_update():
+    counter = Counter()
 
-# Define execution order using markers
-schedule = Schedule([
-    Step("thread1", "read_value"),
-    Step("thread2", "read_value"),
-    Step("thread1", "write_value"),
-    Step("thread2", "write_value"),
-])
+    schedule = Schedule([
+        Step("thread1", "read_value"),
+        Step("thread2", "read_value"),
+        Step("thread1", "write_value"),
+        Step("thread2", "write_value"),
+    ])
 
-def worker1():
-    counter.increment()
+    executor = TraceExecutor(schedule)
+    executor.run("thread1", counter.increment)
+    executor.run("thread2", counter.increment)
+    executor.wait(timeout=5.0)
 
-def worker2():
-    counter.increment()
-
-# Run with controlled interleaving
-executor = TraceExecutor(schedule)
-executor.run("thread1", worker1)
-executor.run("thread2", worker2)
-executor.wait(timeout=5.0)
-
-assert counter.value == 1  # Race condition!
+    assert counter.value == 1  # One increment lost
 ```
 
 ### 2. Bytecode Manipulation (Experimental)
@@ -115,7 +106,7 @@ assert counter.value == 1  # Race condition!
 
 Automatically instrument functions using bytecode rewriting — no markers needed. Each thread fires a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback at every bytecode instruction, pausing at each one to wait for its scheduler turn. This gives fine-grained control but requires monkey-patching standard threading primitives (`Lock`, `Semaphore`, `Event`, `Queue`, etc.) to prevent deadlocks.
 
-For property-based exploration, `explore_interleavings()` generates random schedules and checks invariants, returning any counterexample schedule for deterministic reproduction.
+`explore_interleavings()` does property-based exploration in the style of [Hypothesis](https://hypothesis.readthedocs.io/): it generates random opcode-level schedules and checks that an invariant holds under each one, returning any counterexample schedule.
 
 ```python
 from interlace.bytecode import explore_interleavings
@@ -128,23 +119,21 @@ class Counter:
         temp = self.value
         self.value = temp + 1
 
-# Use explore_interleavings to find race conditions
-result = explore_interleavings(
-    setup=lambda: Counter(value=0),
-    threads=[
-        lambda c: c.increment(),
-        lambda c: c.increment(),
-    ],
-    invariant=lambda c: c.value == 2,  # This should hold if no races exist
-    max_attempts=200,
-    max_ops=200,
-    seed=42,
-)
+def test_counter_no_race():
+    result = explore_interleavings(
+        setup=lambda: Counter(value=0),
+        threads=[
+            lambda c: c.increment(),
+            lambda c: c.increment(),
+        ],
+        invariant=lambda c: c.value == 2,
+        max_attempts=200,
+        max_ops=200,
+        seed=42,
+    )
 
-if not result.property_holds:
-    print("Race condition found!")
-    print(f"After {result.num_explored} attempts")
-    print(f"Expected value: 2, Got: {result.counterexample.value}")
+    assert not result.property_holds, "Expected a race condition"
+    assert result.counterexample.value == 1
 ```
 
 ## Async Support
@@ -157,7 +146,7 @@ Both approaches have async variants.
 from interlace.async_trace_markers import AsyncTraceExecutor
 from interlace.common import Schedule, Step
 
-class Counter:
+class AsyncCounter:
     def __init__(self):
         self.value = 0
 
@@ -173,27 +162,24 @@ class Counter:
         # interlace: write_value
         await self.set_value(temp + 1)
 
-counter = Counter()
+def test_async_counter_lost_update():
+    counter = AsyncCounter()
 
-# Define execution order using markers
-schedule = Schedule([
-    Step("task1", "read_value"),
-    Step("task2", "read_value"),
-    Step("task1", "write_value"),
-    Step("task2", "write_value"),
-])
+    schedule = Schedule([
+        Step("task1", "read_value"),
+        Step("task2", "read_value"),
+        Step("task1", "write_value"),
+        Step("task2", "write_value"),
+    ])
 
-# Run with controlled interleaving (synchronous method)
-executor = AsyncTraceExecutor(schedule)
-executor.run({
-    "task1": counter.increment,
-    "task2": counter.increment,
-})
+    executor = AsyncTraceExecutor(schedule)
+    executor.run({
+        "task1": counter.increment,
+        "task2": counter.increment,
+    })
 
-assert counter.value == 1  # Race condition!
+    assert counter.value == 1  # One increment lost
 ```
-
-**Key insight:** In async code, race conditions only happen at `await` points since the event loop is single-threaded.
 
 ## Development
 

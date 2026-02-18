@@ -46,20 +46,21 @@ Getting Started
            temp += 1
            self.value = temp  # interlace: write_value
 
-   counter = Counter()
-   schedule = Schedule([
-       Step("thread1", "read_value"),
-       Step("thread2", "read_value"),
-       Step("thread1", "write_value"),
-       Step("thread2", "write_value"),
-   ])
+   def test_counter_lost_update():
+       counter = Counter()
+       schedule = Schedule([
+           Step("thread1", "read_value"),
+           Step("thread2", "read_value"),
+           Step("thread1", "write_value"),
+           Step("thread2", "write_value"),
+       ])
 
-   executor = TraceExecutor(schedule)
-   executor.run("thread1", lambda: counter.increment())
-   executor.run("thread2", lambda: counter.increment())
-   executor.wait(timeout=5.0)
+       executor = TraceExecutor(schedule)
+       executor.run("thread1", counter.increment)
+       executor.run("thread2", counter.increment)
+       executor.wait(timeout=5.0)
 
-   assert counter.value == 1  # Race condition!
+       assert counter.value == 1  # One increment lost
 
 For more information, see :doc:`quickstart` and :doc:`approaches`.
 

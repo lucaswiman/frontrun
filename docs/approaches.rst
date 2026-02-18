@@ -124,10 +124,10 @@ that spin-yield via the scheduler instead of blocking. The patching is scoped
 to each test run: primitives are replaced before ``setup()`` and restored
 afterwards.
 
-For property-based exploration, ``explore_interleavings()`` generates random
-opcode-level schedules and checks that an invariant holds under each one. If
-any schedule violates the invariant, it returns the counterexample schedule for
-deterministic reproduction.
+``explore_interleavings()`` does property-based exploration in the style of
+`Hypothesis <https://hypothesis.readthedocs.io/>`_: it generates random
+opcode-level schedules and checks that an invariant holds under each one,
+returning any counterexample schedule.
 
 .. code-block:: python
 
@@ -141,22 +141,21 @@ deterministic reproduction.
            temp = self.value
            self.value = temp + 1
 
-   # Automatically explore different interleavings
-   result = explore_interleavings(
-       setup=lambda: Counter(value=0),
-       threads=[
-           lambda c: c.increment(),
-           lambda c: c.increment(),
-       ],
-       invariant=lambda c: c.value == 2,  # Should hold if no races
-       max_attempts=200,
-       max_ops=200,
-       seed=42,
-   )
+   def test_counter_increment_is_not_atomic():
+       result = explore_interleavings(
+           setup=lambda: Counter(value=0),
+           threads=[
+               lambda c: c.increment(),
+               lambda c: c.increment(),
+           ],
+           invariant=lambda c: c.value == 2,
+           max_attempts=200,
+           max_ops=200,
+           seed=42,
+       )
 
-   if not result.property_holds:
-       print(f"Race condition found after {result.num_explored} attempts")
-       print(f"Expected: 2, Got: {result.counterexample.value}")
+       assert not result.property_holds
+       assert result.counterexample.value == 1
 
 **Controlled Interleaving (Internal/Advanced):**
 

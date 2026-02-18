@@ -7,8 +7,6 @@ This guide will get you up and running with Interlace using **Trace Markers**.
 Basic Example: Triggering a Race Condition
 -------------------------------------------
 
-Let's create a simple example that demonstrates a race condition in a counter:
-
 .. code-block:: python
 
    from interlace.trace_markers import Schedule, Step, TraceExecutor
@@ -22,27 +20,23 @@ Let's create a simple example that demonstrates a race condition in a counter:
            temp += 1
            self.value = temp  # interlace: write_value
 
-   # Create a counter
-   counter = Counter()
+   def test_counter_lost_update():
+       counter = Counter()
 
-   # Define an interleaving that triggers the race condition
-   # Both threads read before either writes, causing lost updates
-   schedule = Schedule([
-       Step("thread1", "read_value"),    # T1 reads 0
-       Step("thread2", "read_value"),    # T2 reads 0 (both see same value!)
-       Step("thread1", "write_value"),   # T1 writes 1
-       Step("thread2", "write_value"),   # T2 writes 1 (overwrites T1's update!)
-   ])
+       # Both threads read before either writes, causing a lost update
+       schedule = Schedule([
+           Step("thread1", "read_value"),    # T1 reads 0
+           Step("thread2", "read_value"),    # T2 reads 0 (both see same value!)
+           Step("thread1", "write_value"),   # T1 writes 1
+           Step("thread2", "write_value"),   # T2 writes 1 (overwrites T1's update!)
+       ])
 
-   # Execute with controlled interleaving
-   executor = TraceExecutor(schedule)
-   executor.run("thread1", lambda: counter.increment())
-   executor.run("thread2", lambda: counter.increment())
-   executor.wait(timeout=5.0)
+       executor = TraceExecutor(schedule)
+       executor.run("thread1", counter.increment)
+       executor.run("thread2", counter.increment)
+       executor.wait(timeout=5.0)
 
-   # Verify the race condition occurred
-   assert counter.value == 1, f"Expected 1 (race condition), got {counter.value}"
-   print("Race condition triggered!")
+       assert counter.value == 1  # One increment lost
 
 
 Understanding Trace Markers
@@ -162,40 +156,41 @@ version, but with ``await`` boundaries:
            # interlace: write_value
            await self.set_value(temp + 1)
 
-   counter = AsyncCounter()
+   def test_async_counter_lost_update():
+       counter = AsyncCounter()
 
-   # Both tasks read before either writes — triggers the lost update
-   schedule = Schedule([
-       Step("task1", "read_value"),
-       Step("task2", "read_value"),
-       Step("task1", "write_value"),
-       Step("task2", "write_value"),
-   ])
+       # Both tasks read before either writes — triggers the lost update
+       schedule = Schedule([
+           Step("task1", "read_value"),
+           Step("task2", "read_value"),
+           Step("task1", "write_value"),
+           Step("task2", "write_value"),
+       ])
 
-   executor = AsyncTraceExecutor(schedule)
-   executor.run({
-       "task1": counter.increment,
-       "task2": counter.increment,
-   })
+       executor = AsyncTraceExecutor(schedule)
+       executor.run({
+           "task1": counter.increment,
+           "task2": counter.increment,
+       })
 
-   # Both tasks read 0, then both write 1 — one increment is lost
-   assert counter.value == 1, f"Expected 1 (lost update), got {counter.value}"
+       # Both tasks read 0, then both write 1 — one increment is lost
+       assert counter.value == 1
 
-   # Now verify the correct schedule gives the right answer
-   counter_ok = AsyncCounter()
+   def test_async_counter_serialized():
+       counter = AsyncCounter()
 
-   correct_schedule = Schedule([
-       Step("task1", "read_value"),
-       Step("task1", "write_value"),
-       Step("task2", "read_value"),
-       Step("task2", "write_value"),
-   ])
+       # Serialized: task1 completes before task2 starts
+       schedule = Schedule([
+           Step("task1", "read_value"),
+           Step("task1", "write_value"),
+           Step("task2", "read_value"),
+           Step("task2", "write_value"),
+       ])
 
-   executor_ok = AsyncTraceExecutor(correct_schedule)
-   executor_ok.run({
-       "task1": counter_ok.increment,
-       "task2": counter_ok.increment,
-   })
+       executor = AsyncTraceExecutor(schedule)
+       executor.run({
+           "task1": counter.increment,
+           "task2": counter.increment,
+       })
 
-   # Serialized: task1 reads 0, writes 1, then task2 reads 1, writes 2
-   assert counter_ok.value == 2, f"Expected 2 (correct), got {counter_ok.value}"
+       assert counter.value == 2  # No lost update
