@@ -1,7 +1,7 @@
 """
 Real-code exploration: SQLAlchemy QueuePool._inc_overflow() lost update.
 
-Runs interlace's bytecode exploration against the real QueuePool._inc_overflow()
+Runs frontrun's bytecode exploration against the real QueuePool._inc_overflow()
 method to find the _overflow counter lost update when max_overflow is unlimited.
 
 The bug: When max_overflow == -1 (unlimited overflow), _inc_overflow() does
@@ -31,7 +31,7 @@ import sys
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_lib = os.path.join(_test_dir, "..", "external_repos", "sqlalchemy", "lib")
-# Insert local repo path FIRST so interlace can trace it (site-packages are excluded).
+# Insert local repo path FIRST so frontrun can trace it (site-packages are excluded).
 sys.path.insert(0, os.path.abspath(_repo_lib))
 
 from case_study_helpers import (  # noqa: E402
@@ -41,7 +41,7 @@ from case_study_helpers import (  # noqa: E402
 )
 from sqlalchemy.pool import QueuePool  # noqa: E402
 
-from interlace.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
 
 
 class SQLAlchemyPoolState:

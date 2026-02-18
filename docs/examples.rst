@@ -1,7 +1,7 @@
 Examples
 ========
 
-This section contains practical examples of using Interlace to test concurrent code.
+This section contains practical examples of using Frontrun to test concurrent code.
 
 
 Example 1: Bank Account Transfer
@@ -11,7 +11,7 @@ A classic example showing how a race condition can cause lost updates:
 
 .. code-block:: python
 
-   from interlace.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.trace_markers import Schedule, Step, TraceExecutor
 
    class BankAccount:
        def __init__(self, balance=0):
@@ -19,13 +19,13 @@ A classic example showing how a race condition can cause lost updates:
 
        def transfer(self, amount):
            """Transfer funds (has a race condition)."""
-           # interlace: after_read
+           # frontrun: after_read
            current = self.balance
 
            # Simulate processing time
            new_balance = current + amount
 
-           # interlace: before_write
+           # frontrun: before_write
            self.balance = new_balance
            return new_balance
 
@@ -61,7 +61,7 @@ Comparing the same code with proper synchronization:
 .. code-block:: python
 
    import threading
-   from interlace.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.trace_markers import Schedule, Step, TraceExecutor
 
    class SyncedBankAccount:
        def __init__(self, balance=0):
@@ -71,10 +71,10 @@ Comparing the same code with proper synchronization:
        def transfer(self, amount):
            """Transfer funds with proper synchronization."""
            with self.lock:
-               # interlace: after_read
+               # frontrun: after_read
                current = self.balance
                new_balance = current + amount
-               # interlace: before_write
+               # frontrun: before_write
                self.balance = new_balance
            return new_balance
 
@@ -107,7 +107,7 @@ Testing a simple producer-consumer queue:
 
 .. code-block:: python
 
-   from interlace.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.trace_markers import Schedule, Step, TraceExecutor
 
    class SimpleQueue:
        def __init__(self):
@@ -115,19 +115,19 @@ Testing a simple producer-consumer queue:
 
        def put(self, item):
            """Add item to queue."""
-           # interlace: before_append
+           # frontrun: before_append
            self.items.append(item)
-           # interlace: after_append
+           # frontrun: after_append
 
        def get(self):
            """Remove and return first item."""
-           # interlace: before_check
+           # frontrun: before_check
            if not self.items:
                return None
-           # interlace: after_check
-           # interlace: before_pop
+           # frontrun: after_check
+           # frontrun: before_pop
            item = self.items.pop(0)
-           # interlace: after_pop
+           # frontrun: after_pop
            return item
 
    queue = SimpleQueue()
@@ -158,8 +158,8 @@ Testing race conditions in async code using async trace markers:
 .. code-block:: python
 
    import asyncio
-   from interlace.async_trace_markers import AsyncTraceExecutor
-   from interlace.common import Schedule, Step
+   from frontrun.async_trace_markers import AsyncTraceExecutor
+   from frontrun.common import Schedule, Step
 
    class AsyncBankAccount:
        def __init__(self, balance=0):
@@ -167,13 +167,13 @@ Testing race conditions in async code using async trace markers:
 
        async def transfer(self, amount):
            """Transfer funds (has a race condition at await points)."""
-           # interlace: after_read
+           # frontrun: after_read
            current = self.balance
            await asyncio.sleep(0)  # Yield point for marker
 
            new_balance = current + amount
 
-           # interlace: before_write
+           # frontrun: before_write
            await asyncio.sleep(0)  # Yield point for marker
            self.balance = new_balance
 
@@ -209,7 +209,7 @@ Using bytecode instrumentation to automatically explore interleavings:
 
 .. code-block:: python
 
-   from interlace.bytecode import explore_interleavings
+   from frontrun.bytecode import explore_interleavings
 
    class Counter:
        def __init__(self, value=0):

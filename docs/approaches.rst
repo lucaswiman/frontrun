@@ -1,7 +1,7 @@
 Approaches to Concurrency Control
 ==================================
 
-Interlace provides two approaches for controlling thread interleaving.
+Frontrun provides two approaches for controlling thread interleaving.
 
 
 Trace Markers
@@ -13,7 +13,7 @@ points in your code, requiring no semantic code changes.
 **How It Works:**
 
 Each thread is run with a ``sys.settrace`` callback that fires on every source
-line. The callback scans each line for ``# interlace: <name>`` comments using a
+line. The callback scans each line for ``# frontrun: <name>`` comments using a
 ``MarkerRegistry`` that caches marker locations per file. When a marker is hit,
 the thread calls ``ThreadCoordinator.wait_for_turn()`` which blocks until the
 schedule says it's that thread's turn to proceed past that marker. This gives
@@ -26,16 +26,16 @@ prefixes like ``before_`` or ``after_``.
 
 .. code-block:: python
 
-   from interlace.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.trace_markers import Schedule, Step, TraceExecutor
 
    class Counter:
        def __init__(self):
            self.value = 0
 
        def increment(self):
-           temp = self.value  # interlace: read_value
+           temp = self.value  # frontrun: read_value
            temp += 1
-           self.value = temp  # interlace: write_value
+           self.value = temp  # frontrun: write_value
 
 
 **Async Support:**
@@ -56,8 +56,8 @@ The synchronization contract:
 
 .. code-block:: python
 
-   from interlace.async_trace_markers import AsyncTraceExecutor
-   from interlace.common import Schedule, Step
+   from frontrun.async_trace_markers import AsyncTraceExecutor
+   from frontrun.common import Schedule, Step
 
    class AsyncCounter:
        def __init__(self):
@@ -73,9 +73,9 @@ The synchronization contract:
 
        async def increment(self):
            """Increment with a race condition between read and write."""
-           # interlace: read_counter
+           # frontrun: read_counter
            current = await self.get_count()
-           # interlace: write_counter
+           # frontrun: write_counter
            await self.set_count(current + 1)
 
    # Alternative: markers inside the async methods themselves
@@ -84,11 +84,11 @@ The synchronization contract:
            self.value = 0
 
        async def get_count(self):
-           # interlace: read_counter
+           # frontrun: read_counter
            return self.value
 
        async def set_count(self, value):
-           # interlace: write_counter
+           # frontrun: write_counter
            self.value = value
 
        async def increment(self):
@@ -131,7 +131,7 @@ returning any counterexample schedule.
 
 .. code-block:: python
 
-   from interlace.bytecode import explore_interleavings
+   from frontrun.bytecode import explore_interleavings
 
    class Counter:
        def __init__(self, value=0):
@@ -171,7 +171,7 @@ debugging this library or building tooling on top of it, rather than for general
    interleaving on 3.13. Counterexample schedules returned by ``explore_interleavings``
    are likewise best treated as ephemeral debugging artifacts rather than long-lived test fixtures.
 
-   The async variant (``interlace.async_bytecode``) uses ``await_point()`` markers rather
+   The async variant (``frontrun.async_bytecode``) uses ``await_point()`` markers rather
    than opcodes, so its schedules are stable — see that module for details.
 
 **Limitations:**

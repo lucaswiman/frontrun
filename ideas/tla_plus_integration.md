@@ -46,7 +46,7 @@ schedules as TLA+ traces and validate them against a spec using TLC.
 1. Agent generates a TLA+ spec from the Python code and its interlace markers
 2. Interlace runs an interleaving, recording a trace:
    `[(thread, marker, state_snapshot), ...]`
-3. An `interlace.tlaplus` module translates that trace into a TLA+ `Trace` module
+3. An `frontrun.tlaplus` module translates that trace into a TLA+ `Trace` module
    (following the Cirstea/Kuppe/Merz framework from SEFM 2024)
 4. TLC validates that the trace is a valid behavior of the spec
 5. If validation fails, the agent diagnoses whether the spec or code is wrong
@@ -60,7 +60,7 @@ schedules as TLA+ traces and validate them against a spec using TLC.
 
 **Sketch of the API:**
 ```python
-from interlace.tlaplus import TLAPlusValidator
+from frontrun.tlaplus import TLAPlusValidator
 
 validator = TLAPlusValidator(
     spec_file="Counter.tla",
@@ -105,7 +105,7 @@ enumerate *all* distinct behaviors of a TLA+ spec, then replay each one as an in
 6. Agent compares actual state at each step against TLC's predicted state
 
 **Why this is the killer feature:**
-- Solves interlace's "coverage gap" problem (noted in FUTURE_WORK.md) — TLC's
+- Solves frontrun's "coverage gap" problem (noted in FUTURE_WORK.md) — TLC's
   exhaustive BFS replaces random exploration
 - Provides *formal* coverage guarantees: if TLC finds no invariant violations for all
   behaviors up to depth N, and the implementation matches, you have real confidence
@@ -116,7 +116,7 @@ enumerate *all* distinct behaviors of a TLA+ spec, then replay each one as an in
 
 **Relationship to DPOR:** TLC's symmetry reduction and state-space pruning are more
 sophisticated than basic DPOR. With an agent maintaining the spec cheaply, this is a
-faster path to exhaustive coverage than implementing DPOR natively in interlace. DPOR
+faster path to exhaustive coverage than implementing DPOR natively in frontrun. DPOR
 explores the *implementation's* state space (large, noisy). TLC explores the *model's*
 state space (smaller, more structured). The agent bridges the two.
 
@@ -181,7 +181,7 @@ interlace-instrumented Python code from the same source of truth.
 
 **Sketch:**
 ```python
-from interlace.formal import StateMachine, Action, Invariant
+from frontrun.formal import StateMachine, Action, Invariant
 
 counter = StateMachine("Counter", variables={"count": 0})
 
@@ -228,7 +228,7 @@ OK: Processes {1, 2} <-> threads {t1, t2}
 - Invariants in the spec have corresponding Python assertion functions
 
 **Implementation:** This is straightforward with `tree-sitter-tlaplus` for the spec
-side and interlace's existing `MarkerRegistry` for the Python side. The linter just
+side and frontrun's existing `MarkerRegistry` for the Python side. The linter just
 compares the two sets and reports differences.
 
 **Agent workflow:** The linter serves as a fast, deterministic check that the agent
@@ -274,7 +274,7 @@ TLA+, and the label/process structure directly produces the interlace scaffoldin
 against the Python implementation to confirm (or refute) the bug in real code.
 
 ```python
-from interlace.tlaplus import replay_counterexample
+from frontrun.tlaplus import replay_counterexample
 
 # TLC found: Init -> Read(t1) -> Read(t2) -> Write(t1) -> Write(t2) violates CounterCorrect
 schedule = replay_counterexample(
@@ -546,7 +546,7 @@ PlusCal specs map to interlace more naturally than raw TLA+ because:
 2. **Processes = threads**: PlusCal `process` declarations correspond directly to
    interlace execution units.
 3. **`pc` = schedule position**: PlusCal's auto-generated `pc` variable tracks which
-   label each process is at, which is the same information interlace's `Schedule`
+   label each process is at, which is the same information frontrun's `Schedule`
    encodes.
 
 A PlusCal spec like:
@@ -612,9 +612,9 @@ Agent runs TLC on the spec
 **Programmatic version:**
 
 ```python
-from interlace.tlaplus import SpecMapping, replay_counterexample
-from interlace.trace_markers import TraceExecutor
-from interlace.common import Schedule, Step
+from frontrun.tlaplus import SpecMapping, replay_counterexample
+from frontrun.trace_markers import TraceExecutor
+from frontrun.common import Schedule, Step
 
 # 1. Parse the spec (agent-generated)
 mapping = SpecMapping.from_tla_file("Counter.tla")

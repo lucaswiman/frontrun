@@ -1,14 +1,14 @@
 # SQLAlchemy Concurrency Bug Exploration Report
 
 **Library:** SQLAlchemy 2.1.0b2 (commit 6fa097e)
-**Tool:** interlace bytecode exploration (property-based interleaving search)
+**Tool:** frontrun bytecode exploration (property-based interleaving search)
 **Test file:** `test_sqlalchemy_concurrency.py`
 
 ## Summary
 
 We wrote 14 property-based concurrency tests targeting different areas of the
 SQLAlchemy codebase. Each test specifies an invariant that should hold
-regardless of thread scheduling, and interlace searches for a counterexample
+regardless of thread scheduling, and frontrun searches for a counterexample
 schedule that violates it. **13 of 14 tests found races. The one test that
 passed (QueuePool with finite overflow) serves as a positive control confirming
 that the `_overflow_lock` works correctly.**
@@ -88,7 +88,7 @@ and `dispose()` + `_inc_overflow()` can also race.
 
 **QueuePool finite overflow (POSITIVE CONTROL)**: The `_overflow_lock`
 correctly prevents all races when `max_overflow > -1`. This is the only test
-that found 0/10 races, confirming interlace isn't producing false positives
+that found 0/10 races, confirming frontrun isn't producing false positives
 and that SQLAlchemy's locking works when applied.
 
 ## Impact Assessment
@@ -114,7 +114,7 @@ Each test follows the pattern:
 1. **setup**: Create fresh SQLAlchemy objects (no real database needed)
 2. **threads**: Define 2 thread functions that exercise concurrent access
 3. **invariant**: A predicate that should hold in any linearizable execution
-4. **explore**: interlace generates random opcode-level schedules and checks
+4. **explore**: frontrun generates random opcode-level schedules and checks
    the invariant. If violated, the counterexample schedule is returned.
 
 All tests use in-memory objects (no SQLite connections), keeping each run
@@ -129,7 +129,7 @@ reproducible 10/10 times with the counterexample schedule. The technique
 requires no code modification and works against the real library code.
 
 The key insight: any `self.x += 1` or check-then-act pattern without a lock
-is vulnerable, and interlace finds these reliably. The more interesting
+is vulnerable, and frontrun finds these reliably. The more interesting
 findings are the higher-level TOCTOU patterns (event registry, memoized
 property consistency) that require understanding the semantics of the code
 to assess impact.

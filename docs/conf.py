@@ -2,13 +2,13 @@
 import sys
 from pathlib import Path
 
-# Add parent directory to path so we can import interlace
+# Add parent directory to path so we can import frontrun
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Project information
-project = "Interlace"
-copyright = "2025, Interlace Contributors"  # noqa: A001
-author = "Interlace Contributors"
+project = "Frontrun"
+copyright = "2026, Lucas Wiman"  # noqa: A001
+author = "Frontrun Contributors"
 
 # The short X.Y version
 version = "0.0"

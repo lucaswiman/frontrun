@@ -48,7 +48,7 @@ A Hypothesis strategy that generates valid `Schedule` objects from declared mark
 
 ```python
 from hypothesis import given
-from interlace.trace_markers import marker_schedule_strategy, TraceExecutor
+from frontrun.trace_markers import marker_schedule_strategy, TraceExecutor
 
 @given(schedule=marker_schedule_strategy(
     threads={
@@ -75,7 +75,7 @@ The strategy would:
 A convenience function mirroring `explore_interleavings` but at marker granularity:
 
 ```python
-from interlace.trace_markers import explore_marker_interleavings
+from frontrun.trace_markers import explore_marker_interleavings
 
 result = explore_marker_interleavings(
     setup=lambda: MyState(),
@@ -169,7 +169,7 @@ combined sequence — a well-studied combinatorial problem.
 
 ```python
 from hypothesis import strategies as st
-from interlace.common import Schedule, Step
+from frontrun.common import Schedule, Step
 
 def marker_schedule_strategy(threads: dict[str, list[str]]):
     """Generate valid Schedule objects from thread marker declarations.

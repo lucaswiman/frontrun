@@ -20,11 +20,11 @@ import threading
 lock = threading.Lock()
 
 # User writes:
-from interlace.sync import Lock
+from frontrun.sync import Lock
 lock = Lock()
 ```
 
-Under `controlled_interleaving`, `interlace.sync.Lock` behaves like
+Under `controlled_interleaving`, `frontrun.sync.Lock` behaves like
 `_CooperativeLock`. Outside of it, it delegates to `threading.Lock` with zero
 overhead.
 
@@ -43,7 +43,7 @@ overhead.
 
 - **Requires import changes**: Can't test unmodified code. This is the main
   drawback -- the whole point of the bytecode approach is testing code as-is.
-- **Dual-import maintenance**: `interlace.sync` must mirror the `threading` and
+- **Dual-import maintenance**: `frontrun.sync` must mirror the `threading` and
   `queue` APIs exactly, and stay in sync as CPython evolves.
 
 ## Why this matters
@@ -53,10 +53,10 @@ issues described in [known_issues.md](known_issues.md) (global state, internal
 resolution leaks, parallel test collisions) make it a poor fit for production
 test suites. The loom-style approach would be more robust for users willing to
 change imports. Since all the cooperative wrapper implementations already exist,
-`interlace.sync` would just be thin dispatch wrappers over them.
+`frontrun.sync` would just be thin dispatch wrappers over them.
 
 ## Implementation
 
-- [ ] Design `interlace.sync` module API (mirror `threading` and `queue`)
+- [ ] Design `frontrun.sync` module API (mirror `threading` and `queue`)
 - [ ] Implement thin dispatch wrappers over existing cooperative primitives
 - [ ] Add mode detection (controlled vs. production)

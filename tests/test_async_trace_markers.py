@@ -1,4 +1,4 @@
-"""Tests for the interlace async_trace_markers module."""
+"""Tests for the frontrun async_trace_markers module."""
 
 import asyncio
 

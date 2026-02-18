@@ -1,7 +1,7 @@
 """
 Real-code exploration: pydis INCR lost update and SET NX race.
 
-Runs interlace's bytecode exploration directly against the real pydis
+Runs frontrun's bytecode exploration directly against the real pydis
 RedisProtocol methods to find concurrency bugs in the
 shared global dictionary.
 
@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(_test_dir, "..", "external_repos", "pydis"))
 from external_tests_helpers import print_exploration_result
 from pydis.__main__ import RedisProtocol, dictionary, expiration
 
-from interlace.bytecode import explore_interleavings, run_with_schedule
+from frontrun.bytecode import explore_interleavings, run_with_schedule
 
 
 class RealPydisIncrState:

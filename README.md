@@ -1,36 +1,36 @@
-# Interlace
+# Frontrun
 
 A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions.
 
 ```bash
-pip install interlace
+pip install frontrun
 ```
 
 ## Overview
 
-Interlace provides tools for controlling thread interleaving at a fine-grained level, allowing you to:
+Frontrun provides tools for controlling thread interleaving at a fine-grained level, allowing you to:
 
 - **Deterministically reproduce race conditions** - Force specific execution ordering to make race conditions happen reliably in tests
 - **Test concurrent code exhaustively** - Explore different execution orders to find bugs
 - **Verify synchronization correctness** - Ensure that proper locking prevents race conditions
 
-Instead of relying on timing-based race detection (which is unreliable), Interlace lets you control exactly when threads execute, making concurrency testing deterministic and reproducible.
+Instead of relying on timing-based race detection (which is unreliable), Frontrun lets you control exactly when threads execute, making concurrency testing deterministic and reproducible.
 
 ## Quick Start: Bank Account Race Condition
 
-Here's a pytest test that uses Interlace to trigger a race condition:
+Here's a pytest test that uses Frontrun to trigger a race condition:
 
 ```python
-from interlace.trace_markers import Schedule, Step, TraceExecutor
+from frontrun.trace_markers import Schedule, Step, TraceExecutor
 
 class BankAccount:
     def __init__(self, balance=0):
         self.balance = balance
 
     def transfer(self, amount):
-        current = self.balance  # interlace: read_balance
+        current = self.balance  # frontrun: read_balance
         new_balance = current + amount
-        self.balance = new_balance  # interlace: write_balance
+        self.balance = new_balance  # frontrun: write_balance
 
 def test_transfer_lost_update():
     account = BankAccount(balance=100)
@@ -54,15 +54,15 @@ def test_transfer_lost_update():
 
 ## Case Studies
 
-See [detailed case studies](docs/CASE_STUDIES.rst) of searching for concurrency bugs in ten libraries: TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3, SQLAlchemy, amqtt, and pykka. Run the test suites with: `PYTHONPATH=interlace python interlace/docs/tests/run_external_tests.py`
+See [detailed case studies](docs/CASE_STUDIES.rst) of searching for concurrency bugs in ten libraries: TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3, SQLAlchemy, amqtt, and pykka. Run the test suites with: `PYTHONPATH=frontrun python frontrun/docs/tests/run_external_tests.py`
 
 ## Usage Approaches
 
-Interlace provides two different ways to control thread interleaving:
+Frontrun provides two different ways to control thread interleaving:
 
 ### 1. Trace Markers
 
-Trace markers are special comments (`# interlace: <marker-name>`) which mark particular synchronization points in multithreaded or async code. These are intended to make it easier to reproduce race conditions in test cases and inspect whether some race conditions are possible.
+Trace markers are special comments (`# frontrun: <marker-name>`) which mark particular synchronization points in multithreaded or async code. These are intended to make it easier to reproduce race conditions in test cases and inspect whether some race conditions are possible.
 
 The execution ordering is controlled with a "schedule" object that says what order the threads / markers should run in.
 
@@ -71,16 +71,16 @@ Each thread runs with a [`sys.settrace`](https://docs.python.org/3/library/sys.h
 Markers can be placed inline or on a separate line before the operation:
 
 ```python
-from interlace.trace_markers import Schedule, Step, TraceExecutor
+from frontrun.trace_markers import Schedule, Step, TraceExecutor
 
 class Counter:
     def __init__(self):
         self.value = 0
 
     def increment(self):
-        temp = self.value  # interlace: read_value
+        temp = self.value  # frontrun: read_value
         temp += 1
-        self.value = temp  # interlace: write_value
+        self.value = temp  # frontrun: write_value
 
 def test_counter_lost_update():
     counter = Counter()
@@ -109,7 +109,7 @@ Automatically instrument functions using bytecode rewriting — no markers neede
 `explore_interleavings()` does property-based exploration in the style of [Hypothesis](https://hypothesis.readthedocs.io/): it generates random opcode-level schedules and checks that an invariant holds under each one, returning any counterexample schedule.
 
 ```python
-from interlace.bytecode import explore_interleavings
+from frontrun.bytecode import explore_interleavings
 
 class Counter:
     def __init__(self, value=0):
@@ -143,8 +143,8 @@ Both approaches have async variants.
 ### Async Trace Markers
 
 ```python
-from interlace.async_trace_markers import AsyncTraceExecutor
-from interlace.common import Schedule, Step
+from frontrun.async_trace_markers import AsyncTraceExecutor
+from frontrun.common import Schedule, Step
 
 class AsyncCounter:
     def __init__(self):
@@ -157,9 +157,9 @@ class AsyncCounter:
         self.value = new_value
 
     async def increment(self):
-        # interlace: read_value
+        # frontrun: read_value
         temp = await self.get_value()
-        # interlace: write_value
+        # frontrun: write_value
         await self.set_value(temp + 1)
 
 def test_async_counter_lost_update():

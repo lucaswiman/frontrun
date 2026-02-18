@@ -1,9 +1,9 @@
 """
-Comprehensive concurrency tests for SQLAlchemy using interlace bytecode exploration.
+Comprehensive concurrency tests for SQLAlchemy using frontrun bytecode exploration.
 
 Tests various areas of SQLAlchemy for race conditions using in-memory SQLite and
 property-based interleaving exploration. Each test specifies an invariant that
-should hold regardless of thread scheduling, and interlace searches for a
+should hold regardless of thread scheduling, and frontrun searches for a
 counterexample schedule that violates it.
 
 Areas tested:
@@ -31,7 +31,7 @@ _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_lib = os.path.join(_test_dir, "..", "external_repos", "sqlalchemy", "lib")
 sys.path.insert(0, os.path.abspath(_repo_lib))
 
-from interlace.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """
 Real-code exploration: pybreaker CircuitMemoryStorage.increment_counter() lost update.
 
-Runs interlace's bytecode exploration directly against the real
+Runs frontrun's bytecode exploration directly against the real
 CircuitMemoryStorage class to find the fail_counter lost update race.
 
 The bug: CircuitMemoryStorage.increment_counter() does
@@ -21,7 +21,7 @@ import sys
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.join(_test_dir, "..", "external_repos", "pybreaker", "src")
-# Insert local repo path FIRST so interlace can trace it (site-packages are excluded).
+# Insert local repo path FIRST so frontrun can trace it (site-packages are excluded).
 sys.path.insert(0, os.path.abspath(_repo_root))
 
 from case_study_helpers import (  # noqa: E402
@@ -31,7 +31,7 @@ from case_study_helpers import (  # noqa: E402
 )
 from pybreaker import STATE_CLOSED, CircuitMemoryStorage  # noqa: E402
 
-from interlace.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
 
 
 class PyBreakerState:

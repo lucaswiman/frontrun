@@ -1,4 +1,4 @@
-"""Shared data structures for interlace."""
+"""Shared data structures for frontrun."""
 
 from dataclasses import dataclass
 

@@ -1,7 +1,7 @@
 """
 Real-code exploration: amqtt Session.next_packet_id duplicate packet IDs.
 
-Runs interlace's bytecode exploration against the real amqtt Session's
+Runs frontrun's bytecode exploration against the real amqtt Session's
 next_packet_id property to find the duplicate packet ID race.
 
 The bug: Session.next_packet_id is a synchronous property that modifies
@@ -37,7 +37,7 @@ import sys
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.join(_test_dir, "..", "external_repos", "amqtt")
-# Insert local repo path FIRST so interlace can trace it (site-packages are excluded).
+# Insert local repo path FIRST so frontrun can trace it (site-packages are excluded).
 sys.path.insert(0, os.path.abspath(_repo_root))
 
 from amqtt.session import Session  # noqa: E402
@@ -47,7 +47,7 @@ from case_study_helpers import (  # noqa: E402
     timeout_minutes,
 )
 
-from interlace.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
 
 
 class AmqttSessionState:

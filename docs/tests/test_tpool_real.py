@@ -1,7 +1,7 @@
 """
 Real-code exploration: TPool _should_keep_going() TOCTOU.
 
-Runs interlace's bytecode exploration directly against the real WildPool
+Runs frontrun's bytecode exploration directly against the real WildPool
 class to find the TOCTOU where the worker exits while
 tasks remain in the queue.
 
@@ -21,11 +21,11 @@ sys.path.insert(0, os.path.join(_test_dir, "..", "external_repos", "TPool", "src
 from external_tests_helpers import print_exploration_result, print_seed_sweep_results
 from TPool import WildPool
 
-from interlace.bytecode import explore_interleavings, run_with_schedule
+from frontrun.bytecode import explore_interleavings, run_with_schedule
 
 
 class RealTPoolState:
-    """Wraps a real WildPool instance for interlace testing.
+    """Wraps a real WildPool instance for frontrun testing.
 
     The bug: _should_keep_going() reads keep_going under worker_lock,
     then checks _join_is_called and bench.empty() under join_lock.

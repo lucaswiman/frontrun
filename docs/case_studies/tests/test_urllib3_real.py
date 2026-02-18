@@ -1,7 +1,7 @@
 """
 Real-code exploration: urllib3 HTTPConnectionPool.num_connections lost update.
 
-Runs interlace's bytecode exploration directly against the real
+Runs frontrun's bytecode exploration directly against the real
 HTTPConnectionPool._new_conn() method to find the num_connections counter
 lost update race.
 
@@ -24,7 +24,7 @@ import sys
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_src = os.path.join(_test_dir, "..", "external_repos", "urllib3", "src")
-# Insert local repo path FIRST so interlace can trace it (site-packages are excluded).
+# Insert local repo path FIRST so frontrun can trace it (site-packages are excluded).
 sys.path.insert(0, os.path.abspath(_repo_src))
 
 # Import directly from the submodule — the top-level __init__ tries to import
@@ -36,7 +36,7 @@ from case_study_helpers import (  # noqa: E402
 )
 from urllib3.connectionpool import HTTPConnectionPool  # noqa: E402
 
-from interlace.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
 
 
 class Urllib3State:

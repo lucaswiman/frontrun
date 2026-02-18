@@ -1,9 +1,9 @@
-Interlace Documentation
-=======================
+Frontrun Documentation
+======================
 
 A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions.
 
-Interlace provides tools for controlling thread interleaving at a fine-grained level, allowing you to deterministically reproduce race conditions in tests and verify that your synchronization primitives work correctly.
+Frontrun provides tools for controlling thread interleaving at a fine-grained level, allowing you to deterministically reproduce race conditions in tests and verify that your synchronization primitives work correctly.
 
 .. toctree::
    :maxdepth: 2
@@ -25,7 +25,7 @@ Key Features
 - **Verify synchronization correctness** - Ensure that proper locking prevents race conditions
 - **Lightweight integration** - No need to modify third-party code when using trace markers
 
-Instead of relying on timing-based race detection (which is unreliable), Interlace lets you control exactly when threads execute, making concurrency testing deterministic and reproducible.
+Instead of relying on timing-based race detection (which is unreliable), Frontrun lets you control exactly when threads execute, making concurrency testing deterministic and reproducible.
 
 
 Getting Started
@@ -35,16 +35,16 @@ Getting Started
 
 .. code-block:: python
 
-   from interlace.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.trace_markers import Schedule, Step, TraceExecutor
 
    class Counter:
        def __init__(self):
            self.value = 0
 
        def increment(self):
-           temp = self.value  # interlace: read_value
+           temp = self.value  # frontrun: read_value
            temp += 1
-           self.value = temp  # interlace: write_value
+           self.value = temp  # frontrun: write_value
 
    def test_counter_lost_update():
        counter = Counter()

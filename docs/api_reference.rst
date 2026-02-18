@@ -4,7 +4,7 @@ API Reference
 Trace Markers
 --------------
 
-.. automodule:: interlace.trace_markers
+.. automodule:: frontrun.trace_markers
    :members:
    :undoc-members:
    :show-inheritance:
@@ -13,7 +13,7 @@ Trace Markers
 Async Trace Markers
 --------------------
 
-.. automodule:: interlace.async_trace_markers
+.. automodule:: frontrun.async_trace_markers
    :members:
    :undoc-members:
    :show-inheritance:
@@ -26,7 +26,7 @@ Bytecode Instrumentation (Experimental)
 
    Bytecode instrumentation is **experimental**. The API may change and behavior is not guaranteed across Python versions.
 
-.. automodule:: interlace.bytecode
+.. automodule:: frontrun.bytecode
    :members:
    :undoc-members:
    :show-inheritance:
@@ -39,7 +39,7 @@ Async Bytecode Instrumentation (Experimental)
 
    Async bytecode instrumentation is **experimental**. The API may change and behavior is not guaranteed across Python versions.
 
-.. automodule:: interlace.async_bytecode
+.. automodule:: frontrun.async_bytecode
    :members:
    :undoc-members:
    :show-inheritance:
@@ -48,7 +48,7 @@ Async Bytecode Instrumentation (Experimental)
 Async Scheduler Utilities
 --------------------------
 
-.. automodule:: interlace.async_scheduler
+.. automodule:: frontrun.async_scheduler
    :members:
    :undoc-members:
    :show-inheritance:

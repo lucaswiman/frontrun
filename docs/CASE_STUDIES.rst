@@ -1,8 +1,8 @@
 ================================================================================
-Interlace Case Studies: Concurrency Bug Detection
+Frontrun Case Studies: Concurrency Bug Detection
 ================================================================================
 
-This document presents case studies demonstrating how **interlace** finds
+This document presents case studies demonstrating how **frontrun** finds
 and reproduces concurrency bugs in Python libraries by running bytecode
 exploration directly against **unmodified library code**.
 
@@ -15,7 +15,7 @@ Key Findings
 1. **Exploration is highly effective.** All 31 tests found their target bugs on
    all 20 seeds. Simple counter races are found in 1-4 attempts; more complex
    TOCTOU patterns take ~17 attempts on average. No models or simplifications
-   needed — interlace runs directly against real library code.
+   needed — frontrun runs directly against real library code.
 
 2. **Plain ``+=`` without locks is a universal vulnerability.** Five of ten
    libraries fail on simple counter increments: pybreaker, urllib3, SQLAlchemy,
@@ -27,23 +27,23 @@ Key Findings
    have equal impact — SQLAlchemy's race is cosmetic, while amqtt's corrupts
    the MQTT protocol.
 
-4. **Impact assessment requires code reading.** Interlace correctly identifies
+4. **Impact assessment requires code reading.** Frontrun correctly identifies
    all non-atomic operations, but whether a race matters depends on its
    call-site. The SQLAlchemy overflow counter is demonstrably racy, yet benign
-   in practice. This shows interlace's role: find the race, then reason about
+   in practice. This shows frontrun's role: find the race, then reason about
    whether it affects correctness.
 
 Run the full suites::
 
     # Round 1
-    PYTHONPATH=interlace python interlace/docs/tests/run_external_tests.py
+    PYTHONPATH=frontrun python frontrun/docs/tests/run_external_tests.py
 
     # Round 2
-    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_pybreaker_real.py
-    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_urllib3_real.py
-    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_sqlalchemy_pool_real.py
-    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_amqtt_real.py
-    PYTHONPATH=interlace python interlace/docs/case_studies/tests/test_pykka_real.py
+    PYTHONPATH=frontrun python frontrun/docs/case_studies/tests/test_pybreaker_real.py
+    PYTHONPATH=frontrun python frontrun/docs/case_studies/tests/test_urllib3_real.py
+    PYTHONPATH=frontrun python frontrun/docs/case_studies/tests/test_sqlalchemy_pool_real.py
+    PYTHONPATH=frontrun python frontrun/docs/case_studies/tests/test_amqtt_real.py
+    PYTHONPATH=frontrun python frontrun/docs/case_studies/tests/test_pykka_real.py
 
     # Round 3 (exploration + safe invariants; safe tests take ~1-2 min each)
     python -m pytest docs/case_studies/tests/test_cachetools_concurrency.py -v -s
@@ -51,8 +51,8 @@ Run the full suites::
 
 Or run individual tests from Round 1::
 
-    PYTHONPATH=interlace python interlace/docs/tests/test_cachetools_real.py
-    PYTHONPATH=interlace python interlace/docs/tests/test_threadpoolctl_real.py
+    PYTHONPATH=frontrun python frontrun/docs/tests/test_cachetools_real.py
+    PYTHONPATH=frontrun python frontrun/docs/tests/test_threadpoolctl_real.py
     # ... etc
 
 ----
@@ -442,7 +442,7 @@ Finding: ``QueuePool._inc_overflow()`` skips the lock in unlimited mode
 .. note::
 
     After closer analysis this is **intentional behaviour**, not a bug.
-    It is included here as a case study in how interlace can surface
+    It is included here as a case study in how frontrun can surface
     deliberate design decisions that look like races — and as a reminder
     to verify *impact* before filing an issue.
 
@@ -467,7 +467,7 @@ Finding: ``QueuePool._inc_overflow()`` skips the lock in unlimited mode
             return False
 
 When ``max_overflow == -1`` (unlimited overflow), the method skips
-``_overflow_lock`` and increments the counter bare.  Interlace detects this
+``_overflow_lock`` and increments the counter bare.  Frontrun detects this
 and flags a lost-update race.
 
 **Why the lock is deliberately omitted:**
@@ -484,13 +484,13 @@ and flags a lost-update race.
   incorrect diagnostic counter is an acceptable trade-off for avoiding a
   contended lock on every connection checkout.
 
-**What interlace tells us here:**
+**What frontrun tells us here:**
 
-Interlace correctly identifies that the ``+=`` is non-atomic at the bytecode
+Frontrun correctly identifies that the ``+=`` is non-atomic at the bytecode
 level and that a concurrent schedule can produce a wrong count.  The
 follow-up question — *does this wrong count affect correctness?* — requires
 reading the call-site logic, which shows it does not.  This is a good
-example of a **true race / no-impact** finding: interlace is right that the
+example of a **true race / no-impact** finding: frontrun is right that the
 memory model is unsound, but the library is also right that the impact is
 bounded to a slightly stale diagnostic counter.
 

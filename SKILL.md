@@ -1,14 +1,14 @@
-# Skill: Finding Concurrency Bugs with Interlace
+# Skill: Finding Concurrency Bugs with Frontrun
 
-You are an expert at using the **interlace** library to find, reproduce, and
+You are an expert at using the **frontrun** library to find, reproduce, and
 document threading race conditions in Python code.  When asked to investigate
 thread safety or find concurrency bugs, follow the workflow below.
 
 ---
 
-## What is interlace?
+## What is frontrun?
 
-Interlace provides **deterministic concurrency testing** for Python.  Instead
+Frontrun provides **deterministic concurrency testing** for Python.  Instead
 of relying on timing (which is unreliable), it controls thread interleaving at
 the bytecode instruction level via `sys.settrace` + `f_trace_opcodes`.
 
@@ -16,8 +16,8 @@ Two approaches are available:
 
 | Approach | Use when | Stability |
 |----------|----------|-----------|
-| **Bytecode exploration** (`interlace.bytecode`) | Testing unmodified third-party code; property-based search | Experimental but effective |
-| **Trace markers** (`interlace.trace_markers`) | You can add `# interlace: name` comments to source | Stable |
+| **Bytecode exploration** (`frontrun.bytecode`) | Testing unmodified third-party code; property-based search | Experimental but effective |
+| **Trace markers** (`frontrun.trace_markers`) | You can add `# frontrun: name` comments to source | Stable |
 
 For finding bugs in external libraries, **bytecode exploration** is the right
 choice.
@@ -50,9 +50,9 @@ if not self.is_alive():    # CHECK
 self.inbox.put(msg)        # ACT  ← actor can die between check and put
 ```
 
-### Step 2 — Check Whether interlace Can Trace the Code
+### Step 2 — Check Whether frontrun Can Trace the Code
 
-Interlace's opcode tracer **skips** files in `site-packages` and `lib/python`.
+Frontrun.s opcode tracer **skips** files in `site-packages` and `lib/python`.
 To trace third-party code, import from a **local source checkout**, not from
 the installed package:
 
@@ -114,7 +114,7 @@ The invariant must be a **callable that takes the state object** and returns
 ```python
 import signal
 from contextlib import contextmanager
-from interlace.bytecode import explore_interleavings, run_with_schedule
+from frontrun.bytecode import explore_interleavings, run_with_schedule
 
 @contextmanager
 def timeout_minutes(n=10):
@@ -199,7 +199,7 @@ same outcome, making it ideal as a regression test.
 ### Pitfall 1 — Importing from site-packages
 
 ```python
-# WRONG — interlace cannot trace site-packages
+# WRONG — frontrun cannot trace site-packages
 import requests
 from cachetools import Cache
 
@@ -268,7 +268,7 @@ invariant = lambda s: s.successes == len(s.received)
 
 ### Pitfall 5 — Confusing "true race / no impact" with a bug
 
-Interlace finds races at the bytecode level.  Whether the race *matters*
+Frontrun finds races at the bytecode level.  Whether the race *matters*
 requires reading the call sites.  Key questions to ask:
 
 * **Is the racy value used for correctness decisions** (admission control,
@@ -280,18 +280,18 @@ requires reading the call sites.  Key questions to ask:
   omission of a lock (e.g. "fast path, no lock needed")?
 
 A counter that is only ever read by `logging.debug(...)` and cannot affect
-any control-flow decision is a *true race / no-impact* finding — interlace is
+any control-flow decision is a *true race / no-impact* finding — frontrun is
 correct that the memory model is unsound, but the library authors may have
 deliberately accepted the imprecision for performance.  File such findings as
 informational notes rather than bugs.
 
 ### Pitfall 6 — Deadlocking under the cooperative scheduler
 
-Interlace replaces `threading.Lock`, `threading.Event`, `queue.Queue` etc. with
+Frontrun replaces `threading.Lock`, `threading.Event`, `queue.Queue` etc. with
 cooperative versions that yield turns instead of blocking.  Code that uses
 **unpatched** C-level locks (e.g. `multiprocessing` primitives, some C
 extensions) can deadlock.  Workaround: set `cooperative_locks=False` in
-`BytecodeInterlace` and add explicit `time.sleep(0)` checkpoints instead.
+`BytecodeShuffler` and add explicit `time.sleep(0)` checkpoints instead.
 
 ---
 
@@ -328,7 +328,7 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_dir, "external_repos", "<library>", "src"))
 
 from <library> import <TheClass>
-from interlace.bytecode import explore_interleavings, run_with_schedule
+from frontrun.bytecode import explore_interleavings, run_with_schedule
 
 
 @contextmanager

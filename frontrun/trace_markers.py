@@ -170,7 +170,7 @@ class ThreadCoordinator:
 class TraceExecutor:
     """Executes threads with interlaced execution according to a schedule.
 
-    This is the main interface for the interlace library. It sets up tracing
+    This is the main interface for the frontrun library. It sets up tracing
     for each thread and coordinates their execution.
     """
 

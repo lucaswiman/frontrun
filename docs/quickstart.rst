@@ -1,7 +1,7 @@
 Quick Start
 ===========
 
-This guide will get you up and running with Interlace using **Trace Markers**.
+This guide will get you up and running with Frontrun using **Trace Markers**.
 
 
 Basic Example: Triggering a Race Condition
@@ -9,16 +9,16 @@ Basic Example: Triggering a Race Condition
 
 .. code-block:: python
 
-   from interlace.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.trace_markers import Schedule, Step, TraceExecutor
 
    class Counter:
        def __init__(self):
            self.value = 0
 
        def increment(self):
-           temp = self.value  # interlace: read_value
+           temp = self.value  # frontrun: read_value
            temp += 1
-           self.value = temp  # interlace: write_value
+           self.value = temp  # frontrun: write_value
 
    def test_counter_lost_update():
        counter = Counter()
@@ -42,8 +42,8 @@ Basic Example: Triggering a Race Condition
 Understanding Trace Markers
 ----------------------------
 
-Trace markers are comments of the form ``# interlace: <name>`` that tell
-Interlace where synchronization points are. A marker **gates** the code that
+Trace markers are comments of the form ``# frontrun: <name>`` that tell
+Frontrun where synchronization points are. A marker **gates** the code that
 follows it: when a thread reaches a marker, it pauses until the scheduler grants
 it a turn. Only then does the gated code execute.
 
@@ -54,9 +54,9 @@ Two placement styles are supported:
    .. code-block:: python
 
        def increment(self):
-           temp = self.value  # interlace: read_value
+           temp = self.value  # frontrun: read_value
            temp += 1
-           self.value = temp  # interlace: write_value
+           self.value = temp  # frontrun: write_value
 
    Here ``read_value`` gates the read of ``self.value``, and ``write_value``
    gates the write.
@@ -66,10 +66,10 @@ Two placement styles are supported:
    .. code-block:: python
 
        def increment(self):
-           # interlace: read_value
+           # frontrun: read_value
            temp = self.value
            temp += 1
-           # interlace: write_value
+           # frontrun: write_value
            self.value = temp
 
    The semantics are the same: the marker gates the next executable line.
@@ -86,7 +86,7 @@ A schedule defines the execution order of marked synchronization points:
 
 .. code-block:: python
 
-   from interlace.trace_markers import Schedule, Step
+   from frontrun.trace_markers import Schedule, Step
 
    schedule = Schedule([
        Step("thread1", "marker_name_1"),
@@ -108,7 +108,7 @@ Execute your code with a specific schedule:
 
 .. code-block:: python
 
-   from interlace.trace_markers import TraceExecutor
+   from frontrun.trace_markers import TraceExecutor
 
    executor = TraceExecutor(schedule)
 
@@ -137,8 +137,8 @@ version, but with ``await`` boundaries:
 
 .. code-block:: python
 
-   from interlace.async_trace_markers import AsyncTraceExecutor
-   from interlace.common import Schedule, Step
+   from frontrun.async_trace_markers import AsyncTraceExecutor
+   from frontrun.common import Schedule, Step
 
    class AsyncCounter:
        def __init__(self):
@@ -151,9 +151,9 @@ version, but with ``await`` boundaries:
            self.value = new_value
 
        async def increment(self):
-           # interlace: read_value
+           # frontrun: read_value
            temp = await self.get_value()
-           # interlace: write_value
+           # frontrun: write_value
            await self.set_value(temp + 1)
 
    def test_async_counter_lost_update():

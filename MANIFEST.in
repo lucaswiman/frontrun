@@ -3,7 +3,7 @@ include README.md
 include CHANGELOG.rst
 include pyproject.toml
 
-recursive-include interlace *.py
+recursive-include frontrun *.py
 
 exclude SKILL.md
 exclude Makefile

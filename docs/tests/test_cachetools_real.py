@@ -1,7 +1,7 @@
 """
 Real-code exploration: cachetools Cache.__setitem__ lost update.
 
-Runs interlace's bytecode exploration directly against the real cachetools
+Runs frontrun's bytecode exploration directly against the real cachetools
 Cache class to find the currsize lost update race.
 
 The bug: Cache.__setitem__ reads self.__currsize, computes diffsize, then
@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(_test_dir, "..", "external_repos", "cachetools",
 from cachetools import Cache
 from external_tests_helpers import print_exploration_result, print_seed_sweep_results
 
-from interlace.bytecode import explore_interleavings, run_with_schedule
+from frontrun.bytecode import explore_interleavings, run_with_schedule
 
 
 class RealCacheState:

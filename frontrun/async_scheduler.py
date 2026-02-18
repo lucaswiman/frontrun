@@ -2,7 +2,7 @@
 Async event loop abstraction for deterministic task interleaving.
 
 This module provides InterleavedLoop, the shared foundation for all async
-interlace POCs. It wraps asyncio's cooperative scheduling to give
+frontrun POCs. It wraps asyncio's cooperative scheduling to give
 deterministic control over which task resumes at each yield point.
 
 In async Python, the event loop decides which ready task to resume after

@@ -4,7 +4,7 @@
 - cachetools v7.0.1 (commit e5f8f01)
 - tenacity (commit 0bdf1d9)
 
-**Tool:** interlace bytecode exploration (property-based interleaving search)
+**Tool:** frontrun bytecode exploration (property-based interleaving search)
 
 ## Summary
 
@@ -105,7 +105,7 @@ Each test follows the pattern:
 1. **setup**: Create fresh library objects (no external resources needed)
 2. **threads**: Define 2 thread functions exercising concurrent access
 3. **invariant**: A predicate that should hold in any linearizable execution
-4. **explore**: interlace generates random opcode-level schedules and checks
+4. **explore**: frontrun generates random opcode-level schedules and checks
    the invariant
 
 Bug-finding tests use 500 max_attempts (sufficient since all races are found

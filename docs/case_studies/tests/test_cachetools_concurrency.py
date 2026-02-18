@@ -1,5 +1,5 @@
 """
-Concurrency tests for cachetools using interlace bytecode exploration.
+Concurrency tests for cachetools using frontrun bytecode exploration.
 
 Bug-finding tests target areas WITHOUT proper synchronization.
 Safe-area tests target areas WITH locks or inherent thread-safety.
@@ -16,7 +16,7 @@ _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_src = os.path.join(_test_dir, "..", "external_repos", "cachetools", "src")
 sys.path.insert(0, os.path.abspath(_repo_src))
 
-from interlace.bytecode import explore_interleavings  # noqa: E402
+from frontrun.bytecode import explore_interleavings  # noqa: E402
 
 
 @contextmanager

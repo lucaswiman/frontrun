@@ -1,5 +1,5 @@
 """
-Concurrency tests for tenacity using interlace bytecode exploration.
+Concurrency tests for tenacity using frontrun bytecode exploration.
 
 Bug-finding tests target areas WITHOUT proper synchronization.
 Safe-area tests target areas WITH locks or inherent thread-safety.
@@ -16,7 +16,7 @@ _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.join(_test_dir, "..", "external_repos", "tenacity")
 sys.path.insert(0, os.path.abspath(_repo_root))
 
-from interlace.bytecode import explore_interleavings  # noqa: E402
+from frontrun.bytecode import explore_interleavings  # noqa: E402
 
 
 @contextmanager

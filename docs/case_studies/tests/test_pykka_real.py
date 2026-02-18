@@ -1,7 +1,7 @@
 """
 Real-code exploration: pykka ActorRef.tell() TOCTOU — ghost messages.
 
-Runs interlace's bytecode exploration against the real pykka ActorRef.tell()
+Runs frontrun's bytecode exploration against the real pykka ActorRef.tell()
 to find the TOCTOU race between the is_alive() check and actor_inbox.put().
 
 The bug in ActorRef.tell() (src/pykka/_ref.py):
@@ -36,7 +36,7 @@ import sys
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_src = os.path.join(_test_dir, "..", "external_repos", "pykka", "src")
-# Insert local repo path FIRST so interlace can trace it (site-packages are excluded).
+# Insert local repo path FIRST so frontrun can trace it (site-packages are excluded).
 sys.path.insert(0, os.path.abspath(_repo_src))
 
 import pykka  # noqa: E402
@@ -47,7 +47,7 @@ from case_study_helpers import (  # noqa: E402
 )
 from pykka import ActorDeadError  # noqa: E402
 
-from interlace.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
 
 
 class PykkaGhostMessageState:

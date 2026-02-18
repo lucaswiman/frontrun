@@ -1,7 +1,7 @@
 """
 Real-code exploration: threadpoolctl _get_libc() TOCTOU.
 
-Runs interlace's bytecode exploration directly against the real
+Runs frontrun's bytecode exploration directly against the real
 ThreadpoolController._get_libc() classmethod to find
 the TOCTOU where two threads racing to cache libc both create
 separate ctypes.CDLL objects.
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(_test_dir, "..", "external_repos", "threadpoolct
 from external_tests_helpers import print_exploration_result, print_seed_sweep_results
 from threadpoolctl import ThreadpoolController
 
-from interlace.bytecode import explore_interleavings, run_with_schedule
+from frontrun.bytecode import explore_interleavings, run_with_schedule
 
 
 class RealGetLibcState:
