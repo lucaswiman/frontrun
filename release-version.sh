@@ -52,9 +52,9 @@ get_current_version() {
 # Prompt for new version
 prompt_for_version() {
     local current_version=$(get_current_version)
-    echo ""
+    echo "" >&2
     print_info "Current version: $current_version"
-    echo -n "Enter new version (or press Enter to keep current): "
+    echo -n "Enter new version (or press Enter to keep current): " >&2
     read -r new_version
 
     if [ -z "$new_version" ]; then
