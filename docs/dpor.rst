@@ -263,11 +263,11 @@ The exploration tree looks like:
 
 .. code-block:: text
 
-   Branch 0           Branch 1          Branch 2          Branch 3
-   ┌──────────┐       ┌──────────┐      ┌──────────┐      ┌──────────┐
-   │ T0: Active│  -->  │ T0: Active│ --> │ T1: Active│ --> │ T1: Active│
-   │ T1: Pending│      │ T1: Pending│    │ T0: Pending│    │ T0: Disabled│
-   └──────────┘       └──────────┘      └──────────┘      └──────────┘
+   Branch 0              Branch 1            Branch 2            Branch 3
+   ┌─────────────┐       ┌─────────────┐     ┌─────────────┐     ┌──────────────┐
+   │ T0: Active  │  -->  │ T0: Active  │ --> │ T1: Active  │ --> │ T1: Active   │
+   │ T1: Pending │       │ T1: Pending │     │ T0: Pending │     │ T0: Disabled │ 
+   └─────────────┘       └─────────────┘     └─────────────┘     └──────────────┘
                             ^
                             │
                        CONFLICT DETECTED between
@@ -280,11 +280,11 @@ backtrack at Branch 1, and schedules T1 there instead:
 
 .. code-block:: text
 
-   Branch 0           Branch 1 (replayed, different choice)
-   ┌──────────┐       ┌──────────┐
-   │ T0: Active│  -->  │ T1: Active│ --> ...
-   │ T1: Pending│      │ T0: Visited│
-   └──────────┘       └──────────┘
+   Branch 0              Branch 1 (replayed, different choice)
+   ┌─────────────┐       ┌─────────────┐
+   │ T0: Active  │  -->  │ T1: Active  │ --> ...
+   │ T1: Pending │       │ T0: Visited │
+   └─────────────┘       └─────────────┘
 
 The prefix up to Branch 0 is replayed identically; only the decision at
 Branch 1 changes.
