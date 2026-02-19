@@ -367,6 +367,38 @@ def _process_opcode(
         if n is not None and len(shadow.stack) >= n:
             shadow.stack[-1], shadow.stack[-n] = shadow.stack[-n], shadow.stack[-1]
 
+    # --- Python 3.10 stack manipulation (replaced by COPY/SWAP in 3.11) ---
+
+    elif op == "DUP_TOP":
+        shadow.push(shadow.peek())
+
+    elif op == "DUP_TOP_TWO":
+        b = shadow.peek(0)
+        a = shadow.peek(1)
+        shadow.push(a)
+        shadow.push(b)
+
+    elif op == "ROT_TWO":
+        if len(shadow.stack) >= 2:
+            shadow.stack[-1], shadow.stack[-2] = shadow.stack[-2], shadow.stack[-1]
+
+    elif op == "ROT_THREE":
+        if len(shadow.stack) >= 3:
+            shadow.stack[-1], shadow.stack[-2], shadow.stack[-3] = (
+                shadow.stack[-2],
+                shadow.stack[-3],
+                shadow.stack[-1],
+            )
+
+    elif op == "ROT_FOUR":
+        if len(shadow.stack) >= 4:
+            shadow.stack[-1], shadow.stack[-2], shadow.stack[-3], shadow.stack[-4] = (
+                shadow.stack[-2],
+                shadow.stack[-3],
+                shadow.stack[-4],
+                shadow.stack[-1],
+            )
+
     # === Attribute access: the instructions we care about most ===
 
     elif op == "LOAD_ATTR":
@@ -426,6 +458,14 @@ def _process_opcode(
             shadow.pop()
             shadow.pop()
             shadow.push(None)
+
+    elif op.startswith("INPLACE_") or op.startswith("BINARY_"):
+        # Python 3.10 INPLACE_ADD, INPLACE_SUBTRACT, etc. and
+        # BINARY_ADD, BINARY_MULTIPLY, etc. All pop 2, push 1.
+        # (BINARY_OP and BINARY_SUBSCR are already handled above.)
+        shadow.pop()
+        shadow.pop()
+        shadow.push(None)
 
     # === Store instructions ===
 
