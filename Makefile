@@ -24,13 +24,21 @@ export UV_CACHE_DIR := $(CURDIR)/.uv-cache
 	uv pip install -e .[dev] --python=$(CURDIR)/.venv-$*/bin/python
 	touch $(CURDIR)/.venv-$*/bin/activate
 
+# Build the frontrun-dpor Rust extension for a specific Python version.
+# Uses maturin to compile the PyO3 extension module and install it into
+# the version-specific virtualenv.
+.PHONY: build-dpor-%
+build-dpor-%: .venv-%/activate
+	uv pip install maturin --python=$(CURDIR)/.venv-$*/bin/python
+	cd frontrun-dpor && $(CURDIR)/.venv-$*/bin/maturin develop --release
 
 .PHONY: default-venv
 default-venv: .venv-3.10/activate
 
 
-# Pattern rule for running tests with specific Python versions
-test-%: .venv-%/activate
+# Pattern rule for running tests with specific Python versions.
+# Builds the Rust DPOR extension first.
+test-%: build-dpor-%
 	$(CURDIR)/.venv-$*/bin/pytest $(PYTEST_ARGS)
 
 # Main test target - runs tests for all Python versions
@@ -59,4 +67,5 @@ docs-clean-build: docs-clean docs-html
 
 clean: docs-clean
 	rm -rf __pycache__ .pytest_cache .eggs *.egg-info dist build .uv-cache .venv $(addprefix .venv-,$(PYTHON_VERSIONS))
+	rm -rf frontrun-dpor/target .cargo-cache
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
