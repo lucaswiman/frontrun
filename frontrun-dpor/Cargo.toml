@@ -9,6 +9,6 @@ name = "frontrun_dpor"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.25", features = ["extension-module"] }
 
 [dev-dependencies]

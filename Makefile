@@ -1,4 +1,4 @@
-.PHONY: test test-% test-frontrun test-tokens-regex clean docs docs-clean docs-html docs-clean-build lint type-check check
+.PHONY: test clean docs docs-clean docs-html docs-clean-build lint type-check check
 
 # Python versions to test
 PYTHON_VERSIONS := 3.10 3.14 3.14t
@@ -27,10 +27,9 @@ export UV_CACHE_DIR := $(CURDIR)/.uv-cache
 # Build the frontrun-dpor Rust extension for a specific Python version.
 # Uses maturin to compile the PyO3 extension module and install it into
 # the version-specific virtualenv.
-.PHONY: build-dpor-%
 build-dpor-%: .venv-%/activate
 	uv pip install maturin --python=$(CURDIR)/.venv-$*/bin/python
-	cd frontrun-dpor && $(CURDIR)/.venv-$*/bin/maturin develop --release
+	cd frontrun-dpor && VIRTUAL_ENV=$(CURDIR)/.venv-$* $(CURDIR)/.venv-$*/bin/maturin develop --release
 
 .PHONY: default-venv
 default-venv: .venv-3.10/activate
