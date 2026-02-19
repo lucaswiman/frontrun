@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import threading
 
-from frontrun.dpor import DporResult, explore_dpor
-from frontrun_dpor import PyDporEngine, PyExecution
+from frontrun_dpor import PyDporEngine
 
+from frontrun.dpor import DporResult, explore_dpor
 
 # ---------------------------------------------------------------------------
 # Low-level Rust engine tests (via PyO3)

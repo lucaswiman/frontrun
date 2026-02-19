@@ -1,7 +1,7 @@
 """Tests for the frontrun trace_markers module."""
 
-import sysconfig
 import sys
+import sysconfig
 import threading
 
 import pytest
