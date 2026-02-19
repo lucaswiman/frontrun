@@ -45,6 +45,12 @@ from frontrun.common import InterleavingResult
 # Type variable for the shared state passed between setup and thread functions
 T = TypeVar("T")
 
+_PY_VERSION = sys.version_info[:2]
+# sys.monitoring (PEP 669) is available since 3.12 and is required for
+# free-threaded builds (3.13t/3.14t) where sys.settrace + f_trace_opcodes
+# has a known crash bug (CPython #118415).
+_USE_SYS_MONITORING = _PY_VERSION >= (3, 12)
+
 # Directories to never trace into (stdlib, site-packages, threading internals)
 _SKIP_DIRS: set[str] = set()
 for _p in sys.path:
@@ -681,12 +687,16 @@ class BytecodeShuffler:
     tries to acquire it.
     """
 
+    # sys.monitoring tool ID (use OPTIMIZER_ID to avoid conflict with DPOR's PROFILER_ID)
+    _TOOL_ID: int | None = None
+
     def __init__(self, scheduler: OpcodeScheduler, cooperative_locks: bool = True):
         self.scheduler = scheduler
         self.cooperative_locks = cooperative_locks
         self.threads: list[threading.Thread] = []
         self.errors: dict[int, Exception] = {}
         self._lock_patched = False
+        self._monitoring_active = False
 
     def _patch_locks(self):
         """Replace threading and queue primitives with cooperative versions."""
@@ -739,12 +749,66 @@ class BytecodeShuffler:
 
         return trace
 
-    def _run_thread(
+    # --- sys.monitoring backend (3.12+) ---
+
+    def _setup_monitoring(self) -> None:
+        """Set up sys.monitoring INSTRUCTION events for opcode-level scheduling."""
+        if not _USE_SYS_MONITORING:
+            return
+
+        mon = sys.monitoring
+        tool_id = mon.OPTIMIZER_ID  # type: ignore[attr-defined]
+        BytecodeShuffler._TOOL_ID = tool_id
+
+        mon.use_tool_id(tool_id, "frontrun-bytecode")  # type: ignore[attr-defined]
+        mon.set_events(tool_id, mon.events.PY_START | mon.events.INSTRUCTION)  # type: ignore[attr-defined]
+
+        scheduler = self.scheduler
+
+        def handle_py_start(code: Any, instruction_offset: int) -> Any:
+            if scheduler._finished or scheduler._error:
+                return mon.DISABLE  # type: ignore[attr-defined]
+            if not _should_trace_file(code.co_filename):
+                return mon.DISABLE  # type: ignore[attr-defined]
+            return None
+
+        def handle_instruction(code: Any, instruction_offset: int) -> Any:
+            if scheduler._finished or scheduler._error:
+                return None
+            if not _should_trace_file(code.co_filename):
+                return None
+
+            thread_id = getattr(_active_scheduler, "thread_id", None)
+            if thread_id is None:
+                return None
+
+            scheduler.wait_for_turn(thread_id)
+            return None
+
+        mon.register_callback(tool_id, mon.events.PY_START, handle_py_start)  # type: ignore[attr-defined]
+        mon.register_callback(tool_id, mon.events.INSTRUCTION, handle_instruction)  # type: ignore[attr-defined]
+        self._monitoring_active = True
+
+    def _teardown_monitoring(self) -> None:
+        """Remove sys.monitoring callbacks and free the tool ID."""
+        if not self._monitoring_active:
+            return
+        mon = sys.monitoring
+        tool_id = BytecodeShuffler._TOOL_ID
+        if tool_id is not None:
+            mon.set_events(tool_id, 0)  # type: ignore[attr-defined]
+            mon.register_callback(tool_id, mon.events.PY_START, None)  # type: ignore[attr-defined]
+            mon.register_callback(tool_id, mon.events.INSTRUCTION, None)  # type: ignore[attr-defined]
+            mon.free_tool_id(tool_id)  # type: ignore[attr-defined]
+        self._monitoring_active = False
+
+    # --- Thread entry points ---
+
+    def _run_thread_settrace(
         self, thread_id: int, func: Callable[..., None], args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> None:
-        """Thread entry point. Installs tracing, runs func, cleans up."""
+        """Thread entry using sys.settrace (3.10-3.11)."""
         try:
-            # Store scheduler context in TLS for cooperative wrappers
             _active_scheduler.scheduler = self.scheduler
             _active_scheduler.thread_id = thread_id
 
@@ -756,6 +820,23 @@ class BytecodeShuffler:
             self.scheduler.report_error(e)
         finally:
             sys.settrace(None)
+            _active_scheduler.scheduler = None
+            _active_scheduler.thread_id = None
+            self.scheduler.mark_done(thread_id)
+
+    def _run_thread_monitoring(
+        self, thread_id: int, func: Callable[..., None], args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> None:
+        """Thread entry using sys.monitoring (3.12+)."""
+        try:
+            _active_scheduler.scheduler = self.scheduler
+            _active_scheduler.thread_id = thread_id
+
+            func(*args, **kwargs)
+        except Exception as e:
+            self.errors[thread_id] = e
+            self.scheduler.report_error(e)
+        finally:
             _active_scheduler.scheduler = None
             _active_scheduler.thread_id = None
             self.scheduler.mark_done(thread_id)
@@ -780,20 +861,31 @@ class BytecodeShuffler:
         if kwargs is None:
             kwargs = [{} for _ in funcs]
 
-        for i, (func, a, kw) in enumerate(zip(funcs, args, kwargs)):
-            t = threading.Thread(
-                target=self._run_thread,
-                args=(i, func, a, kw),
-                name=f"frontrun-{i}",
-                daemon=True,
-            )
-            self.threads.append(t)
+        use_monitoring = _USE_SYS_MONITORING
+        if use_monitoring:
+            self._setup_monitoring()
+            run_thread = self._run_thread_monitoring
+        else:
+            run_thread = self._run_thread_settrace
 
-        for t in self.threads:
-            t.start()
+        try:
+            for i, (func, a, kw) in enumerate(zip(funcs, args, kwargs)):
+                t = threading.Thread(
+                    target=run_thread,
+                    args=(i, func, a, kw),
+                    name=f"frontrun-{i}",
+                    daemon=True,
+                )
+                self.threads.append(t)
 
-        for t in self.threads:
-            t.join(timeout=timeout)
+            for t in self.threads:
+                t.start()
+
+            for t in self.threads:
+                t.join(timeout=timeout)
+        finally:
+            if use_monitoring:
+                self._teardown_monitoring()
 
         if self.errors:
             raise list(self.errors.values())[0]
