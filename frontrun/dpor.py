@@ -44,7 +44,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
-from frontrun_dpor import PyDporEngine, PyExecution
+from frontrun_dpor import PyDporEngine, PyExecution  # type: ignore[reportAttributeAccessIssue]
 
 T = TypeVar("T")
 
