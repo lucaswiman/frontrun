@@ -22,8 +22,8 @@ _frontrun_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _frontrun_path not in sys.path:
     sys.path.insert(0, _frontrun_path)
 
+from frontrun._cooperative import CooperativeLock
 from frontrun.bytecode import (
-    _CooperativeLock,  # Import cooperative lock for patching
     controlled_interleaving,
     explore_interleavings,
 )
@@ -51,7 +51,7 @@ def _frontrun_locks():
     allowing the scheduler to control thread execution at a fine-grained level.
     """
     original_lock = threading.Lock
-    threading.Lock = _CooperativeLock
+    threading.Lock = CooperativeLock
     try:
         yield
     finally:
@@ -67,7 +67,7 @@ def _patch_locks_for_marked_tests(request):
     """
     if request.node.get_closest_marker("frontrun"):
         original_lock = threading.Lock
-        threading.Lock = _CooperativeLock
+        threading.Lock = CooperativeLock
         try:
             yield
         finally:

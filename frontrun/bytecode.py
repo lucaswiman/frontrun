@@ -32,7 +32,6 @@ Example — find a race condition with random schedule exploration:
 """
 
 import os
-import queue
 import random
 import sys
 import threading
@@ -40,6 +39,13 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, TypeVar
 
+from frontrun._cooperative import (
+    clear_context,
+    patch_locks,
+    real_lock,
+    set_context,
+    unpatch_locks,
+)
 from frontrun.common import InterleavingResult
 
 # Type variable for the shared state passed between setup and thread functions
@@ -84,7 +90,7 @@ class OpcodeScheduler:
         self.schedule = schedule
         self.num_threads = num_threads
         self._index = 0
-        self._lock = _real_lock()
+        self._lock = real_lock()
         self._condition = threading.Condition(self._lock)
         self._finished = False
         self._error: Exception | None = None
@@ -142,536 +148,6 @@ class OpcodeScheduler:
         return self._error is not None
 
 
-class _CooperativeLock:
-    """A Lock replacement that yields scheduler turns instead of blocking.
-
-    When acquire() would block (lock is held by another thread), this
-    spins with non-blocking attempts, calling scheduler.wait_for_turn()
-    between each attempt. This gives the lock-holding thread a chance
-    to execute opcodes and release the lock, breaking the deadlock that
-    occurs with real Lock.acquire() under opcode-level scheduling.
-    """
-
-    def __init__(self):
-        self._lock = _real_lock()
-
-    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        if not blocking:
-            return self._lock.acquire(blocking=False)
-
-        # Fast path: lock is uncontested
-        if self._lock.acquire(blocking=False):
-            return True
-
-        # Slow path: lock is held. Get our scheduler context from TLS.
-        scheduler = getattr(_active_scheduler, "scheduler", None)
-        thread_id = getattr(_active_scheduler, "thread_id", None)
-        if scheduler is None:
-            # Not in a managed thread — fall back to real blocking
-            return self._lock.acquire(blocking=blocking, timeout=timeout)
-
-        # Spin: yield scheduler turns until we can acquire
-        while not self._lock.acquire(blocking=False):
-            if scheduler._finished or scheduler._error:
-                return self._lock.acquire(blocking=blocking, timeout=1.0)
-            scheduler.wait_for_turn(thread_id)
-
-        return True
-
-    def release(self):
-        self._lock.release()
-
-    def locked(self):
-        return self._lock.locked()
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        self.release()
-
-    def __repr__(self):
-        return f"<_CooperativeLock locked={self.locked()}>"
-
-
-# Thread-local storage for the active scheduler context.
-# Set by _run_thread so cooperative wrappers can find the scheduler.
-_active_scheduler = threading.local()
-
-# Save real factories before any patching.
-# threading.Lock is a factory function (_thread.allocate_lock), not a type.
-_real_lock = threading.Lock
-_real_rlock = threading.RLock
-_real_semaphore = threading.Semaphore
-_real_bounded_semaphore = threading.BoundedSemaphore
-_real_event = threading.Event
-_real_condition = threading.Condition
-_real_queue = queue.Queue
-_real_lifo_queue = queue.LifoQueue
-_real_priority_queue = queue.PriorityQueue
-
-
-class _CooperativeRLock:
-    """A reentrant lock that yields scheduler turns instead of blocking.
-
-    Tracks the owning thread and recursion count. The same thread can
-    acquire multiple times without blocking; other threads spin-yield.
-    """
-
-    def __init__(self):
-        self._lock = _real_lock()
-        self._owner = None
-        self._count = 0
-
-    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        me = threading.get_ident()
-        if self._owner == me:
-            self._count += 1
-            return True
-
-        if not blocking:
-            if self._lock.acquire(blocking=False):
-                self._owner = me
-                self._count = 1
-                return True
-            return False
-
-        # Fast path
-        if self._lock.acquire(blocking=False):
-            self._owner = me
-            self._count = 1
-            return True
-
-        # Slow path: spin-yield
-        scheduler = getattr(_active_scheduler, "scheduler", None)
-        thread_id = getattr(_active_scheduler, "thread_id", None)
-        if scheduler is None:
-            result = self._lock.acquire(blocking=blocking, timeout=timeout)
-            if result:
-                self._owner = me
-                self._count = 1
-            return result
-
-        while not self._lock.acquire(blocking=False):
-            if scheduler._finished or scheduler._error:
-                result = self._lock.acquire(blocking=blocking, timeout=1.0)
-                if result:
-                    self._owner = me
-                    self._count = 1
-                return result
-            scheduler.wait_for_turn(thread_id)
-
-        self._owner = me
-        self._count = 1
-        return True
-
-    def release(self):
-        if self._owner != threading.get_ident():
-            raise RuntimeError("cannot release un-acquired lock")
-        self._count -= 1
-        if self._count == 0:
-            self._owner = None
-            self._lock.release()
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        self.release()
-
-    def _is_owned(self):
-        return self._owner == threading.get_ident()
-
-    def __repr__(self):
-        owner = self._owner
-        return f"<_CooperativeRLock owner={owner} count={self._count}>"
-
-
-class _CooperativeSemaphore:
-    """A Semaphore that yields scheduler turns instead of blocking.
-
-    Implemented with a real lock and counter rather than delegating to
-    threading.Semaphore, because the real Semaphore's __init__ references
-    Condition/Lock from threading's globals which may be patched.
-    """
-
-    _value: int
-    _lock: Any
-
-    def __init__(self, value: int = 1) -> None:
-        if value < 0:
-            raise ValueError("semaphore initial value must be >= 0")
-        self._value = value
-        self._lock = _real_lock()
-
-    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
-        # Fast path: try to decrement counter
-        self._lock.acquire()
-        if self._value > 0:
-            self._value -= 1
-            self._lock.release()
-            return True
-        self._lock.release()
-
-        if not blocking:
-            return False
-
-        scheduler = getattr(_active_scheduler, "scheduler", None)
-        thread_id = getattr(_active_scheduler, "thread_id", None)
-        if scheduler is None:
-            # Fall back to spinning with real lock (non-managed thread)
-            if timeout is not None:
-                import time
-
-                deadline = time.monotonic() + timeout
-                while True:
-                    self._lock.acquire()
-                    if self._value > 0:
-                        self._value -= 1
-                        self._lock.release()
-                        return True
-                    self._lock.release()
-                    if time.monotonic() >= deadline:
-                        return False
-                    time.sleep(0.001)
-            while True:
-                self._lock.acquire()
-                if self._value > 0:
-                    self._value -= 1
-                    self._lock.release()
-                    return True
-                self._lock.release()
-                import time
-
-                time.sleep(0.001)
-
-        # Spin-yield loop for managed threads
-        while True:
-            self._lock.acquire()
-            if self._value > 0:
-                self._value -= 1
-                self._lock.release()
-                return True
-            self._lock.release()
-            if scheduler._finished or scheduler._error:
-                # Schedule exhausted — spin without scheduler to let
-                # threads complete naturally (same pattern as _CooperativeLock)
-                import time
-
-                deadline = time.monotonic() + 1.0
-                while time.monotonic() < deadline:
-                    self._lock.acquire()
-                    if self._value > 0:
-                        self._value -= 1
-                        self._lock.release()
-                        return True
-                    self._lock.release()
-                    time.sleep(0.001)
-                return False
-            scheduler.wait_for_turn(thread_id)
-
-    def release(self, n: int = 1) -> None:
-        if n < 1:
-            raise ValueError("n must be one or more")
-        self._lock.acquire()
-        self._value += n
-        self._lock.release()
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        self.release()
-
-    def __repr__(self):
-        return f"<_CooperativeSemaphore value={self._value}>"
-
-
-class _CooperativeBoundedSemaphore(_CooperativeSemaphore):
-    """A BoundedSemaphore that yields scheduler turns instead of blocking.
-
-    Like _CooperativeSemaphore but raises ValueError on over-release.
-    """
-
-    _initial_value: int
-
-    def __init__(self, value: int = 1) -> None:
-        super().__init__(value)
-        self._initial_value = value
-
-    def release(self, n: int = 1) -> None:
-        if n < 1:
-            raise ValueError("n must be one or more")
-        self._lock.acquire()
-        if self._value + n > self._initial_value:
-            self._lock.release()
-            raise ValueError("Semaphore released too many times")
-        self._value += n
-        self._lock.release()
-
-    def __repr__(self):
-        return f"<_CooperativeBoundedSemaphore value={self._value}/{self._initial_value}>"
-
-
-class _CooperativeEvent:
-    """An Event that yields scheduler turns instead of blocking on wait()."""
-
-    def __init__(self):
-        self._event = _real_event()
-
-    def wait(self, timeout: float | None = None) -> bool:
-        if self._event.is_set():
-            return True
-
-        scheduler = getattr(_active_scheduler, "scheduler", None)
-        thread_id = getattr(_active_scheduler, "thread_id", None)
-        if scheduler is None:
-            return self._event.wait(timeout=timeout)
-
-        if timeout is not None:
-            import time
-
-            deadline: float = time.monotonic() + timeout
-            while not self._event.is_set():
-                if scheduler._finished or scheduler._error:
-                    return self._event.wait(timeout=1.0)
-                if time.monotonic() >= deadline:
-                    return self._event.is_set()
-                scheduler.wait_for_turn(thread_id)
-            return True
-
-        while not self._event.is_set():
-            if scheduler._finished or scheduler._error:
-                return self._event.wait(timeout=1.0)
-            scheduler.wait_for_turn(thread_id)
-        return True
-
-    def set(self):
-        self._event.set()
-
-    def clear(self):
-        self._event.clear()
-
-    def is_set(self):
-        return self._event.is_set()
-
-    def __repr__(self):
-        return f"<_CooperativeEvent set={self.is_set()}>"
-
-
-class _CooperativeCondition:
-    """A Condition that yields scheduler turns instead of blocking on wait().
-
-    Uses the scheduler's TLS to avoid infinite recursion — the OpcodeScheduler
-    itself uses _real_condition internally.
-    """
-
-    def __init__(self, lock: _CooperativeLock | None = None) -> None:
-        if lock is None:
-            lock = _CooperativeLock()
-        self._lock = lock
-        self._real_cond = _real_condition(_real_lock())
-        # Track waiters so notify can wake them
-        self._waiters = 0
-
-    def acquire(self, *args: Any, **kwargs: Any) -> bool:  # type: ignore[no-untyped-def]
-        return self._lock.acquire(*args, **kwargs)  # type: ignore[arg-type]
-
-    def release(self) -> None:
-        self._lock.release()
-
-    def __enter__(self):
-        self._lock.acquire()
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        self._lock.release()
-
-    def wait(self, timeout: float | None = None) -> bool:
-        # Release the user lock, spin-yield, then re-acquire
-        self._waiters += 1
-        self._lock.release()
-        try:
-            scheduler = getattr(_active_scheduler, "scheduler", None)
-            thread_id = getattr(_active_scheduler, "thread_id", None)
-            if scheduler is None:
-                with self._real_cond:
-                    return self._real_cond.wait(timeout=timeout)
-
-            if timeout is not None:
-                import time
-
-                deadline = time.monotonic() + timeout
-                # Spin-yield checking if we've been notified
-                with self._real_cond:
-                    notified = self._real_cond.wait(timeout=0)
-                while not notified:
-                    if scheduler._finished or scheduler._error:
-                        with self._real_cond:
-                            return self._real_cond.wait(timeout=1.0)
-                    if time.monotonic() >= deadline:
-                        return False
-                    scheduler.wait_for_turn(thread_id)
-                    with self._real_cond:
-                        notified = self._real_cond.wait(timeout=0)
-                return True
-
-            with self._real_cond:
-                notified = self._real_cond.wait(timeout=0)
-            while not notified:
-                if scheduler._finished or scheduler._error:
-                    with self._real_cond:
-                        return self._real_cond.wait(timeout=1.0)
-                scheduler.wait_for_turn(thread_id)
-                with self._real_cond:
-                    notified = self._real_cond.wait(timeout=0)
-            return True
-        finally:
-            self._waiters -= 1
-            self._lock.acquire()
-
-    def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> bool:
-        result = predicate()
-        while not result:
-            self.wait(timeout=timeout)
-            result = predicate()
-            if timeout is not None:
-                break
-        return result
-
-    def notify(self, n: int = 1) -> None:
-        with self._real_cond:
-            self._real_cond.notify(n)
-
-    def notify_all(self) -> None:
-        with self._real_cond:
-            self._real_cond.notify_all()
-
-
-class _CooperativeQueue:
-    """A Queue that yields scheduler turns instead of blocking on get()/put()."""
-
-    _queue_class = _real_queue
-    _queue: Any  # type: ignore[assignment]
-
-    def __init__(self, maxsize: int = 0) -> None:
-        self._queue = self._queue_class(maxsize)
-
-    def get(self, block: bool = True, timeout: float | None = None) -> Any:
-        try:
-            return self._queue.get(block=False)
-        except queue.Empty:
-            if not block:
-                raise
-
-        scheduler = getattr(_active_scheduler, "scheduler", None)
-        thread_id = getattr(_active_scheduler, "thread_id", None)
-        if scheduler is None:
-            return self._queue.get(block=True, timeout=timeout)
-
-        if timeout is not None:
-            import time
-
-            deadline: float = time.monotonic() + timeout
-            while True:
-                try:
-                    return self._queue.get(block=False)
-                except queue.Empty:
-                    pass
-                if scheduler._finished or scheduler._error:
-                    return self._queue.get(block=True, timeout=1.0)
-                if time.monotonic() >= deadline:
-                    raise queue.Empty
-                scheduler.wait_for_turn(thread_id)
-
-        while True:
-            try:
-                return self._queue.get(block=False)
-            except queue.Empty:
-                pass
-            if scheduler._finished or scheduler._error:
-                return self._queue.get(block=True, timeout=1.0)
-            scheduler.wait_for_turn(thread_id)
-
-    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        try:
-            self._queue.put(item, block=False)
-            return
-        except queue.Full:
-            if not block:
-                raise
-
-        scheduler = getattr(_active_scheduler, "scheduler", None)
-        thread_id = getattr(_active_scheduler, "thread_id", None)
-        if scheduler is None:
-            self._queue.put(item, block=True, timeout=timeout)
-            return
-
-        if timeout is not None:
-            import time
-
-            deadline: float = time.monotonic() + timeout
-            while True:
-                try:
-                    self._queue.put(item, block=False)
-                    return
-                except queue.Full:
-                    pass
-                if scheduler._finished or scheduler._error:
-                    self._queue.put(item, block=True, timeout=1.0)
-                    return
-                if time.monotonic() >= deadline:
-                    raise queue.Full
-                scheduler.wait_for_turn(thread_id)
-
-        while True:
-            try:
-                self._queue.put(item, block=False)
-                return
-            except queue.Full:
-                pass
-            if scheduler._finished or scheduler._error:
-                self._queue.put(item, block=True, timeout=1.0)
-                return
-            scheduler.wait_for_turn(thread_id)
-
-    def qsize(self):
-        return self._queue.qsize()
-
-    def empty(self):
-        return self._queue.empty()
-
-    def full(self):
-        return self._queue.full()
-
-    def get_nowait(self) -> Any:
-        return self._queue.get(block=False)
-
-    def put_nowait(self, item: Any) -> None:
-        self._queue.put(item, block=False)
-
-    def task_done(self) -> None:
-        self._queue.task_done()
-
-    def join(self) -> None:
-        self._queue.join()
-
-
-class _CooperativeLifoQueue(_CooperativeQueue):
-    """LifoQueue variant of the cooperative queue."""
-
-    _queue_class = _real_lifo_queue
-
-
-class _CooperativePriorityQueue(_CooperativeQueue):
-    """PriorityQueue variant of the cooperative queue."""
-
-    _queue_class = _real_priority_queue
-
-
 class BytecodeShuffler:
     """Run concurrent functions with bytecode-level interleaving control.
 
@@ -702,29 +178,13 @@ class BytecodeShuffler:
         """Replace threading and queue primitives with cooperative versions."""
         if not self.cooperative_locks:
             return
-        threading.Lock = _CooperativeLock
-        threading.RLock = _CooperativeRLock
-        threading.Semaphore = _CooperativeSemaphore
-        threading.BoundedSemaphore = _CooperativeBoundedSemaphore
-        threading.Event = _CooperativeEvent
-        threading.Condition = _CooperativeCondition
-        queue.Queue = _CooperativeQueue
-        queue.LifoQueue = _CooperativeLifoQueue
-        queue.PriorityQueue = _CooperativePriorityQueue
+        patch_locks()
         self._lock_patched = True
 
     def _unpatch_locks(self):
         """Restore the original threading and queue primitives."""
         if self._lock_patched:
-            threading.Lock = _real_lock
-            threading.RLock = _real_rlock
-            threading.Semaphore = _real_semaphore
-            threading.BoundedSemaphore = _real_bounded_semaphore
-            threading.Event = _real_event
-            threading.Condition = _real_condition
-            queue.Queue = _real_queue
-            queue.LifoQueue = _real_lifo_queue
-            queue.PriorityQueue = _real_priority_queue
+            unpatch_locks()
             self._lock_patched = False
 
     def _make_trace(self, thread_id: int) -> Callable[[Any, str, Any], Any]:  # type: ignore[return-value]
@@ -778,7 +238,9 @@ class BytecodeShuffler:
             if not _should_trace_file(code.co_filename):
                 return None
 
-            thread_id = getattr(_active_scheduler, "thread_id", None)
+            from frontrun._cooperative import _scheduler_tls
+
+            thread_id = getattr(_scheduler_tls, "thread_id", None)
             if thread_id is None:
                 return None
 
@@ -809,8 +271,7 @@ class BytecodeShuffler:
     ) -> None:
         """Thread entry using sys.settrace (3.10-3.11)."""
         try:
-            _active_scheduler.scheduler = self.scheduler
-            _active_scheduler.thread_id = thread_id
+            set_context(self.scheduler, thread_id)
 
             trace_fn = self._make_trace(thread_id)
             sys.settrace(trace_fn)
@@ -820,8 +281,7 @@ class BytecodeShuffler:
             self.scheduler.report_error(e)
         finally:
             sys.settrace(None)
-            _active_scheduler.scheduler = None
-            _active_scheduler.thread_id = None
+            clear_context()
             self.scheduler.mark_done(thread_id)
 
     def _run_thread_monitoring(
@@ -829,16 +289,14 @@ class BytecodeShuffler:
     ) -> None:
         """Thread entry using sys.monitoring (3.12+)."""
         try:
-            _active_scheduler.scheduler = self.scheduler
-            _active_scheduler.thread_id = thread_id
+            set_context(self.scheduler, thread_id)
 
             func(*args, **kwargs)
         except Exception as e:
             self.errors[thread_id] = e
             self.scheduler.report_error(e)
         finally:
-            _active_scheduler.scheduler = None
-            _active_scheduler.thread_id = None
+            clear_context()
             self.scheduler.mark_done(thread_id)
 
     def run(
