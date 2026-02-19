@@ -2,7 +2,7 @@
 name = "dpor-prototype"
 version = "0.1.0"
 edition = "2021"
-description = "Prototype DPOR (Dynamic Partial Order Reduction) engine for interlace"
+description = "Prototype DPOR (Dynamic Partial Order Reduction) engine for frontrun"
 
 [lib]
 name = "dpor_prototype"

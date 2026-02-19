@@ -4,7 +4,7 @@
 //! (conflicting accesses) between threads.
 //!
 //! Unlike loom (which tracks atomic cells, mutexes, etc. as distinct types),
-//! interlace tracks Python-level shared state via opaque integer IDs.
+//! frontrun tracks Python-level shared state via opaque integer IDs.
 
 use crate::access::{Access, AccessKind};
 

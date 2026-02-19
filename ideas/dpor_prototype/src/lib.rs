@@ -1,4 +1,4 @@
-//! DPOR (Dynamic Partial Order Reduction) prototype engine for interlace.
+//! DPOR (Dynamic Partial Order Reduction) prototype engine for frontrun.
 //!
 //! This implements the classic DPOR algorithm (Flanagan & Godefroid, POPL 2005)
 //! with optional preemption bounding (Musuvathi & Qadeer, PLDI 2007).

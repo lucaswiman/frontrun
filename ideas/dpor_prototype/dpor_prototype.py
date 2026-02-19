@@ -1,5 +1,5 @@
 """
-Pure-Python DPOR (Dynamic Partial Order Reduction) prototype for interlace.
+Pure-Python DPOR (Dynamic Partial Order Reduction) prototype for frontrun.
 
 This implements the classic DPOR algorithm (Flanagan & Godefroid, POPL 2005)
 with optional preemption bounding. It is a faithful Python translation of the

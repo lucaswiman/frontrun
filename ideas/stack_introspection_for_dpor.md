@@ -787,21 +787,21 @@ for any opcodes not explicitly handled.
 ### Recommended architecture
 
 ```
-                        ┌─────────────────────┐
+                        ┌──────────────────────┐
                         │   User's unmodified  │
                         │    threaded code     │
-                        └──────────┬──────────┘
+                        └──────────┬───────────┘
                                    │
-                    ┌──────────────┼──────────────┐
+                    ┌──────────────┼───────────────┐
                     │              │               │
-            ┌───────▼───────┐  ┌──▼────────┐  ┌──▼──────────┐
-            │ Monkey-patched│  │sys.settrace│  │  DPOR Engine │
-            │ threading.Lock│  │  + shadow  │  │  (scheduling │
-            │ (sync events) │  │   stack    │  │   decisions) │
-            └───────┬───────┘  │  (access   │  └──────▲──────┘
+            ┌───────▼───────┐  ┌──▼──────────┐  ┌──▼───────────┐
+            │ Monkey-patched│  │sys.settrace │  │  DPOR Engine │
+            │ threading.Lock│  │  + shadow   │  │  (scheduling │
+            │ (sync events) │  │   stack     │  │   decisions) │
+            └───────┬───────┘  │  (access    │  └──────▲───────┘
                     │          │  detection) │         │
                     │          └──────┬──────┘         │
-                    │                 │                 │
+                    │                 │                │
                     └────────►  process_sync  ◄────────┘
                               process_access
 ```
@@ -819,7 +819,7 @@ for any opcodes not explicitly handled.
    and execution references.
 2. Add `process_sync` calls to existing cooperative primitives.
 3. Implement `ShadowStackTracker` as a standalone module.
-4. Create `DporBytecodeInterlace` that combines the opcode scheduler, shadow stack
+4. Create `DporBytecodeShuffler` that combines the opcode scheduler, shadow stack
    tracker, and DPOR engine into a single test runner.
 5. Handle `LOAD_METHOD`/`CALL` patterns for method call tracking.
 6. Add version-specific opcode handling for Python 3.12+.
