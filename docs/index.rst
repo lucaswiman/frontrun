@@ -12,6 +12,7 @@ Frontrun provides tools for controlling thread interleaving at a fine-grained le
    installation
    quickstart
    approaches
+   dpor
    api_reference
    examples
    CASE_STUDIES
