@@ -76,4 +76,4 @@ reportMissingTypeStubs = false
 reportPrivateImportUsage = false
 reportPrivateUsage = false
 venvPath = "."
-venv = ".venv"
+venv = ".venv-3.10"
