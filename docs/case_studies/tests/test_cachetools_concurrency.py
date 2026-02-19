@@ -557,7 +557,7 @@ if __name__ == "__main__":
     import time as _time
 
     print("=" * 72)
-    print("cachetools Concurrency Tests via Interlace")
+    print("cachetools Concurrency Tests via Frontrun")
     print("=" * 72)
 
     for name, fn, attempts, ops in ALL_TESTS:

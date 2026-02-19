@@ -1091,7 +1091,7 @@ if __name__ == "__main__":
     ]
 
     print("=" * 72)
-    print("SQLAlchemy Concurrency Bug Exploration via Interlace")
+    print("SQLAlchemy Concurrency Bug Exploration via Frontrun")
     print("=" * 72)
     print()
 

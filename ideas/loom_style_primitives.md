@@ -12,7 +12,7 @@ In loom, instead of `std::sync::Mutex`, you use `loom::sync::Mutex`. Under test,
 loom's Mutex cooperates with loom's scheduler. In production, it compiles down to
 the real Mutex. The user changes imports, not runtime behavior.
 
-The equivalent for interlace:
+The equivalent for frontrun:
 
 ```python
 # Instead of:

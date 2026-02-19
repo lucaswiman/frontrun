@@ -1,11 +1,11 @@
-# Interlace + TLA+: Integration Brainstorm
+# Frontrun + TLA+: Integration Brainstorm
 
 ## Overview
 
-Interlace controls and records concurrent execution schedules in Python. TLA+ is a
+Frontrun controls and records concurrent execution schedules in Python. TLA+ is a
 formal specification language for modeling and verifying concurrent/distributed systems.
 The two are natural complements: TLA+ reasons about *what interleavings are possible
-and correct*, while interlace *forces specific interleavings in real code*.
+and correct*, while frontrun *forces specific interleavings in real code*.
 
 ### The Key Insight: Coding Agents as the Bridge
 
@@ -14,9 +14,9 @@ in sync with evolving code is expensive human labor. **Coding agents fundamental
 change this equation.** An LLM-based agent can:
 
 - Read Python code and generate a corresponding TLA+ spec
-- Read a TLA+ spec and generate interlace-annotated Python tests
+- Read a TLA+ spec and generate frontrun-annotated Python tests
 - Keep specs and code in sync as either changes
-- Run TLC, parse counterexamples, and translate them into interlace schedules
+- Run TLC, parse counterexamples, and translate them into frontrun schedules
 - Translate TLA+ invariants into Python assertion functions
 
 The developer never needs to learn or touch TLA+. TLA+ becomes an **internal reasoning
@@ -31,28 +31,28 @@ schedule," read "agent does this automatically." The parsing infrastructure in s
 
 ### The Natural Mapping
 
-Interlace markers are the Rosetta Stone — they're already named actions at
+Frontrun markers are the Rosetta Stone — they're already named actions at
 interleaving-relevant points, which is exactly what TLA+ models. The mapping between
 `Step("t1", "read_value")` and the TLA+ action `Read(t1)` is almost syntactic.
 
 ---
 
-## 1. Trace Validation: Check interlace executions against TLA+ specs
+## 1. Trace Validation: Check frontrun executions against TLA+ specs
 
-**The idea:** Interlace already controls and records execution schedules. Emit those
+**The idea:** Frontrun already controls and records execution schedules. Emit those
 schedules as TLA+ traces and validate them against a spec using TLC.
 
 **How it would work:**
-1. Agent generates a TLA+ spec from the Python code and its interlace markers
-2. Interlace runs an interleaving, recording a trace:
+1. Agent generates a TLA+ spec from the Python code and its frontrun markers
+2. Frontrun runs an interleaving, recording a trace:
    `[(thread, marker, state_snapshot), ...]`
-3. An `frontrun.tlaplus` module translates that trace into a TLA+ `Trace` module
+3. A `frontrun.tlaplus` module translates that trace into a TLA+ `Trace` module
    (following the Cirstea/Kuppe/Merz framework from SEFM 2024)
 4. TLC validates that the trace is a valid behavior of the spec
 5. If validation fails, the agent diagnoses whether the spec or code is wrong
 
 **Why it's a natural fit:**
-- Interlace markers already name "actions" — these map directly to TLA+ actions
+- Frontrun markers already name "actions" — these map directly to TLA+ actions
 - The `Schedule` / `Step` data structures already encode the interleaving order
 - `InterleavingResult` could be extended to capture state snapshots at each step
 - An agent can generate the spec, run the validation, and interpret results without
@@ -92,7 +92,7 @@ results = validator.explore_and_validate(
 ## 2. Spec-Guided Schedule Generation: Use TLC to generate interesting interleavings
 
 **The idea:** Instead of random exploration (`explore_interleavings`), use TLC to
-enumerate *all* distinct behaviors of a TLA+ spec, then replay each one as an interlace
+enumerate *all* distinct behaviors of a TLA+ spec, then replay each one as a frontrun
 `Schedule`.
 
 **How it would work:**
@@ -100,8 +100,8 @@ enumerate *all* distinct behaviors of a TLA+ spec, then replay each one as an in
 2. TLC model-checks the spec and emits all distinct traces (or traces violating an
    invariant)
 3. Each trace is a sequence of `(action, state)` pairs
-4. Agent maps actions back to `(thread, marker)` pairs to build interlace `Schedule`s
-5. Interlace executes each schedule against real Python code
+4. Agent maps actions back to `(thread, marker)` pairs to build frontrun `Schedule`s
+5. Frontrun executes each schedule against real Python code
 6. Agent compares actual state at each step against TLC's predicted state
 
 **Why this is the killer feature:**
@@ -126,21 +126,21 @@ state space (smaller, more structured). The agent bridges the two.
 
 **The idea:** A TLA+ spec is "abstract" — it might model a counter with atomic `Read`
 and `Write` actions. The Python implementation is "concrete" — it has bytecodes between
-the read and write. Interlace can bridge the refinement gap.
+the read and write. Frontrun can bridge the refinement gap.
 
 **How it would work:**
 1. Agent writes a high-level TLA+ spec with coarse actions
 2. Agent writes a lower-level TLA+ spec that refines it (with finer actions matching
-   interlace markers)
+   frontrun markers)
 3. TLC verifies the refinement (`LowSpec => HighSpec`)
-4. Interlace trace validation (workflow 1) verifies the Python code conforms to
+4. Frontrun trace validation (workflow 1) verifies the Python code conforms to
    `LowSpec`
 5. By transitivity: Python code refines the high-level spec
 
 **Why it matters:** This is the "gold standard" of formal verification applied to real
 code. It separates concerns cleanly: the high-level spec captures what the algorithm
 *should* do, the low-level spec captures the implementation's atomicity grain, and
-interlace confirms the real code matches. An agent can maintain both spec levels as the
+frontrun confirms the real code matches. An agent can maintain both spec levels as the
 code evolves.
 
 ---
@@ -148,7 +148,7 @@ code evolves.
 ## 4. Invariant Assertion Bridge: Express TLA+ invariants as Python assertions
 
 **The idea:** TLA+ invariants are predicates over state. Translate them to Python and
-check them at every marker during interlace execution.
+check them at every marker during frontrun execution.
 
 **How it would work:**
 ```python
@@ -157,13 +157,13 @@ check them at every marker during interlace execution.
 # (No two threads in the write section simultaneously)
 
 # Agent-generated Python translation:
-@interlace_invariant
+@frontrun_invariant
 def mutual_exclusion(state):
     writers = [t for t in state.threads if state.pc[t] == "write"]
     assert len(writers) <= 1, "Mutual exclusion violated!"
 ```
 
-Interlace could call these invariants after every step in the schedule, catching
+Frontrun could call these invariants after every step in the schedule, catching
 violations immediately with a full trace for reproduction.
 
 **Agent workflow:** The agent reads the TLA+ spec (which it also wrote), extracts
@@ -177,7 +177,7 @@ the agent can approximate or flag for human review.
 ## 5. Bidirectional State Machine DSL
 
 **The idea:** Create a shared Python DSL that generates *both* a TLA+ spec and
-interlace-instrumented Python code from the same source of truth.
+frontrun-instrumented Python code from the same source of truth.
 
 **Sketch:**
 ```python
@@ -187,8 +187,8 @@ counter = StateMachine("Counter", variables={"count": 0})
 
 @counter.action("Increment")
 def increment(state):
-    temp = state.count          # interlace: read
-    state.count = temp + 1      # interlace: write
+    temp = state.count          # frontrun: read
+    state.count = temp + 1      # frontrun: write
 
 @counter.invariant
 def count_non_negative(state):
@@ -197,8 +197,8 @@ def count_non_negative(state):
 # Generate TLA+ spec
 counter.to_tla("Counter.tla")
 
-# Generate interlace test
-counter.to_interlace_test(threads=2, runs=100)
+# Generate frontrun test
+counter.to_frontrun_test(threads=2, runs=100)
 ```
 
 **Re-evaluation with agents in mind:** A full DSL that generates both TLA+ and Python
@@ -211,20 +211,20 @@ Rather than a DSL, a lighter-weight tool that cross-references a TLA+ spec again
 Python source files and flags mismatches:
 
 ```
-$ interlace lint --spec Counter.tla --source counter.py
+$ frontrun lint --spec Counter.tla --source counter.py
 
-WARNING: TLA+ action "Init" has no corresponding interlace marker
-WARNING: Interlace marker "cleanup" in counter.py:42 has no corresponding TLA+ action
+WARNING: TLA+ action "Init" has no corresponding frontrun marker
+WARNING: Frontrun marker "cleanup" in counter.py:42 has no corresponding TLA+ action
 WARNING: TLA+ variable "locked" not covered by state_extractor
 OK: Read <-> read_value, Write <-> write_value
 OK: Processes {1, 2} <-> threads {t1, t2}
 ```
 
 **What the linter checks:**
-- Every TLA+ action (or PlusCal label) has a corresponding `# interlace:` marker
-- Every interlace marker in the Python source appears in the spec
+- Every TLA+ action (or PlusCal label) has a corresponding `# frontrun:` marker
+- Every frontrun marker in the Python source appears in the spec
 - TLA+ variables have corresponding fields in the `state_extractor`
-- PlusCal processes map to interlace execution names
+- PlusCal processes map to frontrun execution names
 - Invariants in the spec have corresponding Python assertion functions
 
 **Implementation:** This is straightforward with `tree-sitter-tlaplus` for the spec
@@ -245,7 +245,7 @@ the same drift detection. And it could run in CI as a consistency check.
 ## 6. PlusCal-to-Schedule Compiler
 
 **The idea:** PlusCal is a pseudocode language that transpiles to TLA+. Its `process`
-and `label` concepts map almost 1:1 to interlace threads and markers.
+and `label` concepts map almost 1:1 to frontrun threads and markers.
 
 ```
 process Incrementer \in {1, 2}
@@ -255,7 +255,7 @@ begin
 end process;
 ```
 
-Labels (`read`, `write`) become interlace markers. Processes become threads. The
+Labels (`read`, `write`) become frontrun markers. Processes become threads. The
 compiler reads PlusCal and generates:
 - A `Schedule` strategy that covers all TLC-discovered behaviors
 - A test template with the right markers and thread structure
@@ -263,14 +263,14 @@ compiler reads PlusCal and generates:
 **Agent angle:** PlusCal is an especially good target for agent-generated specs because
 its imperative style is closer to how agents (and developers) think about algorithms.
 An agent can translate Python concurrent code to PlusCal more naturally than to raw
-TLA+, and the label/process structure directly produces the interlace scaffolding.
+TLA+, and the label/process structure directly produces the frontrun scaffolding.
 
 ---
 
 ## 7. Counterexample Replay
 
 **The idea:** When TLC finds an invariant violation, it produces a counterexample trace
-(a sequence of states). Convert this trace into an interlace `Schedule` and replay it
+(a sequence of states). Convert this trace into an frontrun `Schedule` and replay it
 against the Python implementation to confirm (or refute) the bug in real code.
 
 ```python
@@ -294,7 +294,7 @@ assert result.had_error, "Bug confirmed in implementation!"
 **Why it's powerful with agents:** The full pipeline becomes automatic:
 1. Agent generates TLA+ spec from Python code
 2. Agent runs TLC, which finds an invariant violation
-3. Agent converts the counterexample into an interlace `Schedule`
+3. Agent converts the counterexample into an frontrun `Schedule`
 4. Agent runs the schedule against real code to confirm the bug
 5. Agent reports the bug to the developer with a concrete reproduction test
 6. Agent adds the test to the suite as a regression test
@@ -322,9 +322,9 @@ advantage.
 
 Several integration workflows above depend on reading a TLA+ spec and extracting its
 structure — actions, processes, variables, labels, invariants — to automatically map
-them to interlace annotations. **With agents in the loop, this parsing infrastructure
+them to frontrun annotations. **With agents in the loop, this parsing infrastructure
 is primarily agent-facing plumbing**: the agent generates a spec, then parses it back
-to produce interlace data structures. The human rarely interacts with this layer
+to produce frontrun data structures. The human rarely interacts with this layer
 directly.
 
 ### Available Parsers
@@ -442,24 +442,24 @@ appears unmaintained. Related forks:
 exports JSON IR via `quint parse --out=result.json`. Useful if adopting Quint as the
 specification language instead of raw TLA+. TypeScript-based, no JVM needed.
 
-### What to Extract: TLA+ Entities That Map to Interlace
+### What to Extract: TLA+ Entities That Map to Frontrun
 
-The core goal is to parse a TLA+ spec and produce a mapping that interlace can use.
+The core goal is to parse a TLA+ spec and produce a mapping that frontrun can use.
 Here are the key entities and how they correspond:
 
-| TLA+ Entity | Interlace Concept | How to Extract |
+| TLA+ Entity | Frontrun Concept | How to Extract |
 |-------------|-------------------|----------------|
-| **Action** (operator like `Read(t)`, `Write(t)`) | **Marker name** (`# interlace: read`, `# interlace: write`) | tree-sitter: `operator_definition` nodes at the top level of the spec |
+| **Action** (operator like `Read(t)`, `Write(t)`) | **Marker name** (`# frontrun: read`, `# frontrun: write`) | tree-sitter: `operator_definition` nodes at the top level of the spec |
 | **Process** (PlusCal `process P \in S`) | **Thread / execution name** (`executor.run("P", ...)`) | tree-sitter: `pcal_process` nodes inside `pcal_algorithm` |
 | **Label** (PlusCal `read:`, `write:`) | **Marker name** (directly — labels are the atomic units in PlusCal) | tree-sitter: `pcal_label` nodes within a process body |
 | **Variable** (`VARIABLES count, pc`) | **State snapshot keys** (`state_extractor` return keys) | tree-sitter: `variable_declaration` nodes |
-| **Invariant** (`TypeOK`, `CounterCorrect`) | **Python assertion function** (`@interlace_invariant`) | tree-sitter: operator defs referenced in `INVARIANT` config or spec property |
-| **`pc` variable** (program counter) | **Current marker per thread** (implicit in interlace schedule) | Convention: the `pc` variable maps thread IDs to label names |
+| **Invariant** (`TypeOK`, `CounterCorrect`) | **Python assertion function** (`@frontrun_invariant`) | tree-sitter: operator defs referenced in `INVARIANT` config or spec property |
+| **`pc` variable** (program counter) | **Current marker per thread** (implicit in frontrun schedule) | Convention: the `pc` variable maps thread IDs to label names |
 | **Fairness** (`WF_vars(Action)`) | **Schedule constraints** (every thread eventually progresses) | tree-sitter: `fairness_constraint` nodes in temporal formulas |
 
 ### Concrete Design: `SpecMapping` Class
 
-A `SpecMapping` would parse a TLA+ file and produce the data structures interlace
+A `SpecMapping` would parse a TLA+ file and produce the data structures frontrun
 needs. This is primarily consumed by agents and automated pipelines:
 
 ```python
@@ -469,25 +469,25 @@ from tree_sitter import Language, Parser
 
 @dataclass
 class SpecMapping:
-    """Mapping between a TLA+ spec and interlace annotations."""
+    """Mapping between a TLA+ spec and frontrun annotations."""
     actions: list[str]              # e.g. ["Read", "Write"]
     processes: list[str]            # e.g. ["Incrementer"] (PlusCal only)
     labels: dict[str, list[str]]    # process -> labels, e.g. {"Incrementer": ["read", "write"]}
     variables: list[str]            # e.g. ["count", "pc"]
     invariants: list[str]           # e.g. ["TypeOK", "CounterCorrect"]
 
-    # Derived mappings for interlace
+    # Derived mappings for frontrun
     def action_to_marker(self) -> dict[str, str]:
-        """Map TLA+ action names to interlace marker names (lowercase/snake_case)."""
+        """Map TLA+ action names to frontrun marker names (lowercase/snake_case)."""
         return {a: a.lower() for a in self.actions}
 
     def label_to_marker(self) -> dict[str, str]:
-        """Map PlusCal labels to interlace marker names (identity — labels are already good names)."""
+        """Map PlusCal labels to frontrun marker names (identity — labels are already good names)."""
         all_labels = [l for labels in self.labels.values() for l in labels]
         return {l: l for l in all_labels}
 
     def process_to_thread(self) -> dict[str, str]:
-        """Map PlusCal process names to interlace thread names."""
+        """Map PlusCal process names to frontrun thread names."""
         return {p: p.lower() for p in self.processes}
 
     @classmethod
@@ -539,12 +539,12 @@ def _descendants(node):
 
 ### PlusCal Is the Sweet Spot
 
-PlusCal specs map to interlace more naturally than raw TLA+ because:
+PlusCal specs map to frontrun more naturally than raw TLA+ because:
 
 1. **Labels = markers**: PlusCal labels define the atomic grain — each label is one
-   indivisible step. This is exactly what an interlace marker represents.
+   indivisible step. This is exactly what an frontrun marker represents.
 2. **Processes = threads**: PlusCal `process` declarations correspond directly to
-   interlace execution units.
+   frontrun execution units.
 3. **`pc` = schedule position**: PlusCal's auto-generated `pc` variable tracks which
    label each process is at, which is the same information frontrun's `Schedule`
    encodes.
@@ -584,7 +584,7 @@ Python code is actually written. The agent translates idioms it already understa
 The full agent-mediated pipeline, from Python code to formally-guided tests:
 
 ```
-Developer writes concurrent Python code with interlace markers
+Developer writes concurrent Python code with frontrun markers
     |
     v
 Agent reads code, generates PlusCal/TLA+ spec
@@ -598,7 +598,7 @@ Agent runs TLC on the spec
     +---> TLC finds counterexample trace
           |
           v
-    Agent converts counterexample to interlace Schedule
+    Agent converts counterexample to frontrun Schedule
           |
           v
     Agent runs Schedule against real Python code
@@ -624,7 +624,7 @@ mapping = SpecMapping.from_tla_file("Counter.tla")
 # 2. Run TLC to find counterexamples (or enumerate behaviors)
 #    (via subprocess or modelator-py)
 
-# 3. Convert a TLC counterexample into an interlace Schedule
+# 3. Convert a TLC counterexample into an frontrun Schedule
 schedule = replay_counterexample(
     "MC_Counter.out",
     action_to_marker=mapping.label_to_marker(),
@@ -654,7 +654,7 @@ assert counter.value == expected_from_tlc
 - **Module instantiation**: TLA+ specs often use `INSTANCE` to compose modules. This
   is invisible to tree-sitter (it's a semantic operation). For specs with complex
   module structure, Apalache's flattened JSON IR would be needed.
-- **Symmetry**: TLA+ processes are often symmetric (`\in {1, 2}`). Interlace could
+- **Symmetry**: TLA+ processes are often symmetric (`\in {1, 2}`). Frontrun could
   exploit this to reduce the number of schedules to test, mirroring TLC's symmetry
   reduction.
 - **Spec correctness**: If the agent generates the spec, who validates the spec? One
@@ -681,7 +681,7 @@ assert counter.value == expected_from_tlc
 The suggested starting path: **Counterexample Replay** (7) and **Invariant Bridge**
 (4) are low-effort and immediately useful. Then build toward **Trace Validation** (1)
 and **Spec-Guided Schedules** (2), which together give the full agent-driven pipeline:
-TLC finds bugs in the model, interlace confirms them in real code.
+TLC finds bugs in the model, frontrun confirms them in real code.
 
 **Note on the Linter (5):** The spec/code correspondence linter is low-effort, useful
 to both agents and humans, and provides the foundation for all other workflows — if

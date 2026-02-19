@@ -29,11 +29,11 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/lucaswiman/interlace"
-Repository = "https://github.com/lucaswiman/interlace.git"
-Documentation = "https://lucaswiman.github.io/interlace"
-Changelog = "https://github.com/lucaswiman/interlace/blob/main/CHANGELOG.rst"
-Issues = "https://github.com/lucaswiman/interlace/issues"
+Homepage = "https://github.com/lucaswiman/frontrun"
+Repository = "https://github.com/lucaswiman/frontrun.git"
+Documentation = "https://lucaswiman.github.io/frontrun"
+Changelog = "https://github.com/lucaswiman/frontrun/blob/main/CHANGELOG.rst"
+Issues = "https://github.com/lucaswiman/frontrun/issues"
 
 [project.optional-dependencies]
 dev = [

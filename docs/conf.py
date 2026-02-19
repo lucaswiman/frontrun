@@ -34,7 +34,7 @@ html_theme = "sphinx_rtd_theme"
 
 # Theme options are theme-specific and used by html_theme_path
 html_theme_options = {
-    "canonical_url": "https://lucaswiman.github.io/interlace",
+    "canonical_url": "https://lucaswiman.github.io/frontrun",
     "logo_only": False,
     "display_version": True,
     "prev_next_buttons_location": "bottom",
@@ -71,7 +71,7 @@ on_rtd = True
 html_context = {
     "display_github": True,
     "github_user": "lucaswiman",
-    "github_repo": "interlace",
+    "github_repo": "frontrun",
     "github_version": "main",
     "conf_py_path": "/docs/",
 }

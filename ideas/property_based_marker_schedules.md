@@ -2,9 +2,9 @@
 
 ## The Problem
 
-Interlace currently has two modes that sit at opposite ends of a spectrum:
+Frontrun currently has two modes that sit at opposite ends of a spectrum:
 
-1. **Trace markers** (`# interlace: marker_name`) — You manually write a `Schedule`
+1. **Trace markers** (`# frontrun: marker_name`) — You manually write a `Schedule`
    of `Step` objects that specifies the exact execution order. Precise and
    deterministic, but requires knowing the bug-triggering interleaving in advance.
 
@@ -17,7 +17,7 @@ There's a natural middle ground: **property-based testing at the marker level**.
 
 ## The Idea
 
-Use the `# interlace: marker_name` comments as the vocabulary for schedule
+Use the `# frontrun: marker_name` comments as the vocabulary for schedule
 generation instead of individual opcodes. A Hypothesis strategy generates
 sequences of `(thread_name, marker_name)` steps, and the trace marker executor
 runs each generated schedule.
@@ -106,7 +106,7 @@ of function length.
 
 ### 2. Markers as Documentation
 
-The `# interlace: marker_name` comments serve double duty:
+The `# frontrun: marker_name` comments serve double duty:
 - **For humans**: They mark the interesting interleave points in the code,
   documenting where context switches matter
 - **For the tool**: They define the vocabulary for schedule generation
@@ -248,10 +248,10 @@ This means you can add markers surgically:
 
 ```python
 def _should_keep_going(self):
-    with self.worker_lock:                    # interlace: acquire_worker_lock
+    with self.worker_lock:                    # frontrun: acquire_worker_lock
         keep_going = self.keep_going
     # ← race window is HERE, between the two locks
-    with self.join_lock:                      # interlace: acquire_join_lock
+    with self.join_lock:                      # frontrun: acquire_join_lock
         if self._join_is_called and self.bench.empty():
             return False
     return keep_going
@@ -263,7 +263,7 @@ Just two markers, but they capture the exact race window.
 
 | Feature | Bytecode Exploration | Marker Schedules |
 |---------|---------------------|------------------|
-| Setup effort | Zero (automatic) | Add `# interlace:` comments |
+| Setup effort | Zero (automatic) | Add `# frontrun:` comments |
 | Search space | Enormous (opcode-level) | Small (marker-level) |
 | Exhaustive | No (random sampling) | Yes (for small marker sets) |
 | Counterexample size | 50-300 opcode steps | 3-10 marker steps |

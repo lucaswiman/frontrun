@@ -148,7 +148,7 @@ frontrun/
 
 These data structures are modeled directly on loom's internal representations,
 adapted for frontrun's Python-centric use case. Where loom models C11 atomic
-operations with modification orders and reads-from relations, interlace models
+operations with modification orders and reads-from relations, frontrun models
 Python shared-memory accesses (object attribute reads/writes, dict operations, list
 mutations) with a simpler dependency relation.
 
@@ -310,7 +310,7 @@ impl Access {
 /// Identifies a shared memory location in the Python program.
 ///
 /// Unlike loom (which tracks atomic cells, mutexes, etc. as distinct object types),
-/// interlace must track Python-level shared state: object attributes, dict keys,
+/// frontrun must track Python-level shared state: object attributes, dict keys,
 /// list indices. The `ObjectId` captures the identity of the shared location.
 ///
 /// Object identity is determined by the Python orchestration layer and passed
@@ -902,9 +902,9 @@ def explore_dpor(
 
 ## 5. Conflict Detection for Python
 
-The hardest part of adapting DPOR from loom to interlace is conflict detection.
+The hardest part of adapting DPOR from loom to frontrun is conflict detection.
 Loom instruments explicit `Atomic*` types — the user opts into tracking by using
-`loom::sync::AtomicUsize` instead of `std::sync::atomic::AtomicUsize`. Interlace
+`loom::sync::AtomicUsize` instead of `std::sync::atomic::AtomicUsize`. Frontrun
 must detect accesses to arbitrary Python shared state.
 
 ### 5.1 Approaches to Conflict Detection
@@ -944,10 +944,10 @@ Extend the trace marker syntax to declare accessed objects:
 
 ```python
 def transfer(self, amount):
-    # interlace: read_balance [self.balance:read]
+    # frontrun: read_balance [self.balance:read]
     current = self.balance
     new_balance = current + amount
-    # interlace: write_balance [self.balance:write]
+    # frontrun: write_balance [self.balance:write]
     self.balance = new_balance
 ```
 
@@ -1020,7 +1020,7 @@ detector should filter out:
 2. **Immutable objects.** Accesses to `int`, `str`, `bytes`, `tuple`, `frozenset`
    values. Reads of immutable objects are always independent.
 
-3. **Scheduler internals.** Accesses to the interlace scheduler's own state, the
+3. **Scheduler internals.** Accesses to the frontrun scheduler's own state, the
    cooperative lock wrappers, etc. These must be invisible to DPOR.
 
 4. **Stdlib internals.** Accesses within `threading`, `queue`, `collections`, etc.
@@ -1098,7 +1098,7 @@ edges are:
 | `await` (yield to event loop) -> next task resumes | Scheduling order is the happens-before |
 | `Task.cancel()` -> `CancelledError` raised | Cancel happens-before exception |
 
-For async DPOR, the custom `InterlaceEventLoop` proposed in FUTURE_WORK.md would
+For async DPOR, the custom `FrontrunEventLoop` proposed in FUTURE_WORK.md would
 intercept all task scheduling decisions and report them to the DPOR engine.
 
 ---
@@ -1266,7 +1266,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "interlace_dpor"
+name = "frontrun_dpor"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -1285,7 +1285,7 @@ features = ["pyo3/extension-module"]
 
 ---
 
-## 10. Integration with Existing Interlace Infrastructure
+## 10. Integration with Existing Frontrun Infrastructure
 
 ### 10.1 Bytecode Mode Integration
 

@@ -89,32 +89,18 @@ build_distribution() {
     print_success "Built distribution packages"
 }
 
-# Prompt for PyPI credentials
+# Prompt for PyPI API token
 prompt_for_credentials() {
     echo ""
-    echo "PyPI Upload Credentials"
+    echo "PyPI API Token Required"
     echo "----------------------"
-    echo "Choose authentication method:"
-    echo "1. PyPI token (recommended)"
-    echo "2. Username and password"
+    echo "PyPI requires API tokens for authentication."
+    echo "Create one at: https://pypi.org/manage/account/tokens/"
     echo ""
-    read -p "Enter choice (1 or 2): " auth_choice
-
-    if [ "$auth_choice" = "1" ]; then
-        read -sp "Enter PyPI token: " pypi_token
-        echo ""
-        export TWINE_PASSWORD="$pypi_token"
-        export TWINE_USERNAME="__token__"
-    elif [ "$auth_choice" = "2" ]; then
-        read -p "Enter PyPI username: " pypi_username
-        read -sp "Enter PyPI password: " pypi_password
-        echo ""
-        export TWINE_USERNAME="$pypi_username"
-        export TWINE_PASSWORD="$pypi_password"
-    else
-        print_error "Invalid choice"
-        exit 1
-    fi
+    read -sp "Enter PyPI API token: " pypi_token
+    echo ""
+    export TWINE_PASSWORD="$pypi_token"
+    export TWINE_USERNAME="__token__"
 }
 
 # Upload to PyPI
@@ -134,7 +120,7 @@ upload_to_pypi() {
 main() {
     echo ""
     echo "===================================="
-    echo "   Interlace Release Script"
+    echo "   Frontrun Release Script"
     echo "===================================="
     echo ""
 
