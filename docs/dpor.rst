@@ -122,7 +122,8 @@ Two events :math:`e_i` and :math:`e_j` are **concurrent** (written
 
 Frontrun tracks happens-before using `vector clocks
 <https://en.wikipedia.org/wiki/Vector_clock>`_ (``VersionVec``). A vector clock
-is a dense array of counters, one per thread:
+is an array of counters with one entry per thread (stored as a contiguous
+``Vec<u32>`` indexed by thread ID):
 
 .. math::
 
@@ -162,9 +163,10 @@ Each thread carries *two* vector clocks:
 
 ``dpor_vv``
     Tracks the scheduler's branch decisions. Incremented each time the thread
-    is scheduled and joined on synchronization the same way as ``causality``.
-    This is the clock used for DPOR dependency detection --- it tells us
-    whether two scheduling decisions were causally ordered or concurrent.
+    is scheduled, and merged (via the same component-wise-max ``join``
+    operation) on synchronization events just like ``causality``. This is the
+    clock used for DPOR dependency detection --- it tells us whether two
+    scheduling decisions were causally ordered or concurrent.
 
 
 Conflict detection
@@ -531,7 +533,7 @@ Data structures
 The implementation is split across six Rust modules in ``frontrun-dpor/src/``:
 
 ``vv.rs`` --- Vector clocks
-    ``VersionVec``: a dense ``Vec<u32>`` indexed by thread ID with
+    ``VersionVec``: a contiguous ``Vec<u32>`` indexed by thread ID with
     ``increment``, ``join``, ``partial_le``, and ``concurrent_with`` operations.
 
 ``access.rs`` --- Access records
@@ -635,7 +637,7 @@ accesses per object are retained.
 **Executions:** In the worst case exponential in the number of dependent
 operations, but in practice DPOR prunes the vast majority of redundant
 interleavings. With preemption bounding at bound :math:`k`, the explored
-subset is :math:`O\!\binom{n}{k}` which is polynomial in program length *n*
+subset is :math:`O\!\left(\binom{n}{k}\right)` which is polynomial in program length *n*
 for fixed *k*.
 
 
