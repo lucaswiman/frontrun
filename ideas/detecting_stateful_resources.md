@@ -81,9 +81,57 @@ def _traced_send(self, data, *args):
 
 ---
 
-## Layer 2: Taint Propagation via Proxy Objects
+## Layer 1.5: `sys.setprofile` / `sys.monitoring` C_CALL Events
 
-The insight: if you can identify the *root* resource object (an `Engine`, a `Connection`, a file handle), you can wrap it in a proxy that *taints* everything derived from it.
+`sys.settrace` doesn't fire for C function calls. `_tracing.py:should_trace_file` skips all library/site-packages code, so DPOR's shadow stack goes dark inside C extensions like `psycopg2` or `sqlite3`. But `sys.setprofile` fires `c_call`/`c_return` events for those exact calls:
+
+```python
+def profile_func(frame, event, arg):
+    if event == "c_call":
+        if arg is socket.socket.send:
+            report_resource_access("socket", AccessKind.WRITE)
+        elif arg is socket.socket.recv:
+            report_resource_access("socket", AccessKind.READ)
+
+sys.setprofile(profile_func)
+```
+
+**Integration path:** On the `sys.settrace` path (3.10-3.11), install `sys.setprofile` alongside it in `_run_thread_settrace`. On the `sys.monitoring` path (3.12+), PEP 669 already defines `C_RAISE` and `C_RETURN` event types — add them to the `set_events` bitmask. The callback calls `_report_read`/`_report_write` with a synthetic `object_key`, feeding directly into the existing Rust engine. No new Rust code needed.
+
+`sys.setprofile` and `sys.settrace` don't conflict: profile fires around C calls, trace fires around opcodes. Different events, different times.
+
+---
+
+## Layer 2: Taint Propagation (Proxy or `__class__` Reassignment)
+
+The insight: if you can identify the *root* resource object (an `Engine`, a `Connection`, a file handle), you can make everything derived from it self-reporting.
+
+### Option A: `__class__` Reassignment (preferred)
+
+Swap the object's type at runtime. The object keeps all its state but dispatches through an instrumented subclass. Unlike a proxy, `isinstance()` still works:
+
+```python
+class InstrumentedConnection(type(conn)):
+    def execute(self, *args, **kwargs):
+        report_access(id(self), AccessKind.WRITE)
+        return super().execute(*args, **kwargs)
+
+conn.__class__ = InstrumentedConnection
+```
+
+DPOR already has `PY_RETURN` handlers (`dpor.py:581`). Intercept return values there:
+
+```python
+def handle_py_return(code, instruction_offset, retval):
+    if _is_resource_like(retval) and not _already_instrumented(retval):
+        retval.__class__ = _make_instrumented_subclass(type(retval))
+```
+
+Every cursor, connection, or file handle that passes through a return value gets automatically instrumented. Once swapped, the object self-reports every method call — no further tracing overhead.
+
+**Limitation:** Only works on heap types with compatible `__slots__`/C layout. Pure-Python library objects — fine. C extension types like `sqlite3.Cursor` — raises `TypeError`. For those, fall back to Option B or `sys.setprofile`.
+
+### Option B: Proxy wrapper (explicit config)
 
 ```python
 class ResourceProxy:
@@ -119,9 +167,29 @@ engine = ResourceProxy(create_engine("sqlite:///test.db"), resource_id="main-db"
 # .execute(...)     → reports access to "main-db", returns result
 ```
 
-**Requires one line of config** (wrapping the root resource), but then propagates automatically through arbitrary call chains. This directly addresses the concern about `engine.session().cursor().execute(...)`.
+**Requires one line of config** (wrapping the root resource), but then propagates automatically through arbitrary call chains. Breaks `isinstance()` checks, so prefer `__class__` reassignment when possible.
 
-**Enhancement — auto-detect roots:** Combine with audit hooks. When `socket.connect` fires, walk `gc.get_referrers(sock)` up the reference chain to find the "owning" high-level object. Tag that object as a resource root. Next time any thread touches it (detected via DPOR's normal attribute tracking), we know it's a resource access.
+### Auto-detecting roots with `gc.get_referrers()`
+
+When an audit hook fires on `socket.connect(("localhost", 5432))`, walk `gc.get_referrers(sock)` up the reference chain to find the owning high-level object:
+
+```python
+def find_owner(obj, max_depth=10):
+    """One-shot walk up gc.get_referrers to find the resource owner."""
+    current = obj
+    for _ in range(max_depth):
+        referrers = [
+            r for r in gc.get_referrers(current)
+            if not isinstance(r, (types.FrameType, dict, list))
+            and r is not current
+        ]
+        if not referrers:
+            return current
+        current = referrers[0]
+    return current
+```
+
+socket → `Connection._sock` → `Connection` → `Engine._pool` → `Engine`. Cache the mapping `id(engine) → endpoint`. This is a startup-time operation, not per-opcode. GC non-determinism doesn't matter because you're just using it for resource *identification*; actual conflict detection still goes through deterministic vector clocks.
 
 ---
 
@@ -275,22 +343,28 @@ This is analogous to the existing `# frontrun:` trace markers but for resource i
 These aren't mutually exclusive. The most practical design is probably layered:
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Layer 6: User annotations                       │  ← highest precision
-│  @frontrun.resource("db") / with accessing("db") │
-├─────────────────────────────────────────────────┤
-│  Layer 4: Known-library plugins                  │  ← auto-installed on import
-│  sqlalchemy, redis, psycopg2, ...               │
-├─────────────────────────────────────────────────┤
-│  Layer 3: Duck-typing heuristics                 │  ← .execute(), .send(), .write()
-│  sys.monitoring CALL events                      │
-├─────────────────────────────────────────────────┤
-│  Layer 1: Socket/file monkey-patches             │  ← catch-all I/O
-│  socket.send, builtins.open, os.write            │
-├─────────────────────────────────────────────────┤
-│  Layer 0: sys.addaudithook                       │  ← zero-config safety net
-│  Fires even from C extensions                    │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Layer 6: User annotations                           │  ← highest precision
+│  @frontrun.resource("db") / with accessing("db")     │
+├─────────────────────────────────────────────────────┤
+│  Layer 4: Known-library plugins                      │  ← auto-installed on import
+│  sqlalchemy, redis, psycopg2, ...                    │
+├─────────────────────────────────────────────────────┤
+│  Layer 3: Duck-typing heuristics                     │  ← .execute(), .send(), .write()
+│  sys.monitoring CALL events                          │
+├─────────────────────────────────────────────────────┤
+│  Layer 2: Taint propagation                          │  ← auto or manual
+│  __class__ reassignment / proxy + gc.get_referrers   │
+├─────────────────────────────────────────────────────┤
+│  Layer 1.5: sys.setprofile / sys.monitoring C_CALL   │  ← C extension visibility
+│  Fires on C function calls invisible to sys.settrace │
+├─────────────────────────────────────────────────────┤
+│  Layer 1: Socket/file monkey-patches                 │  ← catch-all I/O
+│  socket.send, builtins.open, os.write                │
+├─────────────────────────────────────────────────────┤
+│  Layer 0: sys.addaudithook                           │  ← zero-config safety net
+│  Fires even from C extensions                        │
+└─────────────────────────────────────────────────────┘
 ```
 
 Higher layers override lower ones (if a plugin provides precise per-table tracking for SQLAlchemy, don't also report the raw socket I/O from the same operation). Lower layers catch everything the higher layers miss.
@@ -309,10 +383,10 @@ Higher layers override lower ones (if a plugin provides precise per-table tracki
 
 ## Wild Ideas Worth Exploring
 
-**`gc.get_referrers` chain walking:** When `socket.connect` fires, walk `gc.get_referrers(sock)` upward to find the high-level object that owns this socket. If it's a `sqlalchemy.engine.Engine`, use that as the resource identity. Completely automatic library detection without a plugin registry.
-
 **SQL wire protocol parsing:** At the socket layer, parse the first few bytes of data sent to known ports (5432=postgres, 3306=mysql, 6379=redis). Extract the SQL command or Redis command. Now you know not just "thread X talked to postgres" but "thread X did `UPDATE accounts`". Resource identity becomes `("postgres", "accounts")` — per-table conflict detection with zero config.
 
 **`LD_PRELOAD` for C extensions:** For libraries that bypass Python's socket layer entirely, ship a small C shared library that intercepts `send`/`recv`/`write`/`read` at the libc level and calls back into Python. This catches *everything*, including pure-C database drivers. Pairs naturally with the Rust DPOR engine (Rust ↔ C interop is trivial).
 
 **Frame introspection at I/O points:** When a resource access is detected (via any layer), inspect `sys._getframe()` to capture the call stack. Use the innermost user-code frame as the "operation identity." This lets you show the user *where* in their code the conflicting resource accesses happen, even without trace markers.
+
+**Import hook bytecode rewriting (long-term):** Eliminate `should_trace_file` filtering entirely. Rewrite bytecodes at import time to insert callbacks only around `CALL` instructions targeting resource methods. Zero overhead on non-resource code. This is a legitimate technique (coverage.py does it), but the implementation cost is high: the shadow stack code in `_process_opcode` already demonstrates ~200 lines of version-specific opcode handling across 3.10–3.14t. For the specific goal of "detect resource accesses," `sys.setprofile` achieves the same thing with ~20 lines.
