@@ -278,8 +278,12 @@ async def explore_interleavings(
     result = InterleavingResult(property_holds=True, num_explored=0)
 
     for _ in range(max_attempts):
-        length = rng.randint(1, max_ops)
-        schedule = [rng.randint(0, num_tasks - 1) for _ in range(length)]
+        num_rounds = rng.randint(1, max(1, max_ops // num_tasks))
+        schedule: list[int] = []
+        for _ in range(num_rounds):
+            round_perm = list(range(num_tasks))
+            rng.shuffle(round_perm)
+            schedule.extend(round_perm)
 
         state = await run_with_schedule(schedule, setup, tasks, timeout=timeout_per_run)
         result.num_explored += 1
@@ -293,7 +297,11 @@ async def explore_interleavings(
 
 
 def schedule_strategy(num_tasks: int, max_ops: int = 100) -> Any:  # type: ignore[name-defined]
-    """Hypothesis strategy for generating await-point schedules.
+    """Hypothesis strategy for generating fair await-point schedules.
+
+    Generates schedules as a sequence of rounds, where each round is a
+    random permutation of all task indices.  This guarantees every task
+    gets exactly the same number of scheduling slots, preventing starvation.
 
     For use with hypothesis @given decorator in your own tests:
 
@@ -312,8 +320,15 @@ def schedule_strategy(num_tasks: int, max_ops: int = 100) -> Any:  # type: ignor
     """
     from hypothesis import strategies as st  # type: ignore[import-not-found]
 
-    return st.lists(  # type: ignore[attr-defined,return-value]
-        st.integers(min_value=0, max_value=num_tasks - 1),  # type: ignore[attr-defined]
-        min_size=1,
-        max_size=max_ops,
-    )
+    max_rounds = max(1, max_ops // num_tasks)
+    tasks = list(range(num_tasks))
+
+    @st.composite  # type: ignore[attr-defined]
+    def _fair_schedule(draw: st.DrawFn) -> list[int]:  # type: ignore[attr-defined,name-defined]
+        num_rounds = draw(st.integers(min_value=1, max_value=max_rounds))  # type: ignore[attr-defined]
+        schedule: list[int] = []
+        for _ in range(num_rounds):
+            schedule.extend(draw(st.permutations(tasks)))  # type: ignore[attr-defined]
+        return schedule
+
+    return _fair_schedule()

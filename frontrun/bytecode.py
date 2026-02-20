@@ -452,8 +452,12 @@ def explore_interleavings(
     result = InterleavingResult(property_holds=True, num_explored=0)
 
     for _ in range(max_attempts):
-        length = rng.randint(1, max_ops)
-        schedule = [rng.randint(0, num_threads - 1) for _ in range(length)]
+        num_rounds = rng.randint(1, max(1, max_ops // num_threads))
+        schedule: list[int] = []
+        for _ in range(num_rounds):
+            round_perm = list(range(num_threads))
+            rng.shuffle(round_perm)
+            schedule.extend(round_perm)
 
         if debug:
             print(f"Running with {schedule=} {threads=}", flush=True)
@@ -469,7 +473,12 @@ def explore_interleavings(
 
 
 def schedule_strategy(num_threads: int, max_ops: int = 300):
-    """Hypothesis strategy for generating opcode schedules.
+    """Hypothesis strategy for generating fair opcode schedules.
+
+    Generates schedules as a sequence of rounds, where each round is a
+    random permutation of all thread indices.  This guarantees every thread
+    gets exactly the same number of scheduling slots, preventing starvation
+    (e.g. a schedule that gives 99 % of steps to one thread).
 
     For use with hypothesis @given decorator in your own tests:
 
@@ -488,8 +497,15 @@ def schedule_strategy(num_threads: int, max_ops: int = 300):
     """
     from hypothesis import strategies as st
 
-    return st.lists(
-        st.integers(min_value=0, max_value=num_threads - 1),
-        min_size=1,
-        max_size=max_ops,
-    )
+    max_rounds = max(1, max_ops // num_threads)
+    threads = list(range(num_threads))
+
+    @st.composite
+    def _fair_schedule(draw: st.DrawFn) -> list[int]:
+        num_rounds = draw(st.integers(min_value=1, max_value=max_rounds))
+        schedule: list[int] = []
+        for _ in range(num_rounds):
+            schedule.extend(draw(st.permutations(threads)))
+        return schedule
+
+    return _fair_schedule()
