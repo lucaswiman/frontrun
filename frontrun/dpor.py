@@ -190,7 +190,23 @@ class DporScheduler:
 
     def wait_for_turn(self, thread_id: int) -> bool:
         """Block until it's this thread's turn. Returns False when done."""
+        return self._report_and_wait(None, thread_id)
+
+    def report_and_wait(self, frame: Any, thread_id: int) -> bool:
+        """Report accesses for an opcode and wait for this thread's turn.
+
+        Combines ``_process_opcode`` and the wait-for-turn logic under a
+        single lock acquisition so that ``engine.report_access()`` and
+        ``engine.schedule()`` can never be called concurrently.  This is
+        critical on free-threaded Python (3.13t/3.14t) where there is no
+        GIL to serialise PyO3 ``&mut self`` borrows.
+        """
+        return self._report_and_wait(frame, thread_id)
+
+    def _report_and_wait(self, frame: Any | None, thread_id: int) -> bool:
         with self._condition:
+            if frame is not None:
+                _process_opcode(frame, self, thread_id)
             while True:
                 if self._finished or self._error:
                     return False
@@ -528,8 +544,7 @@ class DporBytecodeRunner:
                 return None
 
             if event == "opcode":
-                _process_opcode(frame, scheduler, thread_id)
-                scheduler.wait_for_turn(thread_id)
+                scheduler.report_and_wait(frame, thread_id)
                 return trace
 
             if event == "return":
@@ -582,12 +597,12 @@ class DporBytecodeRunner:
             if thread_id is None:
                 return None
 
-            # Build a minimal frame-like object for _process_opcode.
-            # sys.monitoring gives us code + offset; we need f_locals/f_globals.
-            # Use sys._getframe() to get the actual frame.
+            # Use sys._getframe() to get the actual frame for _process_opcode.
+            # report_and_wait runs _process_opcode and wait_for_turn under a
+            # single lock so that engine.report_access() and engine.schedule()
+            # cannot overlap on free-threaded builds.
             frame = sys._getframe(1)
-            _process_opcode(frame, scheduler, thread_id)
-            scheduler.wait_for_turn(thread_id)
+            scheduler.report_and_wait(frame, thread_id)
             return None
 
         mon.register_callback(tool_id, mon.events.PY_START, handle_py_start)  # type: ignore[attr-defined]
