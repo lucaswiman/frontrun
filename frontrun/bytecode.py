@@ -47,6 +47,11 @@ from frontrun._cooperative import (
     unpatch_locks,
 )
 from frontrun._deadlock import SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
+from frontrun._io_detection import (
+    patch_io,
+    set_io_reporter,
+    unpatch_io,
+)
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.common import InterleavingResult
 
@@ -153,12 +158,14 @@ class BytecodeShuffler:
     # sys.monitoring tool ID (use OPTIMIZER_ID to avoid conflict with DPOR's PROFILER_ID)
     _TOOL_ID: int | None = None
 
-    def __init__(self, scheduler: OpcodeScheduler, cooperative_locks: bool = True):
+    def __init__(self, scheduler: OpcodeScheduler, cooperative_locks: bool = True, detect_io: bool = True):
         self.scheduler = scheduler
         self.cooperative_locks = cooperative_locks
+        self.detect_io = detect_io
         self.threads: list[threading.Thread] = []
         self.errors: dict[int, Exception] = {}
         self._lock_patched = False
+        self._io_patched = False
         self._monitoring_active = False
 
     def _patch_locks(self):
@@ -173,8 +180,22 @@ class BytecodeShuffler:
         """Restore the original threading and queue primitives."""
         if self._lock_patched:
             unpatch_locks()
+
             uninstall_wait_for_graph()
             self._lock_patched = False
+
+    def _patch_io(self):
+        """Replace socket and open with traced versions."""
+        if not self.detect_io:
+            return
+        patch_io()
+        self._io_patched = True
+
+    def _unpatch_io(self):
+        """Restore original socket and open implementations."""
+        if self._io_patched:
+            unpatch_io()
+            self._io_patched = False
 
     def _make_trace(self, thread_id: int) -> Callable[[Any, str, Any], Any]:  # type: ignore[return-value]
         """Create a sys.settrace function for the given thread."""
@@ -262,12 +283,32 @@ class BytecodeShuffler:
 
     # --- Thread entry points ---
 
+    def _setup_io_reporter(self, thread_id: int) -> None:
+        """Install IO reporter that forces a scheduling point on IO events."""
+        if not self.detect_io:
+            return
+        scheduler = self.scheduler
+
+        def _io_reporter(resource_id: str, kind: str) -> None:
+            # Force a scheduling point around IO operations so the random
+            # exploration can try different orderings of IO vs other threads.
+            if not scheduler._finished and not scheduler._error:
+                scheduler.wait_for_turn(thread_id)
+
+        set_io_reporter(_io_reporter)
+
+    def _teardown_io_reporter(self) -> None:
+        """Remove the IO reporter for the current thread."""
+        if self.detect_io:
+            set_io_reporter(None)
+
     def _run_thread_settrace(
         self, thread_id: int, func: Callable[..., None], args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> None:
         """Thread entry using sys.settrace (3.10-3.11)."""
         try:
             set_context(self.scheduler, thread_id)
+            self._setup_io_reporter(thread_id)
 
             trace_fn = self._make_trace(thread_id)
             sys.settrace(trace_fn)
@@ -279,6 +320,7 @@ class BytecodeShuffler:
             self.scheduler.report_error(e)
         finally:
             sys.settrace(None)
+            self._teardown_io_reporter()
             clear_context()
             self.scheduler.mark_done(thread_id)
 
@@ -288,6 +330,7 @@ class BytecodeShuffler:
         """Thread entry using sys.monitoring (3.12+)."""
         try:
             set_context(self.scheduler, thread_id)
+            self._setup_io_reporter(thread_id)
 
             func(*args, **kwargs)
         except SchedulerAbort:
@@ -296,6 +339,7 @@ class BytecodeShuffler:
             self.errors[thread_id] = e
             self.scheduler.report_error(e)
         finally:
+            self._teardown_io_reporter()
             clear_context()
             self.scheduler.mark_done(thread_id)
 
@@ -382,6 +426,7 @@ def run_with_schedule(
     threads: list[Callable[[T], None]],
     timeout: float = 5.0,
     cooperative_locks: bool = True,
+    detect_io: bool = True,
     debug: bool = False,
 ) -> T:
     """Run one interleaving and return the state object.
@@ -393,15 +438,18 @@ def run_with_schedule(
         timeout: Max seconds.
         cooperative_locks: Replace threading/queue primitives with
             scheduler-aware versions that prevent deadlocks (default True).
+        detect_io: Automatically detect socket/file I/O and treat them
+            as scheduling points (default True).
 
     Returns:
         The state object after execution.
     """
     scheduler = OpcodeScheduler(schedule, len(threads))
-    runner = BytecodeShuffler(scheduler, cooperative_locks=cooperative_locks)
+    runner = BytecodeShuffler(scheduler, cooperative_locks=cooperative_locks, detect_io=detect_io)
 
     # Patch locks BEFORE setup() so any locks created there are cooperative
     runner._patch_locks()
+    runner._patch_io()
     try:
         state = setup()
 
@@ -418,6 +466,7 @@ def run_with_schedule(
             if debug:
                 print(f"Timed out with {timeout=} on {schedule=}", flush=True)
     finally:
+        runner._unpatch_io()
         runner._unpatch_locks()
     return state
 
@@ -431,6 +480,7 @@ def explore_interleavings(
     timeout_per_run: float = 5.0,
     seed: int | None = None,
     debug: bool = False,
+    detect_io: bool = True,
 ) -> InterleavingResult:
     """Search for interleavings that violate an invariant.
 
@@ -450,6 +500,8 @@ def explore_interleavings(
         max_ops: Maximum schedule length per attempt.
         timeout_per_run: Timeout for each individual run.
         seed: Optional RNG seed for reproducibility.
+        detect_io: Automatically detect socket/file I/O and treat them
+            as scheduling points (default True).
 
     Returns:
         InterleavingResult with the outcome.
@@ -468,7 +520,7 @@ def explore_interleavings(
 
         if debug:
             print(f"Running with {schedule=} {threads=}", flush=True)
-        state = run_with_schedule(schedule, setup, threads, timeout=timeout_per_run)
+        state = run_with_schedule(schedule, setup, threads, timeout=timeout_per_run, detect_io=detect_io)
         result.num_explored += 1
 
         if not invariant(state):

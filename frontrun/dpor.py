@@ -54,6 +54,12 @@ from frontrun._cooperative import (
     unpatch_locks,
 )
 from frontrun._deadlock import SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
+from frontrun._io_detection import (
+    patch_io,
+    set_io_reporter,
+    uninstall_io_profile,
+    unpatch_io,
+)
 from frontrun._tracing import should_trace_file as _should_trace_file
 
 T = TypeVar("T")
@@ -533,12 +539,19 @@ class DporBytecodeRunner:
     # sys.monitoring tool ID for DPOR (use PROFILER to avoid conflict with debuggers)
     _TOOL_ID: int | None = None
 
-    def __init__(self, scheduler: DporScheduler, cooperative_locks: bool = True) -> None:
+    def __init__(
+        self,
+        scheduler: DporScheduler,
+        cooperative_locks: bool = True,
+        detect_io: bool = True,
+    ) -> None:
         self.scheduler = scheduler
         self.cooperative_locks = cooperative_locks
+        self.detect_io = detect_io
         self.threads: list[threading.Thread] = []
         self.errors: dict[int, Exception] = {}
         self._lock_patched = False
+        self._io_patched = False
         self._monitoring_active = False
 
     def _patch_locks(self) -> None:
@@ -553,6 +566,17 @@ class DporBytecodeRunner:
             unpatch_locks()
             uninstall_wait_for_graph()
             self._lock_patched = False
+
+    def _patch_io(self) -> None:
+        if not self.detect_io:
+            return
+        patch_io()
+        self._io_patched = True
+
+    def _unpatch_io(self) -> None:
+        if self._io_patched:
+            unpatch_io()
+            self._io_patched = False
 
     # --- sys.settrace backend (3.10-3.11) ---
 
@@ -712,8 +736,21 @@ class DporBytecodeRunner:
         _dpor_tls.engine = engine
         _dpor_tls.execution = execution
 
+        # IO detection: report socket/file accesses as resource conflicts
+        if self.detect_io:
+
+            def _io_reporter(resource_id: str, kind: str) -> None:
+                object_key = _make_object_key(hash(resource_id), resource_id)
+                with engine_lock:
+                    engine.report_access(execution, thread_id, object_key, kind)
+
+            set_io_reporter(_io_reporter)
+
     def _teardown_dpor_tls(self) -> None:
         """Clean up both shared and DPOR-specific TLS."""
+        if self.detect_io:
+            set_io_reporter(None)
+            uninstall_io_profile()
         clear_context()
         set_sync_reporter(None)
         _dpor_tls.scheduler = None
@@ -822,6 +859,7 @@ def explore_dpor(
     timeout_per_run: float = 5.0,
     cooperative_locks: bool = True,
     stop_on_first: bool = True,
+    detect_io: bool = True,
 ) -> DporResult:
     """Systematically explore interleavings using DPOR.
 
@@ -844,6 +882,10 @@ def explore_dpor(
         stop_on_first: If True (default), stop exploring as soon as the
             first invariant violation is found.  Set to False to collect
             all failing interleavings.
+        detect_io: Automatically detect socket/file I/O operations and
+            report them as resource accesses (default True).  Two threads
+            accessing the same endpoint or file will be treated as
+            conflicting, enabling DPOR to explore their orderings.
 
     Returns:
         DporResult with exploration statistics and any counterexample found.
@@ -869,9 +911,10 @@ def explore_dpor(
         with engine_lock:
             execution = engine.begin_execution()
         scheduler = DporScheduler(engine, execution, num_threads, engine_lock=engine_lock)
-        runner = DporBytecodeRunner(scheduler, cooperative_locks=cooperative_locks)
+        runner = DporBytecodeRunner(scheduler, cooperative_locks=cooperative_locks, detect_io=detect_io)
 
         runner._patch_locks()
+        runner._patch_io()
         try:
             state = setup()
 
@@ -887,6 +930,7 @@ def explore_dpor(
             except TimeoutError:
                 pass
         finally:
+            runner._unpatch_io()
             runner._unpatch_locks()
 
         result.executions_explored += 1
