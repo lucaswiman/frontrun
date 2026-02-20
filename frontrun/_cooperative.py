@@ -149,6 +149,10 @@ class CooperativeLock:
                 scheduler.report_error(TimeoutError(msg))
                 raise SchedulerAbort(msg)
 
+        # Tell the DPOR engine that this thread is waiting for the lock
+        # so it can schedule the lock holder instead.
+        self._report("lock_wait")
+
         try:
             # Spin: yield scheduler turns until we can acquire
             while not self._lock.acquire(blocking=False):
@@ -286,6 +290,10 @@ class CooperativeRLock:
                 msg = f"Lock-ordering deadlock detected: {format_cycle(cycle)}"
                 scheduler.report_error(TimeoutError(msg))
                 raise SchedulerAbort(msg)
+
+        # Tell the DPOR engine that this thread is waiting for the lock
+        # so it can schedule the lock holder instead.
+        self._report("lock_wait")
 
         try:
             while not self._lock.acquire(blocking=False):
@@ -565,16 +573,24 @@ class CooperativeEvent:
 class CooperativeCondition:
     """A Condition that yields scheduler turns instead of blocking on wait().
 
-    Uses the scheduler's TLS to avoid infinite recursion — the
-    ``OpcodeScheduler`` itself uses ``real_condition`` internally.
+    Uses a simple notification counter instead of polling a real Condition.
+    ``notify()`` increments the counter; ``wait()`` spin-yields until the
+    counter advances past its snapshot.  This avoids the lost-notification
+    bug that occurs when ``_real_cond.notify()`` fires while no thread is
+    blocked in ``_real_cond.wait()``.
     """
 
     def __init__(self, lock: CooperativeLock | None = None) -> None:
         if lock is None:
             lock = CooperativeLock()
         self._lock = lock
-        self._real_cond = real_condition(real_lock())
+        # Notification counter — monotonically increasing.  Each notify()
+        # bumps it by n; each wait() records a snapshot and spins until
+        # the counter exceeds the snapshot.
+        self._notify_count = 0
         self._waiters = 0
+        # Fallback real condition for non-managed threads (no scheduler)
+        self._real_cond = real_condition(real_lock())
 
     def acquire(self, *args: Any, **kwargs: Any) -> bool:
         return self._lock.acquire(*args, **kwargs)  # type: ignore[arg-type]
@@ -592,64 +608,88 @@ class CooperativeCondition:
     def wait(self, timeout: float | None = None) -> bool:
         from frontrun._deadlock import SchedulerAbort
 
-        # Release the user lock, spin-yield, then re-acquire
+        # _waiters and notify_count_before_wait are written while we hold
+        # self._lock (the caller must hold it per the Condition API).
         self._waiters += 1
+        # Record the counter BEFORE releasing the lock so that any
+        # notify() that fires after we release is visible.
+        notify_count_before_wait = self._notify_count
         self._lock.release()
         try:
             ctx = get_context()
             if ctx is None:
+                # Not in a managed thread — fall back to real condition
                 with self._real_cond:
                     return self._real_cond.wait(timeout=timeout)
 
             scheduler, thread_id = ctx
 
+            # The spin-loop reads of _notify_count below are intentionally
+            # done WITHOUT holding self._lock.  This is safe because
+            # _notify_count is monotonically increasing: a stale read can
+            # only cause one extra spin iteration, never a missed wakeup.
+
             if timeout is not None:
                 deadline = time.monotonic() + timeout
-                with self._real_cond:
-                    notified = self._real_cond.wait(timeout=0)
-                while not notified:
+                while self._notify_count <= notify_count_before_wait:
                     if scheduler._error:
                         raise SchedulerAbort("scheduler aborted")
                     if scheduler._finished:
-                        with self._real_cond:
-                            return self._real_cond.wait(timeout=1.0)
+                        remaining = max(0.0, deadline - time.monotonic())
+                        time.sleep(min(0.01, remaining))
+                        return self._notify_count > notify_count_before_wait
                     if time.monotonic() >= deadline:
                         return False
                     scheduler.wait_for_turn(thread_id)
-                    with self._real_cond:
-                        notified = self._real_cond.wait(timeout=0)
                 return True
 
-            with self._real_cond:
-                notified = self._real_cond.wait(timeout=0)
-            while not notified:
+            while self._notify_count <= notify_count_before_wait:
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
                 if scheduler._finished:
-                    with self._real_cond:
-                        return self._real_cond.wait(timeout=1.0)
+                    end = time.monotonic() + 1.0
+                    while self._notify_count <= notify_count_before_wait and time.monotonic() < end:
+                        time.sleep(0.001)
+                    return self._notify_count > notify_count_before_wait
                 scheduler.wait_for_turn(thread_id)
-                with self._real_cond:
-                    notified = self._real_cond.wait(timeout=0)
             return True
         finally:
-            self._waiters -= 1
             self._lock.acquire()
+            # Decrement AFTER re-acquiring the lock so that the write is
+            # serialised with notify_all()'s read of _waiters.
+            self._waiters -= 1
 
     def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> bool:
         result = predicate()
+        if result or timeout == 0:
+            return result
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+            while not result:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.wait(timeout=remaining)
+                result = predicate()
+            return result
         while not result:
-            self.wait(timeout=timeout)
+            self.wait()
             result = predicate()
-            if timeout is not None:
-                break
         return result
 
     def notify(self, n: int = 1) -> None:
+        # The caller must hold self._lock (per the Condition API), so
+        # this increment is serialised with other notify/notify_all calls
+        # and with the _waiters bookkeeping in wait().
+        self._notify_count += n
+        # Also wake the real condition for threads in the non-cooperative
+        # path (no scheduler context — they block in _real_cond.wait()).
         with self._real_cond:
             self._real_cond.notify(n)
 
     def notify_all(self) -> None:
+        # Caller holds self._lock — see notify() comment.
+        self._notify_count += max(self._waiters, 1)
         with self._real_cond:
             self._real_cond.notify_all()
 

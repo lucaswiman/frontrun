@@ -165,8 +165,21 @@ class ThreadCoordinator:
                     self.condition.notify_all()
                     return
 
-                # Not our turn, wait
-                self.condition.wait()
+                # Not our turn — wait with a fallback timeout so that
+                # incorrect schedules (referencing a marker that no thread
+                # ever reaches) get diagnosed promptly instead of blocking
+                # until the outer thread.join(timeout) fires.
+                if not self.condition.wait(timeout=5.0):
+                    expected = self.schedule.steps[self.current_step]
+                    self.error = TimeoutError(
+                        f"Schedule stall: waiting for Step({expected.execution_name!r}, "
+                        f"{expected.marker_name!r}) at step {self.current_step}/"
+                        f"{len(self.schedule.steps)}, but no thread has reached it"
+                    )
+                    if _reacquire_execution_lock:
+                        self._execution_lock.acquire()
+                    self.condition.notify_all()
+                    return
 
     def report_error(self, error: Exception):
         """Report an error and wake up all waiting threads.
@@ -339,6 +352,24 @@ class TraceExecutor:
             # Raise the first error we encountered
             first_error = next(iter(self.thread_errors.values()))
             raise first_error
+
+        # Check if the schedule was partially consumed but not completed.
+        # If at least one step was processed (so the schedule was in use)
+        # but the full schedule wasn't completed, it means the schedule
+        # references markers that no thread reached.  If zero steps were
+        # consumed, the markers were simply never hit — which could be a
+        # different issue (wrong file, exec'd code, etc.) and is not
+        # necessarily an error.
+        if (
+            self.coordinator.current_step > 0
+            and self.coordinator.current_step < len(self.coordinator.schedule.steps)
+            and not self.coordinator.completed
+        ):
+            remaining = self.coordinator.schedule.steps[self.coordinator.current_step :]
+            step_strs = [f"Step({s.execution_name!r}, {s.marker_name!r})" for s in remaining]
+            raise TimeoutError(
+                f"Schedule incomplete: {len(remaining)} step(s) were never reached: {', '.join(step_strs)}"
+            )
 
     def reset(self):
         """Reset the executor for another run (for testing purposes)."""

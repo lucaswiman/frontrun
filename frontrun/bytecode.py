@@ -34,6 +34,7 @@ Example — find a race condition with random schedule exploration:
 import random
 import sys
 import threading
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, TypeVar
@@ -214,8 +215,12 @@ class BytecodeShuffler:
         scheduler = self.scheduler
 
         def handle_py_start(code: Any, instruction_offset: int) -> Any:
-            if scheduler._finished or scheduler._error:
-                return mon.DISABLE  # type: ignore[attr-defined]
+            # Only use mon.DISABLE for code that should *never* be traced
+            # (stdlib, site-packages, frontrun internals).  Do NOT disable
+            # for transient conditions like scheduler._finished — DISABLE
+            # permanently removes INSTRUCTION events from the code object,
+            # corrupting monitoring state for subsequent iterations and
+            # tests that share the same tool ID.
             if not _should_trace_file(code.co_filename):
                 return mon.DISABLE  # type: ignore[attr-defined]
             return None
@@ -230,6 +235,9 @@ class BytecodeShuffler:
 
             thread_id = getattr(_scheduler_tls, "thread_id", None)
             if thread_id is None:
+                return None
+            # Guard against zombie threads from a previous runner
+            if getattr(_scheduler_tls, "scheduler", None) is not scheduler:
                 return None
 
             scheduler.wait_for_turn(thread_id)
@@ -304,7 +312,7 @@ class BytecodeShuffler:
             funcs: One callable per thread.
             args: Per-thread positional args.
             kwargs: Per-thread keyword args.
-            timeout: Max wait time per thread.
+            timeout: Max total wait time for all threads (global deadline).
         """
         if args is None:
             args = [() for _ in funcs]
@@ -331,8 +339,10 @@ class BytecodeShuffler:
             for t in self.threads:
                 t.start()
 
+            deadline = time.monotonic() + timeout
             for t in self.threads:
-                t.join(timeout=timeout)
+                remaining = max(0, deadline - time.monotonic())
+                t.join(timeout=remaining)
         finally:
             if use_monitoring:
                 self._teardown_monitoring()
@@ -449,8 +459,12 @@ def explore_interleavings(
     result = InterleavingResult(property_holds=True, num_explored=0)
 
     for _ in range(max_attempts):
-        length = rng.randint(1, max_ops)
-        schedule = [rng.randint(0, num_threads - 1) for _ in range(length)]
+        num_rounds = rng.randint(1, max(1, max_ops // num_threads))
+        schedule: list[int] = []
+        for _ in range(num_rounds):
+            round_perm = list(range(num_threads))
+            rng.shuffle(round_perm)
+            schedule.extend(round_perm)
 
         if debug:
             print(f"Running with {schedule=} {threads=}", flush=True)
@@ -466,7 +480,12 @@ def explore_interleavings(
 
 
 def schedule_strategy(num_threads: int, max_ops: int = 300):
-    """Hypothesis strategy for generating opcode schedules.
+    """Hypothesis strategy for generating fair opcode schedules.
+
+    Generates schedules as a sequence of rounds, where each round is a
+    random permutation of all thread indices.  This guarantees every thread
+    gets exactly the same number of scheduling slots, preventing starvation
+    (e.g. a schedule that gives 99 % of steps to one thread).
 
     For use with hypothesis @given decorator in your own tests:
 
@@ -485,8 +504,15 @@ def schedule_strategy(num_threads: int, max_ops: int = 300):
     """
     from hypothesis import strategies as st
 
-    return st.lists(
-        st.integers(min_value=0, max_value=num_threads - 1),
-        min_size=1,
-        max_size=max_ops,
-    )
+    max_rounds = max(1, max_ops // num_threads)
+    threads = list(range(num_threads))
+
+    @st.composite
+    def _fair_schedule(draw: st.DrawFn) -> list[int]:
+        num_rounds = draw(st.integers(min_value=1, max_value=max_rounds))
+        schedule: list[int] = []
+        for _ in range(num_rounds):
+            schedule.extend(draw(st.permutations(threads)))
+        return schedule
+
+    return _fair_schedule()
