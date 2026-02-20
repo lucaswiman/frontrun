@@ -239,7 +239,13 @@ class TraceExecutor:
 
                 return trace_function
             except Exception as e:
-                # Report error and stop tracing
+                # Release execution lock before reporting to avoid deadlock
+                # (report_error needs the condition lock, which another thread
+                # may hold while waiting for _execution_lock in wait_for_turn).
+                try:
+                    self.coordinator._execution_lock.release()
+                except RuntimeError:
+                    pass
                 self.coordinator.report_error(e)
                 return None
 
@@ -260,6 +266,7 @@ class TraceExecutor:
             args: Positional arguments for the target
             kwargs: Keyword arguments for the target
         """
+        error: Exception | None = None
         try:
             # Install trace function for this execution unit
             trace_fn = self._create_trace_function(execution_name)
@@ -270,16 +277,19 @@ class TraceExecutor:
             # Execute the target function
             target(*args, **kwargs)
         except Exception as e:
-            # Store the error
+            # Store the error but don't call report_error yet — we may still
+            # hold _execution_lock and report_error needs the condition lock,
+            # which risks deadlock against wait_for_turn's lock ordering.
+            error = e
             self.thread_errors[execution_name] = e
-            self.coordinator.report_error(e)
         finally:
-            # Clean up trace function
             sys.settrace(None)
             try:
                 self.coordinator._execution_lock.release()
             except RuntimeError:
-                pass  # Lock already released (e.g., error during wait_for_turn)
+                pass
+            if error is not None:
+                self.coordinator.report_error(error)
 
     def run(
         self,

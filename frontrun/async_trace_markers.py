@@ -153,7 +153,13 @@ class AsyncTraceExecutor:
 
                 return trace_function
             except Exception as e:
-                # Report error and stop tracing
+                # Release execution lock before reporting to avoid deadlock
+                # (report_error needs the condition lock, which another thread
+                # may hold while waiting for _execution_lock in wait_for_turn).
+                try:
+                    self.coordinator._execution_lock.release()
+                except RuntimeError:
+                    pass
                 self.coordinator.report_error(e)
                 return None
 
@@ -166,6 +172,7 @@ class AsyncTraceExecutor:
             execution_name: The name of this task
             task_fn: The async function to execute
         """
+        error: Exception | None = None
         try:
             # Install trace function for this task
             trace_fn = self._create_trace_function(execution_name)
@@ -176,16 +183,19 @@ class AsyncTraceExecutor:
             # Run the async task in its own event loop
             asyncio.run(task_fn())
         except Exception as e:
-            # Store the error
+            # Store the error but don't call report_error yet — we may still
+            # hold _execution_lock and report_error needs the condition lock,
+            # which risks deadlock against wait_for_turn's lock ordering.
+            error = e
             self.task_errors[execution_name] = e
-            self.coordinator.report_error(e)
         finally:
-            # Clean up trace function
             sys.settrace(None)
             try:
                 self.coordinator._execution_lock.release()
             except RuntimeError:
-                pass  # Lock already released (e.g., error during wait_for_turn)
+                pass
+            if error is not None:
+                self.coordinator.report_error(error)
 
     def run(self, tasks: dict[str, Callable[[], Coroutine[Any, Any, None]]], timeout: float = 10.0) -> None:
         """Run all tasks with controlled interleaving based on comment markers.
