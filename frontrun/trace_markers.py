@@ -118,9 +118,20 @@ class ThreadCoordinator:
         self.condition = threading.Condition(self.lock)
         self.completed = False
         self.error: Exception | None = None
+        # Execution serialization lock: ensures only one thread runs between
+        # markers, replicating GIL-like serialization needed on free-threaded
+        # Python where threads truly run in parallel.
+        self._execution_lock = threading.Lock()
 
-    def wait_for_turn(self, execution_name: str, marker_name: str):
+    def wait_for_turn(self, execution_name: str, marker_name: str, *, _reacquire_execution_lock: bool = False):
         """Block until it's this execution unit's turn to execute this marker.
+
+        When *_reacquire_execution_lock* is ``True`` (used by the trace
+        executors), ``_execution_lock`` is acquired while the condition lock
+        is still held, before returning.  This prevents other threads from
+        racing ahead between being notified and the caller resuming execution.
+        The caller must have already released ``_execution_lock`` before
+        calling this method.
 
         Args:
             execution_name: The name of the calling execution unit
@@ -130,11 +141,15 @@ class ThreadCoordinator:
             while True:
                 # Check if we're done or had an error
                 if self.completed or self.error:
+                    if _reacquire_execution_lock:
+                        self._execution_lock.acquire()
                     return
 
                 # Check if we've exceeded the schedule
                 if self.current_step >= len(self.schedule.steps):
                     self.completed = True
+                    if _reacquire_execution_lock:
+                        self._execution_lock.acquire()
                     self.condition.notify_all()
                     return
 
@@ -143,8 +158,10 @@ class ThreadCoordinator:
 
                 # Is it our turn?
                 if expected_step.execution_name == execution_name and expected_step.marker_name == marker_name:
-                    # It's our turn! Advance and notify others
+                    # It's our turn! Advance, optionally acquire execution lock, notify.
                     self.current_step += 1
+                    if _reacquire_execution_lock:
+                        self._execution_lock.acquire()
                     self.condition.notify_all()
                     return
 
@@ -211,8 +228,10 @@ class TraceExecutor:
                 marker_name = self.marker_registry.get_marker(filename, lineno)
 
                 if marker_name:
-                    # We hit a marker! Wait for our turn
-                    self.coordinator.wait_for_turn(execution_name, marker_name)
+                    # Release execution lock while waiting (let other threads run).
+                    # wait_for_turn reacquires it before returning.
+                    self.coordinator._execution_lock.release()
+                    self.coordinator.wait_for_turn(execution_name, marker_name, _reacquire_execution_lock=True)
 
                     # Check if an error occurred in another execution unit
                     if self.coordinator.error:
@@ -244,6 +263,8 @@ class TraceExecutor:
         try:
             # Install trace function for this execution unit
             trace_fn = self._create_trace_function(execution_name)
+            # Acquire execution lock before running (serializes with other threads)
+            self.coordinator._execution_lock.acquire()
             sys.settrace(trace_fn)
 
             # Execute the target function
@@ -255,6 +276,10 @@ class TraceExecutor:
         finally:
             # Clean up trace function
             sys.settrace(None)
+            try:
+                self.coordinator._execution_lock.release()
+            except RuntimeError:
+                pass  # Lock already released (e.g., error during wait_for_turn)
 
     def run(
         self,

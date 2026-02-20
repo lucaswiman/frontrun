@@ -1,15 +1,10 @@
 """Tests for the frontrun trace_markers module."""
 
 import sys
-import sysconfig
 import threading
-
-import pytest
 
 from frontrun.common import Schedule, Step
 from frontrun.trace_markers import MarkerRegistry, ThreadCoordinator, TraceExecutor, frontrun
-
-_free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 
 
 class BankAccount:
@@ -90,7 +85,6 @@ def test_multiple_markers_same_thread():
     assert results == ["step1", "step2", "step3"]
 
 
-@pytest.mark.skipif(_free_threaded, reason="Flaky under free-threaded Python")
 def test_alternating_execution():
     """Alternating execution between two threads."""
     results = []

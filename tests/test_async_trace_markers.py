@@ -1,14 +1,11 @@
 """Tests for the frontrun async_trace_markers module."""
 
 import asyncio
-import sysconfig
 
 import pytest
 
 from frontrun.async_trace_markers import AsyncTraceExecutor, async_frontrun
 from frontrun.common import Schedule, Step
-
-_free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 
 
 class BankAccount:
@@ -107,7 +104,6 @@ def test_multiple_markers_same_task():
     assert results == ["step1", "step2", "step3"]
 
 
-@pytest.mark.skipif(_free_threaded, reason="Flaky under free-threaded Python")
 def test_alternating_execution():
     """Alternating execution between two tasks."""
     results = []
