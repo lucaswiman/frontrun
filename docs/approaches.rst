@@ -1,7 +1,7 @@
 Approaches to Concurrency Control
 ==================================
 
-Frontrun provides two approaches for controlling thread interleaving.
+Frontrun provides three approaches for controlling thread interleaving.
 
 
 Trace Markers
@@ -180,3 +180,45 @@ debugging this library or building tooling on top of it, rather than for general
 - Some bytecode patterns may not be instrumented correctly
 - Performance impact is higher than trace markers
 - Async bytecode instrumentation is also experimental
+
+
+DPOR (Systematic Exploration)
+------------------------------
+
+DPOR (Dynamic Partial Order Reduction) *systematically* explores every
+meaningfully different thread interleaving. Where the bytecode explorer
+samples randomly, DPOR guarantees completeness: every distinct interleaving
+is tried exactly once and redundant orderings are never re-run.
+
+Like the bytecode explorer, DPOR instruments at the opcode level and needs no
+manual markers. It automatically detects attribute reads/writes, subscript
+accesses, and lock operations. The exploration engine is written in Rust for
+performance.
+
+.. code-block:: python
+
+   from frontrun.dpor import explore_dpor
+
+   class Counter:
+       def __init__(self):
+           self.value = 0
+
+       def increment(self):
+           temp = self.value
+           self.value = temp + 1
+
+   result = explore_dpor(
+       setup=Counter,
+       threads=[lambda c: c.increment(), lambda c: c.increment()],
+       invariant=lambda c: c.value == 2,
+   )
+   assert not result.property_holds  # lost-update bug found in 2 executions
+
+**Scope:** DPOR works on pure Python shared-memory concurrency --- attribute
+reads/writes, locks, thread spawn/join. It cannot detect races that involve
+external systems (databases, file systems, network services) because those
+operations are invisible to bytecode-level instrumentation. For external
+interactions, use trace markers with explicit scheduling instead.
+
+For a practical guide see :doc:`dpor_guide`. For the algorithm details and
+theory see :doc:`dpor`.

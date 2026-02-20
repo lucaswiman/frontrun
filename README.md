@@ -61,7 +61,7 @@ See [detailed case studies](docs/CASE_STUDIES.rst) of searching for concurrency 
 
 ## Usage Approaches
 
-Frontrun provides two different ways to control thread interleaving:
+Frontrun provides three ways to test concurrent code:
 
 ### 1. Trace Markers
 
@@ -138,6 +138,36 @@ def test_counter_no_race():
     assert not result.property_holds, "Expected a race condition"
     assert result.counterexample.value == 1
 ```
+
+### 3. DPOR (Systematic Exploration)
+
+DPOR (Dynamic Partial Order Reduction) *systematically* explores every meaningfully different thread interleaving. Unlike the bytecode explorer which samples randomly, DPOR guarantees that every distinct interleaving is tried exactly once — and redundant orderings are never re-run.
+
+The engine automatically detects shared-memory accesses (attribute reads/writes) at the bytecode level — no annotations needed. It tracks which operations conflict and uses vector clocks to skip equivalent orderings.
+
+```python
+from frontrun.dpor import explore_dpor
+
+class Counter:
+    def __init__(self):
+        self.value = 0
+
+    def increment(self):
+        temp = self.value
+        self.value = temp + 1
+
+def test_counter_race():
+    result = explore_dpor(
+        setup=Counter,
+        threads=[lambda c: c.increment(), lambda c: c.increment()],
+        invariant=lambda c: c.value == 2,
+    )
+
+    assert not result.property_holds       # lost-update bug found
+    assert result.executions_explored == 2  # only 2 of 6 interleavings needed
+```
+
+**Scope and limitations:** DPOR works on pure Python shared-memory concurrency — attribute reads/writes, lock acquire/release, thread spawn/join. It cannot detect race conditions that involve external systems (databases, file systems, network services, message queues) because those operations are invisible to the bytecode-level instrumentation. For testing interactions with external systems, use trace markers with explicit scheduling instead.
 
 ## Async Support
 
