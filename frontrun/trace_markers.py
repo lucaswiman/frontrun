@@ -353,6 +353,24 @@ class TraceExecutor:
             first_error = next(iter(self.thread_errors.values()))
             raise first_error
 
+        # Check if the schedule was partially consumed but not completed.
+        # If at least one step was processed (so the schedule was in use)
+        # but the full schedule wasn't completed, it means the schedule
+        # references markers that no thread reached.  If zero steps were
+        # consumed, the markers were simply never hit — which could be a
+        # different issue (wrong file, exec'd code, etc.) and is not
+        # necessarily an error.
+        if (
+            self.coordinator.current_step > 0
+            and self.coordinator.current_step < len(self.coordinator.schedule.steps)
+            and not self.coordinator.completed
+        ):
+            remaining = self.coordinator.schedule.steps[self.coordinator.current_step :]
+            step_strs = [f"Step({s.execution_name!r}, {s.marker_name!r})" for s in remaining]
+            raise TimeoutError(
+                f"Schedule incomplete: {len(remaining)} step(s) were never reached: {', '.join(step_strs)}"
+            )
+
     def reset(self):
         """Reset the executor for another run (for testing purposes)."""
         self.threads = []

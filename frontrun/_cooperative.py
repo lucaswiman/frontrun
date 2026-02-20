@@ -662,9 +662,15 @@ class CooperativeCondition:
 
     def notify(self, n: int = 1) -> None:
         self._notify_count += n
+        # Also wake the real condition for threads in the non-cooperative
+        # path (no scheduler context — they block in _real_cond.wait()).
+        with self._real_cond:
+            self._real_cond.notify(n)
 
     def notify_all(self) -> None:
         self._notify_count += max(self._waiters, 1)
+        with self._real_cond:
+            self._real_cond.notify_all()
 
 
 # ---------------------------------------------------------------------------

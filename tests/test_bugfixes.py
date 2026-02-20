@@ -220,6 +220,7 @@ class TestTimeoutAccumulation:
 
     The fix uses a global deadline so total wait is bounded by timeout."""
 
+    @pytest.mark.intentionally_leaves_dangling_threads
     def test_total_timeout_is_bounded(self):
         """With 3 threads, total wait should still be ~timeout, not 3*timeout."""
         schedule = [0] * 10  # very short schedule
@@ -237,6 +238,7 @@ class TestTimeoutAccumulation:
         # After fix: elapsed ~ 1.0 (global deadline)
         assert elapsed < 2.5, f"total time {elapsed:.1f}s should be <2.5s with timeout=1.0"
 
+    @pytest.mark.intentionally_leaves_dangling_threads
     def test_dpor_total_timeout_is_bounded(self):
         """Same test for DporBytecodeRunner."""
         pytest.importorskip("frontrun_dpor")
@@ -266,13 +268,15 @@ class TestTimeoutAccumulation:
 
 class TestTraceMarkerTimeout:
     """ThreadCoordinator.wait_for_turn() used to call condition.wait() with
-    no timeout.  The fix adds a 5-second fallback so incorrect schedules
-    get diagnosed promptly."""
+    no timeout.  The fix adds:
+    1. A 5-second fallback condition.wait(timeout=5.0) for stalled threads
+    2. A schedule-incomplete check in TraceExecutor.wait() for threads that
+       finish before consuming the full schedule.
+    """
 
-    @pytest.mark.intentionally_leaves_dangling_threads
-    def test_wrong_schedule_reports_stall(self):
-        """A schedule referencing a non-existent marker should raise
-        TimeoutError promptly, not wait for the full outer timeout."""
+    def test_incomplete_schedule_reports_error(self):
+        """A schedule referencing a non-existent marker should raise TimeoutError
+        with a clear message about which steps were never reached."""
         schedule = Schedule(
             [
                 Step("t1", "marker_that_exists"),
@@ -286,12 +290,6 @@ class TestTraceMarkerTimeout:
             x = 1  # frontrun: marker_that_exists
             _ = x + 1  # no marker here
 
-        start = time.monotonic()
         executor.run("t1", worker)
-        with pytest.raises(TimeoutError):
-            executor.wait(timeout=8.0)
-        elapsed = time.monotonic() - start
-
-        # Before fix: elapsed ~ 8.0 (full outer timeout)
-        # After fix: elapsed ~ 5.0 (inner condition timeout fires first)
-        assert elapsed < 7.0, f"should detect stall before full timeout, took {elapsed:.1f}s"
+        with pytest.raises(TimeoutError, match="Schedule incomplete.*marker_that_does_not_exist"):
+            executor.wait(timeout=5.0)
