@@ -215,8 +215,12 @@ class BytecodeShuffler:
         scheduler = self.scheduler
 
         def handle_py_start(code: Any, instruction_offset: int) -> Any:
-            if scheduler._finished or scheduler._error:
-                return mon.DISABLE  # type: ignore[attr-defined]
+            # Only use mon.DISABLE for code that should *never* be traced
+            # (stdlib, site-packages, frontrun internals).  Do NOT disable
+            # for transient conditions like scheduler._finished — DISABLE
+            # permanently removes INSTRUCTION events from the code object,
+            # corrupting monitoring state for subsequent iterations and
+            # tests that share the same tool ID.
             if not _should_trace_file(code.co_filename):
                 return mon.DISABLE  # type: ignore[attr-defined]
             return None
@@ -231,6 +235,9 @@ class BytecodeShuffler:
 
             thread_id = getattr(_scheduler_tls, "thread_id", None)
             if thread_id is None:
+                return None
+            # Guard against zombie threads from a previous runner
+            if getattr(_scheduler_tls, "scheduler", None) is not scheduler:
                 return None
 
             scheduler.wait_for_turn(thread_id)

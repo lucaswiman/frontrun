@@ -149,6 +149,10 @@ class CooperativeLock:
                 scheduler.report_error(TimeoutError(msg))
                 raise SchedulerAbort(msg)
 
+        # Tell the DPOR engine that this thread is waiting for the lock
+        # so it can schedule the lock holder instead.
+        self._report("lock_wait")
+
         try:
             # Spin: yield scheduler turns until we can acquire
             while not self._lock.acquire(blocking=False):
@@ -286,6 +290,10 @@ class CooperativeRLock:
                 msg = f"Lock-ordering deadlock detected: {format_cycle(cycle)}"
                 scheduler.report_error(TimeoutError(msg))
                 raise SchedulerAbort(msg)
+
+        # Tell the DPOR engine that this thread is waiting for the lock
+        # so it can schedule the lock holder instead.
+        self._report("lock_wait")
 
         try:
             while not self._lock.acquire(blocking=False):

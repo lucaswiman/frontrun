@@ -162,10 +162,21 @@ class DporScheduler:
     cycle detection via the :class:`~frontrun._deadlock.WaitForGraph`.
     """
 
-    def __init__(self, engine: PyDporEngine, execution: PyExecution, num_threads: int) -> None:
+    def __init__(
+        self,
+        engine: PyDporEngine,
+        execution: PyExecution,
+        num_threads: int,
+        engine_lock: threading.Lock | None = None,
+    ) -> None:
         self.engine = engine
         self.execution = execution
         self.num_threads = num_threads
+        # On free-threaded Python, PyO3 &mut self borrows are non-blocking
+        # (try-or-panic).  A single engine_lock serialises ALL calls to the
+        # engine and execution objects across worker threads, the sync
+        # reporter, and the main explore_dpor loop.
+        self._engine_lock: threading.Lock = engine_lock if engine_lock is not None else real_lock()
         self._lock = real_lock()
         self._condition = threading.Condition(self._lock)
         self._finished = False
@@ -178,16 +189,22 @@ class DporScheduler:
         # entirely, which is critical for free-threaded builds.
         # Format: _dpor_tls._shadow_stacks = {frame_id: ShadowStack}
 
+        # Tracks which threads are waiting for which locks (lock_id → {thread_ids}).
+        # Used to block threads in the DPOR execution when they're spinning
+        # on a cooperative lock, and unblock them when the lock is released.
+        self._lock_waiters: dict[int, set[int]] = {}
+
         # Request the first scheduling decision
         self._current_thread = self._schedule_next()
 
     def _schedule_next(self) -> int | None:
         """Ask the DPOR engine which thread to run next."""
-        runnable = self.execution.runnable_threads()
-        if not runnable:
-            return None
+        with self._engine_lock:
+            runnable = self.execution.runnable_threads()
+            if not runnable:
+                return None
 
-        return self.engine.schedule(self.execution)
+            return self.engine.schedule(self.execution)
 
     def wait_for_turn(self, thread_id: int) -> bool:
         """Block until it's this thread's turn. Returns False when done."""
@@ -239,7 +256,8 @@ class DporScheduler:
     def mark_done(self, thread_id: int) -> None:
         with self._condition:
             self._threads_done.add(thread_id)
-            self.execution.finish_thread(thread_id)
+            with self._engine_lock:
+                self.execution.finish_thread(thread_id)
             # If the done thread was the current one, schedule next
             if self._current_thread == thread_id:
                 next_thread = self._schedule_next()
@@ -281,14 +299,20 @@ def _make_object_key(obj_id: int, name: Any) -> int:
     return hash((obj_id, name)) & 0xFFFFFFFFFFFFFFFF
 
 
-def _report_read(engine: PyDporEngine, execution: PyExecution, thread_id: int, obj: Any, name: Any) -> None:
+def _report_read(
+    engine: PyDporEngine, execution: PyExecution, thread_id: int, obj: Any, name: Any, lock: threading.Lock
+) -> None:
     if obj is not None:
-        engine.report_access(execution, thread_id, _make_object_key(id(obj), name), "read")
+        with lock:
+            engine.report_access(execution, thread_id, _make_object_key(id(obj), name), "read")
 
 
-def _report_write(engine: PyDporEngine, execution: PyExecution, thread_id: int, obj: Any, name: Any) -> None:
+def _report_write(
+    engine: PyDporEngine, execution: PyExecution, thread_id: int, obj: Any, name: Any, lock: threading.Lock
+) -> None:
     if obj is not None:
-        engine.report_access(execution, thread_id, _make_object_key(id(obj), name), "write")
+        with lock:
+            engine.report_access(execution, thread_id, _make_object_key(id(obj), name), "write")
 
 
 def _process_opcode(
@@ -312,6 +336,7 @@ def _process_opcode(
     op = instr.opname
     engine = scheduler.engine
     execution = scheduler.execution
+    elock = scheduler._engine_lock
 
     # === LOAD instructions: push values onto the shadow stack ===
 
@@ -398,7 +423,7 @@ def _process_opcode(
     elif op == "LOAD_ATTR":
         obj = shadow.pop()
         attr = instr.argval
-        _report_read(engine, execution, thread_id, obj, attr)
+        _report_read(engine, execution, thread_id, obj, attr, elock)
         if obj is not None:
             try:
                 shadow.push(getattr(obj, attr))
@@ -410,11 +435,11 @@ def _process_opcode(
     elif op == "STORE_ATTR":
         obj = shadow.pop()  # TOS = object
         _val = shadow.pop()  # TOS1 = value
-        _report_write(engine, execution, thread_id, obj, instr.argval)
+        _report_write(engine, execution, thread_id, obj, instr.argval, elock)
 
     elif op == "DELETE_ATTR":
         obj = shadow.pop()
-        _report_write(engine, execution, thread_id, obj, instr.argval)
+        _report_write(engine, execution, thread_id, obj, instr.argval, elock)
 
     # === Subscript access (dict/list operations) ===
 
@@ -423,19 +448,19 @@ def _process_opcode(
         # with subscript oparg).
         key = shadow.pop()
         container = shadow.pop()
-        _report_read(engine, execution, thread_id, container, repr(key))
+        _report_read(engine, execution, thread_id, container, repr(key), elock)
         shadow.push(None)
 
     elif op == "STORE_SUBSCR":
         key = shadow.pop()
         container = shadow.pop()
         _val = shadow.pop()
-        _report_write(engine, execution, thread_id, container, repr(key))
+        _report_write(engine, execution, thread_id, container, repr(key), elock)
 
     elif op == "DELETE_SUBSCR":
         key = shadow.pop()
         container = shadow.pop()
-        _report_write(engine, execution, thread_id, container, repr(key))
+        _report_write(engine, execution, thread_id, container, repr(key), elock)
 
     # === Arithmetic and binary operations ===
 
@@ -446,7 +471,7 @@ def _process_opcode(
         if argrepr and ("[" in argrepr or "NB_SUBSCR" in argrepr.upper()):
             key = shadow.pop()
             container = shadow.pop()
-            _report_read(engine, execution, thread_id, container, repr(key))
+            _report_read(engine, execution, thread_id, container, repr(key), elock)
             shadow.push(None)
         else:
             shadow.pop()
@@ -573,8 +598,12 @@ class DporBytecodeRunner:
         scheduler = self.scheduler
 
         def handle_py_start(code: Any, instruction_offset: int) -> Any:
-            if scheduler._finished or scheduler._error:
-                return mon.DISABLE  # type: ignore[attr-defined]
+            # Only use mon.DISABLE for code that should *never* be traced
+            # (stdlib, site-packages, frontrun internals).  Do NOT disable
+            # for transient conditions like scheduler._finished — DISABLE
+            # permanently removes INSTRUCTION events from the code object,
+            # corrupting monitoring state for subsequent DPOR iterations
+            # and tests that share the same tool ID.
             if not _should_trace_file(code.co_filename):
                 return mon.DISABLE  # type: ignore[attr-defined]
             return None
@@ -583,7 +612,7 @@ class DporBytecodeRunner:
             if not _should_trace_file(code.co_filename):
                 return None
             thread_id = getattr(_dpor_tls, "thread_id", None)
-            if thread_id is not None:
+            if thread_id is not None and getattr(_dpor_tls, "scheduler", None) is scheduler:
                 frame = sys._getframe(1)
                 scheduler.remove_shadow_stack(id(frame))
             return None
@@ -596,6 +625,14 @@ class DporBytecodeRunner:
 
             thread_id = getattr(_dpor_tls, "thread_id", None)
             if thread_id is None:
+                return None
+
+            # Guard against zombie threads from a previous DporBytecodeRunner
+            # whose monitoring was torn down and replaced by ours.  The zombie
+            # still has TLS from the old scheduler, but this closure captures
+            # the *new* scheduler.  Letting it through would call engine
+            # methods on the wrong execution, causing PyO3 borrow conflicts.
+            if getattr(_dpor_tls, "scheduler", None) is not scheduler:
                 return None
 
             # Use sys._getframe() to get the actual frame for _process_opcode.
@@ -628,14 +665,45 @@ class DporBytecodeRunner:
 
     def _setup_dpor_tls(self, thread_id: int) -> None:
         """Set up both shared cooperative TLS and DPOR-specific TLS."""
-        engine = self.scheduler.engine
-        execution = self.scheduler.execution
+        scheduler = self.scheduler
+        engine = scheduler.engine
+        execution = scheduler.execution
+        engine_lock = scheduler._engine_lock
         # Shared context for cooperative primitives
         set_context(self.scheduler, thread_id)
 
-        # Sync reporter so cooperative Lock/RLock report to the DPOR engine
+        # Sync reporter so cooperative Lock/RLock report to the DPOR engine.
+        # Must hold the engine_lock to serialise PyO3 &mut self borrows.
+        # Also handles block/unblock for cooperative lock spinning:
+        #   "lock_wait"    → execution.block_thread  (DPOR skips this thread)
+        #   "lock_acquire" → execution.unblock_thread (DPOR can schedule again)
+        #   "lock_release" → unblock all waiters for this lock
         def _sync_reporter(event: str, obj_id: int) -> None:
-            engine.report_sync(execution, thread_id, event, obj_id)
+            if event == "lock_wait":
+                with engine_lock:
+                    scheduler._lock_waiters.setdefault(obj_id, set()).add(thread_id)
+                    execution.block_thread(thread_id)
+                return
+            if event == "lock_acquire":
+                with engine_lock:
+                    waiter_set = scheduler._lock_waiters.get(obj_id)
+                    if waiter_set is not None and thread_id in waiter_set:
+                        waiter_set.discard(thread_id)
+                        execution.unblock_thread(thread_id)
+                    engine.report_sync(execution, thread_id, "lock_acquire", obj_id)
+                return
+            if event == "lock_release":
+                with engine_lock:
+                    waiters = scheduler._lock_waiters.pop(obj_id, set())
+                    for waiter in waiters:
+                        execution.unblock_thread(waiter)
+                    engine.report_sync(execution, thread_id, "lock_release", obj_id)
+                # Wake threads that may now be schedulable
+                with scheduler._condition:
+                    scheduler._condition.notify_all()
+                return
+            with engine_lock:
+                engine.report_sync(execution, thread_id, event, obj_id)
 
         set_sync_reporter(_sync_reporter)
         # DPOR-specific TLS for _process_opcode (shadow stacks, etc.)
@@ -791,10 +859,16 @@ def explore_dpor(
     )
 
     result = DporResult(property_holds=True)
+    # Shared lock serialising ALL PyO3 calls to engine/execution objects.
+    # On free-threaded Python, PyO3 &mut self borrows panic rather than
+    # block when contested, so we need a Python-level lock shared across
+    # worker threads, the sync reporter, and the main loop.
+    engine_lock = real_lock()
 
     while True:
-        execution = engine.begin_execution()
-        scheduler = DporScheduler(engine, execution, num_threads)
+        with engine_lock:
+            execution = engine.begin_execution()
+        scheduler = DporScheduler(engine, execution, num_threads, engine_lock=engine_lock)
         runner = DporBytecodeRunner(scheduler, cooperative_locks=cooperative_locks)
 
         runner._patch_locks()
@@ -819,7 +893,8 @@ def explore_dpor(
 
         if not invariant(state):
             result.property_holds = False
-            schedule = execution.schedule_trace
+            with engine_lock:
+                schedule = execution.schedule_trace
             result.failures.append((result.executions_explored, list(schedule)))
             if result.counterexample_schedule is None:
                 result.counterexample_schedule = list(schedule)
@@ -833,7 +908,8 @@ def explore_dpor(
         with _INSTR_CACHE_LOCK:
             _INSTR_CACHE.clear()
 
-        if not engine.next_execution():
-            break
+        with engine_lock:
+            if not engine.next_execution():
+                break
 
     return result
