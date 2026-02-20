@@ -565,16 +565,24 @@ class CooperativeEvent:
 class CooperativeCondition:
     """A Condition that yields scheduler turns instead of blocking on wait().
 
-    Uses the scheduler's TLS to avoid infinite recursion — the
-    ``OpcodeScheduler`` itself uses ``real_condition`` internally.
+    Uses a simple notification counter instead of polling a real Condition.
+    ``notify()`` increments the counter; ``wait()`` spin-yields until the
+    counter advances past its snapshot.  This avoids the lost-notification
+    bug that occurs when ``_real_cond.notify()`` fires while no thread is
+    blocked in ``_real_cond.wait()``.
     """
 
     def __init__(self, lock: CooperativeLock | None = None) -> None:
         if lock is None:
             lock = CooperativeLock()
         self._lock = lock
-        self._real_cond = real_condition(real_lock())
+        # Notification counter — monotonically increasing.  Each notify()
+        # bumps it by n; each wait() records a snapshot and spins until
+        # the counter exceeds the snapshot.
+        self._notify_count = 0
         self._waiters = 0
+        # Fallback real condition for non-managed threads (no scheduler)
+        self._real_cond = real_condition(real_lock())
 
     def acquire(self, *args: Any, **kwargs: Any) -> bool:
         return self._lock.acquire(*args, **kwargs)  # type: ignore[arg-type]
@@ -592,12 +600,15 @@ class CooperativeCondition:
     def wait(self, timeout: float | None = None) -> bool:
         from frontrun._deadlock import SchedulerAbort
 
-        # Release the user lock, spin-yield, then re-acquire
         self._waiters += 1
+        # Snapshot the counter BEFORE releasing the lock so that any
+        # notify() that fires after we release is visible.
+        snapshot = self._notify_count
         self._lock.release()
         try:
             ctx = get_context()
             if ctx is None:
+                # Not in a managed thread — fall back to real condition
                 with self._real_cond:
                     return self._real_cond.wait(timeout=timeout)
 
@@ -605,32 +616,27 @@ class CooperativeCondition:
 
             if timeout is not None:
                 deadline = time.monotonic() + timeout
-                with self._real_cond:
-                    notified = self._real_cond.wait(timeout=0)
-                while not notified:
+                while self._notify_count <= snapshot:
                     if scheduler._error:
                         raise SchedulerAbort("scheduler aborted")
                     if scheduler._finished:
-                        with self._real_cond:
-                            return self._real_cond.wait(timeout=1.0)
+                        remaining = max(0.0, deadline - time.monotonic())
+                        time.sleep(min(0.01, remaining))
+                        return self._notify_count > snapshot
                     if time.monotonic() >= deadline:
                         return False
                     scheduler.wait_for_turn(thread_id)
-                    with self._real_cond:
-                        notified = self._real_cond.wait(timeout=0)
                 return True
 
-            with self._real_cond:
-                notified = self._real_cond.wait(timeout=0)
-            while not notified:
+            while self._notify_count <= snapshot:
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
                 if scheduler._finished:
-                    with self._real_cond:
-                        return self._real_cond.wait(timeout=1.0)
+                    end = time.monotonic() + 1.0
+                    while self._notify_count <= snapshot and time.monotonic() < end:
+                        time.sleep(0.001)
+                    return self._notify_count > snapshot
                 scheduler.wait_for_turn(thread_id)
-                with self._real_cond:
-                    notified = self._real_cond.wait(timeout=0)
             return True
         finally:
             self._waiters -= 1
@@ -638,20 +644,27 @@ class CooperativeCondition:
 
     def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> bool:
         result = predicate()
+        if result or timeout == 0:
+            return result
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+            while not result:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.wait(timeout=remaining)
+                result = predicate()
+            return result
         while not result:
-            self.wait(timeout=timeout)
+            self.wait()
             result = predicate()
-            if timeout is not None:
-                break
         return result
 
     def notify(self, n: int = 1) -> None:
-        with self._real_cond:
-            self._real_cond.notify(n)
+        self._notify_count += n
 
     def notify_all(self) -> None:
-        with self._real_cond:
-            self._real_cond.notify_all()
+        self._notify_count += max(self._waiters, 1)
 
 
 # ---------------------------------------------------------------------------

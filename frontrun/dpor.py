@@ -38,6 +38,7 @@ from __future__ import annotations
 import dis
 import sys
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
@@ -724,8 +725,10 @@ class DporBytecodeRunner:
             for t in self.threads:
                 t.start()
 
+            deadline = time.monotonic() + timeout
             for t in self.threads:
-                t.join(timeout=timeout)
+                remaining = max(0, deadline - time.monotonic())
+                t.join(timeout=remaining)
         finally:
             if use_monitoring:
                 self._teardown_monitoring()
@@ -750,6 +753,7 @@ def explore_dpor(
     max_branches: int = 100_000,
     timeout_per_run: float = 5.0,
     cooperative_locks: bool = True,
+    stop_on_first: bool = True,
 ) -> DporResult:
     """Systematically explore interleavings using DPOR.
 
@@ -769,6 +773,9 @@ def explore_dpor(
         timeout_per_run: Timeout per execution in seconds.
         cooperative_locks: Replace threading/queue primitives with
             scheduler-aware versions.
+        stop_on_first: If True (default), stop exploring as soon as the
+            first invariant violation is found.  Set to False to collect
+            all failing interleavings.
 
     Returns:
         DporResult with exploration statistics and any counterexample found.
@@ -816,6 +823,11 @@ def explore_dpor(
             result.failures.append((result.executions_explored, list(schedule)))
             if result.counterexample_schedule is None:
                 result.counterexample_schedule = list(schedule)
+            if stop_on_first:
+                # Clear cache before returning
+                with _INSTR_CACHE_LOCK:
+                    _INSTR_CACHE.clear()
+                return result
 
         # Clear instruction cache between executions to avoid stale code ids
         with _INSTR_CACHE_LOCK:

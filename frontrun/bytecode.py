@@ -34,6 +34,7 @@ Example — find a race condition with random schedule exploration:
 import random
 import sys
 import threading
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, TypeVar
@@ -304,7 +305,7 @@ class BytecodeShuffler:
             funcs: One callable per thread.
             args: Per-thread positional args.
             kwargs: Per-thread keyword args.
-            timeout: Max wait time per thread.
+            timeout: Max total wait time for all threads (global deadline).
         """
         if args is None:
             args = [() for _ in funcs]
@@ -331,8 +332,10 @@ class BytecodeShuffler:
             for t in self.threads:
                 t.start()
 
+            deadline = time.monotonic() + timeout
             for t in self.threads:
-                t.join(timeout=timeout)
+                remaining = max(0, deadline - time.monotonic())
+                t.join(timeout=remaining)
         finally:
             if use_monitoring:
                 self._teardown_monitoring()
