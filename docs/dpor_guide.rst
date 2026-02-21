@@ -63,6 +63,12 @@ visible at the bytecode level register as conflicts.
 - Subscript reads and writes (``d[key]``, ``lst[i] = ...``)
 - Lock acquire and release (``threading.Lock``, ``threading.RLock``)
 - Thread spawn and join
+- **Socket I/O** (``connect``, ``send``, ``sendall``, ``sendto``, ``recv``,
+  ``recv_into``, ``recvfrom``) --- detected via automatic monkey-patching
+  when ``detect_io=True`` (the default). Two threads accessing the same
+  ``host:port`` endpoint conflict; different endpoints are independent.
+- **File opens** (``builtins.open``) --- read vs write determined by mode,
+  resource identity from the resolved file path.
 
 Beyond invariant violations, DPOR also detects **deadlocks** (via wait-for-graph
 cycle detection) and **crashes** (unhandled exceptions in any thread are
@@ -73,12 +79,11 @@ re-raised after the execution completes).
 - **Database operations.** Two threads calling ``cursor.execute("UPDATE ...")``
   on the same row look like independent C function calls to the tracer ---
   DPOR sees no conflict between them and only runs one interleaving.
-- **File system access.** ``open()`` / ``read()`` / ``write()`` go through
-  C-level I/O. Two threads writing to the same file appear independent.
-- **Network and IPC.** HTTP requests, message queues, Redis commands, etc.
-  are opaque calls with no visible shared object.
-- **C extensions.** Shared state modified inside C code (NumPy arrays,
-  database drivers, etc.) is not tracked.
+- **Opaque C-extension I/O.** Database drivers, Redis clients, and other
+  libraries that manage sockets entirely in C code bypass the
+  monkey-patches, so their operations appear independent.
+- **C-extension shared state.** Shared state modified inside C code (NumPy
+  arrays, etc.) is not tracked at the bytecode level.
 
 The consequence is not that DPOR "can't run" on such code --- it will run
 fine, it just won't explore the interesting schedules. Because the external

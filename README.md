@@ -167,7 +167,19 @@ def test_counter_race():
     assert result.executions_explored == 2  # only 2 of 6 interleavings needed
 ```
 
-**Scope and limitations:** DPOR explores alternative schedules only where it sees a conflict (two threads accessing the same Python object with at least one write). Operations that go through C code — database queries, file I/O, network calls — look like opaque, independent function calls to the bytecode tracer. DPOR won't see a conflict between two threads calling `cursor.execute(...)` on the same row, so it will conclude they are independent and skip the interleavings where bugs hide. For testing those interactions, use trace markers with explicit scheduling instead.
+**Scope and limitations:** DPOR explores alternative schedules only where it sees a conflict (two threads accessing the same Python object with at least one write). Operations that go through C code — database queries, network calls — look like opaque, independent function calls to the bytecode tracer. DPOR won't see a conflict between two threads calling `cursor.execute(...)` on the same row, so it will conclude they are independent and skip the interleavings where bugs hide. For testing those interactions, use trace markers with explicit scheduling instead.
+
+### Automatic I/O Detection
+
+Both the bytecode explorer and DPOR automatically detect socket and file I/O operations (enabled by default via `detect_io=True`). When two threads access the same network endpoint or file path, the operation is reported as a conflict so the scheduler explores their reorderings.
+
+Detected operations:
+- **Sockets:** `connect`, `send`, `sendall`, `sendto`, `recv`, `recv_into`, `recvfrom`
+- **Files:** `open()` (read vs write determined by mode)
+
+Resource identity is derived from the socket's peer address (`host:port`) or the file's resolved path — two threads hitting the same endpoint or file conflict; different endpoints are independent. A secondary `sys.setprofile` layer catches C-level socket calls that bypass the monkey-patches.
+
+This does **not** cover opaque C-extension I/O (database drivers, Redis clients, etc.) where the socket is managed entirely in C code. For those, use trace markers.
 
 ## Async Support
 

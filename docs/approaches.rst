@@ -217,9 +217,39 @@ performance.
 **Scope:** DPOR explores alternative schedules only where it detects a
 conflict at the bytecode level (two threads accessing the same Python object
 with at least one write). Operations that go through C code --- database
-queries, file I/O, network calls --- look like opaque, independent function
-calls to the tracer, so DPOR won't explore their reorderings. For those
+queries, network calls --- look like opaque, independent function calls to
+the tracer, so DPOR won't explore their reorderings. For those
 interactions, use trace markers with explicit scheduling instead.
 
 For a practical guide see :doc:`dpor_guide`. For the algorithm details and
 theory see :doc:`dpor`.
+
+
+Automatic I/O Detection
+-------------------------
+
+Both the bytecode explorer and DPOR automatically detect socket and file
+I/O operations. This is enabled by default (``detect_io=True``) and works
+by monkey-patching ``socket.socket`` methods and ``builtins.open`` to
+report resource accesses to the scheduler.
+
+**Detected operations:**
+
+- **Sockets:** ``connect``, ``send``, ``sendall``, ``sendto``, ``recv``,
+  ``recv_into``, ``recvfrom``
+- **Files:** ``open()`` (read vs write determined by mode)
+
+Resource identity is derived from the socket's peer address
+(``host:port``) or the file's resolved path. Two threads accessing the
+same endpoint or file are treated as conflicting; different endpoints are
+independent.
+
+A secondary ``sys.setprofile`` layer catches C-level socket calls that
+bypass the monkey-patches (e.g. calls made from C extension code that
+resolve the underlying C method directly).
+
+**Limitations:**
+
+I/O detection does not cover opaque C-extension I/O --- database drivers,
+Redis clients, or other libraries that manage sockets entirely in C code.
+For those cases, use trace markers with explicit scheduling.
