@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'frontrun/**'
+      - 'frontrun-dpor/**'
+      - 'tests/**'
       - 'Makefile'
       - 'venv.mk'
       - 'pyproject.toml'
@@ -13,21 +15,20 @@ on:
   pull_request:
     paths:
       - 'frontrun/**'
+      - 'frontrun-dpor/**'
+      - 'tests/**'
       - 'Makefile'
       - 'venv.mk'
       - 'pyproject.toml'
       - '.github/workflows/ci.yml'
 
 jobs:
-  test:
-    name: Tests, Linting & Checks
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -40,5 +41,29 @@ jobs:
       - name: Run linting and type checks
         run: make check
 
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.14', '3.14t']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontrun-dpor
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Run tests
-        run: make test
+        run: make test-${{ matrix.python }}
