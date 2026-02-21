@@ -54,9 +54,13 @@ class InterleavingResult:
         num_explored: How many interleavings were tested.
         unique_interleavings: Number of distinct schedule orderings observed.
             Provides a lower bound on interleaving-space coverage.
+        explanation: Human-readable explanation of the race condition, showing
+            interleaved source lines and the conflict pattern. None if no
+            race was found.
     """
 
     property_holds: bool
     counterexample: list[int] | None = None
     num_explored: int = 0
     unique_interleavings: int = 0
+    explanation: str | None = None

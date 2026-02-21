@@ -61,6 +61,7 @@ from frontrun._io_detection import (
     uninstall_io_profile,
     unpatch_io,
 )
+from frontrun._trace_format import TraceRecorder, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
 
 T = TypeVar("T")
@@ -78,12 +79,23 @@ _USE_SYS_MONITORING = _PY_VERSION >= (3, 12)
 
 @dataclass
 class DporResult:
-    """Result of DPOR exploration."""
+    """Result of DPOR exploration.
+
+    Attributes:
+        property_holds: True if the invariant held under all explored interleavings.
+        executions_explored: How many distinct interleavings were explored.
+        counterexample_schedule: First failing schedule (list of thread IDs).
+        failures: All failing schedules: (execution number, schedule).
+        explanation: Human-readable explanation of the race condition, showing
+            interleaved source lines and the conflict pattern. None if no
+            race was found.
+    """
 
     property_holds: bool
     executions_explored: int = 0
     counterexample_schedule: list[int] | None = None
     failures: list[tuple[int, list[int]]] = field(default_factory=list)
+    explanation: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +194,13 @@ class DporScheduler:
         num_threads: int,
         engine_lock: threading.Lock | None = None,
         deadlock_timeout: float = 5.0,
+        trace_recorder: TraceRecorder | None = None,
     ) -> None:
         self.engine = engine
         self.execution = execution
         self.num_threads = num_threads
         self.deadlock_timeout = deadlock_timeout
+        self.trace_recorder = trace_recorder
         # On free-threaded Python, PyO3 &mut self borrows are non-blocking
         # (try-or-panic).  A single engine_lock serialises ALL calls to the
         # engine and execution objects across worker threads, the sync
@@ -352,6 +366,7 @@ def _process_opcode(
     engine = scheduler.engine
     execution = scheduler.execution
     elock = scheduler._engine_lock
+    recorder = scheduler.trace_recorder
 
     # === LOAD instructions: push values onto the shadow stack ===
 
@@ -439,6 +454,8 @@ def _process_opcode(
         obj = shadow.pop()
         attr = instr.argval
         _report_read(engine, execution, thread_id, obj, attr, elock)
+        if recorder is not None and obj is not None:
+            recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=attr, obj=obj)
         if obj is not None:
             try:
                 shadow.push(getattr(obj, attr))
@@ -451,10 +468,14 @@ def _process_opcode(
         obj = shadow.pop()  # TOS = object
         _val = shadow.pop()  # TOS1 = value
         _report_write(engine, execution, thread_id, obj, instr.argval, elock)
+        if recorder is not None and obj is not None:
+            recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=instr.argval, obj=obj)
 
     elif op == "DELETE_ATTR":
         obj = shadow.pop()
         _report_write(engine, execution, thread_id, obj, instr.argval, elock)
+        if recorder is not None and obj is not None:
+            recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=instr.argval, obj=obj)
 
     # === Subscript access (dict/list operations) ===
 
@@ -464,6 +485,8 @@ def _process_opcode(
         key = shadow.pop()
         container = shadow.pop()
         _report_read(engine, execution, thread_id, container, repr(key), elock)
+        if recorder is not None and container is not None:
+            recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=repr(key), obj=container)
         shadow.push(None)
 
     elif op == "STORE_SUBSCR":
@@ -471,11 +494,15 @@ def _process_opcode(
         container = shadow.pop()
         _val = shadow.pop()
         _report_write(engine, execution, thread_id, container, repr(key), elock)
+        if recorder is not None and container is not None:
+            recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=repr(key), obj=container)
 
     elif op == "DELETE_SUBSCR":
         key = shadow.pop()
         container = shadow.pop()
         _report_write(engine, execution, thread_id, container, repr(key), elock)
+        if recorder is not None and container is not None:
+            recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=repr(key), obj=container)
 
     # === Arithmetic and binary operations ===
 
@@ -487,6 +514,8 @@ def _process_opcode(
             key = shadow.pop()
             container = shadow.pop()
             _report_read(engine, execution, thread_id, container, repr(key), elock)
+            if recorder is not None and container is not None:
+                recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=repr(key), obj=container)
             shadow.push(None)
         else:
             shadow.pop()
@@ -916,8 +945,14 @@ def explore_dpor(
     while True:
         with engine_lock:
             execution = engine.begin_execution()
+        recorder = TraceRecorder()
         scheduler = DporScheduler(
-            engine, execution, num_threads, engine_lock=engine_lock, deadlock_timeout=deadlock_timeout
+            engine,
+            execution,
+            num_threads,
+            engine_lock=engine_lock,
+            deadlock_timeout=deadlock_timeout,
+            trace_recorder=recorder,
         )
         runner = DporBytecodeRunner(scheduler, detect_io=detect_io)
 
@@ -950,6 +985,15 @@ def explore_dpor(
             result.failures.append((result.executions_explored, list(schedule)))
             if result.counterexample_schedule is None:
                 result.counterexample_schedule = list(schedule)
+            if result.explanation is None:
+                try:
+                    result.explanation = format_trace(
+                        recorder.events,
+                        num_threads=num_threads,
+                        num_explored=result.executions_explored,
+                    )
+                except Exception:
+                    pass  # Don't let trace formatting break the result
             if stop_on_first:
                 # Clear cache before returning
                 with _INSTR_CACHE_LOCK:

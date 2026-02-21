@@ -53,6 +53,7 @@ from frontrun._io_detection import (
     set_io_reporter,
     unpatch_io,
 )
+from frontrun._trace_format import TraceRecorder, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.common import InterleavingResult
 
@@ -85,7 +86,15 @@ class OpcodeScheduler:
     lock-ordering cycle detection.
     """
 
-    def __init__(self, schedule: list[int], num_threads: int, *, deadlock_timeout: float = 5.0, max_ops: int = 0):
+    def __init__(
+        self,
+        schedule: list[int],
+        num_threads: int,
+        *,
+        deadlock_timeout: float = 5.0,
+        max_ops: int = 0,
+        trace_recorder: TraceRecorder | None = None,
+    ):
         self.schedule = list(schedule)  # mutable copy for dynamic extension
         self.num_threads = num_threads
         self.deadlock_timeout = deadlock_timeout
@@ -96,6 +105,7 @@ class OpcodeScheduler:
         self._finished = False
         self._error: Exception | None = None
         self._threads_done: set[int] = set()
+        self.trace_recorder = trace_recorder
 
     def _extend_schedule(self) -> bool:
         """Append a round-robin round of all active threads.
@@ -220,6 +230,7 @@ class BytecodeShuffler:
     def _make_trace(self, thread_id: int) -> Callable[[Any, str, Any], Any]:  # type: ignore[return-value]
         """Create a sys.settrace function for the given thread."""
         scheduler = self.scheduler
+        recorder = scheduler.trace_recorder
 
         def trace(frame: Any, event: str, arg: Any) -> Any:  # type: ignore[name-defined]
             if scheduler._finished or scheduler._error:
@@ -232,6 +243,8 @@ class BytecodeShuffler:
                 return None
 
             if event == "opcode":
+                if recorder is not None:
+                    recorder.record_from_opcode(thread_id, frame)
                 scheduler.wait_for_turn(thread_id)
                 return trace
 
@@ -266,6 +279,8 @@ class BytecodeShuffler:
                 return mon.DISABLE  # type: ignore[attr-defined]
             return None
 
+        recorder = scheduler.trace_recorder
+
         def handle_instruction(code: Any, instruction_offset: int) -> Any:
             if scheduler._finished or scheduler._error:
                 return None
@@ -280,6 +295,10 @@ class BytecodeShuffler:
             # Guard against zombie threads from a previous runner
             if getattr(_scheduler_tls, "scheduler", None) is not scheduler:
                 return None
+
+            if recorder is not None:
+                frame = sys._getframe(1)
+                recorder.record_from_opcode(thread_id, frame)
 
             scheduler.wait_for_turn(thread_id)
             return None
@@ -448,6 +467,7 @@ def run_with_schedule(
     detect_io: bool = True,
     debug: bool = False,
     deadlock_timeout: float = 5.0,
+    trace_recorder: TraceRecorder | None = None,
 ) -> T:
     """Run one interleaving and return the state object.
 
@@ -461,11 +481,16 @@ def run_with_schedule(
         deadlock_timeout: Seconds to wait before declaring a deadlock
             (default 5.0).  Increase for code that legitimately blocks
             in C extensions (NumPy, database queries, network I/O).
+        trace_recorder: Optional recorder for capturing trace events.
+            When provided, records shared-state accesses for later
+            formatting into human-readable explanations.
 
     Returns:
         The state object after execution.
     """
-    scheduler = OpcodeScheduler(schedule, len(threads), deadlock_timeout=deadlock_timeout)
+    scheduler = OpcodeScheduler(
+        schedule, len(threads), deadlock_timeout=deadlock_timeout, trace_recorder=trace_recorder
+    )
     runner = BytecodeShuffler(scheduler, detect_io=detect_io)
 
     # Patch locks BEFORE setup() so any locks created there are cooperative
@@ -558,6 +583,27 @@ def explore_interleavings(
             result.property_holds = False
             result.counterexample = schedule
             result.unique_interleavings = len(seen_schedule_hashes)
+
+            # Replay the counterexample with trace recording to build explanation
+            try:
+                recorder = TraceRecorder()
+                run_with_schedule(
+                    schedule,
+                    setup,
+                    threads,
+                    timeout=timeout_per_run,
+                    detect_io=detect_io,
+                    deadlock_timeout=deadlock_timeout,
+                    trace_recorder=recorder,
+                )
+                result.explanation = format_trace(
+                    recorder.events,
+                    num_threads=num_threads,
+                    num_explored=result.num_explored,
+                )
+            except Exception:
+                pass  # Don't let trace formatting break the result
+
             return result
 
     result.unique_interleavings = len(seen_schedule_hashes)
