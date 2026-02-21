@@ -111,8 +111,9 @@ class ThreadCoordinator:
     each thread executes markers in the order specified by the schedule.
     """
 
-    def __init__(self, schedule: Schedule):
+    def __init__(self, schedule: Schedule, *, deadlock_timeout: float = 5.0):
         self.schedule = schedule
+        self.deadlock_timeout = deadlock_timeout
         self.current_step = 0
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
@@ -169,7 +170,7 @@ class ThreadCoordinator:
                 # incorrect schedules (referencing a marker that no thread
                 # ever reaches) get diagnosed promptly instead of blocking
                 # until the outer thread.join(timeout) fires.
-                if not self.condition.wait(timeout=5.0):
+                if not self.condition.wait(timeout=self.deadlock_timeout):
                     expected = self.schedule.steps[self.current_step]
                     self.error = TimeoutError(
                         f"Schedule stall: waiting for Step({expected.execution_name!r}, "
@@ -204,14 +205,18 @@ class TraceExecutor:
     for each thread and coordinates their execution.
     """
 
-    def __init__(self, schedule: Schedule):
+    def __init__(self, schedule: Schedule, *, deadlock_timeout: float = 5.0):
         """Initialize the executor with a schedule.
 
         Args:
             schedule: The Schedule defining the execution order
+            deadlock_timeout: Seconds to wait before declaring a deadlock
+                (default 5.0).  Increase for code that legitimately blocks
+                in C extensions (NumPy, database queries, network I/O).
         """
         self.schedule = schedule
-        self.coordinator = ThreadCoordinator(schedule)
+        self.deadlock_timeout = deadlock_timeout
+        self.coordinator = ThreadCoordinator(schedule, deadlock_timeout=deadlock_timeout)
         self.marker_registry = MarkerRegistry()
         self.threads: list[threading.Thread] = []
         self.thread_errors: dict[str, Exception] = {}
@@ -375,7 +380,7 @@ class TraceExecutor:
         """Reset the executor for another run (for testing purposes)."""
         self.threads = []
         self.thread_errors = {}
-        self.coordinator = ThreadCoordinator(self.schedule)
+        self.coordinator = ThreadCoordinator(self.schedule, deadlock_timeout=self.deadlock_timeout)
         self.marker_registry = MarkerRegistry()
 
 
@@ -385,6 +390,7 @@ def frontrun(
     thread_args: dict[str, tuple[Any, ...]] | None = None,
     thread_kwargs: dict[str, dict[str, Any]] | None = None,
     timeout: float | None = None,
+    deadlock_timeout: float = 5.0,
 ) -> "TraceExecutor":
     """Convenience function to run multiple threads with a schedule.
 
@@ -394,6 +400,9 @@ def frontrun(
         thread_args: Optional dictionary mapping execution unit names to argument tuples
         thread_kwargs: Optional dictionary mapping execution unit names to keyword argument dicts
         timeout: Optional timeout for waiting
+        deadlock_timeout: Seconds to wait before declaring a deadlock
+            (default 5.0).  Increase for code that legitimately blocks
+            in C extensions (NumPy, database queries, network I/O).
 
     Returns:
         The TraceExecutor instance (useful for inspection)
@@ -411,7 +420,7 @@ def frontrun(
     if thread_kwargs is None:
         thread_kwargs = {}
 
-    executor = TraceExecutor(schedule)
+    executor = TraceExecutor(schedule, deadlock_timeout=deadlock_timeout)
 
     for execution_name, target in threads.items():
         args = thread_args.get(execution_name, ())

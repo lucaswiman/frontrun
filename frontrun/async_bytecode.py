@@ -90,8 +90,8 @@ class AwaitScheduler(InterleavedLoop):
     scheduling as its policy.
     """
 
-    def __init__(self, schedule: list[int], num_tasks: int):
-        super().__init__()
+    def __init__(self, schedule: list[int], num_tasks: int, *, deadlock_timeout: float = 5.0):
+        super().__init__(deadlock_timeout=deadlock_timeout)
         self.schedule = schedule
         self.num_tasks = num_tasks
         self._index = 0
@@ -212,6 +212,7 @@ async def run_with_schedule(
     setup: Callable[[], Any],
     tasks: list[Callable[[Any], Coroutine[Any, Any, None]]],
     timeout: float = 5.0,
+    deadlock_timeout: float = 5.0,
 ) -> Any:
     """Run one async interleaving and return the state object.
 
@@ -220,11 +221,14 @@ async def run_with_schedule(
         setup: Returns fresh shared state.
         tasks: Async callables that each receive the state as their argument.
         timeout: Max seconds.
+        deadlock_timeout: Seconds to wait before declaring a deadlock
+            (default 5.0).  Increase for code that legitimately blocks
+            in C extensions (NumPy, database queries, network I/O).
 
     Returns:
         The state object after execution.
     """
-    scheduler = AwaitScheduler(schedule, len(tasks))
+    scheduler = AwaitScheduler(schedule, len(tasks), deadlock_timeout=deadlock_timeout)
     runner = AsyncBytecodeShuffler(scheduler)
 
     state = setup()
@@ -246,6 +250,7 @@ async def explore_interleavings(
     max_ops: int = 100,
     timeout_per_run: float = 5.0,
     seed: int | None = None,
+    deadlock_timeout: float = 5.0,
 ) -> InterleavingResult:
     """Search for async interleavings that violate an invariant.
 
@@ -269,13 +274,18 @@ async def explore_interleavings(
         max_ops: Maximum schedule length per attempt.
         timeout_per_run: Timeout for each individual run.
         seed: Optional RNG seed for reproducibility.
+        deadlock_timeout: Seconds to wait before declaring a deadlock
+            (default 5.0).  Increase for code that legitimately blocks
+            in C extensions (NumPy, database queries, network I/O).
 
     Returns:
-        InterleavingResult with the outcome.
+        InterleavingResult with the outcome.  The ``unique_interleavings``
+        field reports how many distinct schedule orderings were observed.
     """
     rng = random.Random(seed)
     num_tasks = len(tasks)
     result = InterleavingResult(property_holds=True, num_explored=0)
+    seen_schedule_hashes: set[int] = set()
 
     for _ in range(max_attempts):
         num_rounds = rng.randint(1, max(1, max_ops // num_tasks))
@@ -285,14 +295,19 @@ async def explore_interleavings(
             rng.shuffle(round_perm)
             schedule.extend(round_perm)
 
-        state = await run_with_schedule(schedule, setup, tasks, timeout=timeout_per_run)
+        state = await run_with_schedule(
+            schedule, setup, tasks, timeout=timeout_per_run, deadlock_timeout=deadlock_timeout
+        )
         result.num_explored += 1
+        seen_schedule_hashes.add(hash(tuple(schedule)))
 
         if not invariant(state):
             result.property_holds = False
             result.counterexample = schedule
+            result.unique_interleavings = len(seen_schedule_hashes)
             return result
 
+    result.unique_interleavings = len(seen_schedule_hashes)
     return result
 
 

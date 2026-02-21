@@ -87,14 +87,18 @@ class AsyncTraceExecutor:
     each async task in its own thread with its own event loop via asyncio.run().
     """
 
-    def __init__(self, schedule: Schedule):
+    def __init__(self, schedule: Schedule, *, deadlock_timeout: float = 5.0):
         """Initialize the executor with a schedule.
 
         Args:
             schedule: The Schedule defining the execution order
+            deadlock_timeout: Seconds to wait before declaring a deadlock
+                (default 5.0).  Increase for code that legitimately blocks
+                in C extensions (NumPy, database queries, network I/O).
         """
         self.schedule = schedule
-        self.coordinator = ThreadCoordinator(schedule)
+        self.deadlock_timeout = deadlock_timeout
+        self.coordinator = ThreadCoordinator(schedule, deadlock_timeout=deadlock_timeout)
         self.marker_registry = MarkerRegistry()
         self.task_errors: dict[str, Exception] = {}
 
@@ -239,7 +243,7 @@ class AsyncTraceExecutor:
     def reset(self):
         """Reset the executor for another run (for testing purposes)."""
         self.task_errors = {}
-        self.coordinator = ThreadCoordinator(self.schedule)
+        self.coordinator = ThreadCoordinator(self.schedule, deadlock_timeout=self.deadlock_timeout)
         self.marker_registry = MarkerRegistry()
 
 
@@ -249,6 +253,7 @@ def async_frontrun(
     task_args: dict[str, tuple[Any, ...]] | None = None,
     task_kwargs: dict[str, dict[str, Any]] | None = None,
     timeout: float = 10.0,
+    deadlock_timeout: float = 5.0,
 ) -> AsyncTraceExecutor:
     """Convenience function to run multiple async tasks with a schedule.
 
@@ -265,6 +270,9 @@ def async_frontrun(
         task_args: Optional dictionary mapping execution unit names to argument tuples
         task_kwargs: Optional dictionary mapping execution unit names to keyword argument dicts
         timeout: Timeout in seconds for the entire execution
+        deadlock_timeout: Seconds to wait before declaring a deadlock
+            (default 5.0).  Increase for code that legitimately blocks
+            in C extensions (NumPy, database queries, network I/O).
 
     Returns:
         The AsyncTraceExecutor instance (useful for inspection)
@@ -289,7 +297,7 @@ def async_frontrun(
     if task_kwargs is None:
         task_kwargs = {}
 
-    executor = AsyncTraceExecutor(schedule)
+    executor = AsyncTraceExecutor(schedule, deadlock_timeout=deadlock_timeout)
 
     # Create wrapped tasks that call the target with args/kwargs
     wrapped_tasks: dict[str, Callable[[], Coroutine[Any, Any, None]]] = {}

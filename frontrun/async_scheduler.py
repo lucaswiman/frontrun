@@ -62,13 +62,14 @@ class InterleavedLoop:
         Error propagation, timeout handling, and done-task tracking
     """
 
-    def __init__(self):
+    def __init__(self, *, deadlock_timeout: float = 5.0):
         self._condition = asyncio.Condition()
         self._finished = False
         self._error: Exception | None = None
         self._tasks_done: set[Any] = set()
         self._num_tasks: int = 0  # set by run_all
         self._waiting_count: int = 0
+        self.deadlock_timeout = deadlock_timeout
 
     # ------------------------------------------------------------------
     # Scheduling policy — override in subclasses
@@ -150,7 +151,7 @@ class InterleavedLoop:
                         return
 
                     try:
-                        await asyncio.wait_for(self._condition.wait(), timeout=5.0)
+                        await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                     except asyncio.TimeoutError:
                         self._handle_timeout(task_id, marker)
                         return

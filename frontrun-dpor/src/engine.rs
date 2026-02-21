@@ -114,7 +114,9 @@ impl DporEngine {
 
         let object_state = execution.objects.entry(object_id).or_insert_with(ObjectState::new);
 
-        if let Some(prev_access) = object_state.last_dependent_access(kind) {
+        // Check ALL dependent accesses from other threads (not just the last one).
+        // This ensures 3+ thread scenarios are handled correctly.
+        for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_dpor_vv) {
                 self.path.backtrack(prev_access.path_id, thread_id);
             }
@@ -321,5 +323,78 @@ mod tests {
 
         assert!(!engine.next_execution());
         assert_eq!(engine.executions_completed(), 1);
+    }
+
+    #[test]
+    fn test_three_threads_write_conflict() {
+        // Regression test: with the old single-last-access tracking,
+        // Thread A's access would be overwritten by Thread B's, so the
+        // conflict between A and C was never explored. The per-thread
+        // map ensures all conflicts are detected.
+        let mut engine = DporEngine::new(3, None, 1000, None);
+        let mut exec_count = 0;
+
+        loop {
+            let mut execution = engine.begin_execution();
+
+            // Each thread writes to the same object (id=1)
+            loop {
+                let runnable = execution.runnable_threads();
+                if runnable.is_empty() {
+                    break;
+                }
+                let chosen = match engine.schedule(&mut execution) {
+                    Some(t) => t,
+                    None => break,
+                };
+                engine.process_access(&mut execution, chosen, 1, AccessKind::Write);
+                execution.finish_thread(chosen);
+            }
+
+            exec_count += 1;
+            if !engine.next_execution() {
+                break;
+            }
+        }
+
+        // 3 threads all writing to the same object: 3! = 6 orderings
+        assert_eq!(exec_count, 6);
+    }
+
+    #[test]
+    fn test_three_threads_read_write_conflict() {
+        // Thread A reads, Thread B reads, Thread C writes — all same object.
+        // With the old implementation, Thread A's read could be lost.
+        let mut engine = DporEngine::new(3, None, 1000, None);
+        let mut exec_count = 0;
+        let thread_kinds = [AccessKind::Read, AccessKind::Read, AccessKind::Write];
+
+        loop {
+            let mut execution = engine.begin_execution();
+
+            loop {
+                let runnable = execution.runnable_threads();
+                if runnable.is_empty() {
+                    break;
+                }
+                let chosen = match engine.schedule(&mut execution) {
+                    Some(t) => t,
+                    None => break,
+                };
+                engine.process_access(&mut execution, chosen, 1, thread_kinds[chosen]);
+                execution.finish_thread(chosen);
+            }
+
+            exec_count += 1;
+            if !engine.next_execution() {
+                break;
+            }
+        }
+
+        // Read-Read is independent, but Read-Write and Write-Read conflict.
+        // C(write) conflicts with both A(read) and B(read), so C must be
+        // explored in all positions relative to both A and B.
+        // Expected: 3 orderings (C before both, C between, C after both)
+        assert!(exec_count >= 3, "expected at least 3 executions, got {exec_count}");
     }
 }

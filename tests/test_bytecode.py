@@ -59,7 +59,9 @@ class SafeCounter:
 
 def test_scheduler_basic_round_robin():
     """Two threads alternate opcode execution."""
-    scheduler = OpcodeScheduler([0, 1, 0, 1], num_threads=2)
+    # max_ops=4 disables dynamic schedule extension so the scheduler
+    # finishes exactly when the explicit schedule is consumed.
+    scheduler = OpcodeScheduler([0, 1, 0, 1], num_threads=2, max_ops=4)
 
     assert scheduler.wait_for_turn(0) is True  # schedule[0] = 0
     assert scheduler.wait_for_turn(1) is True  # schedule[1] = 1
@@ -69,6 +71,19 @@ def test_scheduler_basic_round_robin():
     assert scheduler._finished is True
 
 
+def test_scheduler_extends_schedule():
+    """When the explicit schedule is exhausted, the scheduler dynamically
+    extends with round-robin entries to maintain deterministic control."""
+    scheduler = OpcodeScheduler([0, 1], num_threads=2)
+
+    assert scheduler.wait_for_turn(0) is True  # schedule[0] = 0
+    assert scheduler.wait_for_turn(1) is True  # schedule[1] = 1
+    # Explicit schedule is exhausted — dynamic extension should kick in
+    assert scheduler.wait_for_turn(0) is True  # extended round-robin
+    assert scheduler.wait_for_turn(1) is True  # extended round-robin
+    assert scheduler._finished is False
+
+
 def test_scheduler_skips_done_threads():
     """If a scheduled thread is already done, skip to next step."""
     scheduler = OpcodeScheduler([0, 1, 0], num_threads=2)
@@ -76,8 +91,11 @@ def test_scheduler_skips_done_threads():
     assert scheduler.wait_for_turn(0) is True
     scheduler.mark_done(0)
     assert scheduler.wait_for_turn(1) is True
-    # schedule[2] = 0, but thread 0 is done — should skip past it
-    assert scheduler.wait_for_turn(1) is False  # schedule exhausted
+    # schedule[2] = 0, but thread 0 is done — dynamic extension has
+    # only thread 1 active, so thread 1 gets to run
+    scheduler.mark_done(1)
+    # Now both threads are done — scheduler should finish
+    assert scheduler.wait_for_turn(1) is False
 
 
 # ---------------------------------------------------------------------------

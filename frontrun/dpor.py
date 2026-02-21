@@ -116,24 +116,29 @@ class ShadowStack:
         self.stack.clear()
 
 
-# Pre-analyzed instruction cache: code_id -> {offset -> instruction}
-_INSTR_CACHE: dict[int, dict[int, dis.Instruction]] = {}
+# Pre-analyzed instruction cache: code object -> {offset -> instruction}.
+#
+# Keyed by the code object itself (not ``id(code)``).  Using the code
+# object as the dict key keeps a strong reference, which prevents the
+# object from being garbage-collected while cached.  This eliminates the
+# stale-cache bug where a GC'd code object's id was reused by a new one
+# within a single DPOR execution.
+_INSTR_CACHE: dict[Any, dict[int, dis.Instruction]] = {}
 # Lock created with threading.Lock() directly (before any patching happens)
 _INSTR_CACHE_LOCK = threading.Lock()
 
 
 def _get_instructions(code: Any) -> dict[int, dis.Instruction]:
     """Get a mapping from byte offset to Instruction for a code object."""
-    code_id = id(code)
     # Fast path: already cached (safe to read without lock on GIL builds;
     # on free-threaded builds dict reads are internally locked)
-    cached = _INSTR_CACHE.get(code_id)
+    cached = _INSTR_CACHE.get(code)
     if cached is not None:
         return cached
     with _INSTR_CACHE_LOCK:
         # Double-check after acquiring lock
-        if code_id in _INSTR_CACHE:
-            return _INSTR_CACHE[code_id]
+        if code in _INSTR_CACHE:
+            return _INSTR_CACHE[code]
         mapping = {}
         # show_caches parameter was added in Python 3.11
         if _PY_VERSION >= (3, 11):
@@ -142,7 +147,7 @@ def _get_instructions(code: Any) -> dict[int, dis.Instruction]:
             instructions = dis.get_instructions(code)
         for instr in instructions:
             mapping[instr.offset] = instr
-        _INSTR_CACHE[code_id] = mapping
+        _INSTR_CACHE[code] = mapping
         return mapping
 
 
@@ -174,10 +179,12 @@ class DporScheduler:
         execution: PyExecution,
         num_threads: int,
         engine_lock: threading.Lock | None = None,
+        deadlock_timeout: float = 5.0,
     ) -> None:
         self.engine = engine
         self.execution = execution
         self.num_threads = num_threads
+        self.deadlock_timeout = deadlock_timeout
         # On free-threaded Python, PyO3 &mut self borrows are non-blocking
         # (try-or-panic).  A single engine_lock serialises ALL calls to the
         # engine and execution objects across worker threads, the sync
@@ -244,7 +251,7 @@ class DporScheduler:
                     return True
 
                 # Wait for our turn (fallback timeout for C-blocked threads)
-                if not self._condition.wait(timeout=5.0):
+                if not self._condition.wait(timeout=self.deadlock_timeout):
                     if self._current_thread in self._threads_done:
                         # Current thread is done, try scheduling again
                         next_thread = self._schedule_next()
@@ -860,6 +867,7 @@ def explore_dpor(
     cooperative_locks: bool = True,
     stop_on_first: bool = True,
     detect_io: bool = True,
+    deadlock_timeout: float = 5.0,
 ) -> DporResult:
     """Systematically explore interleavings using DPOR.
 
@@ -886,6 +894,9 @@ def explore_dpor(
             report them as resource accesses (default True).  Two threads
             accessing the same endpoint or file will be treated as
             conflicting, enabling DPOR to explore their orderings.
+        deadlock_timeout: Seconds to wait before declaring a deadlock
+            (default 5.0).  Increase for code that legitimately blocks
+            in C extensions (NumPy, database queries, network I/O).
 
     Returns:
         DporResult with exploration statistics and any counterexample found.
@@ -910,7 +921,9 @@ def explore_dpor(
     while True:
         with engine_lock:
             execution = engine.begin_execution()
-        scheduler = DporScheduler(engine, execution, num_threads, engine_lock=engine_lock)
+        scheduler = DporScheduler(
+            engine, execution, num_threads, engine_lock=engine_lock, deadlock_timeout=deadlock_timeout
+        )
         runner = DporBytecodeRunner(scheduler, cooperative_locks=cooperative_locks, detect_io=detect_io)
 
         runner._patch_locks()

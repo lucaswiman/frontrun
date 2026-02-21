@@ -72,15 +72,23 @@ class TestCooperativeConditionNotificationLoss:
         with cond:
             snapshot = cond._notify_count
 
-        # Simulate notify
-        cond.notify()
+        # notify()/notify_all() require holding the lock (standard Condition API).
+        with cond:
+            cond.notify()
         assert cond._notify_count > snapshot, "notify should increment the counter"
 
         # Simulate notify_all
         cond._waiters = 3
         before = cond._notify_count
-        cond.notify_all()
+        with cond:
+            cond.notify_all()
         assert cond._notify_count >= before + 3, "notify_all should increment by at least waiters count"
+
+    def test_notify_without_lock_raises(self):
+        """Calling notify() without holding the lock should raise RuntimeError."""
+        cond = CooperativeCondition()
+        with pytest.raises(RuntimeError, match="cannot notify on un-acquired lock"):
+            cond.notify()
 
 
 # ---------------------------------------------------------------------------

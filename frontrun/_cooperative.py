@@ -580,10 +580,10 @@ class CooperativeCondition:
     blocked in ``_real_cond.wait()``.
     """
 
-    def __init__(self, lock: CooperativeLock | None = None) -> None:
+    def __init__(self, lock: "CooperativeLock | CooperativeRLock | None" = None) -> None:
         if lock is None:
             lock = CooperativeLock()
-        self._lock = lock
+        self._lock: CooperativeLock | CooperativeRLock = lock
         # Notification counter — monotonically increasing.  Each notify()
         # bumps it by n; each wait() records a snapshot and spins until
         # the counter exceeds the snapshot.
@@ -677,10 +677,33 @@ class CooperativeCondition:
             result = predicate()
         return result
 
+    def _check_owned(self) -> None:
+        """Raise RuntimeError if the caller does not hold the underlying lock.
+
+        The standard ``threading.Condition`` contract requires the caller
+        to hold the associated lock when calling ``notify()`` or
+        ``notify_all()``.  This method enforces that invariant.
+        """
+        lock = self._lock
+        if isinstance(lock, CooperativeRLock):
+            if not lock._is_owned():
+                raise RuntimeError("cannot notify on un-acquired lock")
+        elif isinstance(lock, CooperativeLock):  # type: ignore[unnecessary-isinstance]
+            # CooperativeLock — check owner via TLS thread id
+            ctx = get_context()
+            if ctx is not None:
+                _, thread_id = ctx
+                if lock._owner_thread_id != thread_id:
+                    raise RuntimeError("cannot notify on un-acquired lock")
+            elif not lock.locked():
+                raise RuntimeError("cannot notify on un-acquired lock")
+
     def notify(self, n: int = 1) -> None:
-        # The caller must hold self._lock (per the Condition API), so
-        # this increment is serialised with other notify/notify_all calls
-        # and with the _waiters bookkeeping in wait().
+        # Enforce the Condition invariant: caller must hold self._lock.
+        self._check_owned()
+        # The caller holds self._lock, so this increment is serialised
+        # with other notify/notify_all calls and with the _waiters
+        # bookkeeping in wait().
         self._notify_count += n
         # Also wake the real condition for threads in the non-cooperative
         # path (no scheduler context — they block in _real_cond.wait()).
@@ -688,7 +711,8 @@ class CooperativeCondition:
             self._real_cond.notify(n)
 
     def notify_all(self) -> None:
-        # Caller holds self._lock — see notify() comment.
+        # Enforce the Condition invariant: caller must hold self._lock.
+        self._check_owned()
         self._notify_count += max(self._waiters, 1)
         with self._real_cond:
             self._real_cond.notify_all()
@@ -835,33 +859,56 @@ class CooperativePriorityQueue(CooperativeQueue):
 # ---------------------------------------------------------------------------
 
 _patched = False
+# Reference count protects against concurrent patch/unpatch from
+# parallel test runners (e.g. pytest-xdist in-process parallelism).
+_patch_count = 0
+_patch_count_lock = real_lock()
 
 
 def patch_locks() -> None:
-    """Replace threading and queue primitives with cooperative versions."""
-    global _patched  # noqa: PLW0603
-    threading.Lock = CooperativeLock  # type: ignore[assignment]
-    threading.RLock = CooperativeRLock  # type: ignore[assignment]
-    threading.Semaphore = CooperativeSemaphore  # type: ignore[assignment]
-    threading.BoundedSemaphore = CooperativeBoundedSemaphore  # type: ignore[assignment]
-    threading.Event = CooperativeEvent  # type: ignore[assignment]
-    threading.Condition = CooperativeCondition  # type: ignore[assignment]
-    queue.Queue = CooperativeQueue  # type: ignore[assignment]
-    queue.LifoQueue = CooperativeLifoQueue  # type: ignore[assignment]
-    queue.PriorityQueue = CooperativePriorityQueue  # type: ignore[assignment]
-    _patched = True
+    """Replace threading and queue primitives with cooperative versions.
+
+    Safe to call from multiple concurrent test runners: uses reference
+    counting so the first call patches and subsequent calls increment
+    the count.  ``unpatch_locks()`` only restores the originals when
+    the count drops to zero.
+    """
+    global _patched, _patch_count  # noqa: PLW0603
+    with _patch_count_lock:
+        _patch_count += 1
+        if _patch_count > 1:
+            return  # Already patched by another runner
+        threading.Lock = CooperativeLock  # type: ignore[assignment]
+        threading.RLock = CooperativeRLock  # type: ignore[assignment]
+        threading.Semaphore = CooperativeSemaphore  # type: ignore[assignment]
+        threading.BoundedSemaphore = CooperativeBoundedSemaphore  # type: ignore[assignment]
+        threading.Event = CooperativeEvent  # type: ignore[assignment]
+        threading.Condition = CooperativeCondition  # type: ignore[assignment]
+        queue.Queue = CooperativeQueue  # type: ignore[assignment]
+        queue.LifoQueue = CooperativeLifoQueue  # type: ignore[assignment]
+        queue.PriorityQueue = CooperativePriorityQueue  # type: ignore[assignment]
+        _patched = True
 
 
 def unpatch_locks() -> None:
-    """Restore the original threading and queue primitives."""
-    global _patched  # noqa: PLW0603
-    threading.Lock = real_lock  # type: ignore[assignment]
-    threading.RLock = real_rlock  # type: ignore[assignment]
-    threading.Semaphore = real_semaphore  # type: ignore[assignment]
-    threading.BoundedSemaphore = real_bounded_semaphore  # type: ignore[assignment]
-    threading.Event = real_event  # type: ignore[assignment]
-    threading.Condition = real_condition  # type: ignore[assignment]
-    queue.Queue = real_queue  # type: ignore[assignment]
-    queue.LifoQueue = real_lifo_queue  # type: ignore[assignment]
-    queue.PriorityQueue = real_priority_queue  # type: ignore[assignment]
-    _patched = False
+    """Restore the original threading and queue primitives.
+
+    Only actually restores when all paired ``patch_locks()`` calls
+    have been balanced by ``unpatch_locks()`` calls.
+    """
+    global _patched, _patch_count  # noqa: PLW0603
+    with _patch_count_lock:
+        _patch_count -= 1
+        if _patch_count > 0:
+            return  # Still in use by another runner
+        _patch_count = max(_patch_count, 0)  # Guard against over-unpatch
+        threading.Lock = real_lock  # type: ignore[assignment]
+        threading.RLock = real_rlock  # type: ignore[assignment]
+        threading.Semaphore = real_semaphore  # type: ignore[assignment]
+        threading.BoundedSemaphore = real_bounded_semaphore  # type: ignore[assignment]
+        threading.Event = real_event  # type: ignore[assignment]
+        threading.Condition = real_condition  # type: ignore[assignment]
+        queue.Queue = real_queue  # type: ignore[assignment]
+        queue.LifoQueue = real_lifo_queue  # type: ignore[assignment]
+        queue.PriorityQueue = real_priority_queue  # type: ignore[assignment]
+        _patched = False

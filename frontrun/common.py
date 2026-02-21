@@ -52,8 +52,11 @@ class InterleavingResult:
         property_holds: True if the invariant held under all tested interleavings.
         counterexample: A schedule that violated the invariant (if any).
         num_explored: How many interleavings were tested.
+        unique_interleavings: Number of distinct schedule orderings observed.
+            Provides a lower bound on interleaving-space coverage.
     """
 
     property_holds: bool
     counterexample: list[int] | None = None
     num_explored: int = 0
+    unique_interleavings: int = 0

@@ -69,18 +69,26 @@ class OpcodeScheduler:
     """Controls thread execution at bytecode instruction granularity.
 
     The schedule is a list of thread indices. Each entry means "let this
-    thread execute one bytecode instruction." When the schedule is
-    exhausted, all threads run freely to completion.
+    thread execute one bytecode instruction."
 
-    Deadlock detection uses a 5 s fallback ``condition.wait`` timeout for
-    threads stuck in C extensions or other unmanaged blocking calls.  When
-    cooperative locks are enabled, the :class:`~frontrun._deadlock.WaitForGraph`
-    provides instant lock-ordering cycle detection.
+    When the explicit schedule is exhausted, the scheduler dynamically
+    extends it with round-robin entries so that threads remain under
+    deterministic scheduler control instead of falling back to real
+    (non-deterministic) concurrency.  A hard cap (``max_ops``) limits
+    the total number of scheduler steps to prevent infinite runs.
+
+    Deadlock detection uses a configurable fallback ``condition.wait``
+    timeout (default 5 s) for threads stuck in C extensions or other
+    unmanaged blocking calls.  When cooperative locks are enabled, the
+    :class:`~frontrun._deadlock.WaitForGraph` provides instant
+    lock-ordering cycle detection.
     """
 
-    def __init__(self, schedule: list[int], num_threads: int):
-        self.schedule = schedule
+    def __init__(self, schedule: list[int], num_threads: int, *, deadlock_timeout: float = 5.0, max_ops: int = 0):
+        self.schedule = list(schedule)  # mutable copy for dynamic extension
         self.num_threads = num_threads
+        self.deadlock_timeout = deadlock_timeout
+        self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10000
         self._index = 0
         self._lock = real_lock()
         self._condition = threading.Condition(self._lock)
@@ -88,17 +96,32 @@ class OpcodeScheduler:
         self._error: Exception | None = None
         self._threads_done: set[int] = set()
 
+    def _extend_schedule(self) -> bool:
+        """Append a round-robin round of all active threads.
+
+        Returns True if the schedule was extended, False if all threads
+        are done or the max_ops cap was reached.
+        """
+        if self._index >= self._max_ops:
+            return False
+        active = [t for t in range(self.num_threads) if t not in self._threads_done]
+        if not active:
+            return False
+        self.schedule.extend(active)
+        return True
+
     def wait_for_turn(self, thread_id: int) -> bool:
-        """Block until it's this thread's turn. Returns False when schedule exhausted."""
+        """Block until it's this thread's turn. Returns False when done."""
         with self._condition:
             while True:
                 if self._finished or self._error:
                     return False
 
                 if self._index >= len(self.schedule):
-                    self._finished = True
-                    self._condition.notify_all()
-                    return False
+                    if not self._extend_schedule():
+                        self._finished = True
+                        self._condition.notify_all()
+                        return False
 
                 scheduled_tid = self.schedule[self._index]
 
@@ -112,7 +135,7 @@ class OpcodeScheduler:
                     self._condition.notify_all()
                     return True
 
-                if not self._condition.wait(timeout=5.0):
+                if not self._condition.wait(timeout=self.deadlock_timeout):
                     needed = self.schedule[self._index]
                     if needed in self._threads_done:
                         continue
@@ -428,6 +451,7 @@ def run_with_schedule(
     cooperative_locks: bool = True,
     detect_io: bool = True,
     debug: bool = False,
+    deadlock_timeout: float = 5.0,
 ) -> T:
     """Run one interleaving and return the state object.
 
@@ -440,11 +464,14 @@ def run_with_schedule(
             scheduler-aware versions that prevent deadlocks (default True).
         detect_io: Automatically detect socket/file I/O and treat them
             as scheduling points (default True).
+        deadlock_timeout: Seconds to wait before declaring a deadlock
+            (default 5.0).  Increase for code that legitimately blocks
+            in C extensions (NumPy, database queries, network I/O).
 
     Returns:
         The state object after execution.
     """
-    scheduler = OpcodeScheduler(schedule, len(threads))
+    scheduler = OpcodeScheduler(schedule, len(threads), deadlock_timeout=deadlock_timeout)
     runner = BytecodeShuffler(scheduler, cooperative_locks=cooperative_locks, detect_io=detect_io)
 
     # Patch locks BEFORE setup() so any locks created there are cooperative
@@ -481,6 +508,7 @@ def explore_interleavings(
     seed: int | None = None,
     debug: bool = False,
     detect_io: bool = True,
+    deadlock_timeout: float = 5.0,
 ) -> InterleavingResult:
     """Search for interleavings that violate an invariant.
 
@@ -502,13 +530,19 @@ def explore_interleavings(
         seed: Optional RNG seed for reproducibility.
         detect_io: Automatically detect socket/file I/O and treat them
             as scheduling points (default True).
+        deadlock_timeout: Seconds to wait before declaring a deadlock
+            (default 5.0).  Increase for code that legitimately blocks
+            in C extensions (NumPy, database queries, network I/O).
 
     Returns:
-        InterleavingResult with the outcome.
+        InterleavingResult with the outcome.  The ``unique_interleavings``
+        field reports how many distinct execution orderings were observed,
+        providing a lower bound on exploration coverage.
     """
     rng = random.Random(seed)
     num_threads = len(threads)
     result = InterleavingResult(property_holds=True, num_explored=0)
+    seen_schedule_hashes: set[int] = set()
 
     for _ in range(max_attempts):
         num_rounds = rng.randint(1, max(1, max_ops // num_threads))
@@ -520,14 +554,19 @@ def explore_interleavings(
 
         if debug:
             print(f"Running with {schedule=} {threads=}", flush=True)
-        state = run_with_schedule(schedule, setup, threads, timeout=timeout_per_run, detect_io=detect_io)
+        state = run_with_schedule(
+            schedule, setup, threads, timeout=timeout_per_run, detect_io=detect_io, deadlock_timeout=deadlock_timeout
+        )
         result.num_explored += 1
+        seen_schedule_hashes.add(hash(tuple(schedule)))
 
         if not invariant(state):
             result.property_holds = False
             result.counterexample = schedule
+            result.unique_interleavings = len(seen_schedule_hashes)
             return result
 
+    result.unique_interleavings = len(seen_schedule_hashes)
     return result
 
 
