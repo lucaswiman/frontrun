@@ -154,11 +154,11 @@ The ``explore_dpor()`` function is the main entry point:
 ``timeout_per_run`` *(default: 5.0)*
     Timeout in seconds for each individual execution.
 
-``reproduce_on_failure`` *(default: 0)*
+``reproduce_on_failure`` *(default: 10)*
     When a counterexample is found, replay the same schedule this many
     times to measure how reproducible the failure is. The reproduction
-    count and percentage appear in ``result.explanation``. Set to e.g. 10
-    to enable.
+    count and percentage appear in ``result.explanation``. Set to 0 to
+    skip.
 
 
 Interpreting results
