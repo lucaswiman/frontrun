@@ -271,9 +271,7 @@ class TestFormatting:
             TraceEvent(2, 0, "counter.py", 11, "increment", "STORE_ATTR", "write", "value", "Counter"),
             TraceEvent(3, 1, "counter.py", 11, "increment", "STORE_ATTR", "write", "value", "Counter"),
         ]
-        output = format_trace(
-            events, num_threads=2, num_explored=3, reproduction_attempts=10, reproduction_successes=7
-        )
+        output = format_trace(events, num_threads=2, num_explored=3, reproduction_attempts=10, reproduction_successes=7)
         assert "7/10" in output
         assert "70%" in output
 
@@ -461,6 +459,7 @@ class TestBytecodeIntegration:
 # ---------------------------------------------------------------------------
 # Integration tests: explore_dpor produces explanation
 # ---------------------------------------------------------------------------
+
 
 class TestDporIntegration:
     def test_dpor_counter_has_explanation(self) -> None:

@@ -17,9 +17,10 @@ from __future__ import annotations
 import dis
 import linecache
 import sys
-import threading
 from dataclasses import dataclass
 from typing import Any
+
+from frontrun._cooperative import real_lock
 
 _PY_VERSION = sys.version_info[:2]
 
@@ -75,7 +76,7 @@ class TraceRecorder:
     def __init__(self, *, enabled: bool = True) -> None:
         self.events: list[TraceEvent] = []
         self._step = 0
-        self._lock = threading.Lock()
+        self._lock = real_lock()
         self.enabled = enabled
 
     def record(
@@ -445,9 +446,7 @@ def format_trace(
     if reproduction_attempts > 0:
         parts.append("")
         pct = reproduction_successes * 100 // reproduction_attempts
-        parts.append(
-            f"  Reproduced {reproduction_successes}/{reproduction_attempts} times ({pct}%)"
-        )
+        parts.append(f"  Reproduced {reproduction_successes}/{reproduction_attempts} times ({pct}%)")
 
     parts.append("")
     return "\n".join(parts)
