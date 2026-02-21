@@ -18,7 +18,7 @@ import dis
 import linecache
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 _PY_VERSION = sys.version_info[:2]
@@ -93,10 +93,7 @@ class TraceRecorder:
         code = frame.f_code
         obj_type_name: str | None = None
         if obj is not None:
-            try:
-                obj_type_name = type(obj).__name__
-            except Exception:
-                pass
+            obj_type_name = type(obj).__name__
 
         with self._lock:
             step = self._step
@@ -269,7 +266,6 @@ class ConflictInfo:
     pattern: str  # "lost_update", "stale_read", "write_write", "order_violation", "unknown"
     summary: str  # One-line human-readable explanation
     attr_name: str | None = None  # attribute involved, if identifiable
-    involved_threads: list[int] = field(default_factory=list)
 
 
 def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
@@ -326,7 +322,6 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
                                 f"{obj_desc} before either wrote it back."
                             ),
                             attr_name=attr,
-                            involved_threads=[t_a, t_b],
                         )
 
         # Check for write-write without reads (simple overwrite)
@@ -341,7 +336,6 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
                         pattern="write_write",
                         summary=f"Write-write conflict: threads {t_a} and {t_b} both wrote to {attr}.",
                         attr_name=attr,
-                        involved_threads=[t_a, t_b],
                     )
 
     # Fallback: we recorded shared accesses but couldn't classify the pattern
@@ -349,7 +343,6 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
     return ConflictInfo(
         pattern="unknown",
         summary=f"Race condition involving threads {', '.join(map(str, all_threads))}.",
-        involved_threads=all_threads,
     )
 
 

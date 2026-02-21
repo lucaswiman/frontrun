@@ -45,6 +45,15 @@ Async Bytecode Instrumentation (Experimental)
    :show-inheritance:
 
 
+Trace Formatting
+-----------------
+
+.. automodule:: frontrun._trace_format
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
 Async Scheduler Utilities
 --------------------------
 

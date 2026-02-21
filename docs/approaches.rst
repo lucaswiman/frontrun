@@ -155,7 +155,14 @@ returning any counterexample schedule.
        )
 
        assert not result.property_holds
-       assert result.counterexample.value == 1
+       # result.explanation has a human-readable trace of the race
+       print(result.explanation)
+
+When a race is found, ``result.explanation`` contains an interleaved source-line
+trace showing which threads accessed which shared state, the conflict pattern
+(e.g. lost update, write-write), and reproduction statistics. The
+``reproduce_on_failure`` parameter (default 10) controls how many times the
+counterexample schedule is replayed to measure reproducibility.
 
 **Controlled Interleaving (Internal/Advanced):**
 
@@ -213,6 +220,7 @@ performance.
        invariant=lambda c: c.value == 2,
    )
    assert not result.property_holds  # lost-update bug found in 2 executions
+   print(result.explanation)         # human-readable trace of the race
 
 **Scope:** DPOR explores alternative schedules only where it detects a
 conflict at the bytecode level (two threads accessing the same Python object

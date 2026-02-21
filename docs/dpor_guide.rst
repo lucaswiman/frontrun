@@ -154,6 +154,12 @@ The ``explore_dpor()`` function is the main entry point:
 ``timeout_per_run`` *(default: 5.0)*
     Timeout in seconds for each individual execution.
 
+``reproduce_on_failure`` *(default: 10)*
+    When a counterexample is found, replay the same schedule this many
+    times to measure how reproducible the failure is. The reproduction
+    count and percentage appear in ``result.explanation``. Set to 0 to
+    skip reproduction testing.
+
 
 Interpreting results
 --------------------
@@ -168,10 +174,18 @@ Interpreting results
        executions_explored: int = 0                      # total interleavings tried
        counterexample_schedule: list[int] | None = None  # first failing schedule
        failures: list[tuple[int, list[int]]] = ...       # all (execution_num, schedule) pairs
+       explanation: str | None = None                    # human-readable trace of the race
+       reproduction_attempts: int = 0                    # number of replay attempts
+       reproduction_successes: int = 0                   # how many replays reproduced the failure
 
 ``counterexample_schedule`` is a list of thread IDs representing the order in
 which threads were scheduled. For example, ``[0, 0, 1, 1]`` means thread 0
 ran for two steps, then thread 1 ran for two steps.
+
+When a race is found, ``explanation`` contains a formatted trace showing the
+interleaved source lines, the conflict pattern (lost update, write-write, etc.),
+and reproduction statistics. This is the same output for both ``explore_dpor``
+and ``explore_interleavings``.
 
 
 Example: verifying that a lock fixes a race

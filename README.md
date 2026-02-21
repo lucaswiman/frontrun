@@ -136,8 +136,26 @@ def test_counter_no_race():
     )
 
     assert not result.property_holds, "Expected a race condition"
-    assert result.counterexample.value == 1
+    # result.explanation contains a human-readable trace of the race
+    print(result.explanation)
 ```
+
+When a race is found, `result.explanation` contains a human-readable trace showing which source lines executed in which order, the conflict pattern (e.g. lost update), and reproduction statistics:
+
+```
+Race condition found after 3 interleavings.
+
+  Lost update: threads 0 and 1 both read value before either wrote it back.
+
+  Thread 0 | counter.py:7             temp = self.value  [read Counter.value]
+  Thread 1 | counter.py:7             temp = self.value  [read Counter.value]
+  Thread 0 | counter.py:8             self.value = temp + 1  [write Counter.value]
+  Thread 1 | counter.py:8             self.value = temp + 1  [write Counter.value]
+
+  Reproduced 8/10 times (80%)
+```
+
+The `reproduce_on_failure` parameter (default 10) controls how many times the counterexample schedule is replayed to measure reproducibility. Set to 0 to skip reproduction testing.
 
 ### 3. DPOR (Systematic Exploration)
 
@@ -165,7 +183,10 @@ def test_counter_race():
 
     assert not result.property_holds       # lost-update bug found
     assert result.executions_explored == 2  # only 2 of 6 interleavings needed
+    print(result.explanation)              # human-readable trace of the race
 ```
+
+Like `explore_interleavings`, DPOR produces `result.explanation` with the interleaved trace and reproduction statistics when a race is found.
 
 **Scope and limitations:** DPOR explores alternative schedules only where it sees a conflict (two threads accessing the same Python object with at least one write). Operations that go through C code — database queries, network calls — look like opaque, independent function calls to the bytecode tracer. DPOR won't see a conflict between two threads calling `cursor.execute(...)` on the same row, so it will conclude they are independent and skip the interleavings where bugs hide. For testing those interactions, use trace markers with explicit scheduling instead.
 

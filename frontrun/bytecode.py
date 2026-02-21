@@ -615,16 +615,13 @@ def explore_interleavings(
                 result.reproduction_attempts = reproduce_on_failure
                 result.reproduction_successes = successes
 
-            try:
-                result.explanation = format_trace(
-                    recorder.events,
-                    num_threads=num_threads,
-                    num_explored=result.num_explored,
-                    reproduction_attempts=result.reproduction_attempts,
-                    reproduction_successes=result.reproduction_successes,
-                )
-            except Exception:
-                pass  # Don't let trace formatting break the result
+            result.explanation = format_trace(
+                recorder.events,
+                num_threads=num_threads,
+                num_explored=result.num_explored,
+                reproduction_attempts=result.reproduction_attempts,
+                reproduction_successes=result.reproduction_successes,
+            )
 
             return result
 

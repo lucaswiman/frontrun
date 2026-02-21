@@ -1020,16 +1020,13 @@ def explore_dpor(
                 result.reproduction_successes = successes
 
             if result.explanation is None:
-                try:
-                    result.explanation = format_trace(
-                        recorder.events,
-                        num_threads=num_threads,
-                        num_explored=result.executions_explored,
-                        reproduction_attempts=result.reproduction_attempts,
-                        reproduction_successes=result.reproduction_successes,
-                    )
-                except Exception:
-                    pass  # Don't let trace formatting break the result
+                result.explanation = format_trace(
+                    recorder.events,
+                    num_threads=num_threads,
+                    num_explored=result.executions_explored,
+                    reproduction_attempts=result.reproduction_attempts,
+                    reproduction_successes=result.reproduction_successes,
+                )
             if stop_on_first:
                 # Clear cache before returning
                 with _INSTR_CACHE_LOCK:
