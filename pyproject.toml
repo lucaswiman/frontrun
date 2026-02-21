@@ -28,6 +28,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.entry-points.pytest11]
+frontrun = "frontrun.pytest_plugin"
+
 [project.urls]
 Homepage = "https://github.com/lucaswiman/frontrun"
 Repository = "https://github.com/lucaswiman/frontrun.git"
