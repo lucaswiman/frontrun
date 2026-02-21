@@ -42,6 +42,7 @@ from typing import Any, TypeVar
 from frontrun._cooperative import (
     clear_context,
     patch_locks,
+    real_condition,
     real_lock,
     set_context,
     unpatch_locks,
@@ -91,7 +92,7 @@ class OpcodeScheduler:
         self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10000
         self._index = 0
         self._lock = real_lock()
-        self._condition = threading.Condition(self._lock)
+        self._condition = real_condition(self._lock)
         self._finished = False
         self._error: Exception | None = None
         self._threads_done: set[int] = set()

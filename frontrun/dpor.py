@@ -48,6 +48,7 @@ from frontrun_dpor import PyDporEngine, PyExecution  # type: ignore[reportAttrib
 from frontrun._cooperative import (
     clear_context,
     patch_locks,
+    real_condition,
     real_lock,
     set_context,
     set_sync_reporter,
@@ -124,8 +125,9 @@ class ShadowStack:
 # stale-cache bug where a GC'd code object's id was reused by a new one
 # within a single DPOR execution.
 _INSTR_CACHE: dict[Any, dict[int, dis.Instruction]] = {}
-# Lock created with threading.Lock() directly (before any patching happens)
-_INSTR_CACHE_LOCK = threading.Lock()
+# Must use real_lock() — not threading.Lock() — to avoid cooperative re-entry
+# when the pytest plugin patches threading.Lock globally.
+_INSTR_CACHE_LOCK = real_lock()
 
 
 def _get_instructions(code: Any) -> dict[int, dis.Instruction]:
@@ -191,7 +193,7 @@ class DporScheduler:
         # reporter, and the main explore_dpor loop.
         self._engine_lock: threading.Lock = engine_lock if engine_lock is not None else real_lock()
         self._lock = real_lock()
-        self._condition = threading.Condition(self._lock)
+        self._condition = real_condition(self._lock)
         self._finished = False
         self._error: Exception | None = None
         self._threads_done: set[int] = set()

@@ -32,6 +32,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from frontrun._cooperative import real_condition, real_lock
 from frontrun.common import Schedule
 
 MARKER_PATTERN = re.compile(r"#\s*frontrun:\s*(\w+)")
@@ -47,7 +48,7 @@ class MarkerRegistry:
     def __init__(self):
         self._markers: dict[tuple[str, int], str] = {}  # (filename, lineno) -> marker_name
         self._scanned_files: set[str] = set()
-        self._lock = threading.Lock()
+        self._lock = real_lock()
 
     def scan_frame(self, frame: Any) -> None:  # type: ignore[name-defined]
         """Scan the source file for the given frame to find all markers.
@@ -115,14 +116,14 @@ class ThreadCoordinator:
         self.schedule = schedule
         self.deadlock_timeout = deadlock_timeout
         self.current_step = 0
-        self.lock = threading.Lock()
-        self.condition = threading.Condition(self.lock)
+        self.lock = real_lock()
+        self.condition = real_condition(self.lock)
         self.completed = False
         self.error: Exception | None = None
         # Execution serialization lock: ensures only one thread runs between
         # markers, replicating GIL-like serialization needed on free-threaded
         # Python where threads truly run in parallel.
-        self._execution_lock = threading.Lock()
+        self._execution_lock = real_lock()
 
     def wait_for_turn(self, execution_name: str, marker_name: str, *, _reacquire_execution_lock: bool = False):
         """Block until it's this execution unit's turn to execute this marker.
