@@ -43,13 +43,26 @@ def pytest_configure(config):
     )
 
 
+def _global_patch_active() -> bool:
+    """Return True if the pytest plugin already patched locks globally."""
+    from frontrun._cooperative import _patched
+
+    return _patched
+
+
 @pytest.fixture
 def _frontrun_locks():
     """Internal fixture that patches/unpatches threading.Lock for frontrun tests.
 
     This ensures cooperative locks are used during frontrun-specific tests,
     allowing the scheduler to control thread execution at a fine-grained level.
+
+    If the ``--frontrun-patch-locks`` plugin already patched globally, this
+    is a no-op (avoids double-patching).
     """
+    if _global_patch_active():
+        yield
+        return
     original_lock = threading.Lock
     threading.Lock = CooperativeLock
     try:
@@ -64,7 +77,13 @@ def _patch_locks_for_marked_tests(request):
 
     This allows tests that directly call frontrun functions (without using fixtures)
     to still have cooperative lock behavior.
+
+    If the ``--frontrun-patch-locks`` plugin already patched globally, this
+    is a no-op.
     """
+    if _global_patch_active():
+        yield
+        return
     if request.node.get_closest_marker("frontrun"):
         original_lock = threading.Lock
         threading.Lock = CooperativeLock

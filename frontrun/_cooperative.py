@@ -898,10 +898,11 @@ def unpatch_locks() -> None:
     """
     global _patched, _patch_count  # noqa: PLW0603
     with _patch_count_lock:
+        if _patch_count <= 0:
+            return  # Not patched — nothing to do
         _patch_count -= 1
         if _patch_count > 0:
             return  # Still in use by another runner
-        _patch_count = max(_patch_count, 0)  # Guard against over-unpatch
         threading.Lock = real_lock  # type: ignore[assignment]
         threading.RLock = real_rlock  # type: ignore[assignment]
         threading.Semaphore = real_semaphore  # type: ignore[assignment]

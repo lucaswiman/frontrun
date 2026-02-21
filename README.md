@@ -226,6 +226,24 @@ def test_async_counter_lost_update():
     assert counter.value == 1  # One increment lost
 ```
 
+## Pytest Plugin
+
+Frontrun ships a pytest plugin (registered via the `pytest11` entry point) that
+automatically patches `threading.Lock`, `threading.RLock`, `queue.Queue`, and
+related primitives with cooperative versions **before test collection**. This
+means any module-level `threading.Lock()` created at import time will already be
+a cooperative lock.
+
+Patching is **on by default** — no flags needed:
+
+```bash
+pytest                            # cooperative lock patching is active
+pytest --no-frontrun-patch-locks  # disable if it causes issues
+```
+
+The plugin calls `patch_locks()` in `pytest_configure` (before any test module
+is imported) and `unpatch_locks()` in `pytest_unconfigure`.
+
 ## Development
 
 ### Running Tests

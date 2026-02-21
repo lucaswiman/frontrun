@@ -159,6 +159,111 @@ globals. Version-sensitive (`PyFrame_LocalsToFast` is CPython-specific). Prefer
 
 ---
 
+## Trace-Time Lock `acquire`/`release` Interception (Lovecraftian Horror)
+
+Instead of monkeypatching `threading.Lock` globally, intercept `lock.acquire()`
+and `lock.release()` calls *inside the trace callback* — the same `sys.settrace`
+/ `sys.monitoring` machinery that already runs for every opcode.
+
+**The idea:** when the tracer sees a `CALL` opcode targeting a bound method like
+`lock.acquire`, replace the blocking call with a cooperative spin-yield loop
+before the real instruction executes. No global mutation, perfectly scoped to
+traced runs, works for locks created at any time.
+
+**Why it doesn't work cleanly:** trace callbacks fire *around* opcodes, not
+*instead of* them. You cannot prevent the real `CALL` instruction from executing.
+Options for working around this, each worse than the last:
+
+1. **Pre-acquire with `lock.acquire(blocking=False)` in the trace callback,**
+   spinning and yielding scheduler turns until it succeeds. Then the real `CALL`
+   instruction's blocking acquire succeeds instantly. But now you've acquired
+   twice — you need to release once to compensate, creating a window where the
+   lock is unheld between your compensating release and the real acquire. Race
+   condition in your race condition detector.
+
+2. **Replace the bound method on the eval stack** before `CALL` executes, using
+   `ctypes` to poke at the frame's value stack. Undocumented, changes across
+   CPython versions, and the eval stack layout differs between 3.10, 3.11, 3.12,
+   3.13, and 3.14. Five layouts to reverse-engineer and maintain.
+
+3. **Swap `f_locals` to point at a wrapper** via PEP 667 / `PyFrame_LocalsToFast`.
+   Only works when the lock is a local variable, not `self._lock.acquire()`.
+
+4. **Use `sys.monitoring` `CALL` events** (3.12+). PEP 669 gives you the callee
+   but no way to replace it or skip the call.
+
+**Where it *could* be useful without the horror:** for DPOR conflict detection
+(not interleaving control), the trace callback could detect `lock.acquire` calls
+and report them to the Rust engine as sync events — improving happens-before
+tracking for real locks without needing to control the interleaving. This is a
+read-only observation, so none of the above problems apply. But it still requires
+shadow-stack tracking through `LOAD_ATTR` to identify which object the `acquire`
+is being called on, and `CALL` opcodes don't appear in DPOR's `_process_opcode`
+explicit handling (they fall through to `dis.stack_effect`).
+
+**Verdict:** Early monkey-patching via the pytest plugin (on by default) covers
+the realistic cases. This approach is preserved here as a future possibility if
+someone wants to eliminate global lock patching entirely and doesn't mind mass
+`ctypes` eval-stack surgery.
+
+---
+
+## `gc.get_objects()` Lock Instance Replacement (`--frontrun-patch-locks=aggressive`)
+
+Walk all live objects via `gc.get_objects()`, find real `_thread.lock` and
+`_thread.RLock` instances, then use `gc.get_referrers()` to locate their
+containers (dicts, lists, `__dict__`) and swap in cooperative wrappers.
+
+```python
+for lock in gc.get_objects():
+    if type(lock) is real_lock_type:
+        wrapper = CooperativeLock.__new__(CooperativeLock)
+        wrapper._lock = lock
+        for referrer in gc.get_referrers(lock):
+            _try_replace(referrer, lock, wrapper)
+```
+
+**The appeal:** catches locks created before `patch_locks()` ran — e.g. stdlib
+module-level locks, third-party libraries that create locks at import time.
+Monkey-patching `threading.Lock` only affects *future* calls; this retroactively
+fixes *existing* instances.
+
+**Why it's problematic:**
+
+1. **Recursive wrapping.** The wrapper's `_lock` attribute refers to the real
+   lock. But `gc.get_referrers(real_lock)` also finds the wrapper's `__dict__`
+   as a referrer, so `_try_replace` wraps the wrapper — `CooperativeLock` whose
+   `_lock` is another `CooperativeLock` whose `_lock` is the real lock. Every
+   method call recurses. The fix is to skip referrers that are already
+   cooperative wrappers, but the check is fragile.
+
+2. **Stdlib internal locks.** Python's logging, threading, importlib, and io
+   modules all hold real locks in module-level or instance variables. Replacing
+   them with cooperative wrappers means `logging.Handler.acquire()` now calls
+   cooperative `acquire()` which imports `frontrun._deadlock` which may trigger
+   logging… infinite recursion at shutdown. The `_is_frontrun_internal` guard
+   only skips frontrun's own modules, not stdlib.
+
+3. **Best-effort coverage.** Locks in tuples, frozensets, C extension structs,
+   closure cells, and `__slots__` cannot be replaced. The user gets silent
+   partial coverage with no way to know which locks were missed.
+
+4. **Non-deterministic.** `gc.get_objects()` order depends on allocation
+   history. Different test runs may replace different subsets of locks depending
+   on import order, gc timing, and which objects have been collected.
+
+5. **Wrapper construction via `__new__`.** Bypassing `__init__` requires
+   manually initializing every field. When `CooperativeRLock` gains a new field,
+   the `__new__` path silently produces broken instances (as happened with
+   `_owner` and `_count`).
+
+**Current status:** Removed. The gc-scanning code has been deleted from
+`pytest_plugin.py`. The problems above (especially recursive wrapping and
+stdlib lock interference) made it unreliable. Early monkey-patching (now on
+by default) covers the realistic cases without these risks.
+
+---
+
 ## Import Hook Bytecode Rewriting (Long-Term Option)
 
 A standard technique used by coverage.py and crosshair. Register a custom
