@@ -900,7 +900,7 @@ def explore_dpor(
     stop_on_first: bool = True,
     detect_io: bool = True,
     deadlock_timeout: float = 5.0,
-    reproduce_on_failure: int = 10,
+    reproduce_on_failure: int = 0,
 ) -> DporResult:
     """Systematically explore interleavings using DPOR.
 
@@ -930,7 +930,7 @@ def explore_dpor(
             in C extensions (NumPy, database queries, network I/O).
         reproduce_on_failure: When a counterexample is found, replay the
             same schedule this many times to measure reproducibility
-            (default 10).  Set to 0 to skip reproduction testing.
+            (default 0).  Set to e.g. 10 to enable reproduction testing.
 
     Returns:
         DporResult with exploration statistics and any counterexample found.

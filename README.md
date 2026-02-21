@@ -155,7 +155,7 @@ Race condition found after 3 interleavings.
   Reproduced 8/10 times (80%)
 ```
 
-The `reproduce_on_failure` parameter (default 10) controls how many times the counterexample schedule is replayed to measure reproducibility. Set to 0 to skip reproduction testing.
+The `reproduce_on_failure` parameter (default 0) controls how many times the counterexample schedule is replayed to measure reproducibility. Set to e.g. 10 to enable.
 
 ### 3. DPOR (Systematic Exploration)
 

@@ -161,7 +161,7 @@ returning any counterexample schedule.
 When a race is found, ``result.explanation`` contains an interleaved source-line
 trace showing which threads accessed which shared state, the conflict pattern
 (e.g. lost update, write-write), and reproduction statistics. The
-``reproduce_on_failure`` parameter (default 10) controls how many times the
+``reproduce_on_failure`` parameter (default 0) controls how many times the
 counterexample schedule is replayed to measure reproducibility.
 
 **Controlled Interleaving (Internal/Advanced):**
