@@ -198,14 +198,10 @@ Testing race conditions in async code using async trace markers:
    print("Async race condition detected!")
 
 
-Example 5: Finding Race Conditions Automatically (Experimental)
----------------------------------------------------------------
+Example 5: Finding Race Conditions Automatically
+--------------------------------------------------
 
 Using bytecode instrumentation to automatically explore interleavings:
-
-.. warning::
-
-   Bytecode instrumentation is experimental. Use with caution.
 
 .. code-block:: python
 

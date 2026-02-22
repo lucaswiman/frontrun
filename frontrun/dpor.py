@@ -5,7 +5,7 @@ This module implements systematic interleaving exploration using DPOR,
 completely separate from the existing bytecode.py random exploration.
 
 The approach:
-1. A Rust DPOR engine (frontrun_dpor) manages the exploration tree,
+1. A Rust DPOR engine (frontrun._dpor) manages the exploration tree,
    vector clocks, and backtrack set computation.
 2. Python drives execution: runs threads under sys.settrace opcode
    tracing, uses a shadow stack to detect shared-memory accesses,
@@ -43,8 +43,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
-from frontrun_dpor import PyDporEngine, PyExecution  # type: ignore[reportAttributeAccessIssue]
-
 from frontrun._cooperative import (
     clear_context,
     patch_locks,
@@ -55,6 +53,7 @@ from frontrun._cooperative import (
     unpatch_locks,
 )
 from frontrun._deadlock import SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
+from frontrun._dpor import PyDporEngine, PyExecution  # type: ignore[reportAttributeAccessIssue]
 from frontrun._io_detection import (
     patch_io,
     set_io_reporter,
@@ -63,6 +62,7 @@ from frontrun._io_detection import (
 )
 from frontrun._trace_format import TraceRecorder, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
+from frontrun.cli import require_active as _require_frontrun_env
 
 T = TypeVar("T")
 
@@ -656,7 +656,7 @@ class DporBytecodeRunner:
         tool_id = mon.PROFILER_ID  # type: ignore[attr-defined]
         DporBytecodeRunner._TOOL_ID = tool_id
 
-        mon.use_tool_id(tool_id, "frontrun-dpor")  # type: ignore[attr-defined]
+        mon.use_tool_id(tool_id, "frontrun._dpor")  # type: ignore[attr-defined]
         mon.set_events(tool_id, mon.events.PY_START | mon.events.PY_RETURN | mon.events.INSTRUCTION)  # type: ignore[attr-defined]
 
         scheduler = self.scheduler
@@ -934,7 +934,15 @@ def explore_dpor(
 
     Returns:
         DporResult with exploration statistics and any counterexample found.
+
+    .. note::
+
+       When running under **pytest**, this function requires the
+       ``frontrun`` CLI wrapper (``frontrun pytest ...``) or the
+       ``--frontrun-patch-locks`` flag.  Without it, the test is
+       automatically skipped.
     """
+    _require_frontrun_env("explore_dpor")
     num_threads = len(threads)
     pb = None if preemption_bound is None else preemption_bound
     me = None if max_executions is None else max_executions

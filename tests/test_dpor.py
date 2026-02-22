@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 
-from frontrun_dpor import PyDporEngine
+from frontrun._dpor import PyDporEngine
 
 from frontrun.dpor import DporResult, explore_dpor
 

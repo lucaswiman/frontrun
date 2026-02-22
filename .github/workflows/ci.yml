@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - 'frontrun/**'
-      - 'frontrun-dpor/**'
+      - 'crates/**'
       - 'tests/**'
       - 'Makefile'
       - 'venv.mk'
@@ -15,7 +15,7 @@ on:
   pull_request:
     paths:
       - 'frontrun/**'
-      - 'frontrun-dpor/**'
+      - 'crates/**'
       - 'tests/**'
       - 'Makefile'
       - 'venv.mk'
@@ -58,7 +58,7 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: frontrun-dpor
+          workspaces: .
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5

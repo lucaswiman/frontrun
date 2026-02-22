@@ -143,7 +143,7 @@ on its own:
        invariant=lambda s: _read_count() == 2,
        max_attempts=50,
        seed=42,
-       detect_io=False,   # psycopg2 uses C-level sockets
+       detect_io=True,    # C-level sockets detected via LD_PRELOAD
    )
 
 Output:
@@ -221,11 +221,11 @@ Running the example yourself
 
 .. code-block:: bash
 
-   # Build the virtualenv with SQLAlchemy + psycopg2
-   make build-examples-3.14t    # or build-examples-3.10
+   # Build the virtualenv with SQLAlchemy + psycopg2, and the I/O library
+   make build-examples-3.14t build-io   # or build-examples-3.10
 
    # Create the test database (if it doesn't exist)
    createdb frontrun_test
 
-   # Run
-   .venv-3.14t/bin/python examples/orm_race.py
+   # Run via the frontrun CLI for C-level I/O interception
+   frontrun .venv-3.14t/bin/python examples/orm_race.py

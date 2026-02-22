@@ -1,9 +1,12 @@
 [build-system]
-requires = ["setuptools>=77", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
-[tool.setuptools]
-packages = ["frontrun"]
+[tool.maturin]
+features = ["pyo3/extension-module"]
+manifest-path = "crates/dpor/Cargo.toml"
+module-name = "frontrun._dpor"
+python-source = "."
 
 [project]
 name = "frontrun"
@@ -27,6 +30,9 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = []
+
+[project.scripts]
+frontrun = "frontrun.cli:main"
 
 [project.entry-points.pytest11]
 frontrun = "frontrun.pytest_plugin"

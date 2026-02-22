@@ -5,7 +5,7 @@ edition = "2021"
 description = "DPOR (Dynamic Partial Order Reduction) engine for frontrun concurrency testing"
 
 [lib]
-name = "frontrun_dpor"
+name = "_dpor"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]

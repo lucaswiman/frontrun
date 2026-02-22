@@ -30,16 +30,17 @@ This example demonstrates detection using frontrun:
 
 1. **Trace markers** (deterministic) — exact schedule forces the race
 2. **Bytecode exploration** (automatic) — random opcode-level schedules
-3. **Naive threading** — shows intermittent failure rate
+3. **DPOR** (systematic) — explores all meaningfully different interleavings
+4. **Naive threading** — shows intermittent failure rate
 
 Requirements::
 
-    make build-examples-3.14t   # or build-examples-3.10
-    createdb frontrun_test      # or: sudo -u postgres createdb frontrun_test
+    make build-examples-3.14t build-io  # or build-examples-3.10
+    createdb frontrun_test              # or: sudo -u postgres createdb frontrun_test
 
 Running::
 
-    .venv-3.14t/bin/python examples/orm_race.py
+    frontrun .venv-3.14t/bin/python examples/orm_race.py
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from frontrun.bytecode import explore_interleavings
 from frontrun.common import Schedule, Step
+from frontrun.dpor import explore_dpor
 from frontrun.trace_markers import TraceExecutor
 
 _DB_NAME = "frontrun_test"
@@ -278,7 +280,79 @@ def demo_bytecode_exploration() -> None:
 
 
 # ============================================================================
-# Demo 3: Naive threading — intermittent failure
+# Demo 3: Systematic exploration with DPOR
+# ============================================================================
+#
+# DPOR (Dynamic Partial Order Reduction) systematically explores all
+# meaningfully different interleavings.  Unlike bytecode exploration which
+# samples randomly, DPOR guarantees coverage: every distinct ordering is
+# tried exactly once, and redundant orderings are pruned.
+#
+# When run under the `frontrun` CLI, the LD_PRELOAD library intercepts
+# C-level I/O (libpq's send/recv calls) so DPOR sees socket operations
+# as conflict points.  This means it can detect the lost update even
+# though the database I/O happens inside a C extension.
+
+
+def demo_dpor() -> None:
+    """Systematically explore interleavings with DPOR."""
+    print(_SEP)
+    print("Demo 3: SQLAlchemy lost update  (DPOR — systematic exploration)")
+    print(_SEP)
+    print()
+    print("  DPOR systematically explores all meaningfully different")
+    print("  interleavings.  C-level I/O is intercepted via LD_PRELOAD.")
+    print()
+
+    _setup_table()
+
+    class _State:
+        """Per-attempt state: reset login_count to 0."""
+
+        def __init__(self) -> None:
+            with Session(_engine) as session:
+                user = session.get(User, 1)
+                assert user is not None
+                user.login_count = 0
+                session.commit()
+
+    def _thread_fn(_state: _State) -> None:
+        with Session(_engine) as session:
+            user = session.get(User, 1)
+            assert user is not None
+            user.login_count = user.login_count + 1
+            session.commit()
+
+    def _invariant(_state: _State) -> bool:
+        with Session(_engine) as session:
+            user = session.get(User, 1)
+            assert user is not None
+            return user.login_count == 2
+
+    result = explore_dpor(
+        setup=_State,
+        threads=[_thread_fn, _thread_fn],
+        invariant=_invariant,
+        detect_io=True,
+        deadlock_timeout=15.0,
+    )
+
+    print(f"  property_holds       : {result.property_holds}")
+    print(f"  executions_explored  : {result.executions_explored}")
+    if not result.property_holds:
+        print()
+        print("  LOST UPDATE confirmed via DPOR.")
+    else:
+        print("  No lost update found.")
+    if result.explanation:
+        print()
+        for line in result.explanation.splitlines():
+            print("  " + line)
+    print()
+
+
+# ============================================================================
+# Demo 4: Naive threading — intermittent failure
 # ============================================================================
 #
 # In production, two login events for the same user don't arrive at the
@@ -296,7 +370,7 @@ def demo_bytecode_exploration() -> None:
 def demo_naive_threading(trials: int = 500) -> None:
     """Show the intermittent nature of the race with plain threads + Postgres."""
     print(_SEP)
-    print(f"Demo 3: Naive threading + SQLAlchemy  ({trials} trials)")
+    print(f"Demo 4: Naive threading + SQLAlchemy  ({trials} trials)")
     print(_SEP)
     print()
     print("  Running both handlers in plain threads against real Postgres.")
@@ -351,4 +425,5 @@ def demo_naive_threading(trials: int = 500) -> None:
 if __name__ == "__main__":
     demo_trace_markers()
     demo_bytecode_exploration()
+    demo_dpor()
     demo_naive_threading()

@@ -177,7 +177,7 @@ impl PyExecution {
 /// (3.13t/3.14t). The DPOR engine state is only mutated through Python calls
 /// serialized by our cooperative scheduler, so this is safe.
 #[pymodule(gil_used = false)]
-fn frontrun_dpor(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _dpor(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDporEngine>()?;
     m.add_class::<PyExecution>()?;
     Ok(())

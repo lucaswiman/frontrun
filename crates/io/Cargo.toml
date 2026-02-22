@@ -1,0 +1,12 @@
+[package]
+name = "frontrun-io"
+version = "0.1.0"
+edition = "2021"
+description = "LD_PRELOAD library that intercepts libc I/O for frontrun concurrency testing"
+
+[lib]
+name = "frontrun_io"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"

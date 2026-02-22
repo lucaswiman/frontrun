@@ -34,6 +34,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Rust build output (Cargo workspace)
+target/
+
 # Build cache
 .cargo-cache/
 .uv-cache/

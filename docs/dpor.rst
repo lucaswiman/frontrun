@@ -530,7 +530,7 @@ interleavings under independent-operation reordering.
 Data structures
 ---------------
 
-The implementation is split across six Rust modules in ``frontrun-dpor/src/``:
+The implementation is split across six Rust modules in ``crates/dpor/src/``:
 
 ``vv.rs`` --- Vector clocks
     ``VersionVec``: a contiguous ``Vec<u32>`` indexed by thread ID with
@@ -565,13 +565,13 @@ The implementation is split across six Rust modules in ``frontrun-dpor/src/``:
 Python API
 ----------
 
-The Rust engine is exposed to Python via PyO3 as the ``frontrun_dpor`` native
+The Rust engine is exposed to Python via PyO3 as the ``frontrun._dpor`` native
 module. The two Python-visible classes are ``PyDporEngine`` and
 ``PyExecution``.
 
 .. code-block:: python
 
-   from frontrun_dpor import PyDporEngine, PyExecution
+   from frontrun._dpor import PyDporEngine, PyExecution
 
    engine = PyDporEngine(
        num_threads=2,

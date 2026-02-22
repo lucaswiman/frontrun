@@ -55,6 +55,7 @@ from frontrun._io_detection import (
 )
 from frontrun._trace_format import TraceRecorder, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
+from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import InterleavingResult
 
 # Type variable for the shared state passed between setup and thread functions
@@ -532,6 +533,13 @@ def explore_interleavings(
 ) -> InterleavingResult:
     """Search for interleavings that violate an invariant.
 
+    .. note::
+
+       When running under **pytest**, this function requires the
+       ``frontrun`` CLI wrapper (``frontrun pytest ...``) or the
+       ``--frontrun-patch-locks`` flag.  Without it, the test is
+       automatically skipped.
+
     Generates random opcode-level schedules and tests whether the invariant
     holds under each one. If a violation is found, returns immediately with
     the counterexample schedule.
@@ -562,6 +570,7 @@ def explore_interleavings(
         field reports how many distinct execution orderings were observed,
         providing a lower bound on exploration coverage.
     """
+    _require_frontrun_env("explore_interleavings")
     rng = random.Random(seed)
     num_threads = len(threads)
     result = InterleavingResult(property_holds=True, num_explored=0)

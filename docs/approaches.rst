@@ -96,12 +96,8 @@ The synchronization contract:
            await self.set_count(current + 1)
 
 
-Bytecode Instrumentation (Experimental)
-----------------------------------------
-
-.. warning::
-
-   Bytecode instrumentation is **experimental** and should be used with caution. The API may change, and behavior is not guaranteed to be stable across Python versions.
+Bytecode Instrumentation
+-------------------------
 
 Bytecode instrumentation automatically inserts checkpoints into functions using Python bytecode rewriting. No manual marker insertion is needed.
 
@@ -186,7 +182,6 @@ debugging this library or building tooling on top of it, rather than for general
 - Results may vary across Python versions
 - Some bytecode patterns may not be instrumented correctly
 - Performance impact is higher than trace markers
-- Async bytecode instrumentation is also experimental
 
 
 DPOR (Systematic Exploration)
@@ -224,10 +219,10 @@ performance.
 
 **Scope:** DPOR explores alternative schedules only where it detects a
 conflict at the bytecode level (two threads accessing the same Python object
-with at least one write). Operations that go through C code --- database
-queries, network calls --- look like opaque, independent function calls to
-the tracer, so DPOR won't explore their reorderings. For those
-interactions, use trace markers with explicit scheduling instead.
+with at least one write). When run under the ``frontrun`` CLI, a native
+``LD_PRELOAD`` library intercepts C-level I/O operations (``send``,
+``recv``, ``read``, ``write``, etc.), so even opaque database drivers and
+Redis clients are covered --- see :ref:`c-level-io-interception` below.
 
 For a practical guide see :doc:`dpor_guide`. For the algorithm details and
 theory see :doc:`dpor`.
@@ -241,7 +236,7 @@ I/O operations. This is enabled by default (``detect_io=True``) and works
 by monkey-patching ``socket.socket`` methods and ``builtins.open`` to
 report resource accesses to the scheduler.
 
-**Detected operations:**
+**Python-level detection (monkey-patching):**
 
 - **Sockets:** ``connect``, ``send``, ``sendall``, ``sendto``, ``recv``,
   ``recv_into``, ``recvfrom``
@@ -252,12 +247,42 @@ Resource identity is derived from the socket's peer address
 same endpoint or file are treated as conflicting; different endpoints are
 independent.
 
-A secondary ``sys.setprofile`` layer catches C-level socket calls that
-bypass the monkey-patches (e.g. calls made from C extension code that
-resolve the underlying C method directly).
+.. _c-level-io-interception:
 
-**Limitations:**
+C-Level I/O Interception
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-I/O detection does not cover opaque C-extension I/O --- database drivers,
-Redis clients, or other libraries that manage sockets entirely in C code.
-For those cases, use trace markers with explicit scheduling.
+When run under the ``frontrun`` CLI, a native ``LD_PRELOAD`` library
+(``libfrontrun_io.so``) intercepts libc I/O functions directly. This
+covers opaque C extensions --- database drivers (libpq, mysqlclient),
+Redis clients, HTTP libraries, and anything else that calls libc's
+``send()``, ``recv()``, ``read()``, ``write()``, etc.
+
+**Intercepted functions:** ``connect``, ``send``, ``sendto``, ``sendmsg``,
+``write``, ``writev``, ``recv``, ``recvfrom``, ``recvmsg``, ``read``,
+``readv``, ``close``
+
+The library maintains a process-global file-descriptor → resource map:
+
+.. code-block:: text
+
+   connect(fd, sockaddr{127.0.0.1:5432}, ...)  →  fd=7 → "socket:127.0.0.1:5432"
+   send(fd=7, ...)                              →  report write to "socket:127.0.0.1:5432"
+   recv(fd=7, ...)                              →  report read from "socket:127.0.0.1:5432"
+   close(fd=7)                                  →  remove fd=7 from map
+
+Events are logged to a file (set via ``FRONTRUN_IO_LOG``) which the
+Python-side DPOR scheduler reads for conflict analysis.
+
+**Building:**
+
+.. code-block:: bash
+
+   make build-io    # builds and copies libfrontrun_io.so into the frontrun package
+
+**Usage:**
+
+.. code-block:: bash
+
+   frontrun pytest -vv tests/           # I/O interception + monkey-patching
+   frontrun python examples/orm_race.py  # same, for scripts

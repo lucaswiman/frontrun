@@ -9,7 +9,7 @@ import threading
 import time
 
 import pytest
-from frontrun_dpor import PyDporEngine
+from frontrun._dpor import PyDporEngine
 
 from frontrun._cooperative import CooperativeCondition
 from frontrun.bytecode import BytecodeShuffler, OpcodeScheduler

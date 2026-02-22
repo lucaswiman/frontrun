@@ -865,6 +865,11 @@ _patch_count = 0
 _patch_count_lock = real_lock()
 
 
+def is_patched() -> bool:
+    """Return True if cooperative lock patching is currently active."""
+    return _patched
+
+
 def patch_locks() -> None:
     """Replace threading and queue primitives with cooperative versions.
 

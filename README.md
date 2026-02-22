@@ -103,9 +103,7 @@ def test_counter_lost_update():
     assert counter.value == 1  # One increment lost
 ```
 
-### 2. Bytecode Manipulation (Experimental)
-
-> ⚠️ **Experimental:** Bytecode instrumentation is experimental and may change. It requires monkey-patching concurrency primitives and relies on `f_trace_opcodes` (Python 3.7+). Use with caution.
+### 2. Bytecode Manipulation
 
 Automatically instrument functions using bytecode rewriting — no markers needed. Each thread fires a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback at every bytecode instruction, pausing at each one to wait for its scheduler turn. This gives fine-grained control but requires monkey-patching standard threading primitives (`Lock`, `Semaphore`, `Event`, `Queue`, etc.) to prevent deadlocks.
 
@@ -188,19 +186,34 @@ def test_counter_race():
 
 Like `explore_interleavings`, DPOR produces `result.explanation` with the interleaved trace and reproduction statistics when a race is found.
 
-**Scope and limitations:** DPOR explores alternative schedules only where it sees a conflict (two threads accessing the same Python object with at least one write). Direct socket I/O operations are detected automatically when `detect_io=True` (the default), so network conflicts are explored. However, operations in opaque C extensions — such as database drivers (`cursor.execute(...)`), Redis clients, or NumPy functions — look like single indivisible calls to the bytecode tracer, so DPOR won't see internal conflicts within them. For testing those interactions, use trace markers with explicit scheduling instead.
+**Scope and limitations:** DPOR explores alternative schedules only where it sees a conflict (two threads accessing the same Python object with at least one write). Direct socket I/O operations are detected automatically when `detect_io=True` (the default), so network conflicts are explored. When run under the `frontrun` CLI, a native `LD_PRELOAD` library intercepts C-level I/O operations (see [C-Level I/O Interception](#c-level-io-interception) below), so even opaque database drivers and Redis clients are covered.
 
 ### Automatic I/O Detection
 
 Both the bytecode explorer and DPOR automatically detect socket and file I/O operations (enabled by default via `detect_io=True`). When two threads access the same network endpoint or file path, the operation is reported as a conflict so the scheduler explores their reorderings.
 
-Detected operations:
+**Python-level detection** (monkey-patching):
 - **Sockets:** `connect`, `send`, `sendall`, `sendto`, `recv`, `recv_into`, `recvfrom`
 - **Files:** `open()` (read vs write determined by mode)
 
-Resource identity is derived from the socket's peer address (`host:port`) or the file's resolved path — two threads hitting the same endpoint or file conflict; different endpoints are independent. A secondary `sys.setprofile` layer catches C-level socket calls that bypass the monkey-patches.
+Resource identity is derived from the socket's peer address (`host:port`) or the file's resolved path — two threads hitting the same endpoint or file conflict; different endpoints are independent.
 
-This does **not** cover opaque C-extension I/O (database drivers, Redis clients, etc.) where the socket is managed entirely in C code. For those, use trace markers.
+### C-Level I/O Interception
+
+When run under the `frontrun` CLI, a native `LD_PRELOAD` library (`libfrontrun_io.so`) intercepts libc I/O functions directly. This covers opaque C extensions — database drivers (libpq, mysqlclient), Redis clients, HTTP libraries, and anything else that calls libc's `send()`, `recv()`, `read()`, `write()`, etc.
+
+**Intercepted functions:** `connect`, `send`, `sendto`, `sendmsg`, `write`, `writev`, `recv`, `recvfrom`, `recvmsg`, `read`, `readv`, `close`
+
+The library maintains a process-global file-descriptor → resource map:
+
+```
+connect(fd, sockaddr{127.0.0.1:5432}, ...)  →  record fd=7 → "socket:127.0.0.1:5432"
+send(fd=7, ...)                              →  report write to "socket:127.0.0.1:5432"
+recv(fd=7, ...)                              →  report read from "socket:127.0.0.1:5432"
+close(fd=7)                                  →  remove fd=7 from map
+```
+
+Events are logged to a file (set via `FRONTRUN_IO_LOG`) which the Python-side DPOR scheduler reads for conflict analysis.
 
 ## Async Support
 
@@ -278,28 +291,55 @@ async def test_async_counter_race():
 
 Like its threaded counterpart, `explore_interleavings` generates random await-point-level schedules and checks that the invariant holds. Each task runs as a separate async coroutine, and you explicitly mark await points with `await await_point()` where context switches can occur.
 
+## CLI
+
+The `frontrun` CLI wraps any command with the I/O interception environment:
+
+```bash
+# Run pytest with frontrun I/O interception
+frontrun pytest -vv tests/
+
+# Run any Python program
+frontrun python examples/orm_race.py
+
+# Run a web server
+frontrun uvicorn myapp:app
+```
+
+The CLI:
+1. Sets `FRONTRUN_ACTIVE=1` so frontrun knows it's running under the CLI
+2. Sets `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) to load `libfrontrun_io.so`/`.dylib`
+3. Runs the command as a subprocess
+
 ## Pytest Plugin
 
 Frontrun ships a pytest plugin (registered via the `pytest11` entry point) that
-automatically patches `threading.Lock`, `threading.RLock`, `queue.Queue`, and
-related primitives with cooperative versions **before test collection**. This
-means any module-level `threading.Lock()` created at import time will already be
-a cooperative lock.
+patches `threading.Lock`, `threading.RLock`, `queue.Queue`, and related
+primitives with cooperative versions **before test collection**.
 
-Patching is **on by default** — no flags needed:
+Patching is **on by default when running under the `frontrun` CLI**. When
+running plain `pytest` without the CLI, patching is off unless explicitly
+requested:
 
 ```bash
-pytest                            # cooperative lock patching is active
-pytest --no-frontrun-patch-locks  # disable if it causes issues
+frontrun pytest                    # cooperative lock patching is active (auto)
+pytest --frontrun-patch-locks      # explicitly enable without CLI
+pytest --no-frontrun-patch-locks   # explicitly disable even under CLI
 ```
 
-The plugin calls `patch_locks()` in `pytest_configure` (before any test module
-is imported) and `unpatch_locks()` in `pytest_unconfigure`.
+Tests that use `explore_interleavings()` or `explore_dpor()` will be
+**automatically skipped** when run without the frontrun CLI, preventing
+confusing failures when the environment isn't properly set up.
 
 ## Development
 
 ### Running Tests
 
 ```bash
-make test
+# Build everything and run tests
+make test-3.10
+
+# Or via the frontrun CLI
+make build-dpor-3.10 build-io
+frontrun .venv-3.10/bin/pytest -v
 ```
