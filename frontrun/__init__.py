@@ -23,4 +23,4 @@ DPOR (Dynamic Partial Order Reduction) systematic exploration::
     from frontrun.dpor import explore_dpor
 """
 
-__version__ = "0.0.2"
+__version__ = "0.1.0"
