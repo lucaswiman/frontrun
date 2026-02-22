@@ -37,7 +37,7 @@ jobs:
         include:
           - { os: ubuntu-latest, target: x86_64, label: "Linux x86_64" }
           - { os: ubuntu-latest, target: aarch64, label: "Linux aarch64" }
-          - { os: macos-13, target: x86_64, label: "macOS x86_64" }
+          - { os: macos-15-intel, target: x86_64, label: "macOS x86_64" }
           - { os: macos-14, target: aarch64, label: "macOS aarch64" }
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +66,8 @@ jobs:
           manylinux: auto
           before-script-linux: |
             cargo build --release -p frontrun-io
-            cp target/release/libfrontrun_io.so frontrun/libfrontrun_io.so
+            cp target/release/libfrontrun_io.so frontrun/libfrontrun_io.so 2>/dev/null || \
+              cp target/*/release/libfrontrun_io.so frontrun/libfrontrun_io.so
 
       - name: Build wheels (free-threaded)
         uses: PyO3/maturin-action@v1
@@ -76,7 +77,8 @@ jobs:
           manylinux: auto
           before-script-linux: |
             cargo build --release -p frontrun-io
-            cp target/release/libfrontrun_io.so frontrun/libfrontrun_io.so
+            cp target/release/libfrontrun_io.so frontrun/libfrontrun_io.so 2>/dev/null || \
+              cp target/*/release/libfrontrun_io.so frontrun/libfrontrun_io.so
 
       - uses: actions/upload-artifact@v4
         with:
