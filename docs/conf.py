@@ -30,19 +30,8 @@ templates_path = ["_templates"]
 # List of patterns to ignore when building documentation
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
-# The theme to use
-html_theme = "sphinx_rtd_theme"
-
-# Theme options are theme-specific and used by html_theme_path
-html_theme_options = {
-    "canonical_url": "https://lucaswiman.github.io/frontrun",
-    "logo_only": False,
-    "display_version": True,
-    "prev_next_buttons_location": "bottom",
-    "style_external_links": False,
-    "vcs_pageview_mode": "",
-    "style_nav_header_background": "#2980B9",
-}
+# The theme to use — furo supports automatic light/dark mode via prefers-color-scheme
+html_theme = "furo"
 
 # Add any paths that contain custom static files here
 html_static_path = ["_static"]
@@ -67,12 +56,9 @@ napoleon_preprocess_types = False
 napoleon_type_aliases = None
 napoleon_attr_annotations = True
 
-# Read the Docs configuration
-on_rtd = True
-html_context = {
-    "display_github": True,
-    "github_user": "lucaswiman",
-    "github_repo": "frontrun",
-    "github_version": "main",
-    "conf_py_path": "/docs/",
+# Source links
+html_theme_options = {
+    "source_repository": "https://github.com/lucaswiman/frontrun",
+    "source_branch": "main",
+    "source_directory": "docs/",
 }
