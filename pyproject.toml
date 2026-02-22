@@ -7,6 +7,9 @@ features = ["pyo3/extension-module"]
 manifest-path = "crates/dpor/Cargo.toml"
 module-name = "frontrun._dpor"
 python-source = "."
+include = [
+    { path = "frontrun/libfrontrun_io.*", format = "wheel" },
+]
 
 [project]
 name = "frontrun"

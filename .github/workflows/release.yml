@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g., 0.2.0)"
+        required: true
+        type: string
+
+jobs:
+  validate-and-tag:
+    name: Validate & tag
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate changelog has release section
+        run: |
+          VERSION="${{ inputs.version }}"
+          ESCAPED="${VERSION//./\\.}"
+          if ! grep -q "^${ESCAPED} " CHANGELOG.rst; then
+            echo "::error::No changelog section found for version ${VERSION} in CHANGELOG.rst"
+            echo "Expected a line like: ${VERSION} (YYYY-MM-DD)"
+            exit 1
+          fi
+          if grep -qi "^${ESCAPED}.*unreleased" CHANGELOG.rst; then
+            echo "::error::Changelog section for ${VERSION} is still marked as Unreleased — update the date first"
+            exit 1
+          fi
+
+      - name: Validate pyproject.toml version
+        run: |
+          TOML_VERSION="$(python3 -c "
+          import tomllib, pathlib
+          d = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
+          print(d['project']['version'])
+          ")"
+          if [ "$TOML_VERSION" != "${{ inputs.version }}" ]; then
+            echo "::error::pyproject.toml version ($TOML_VERSION) does not match requested version (${{ inputs.version }})"
+            exit 1
+          fi
+
+      - name: Validate Cargo.toml versions
+        run: |
+          for toml in crates/dpor/Cargo.toml crates/io/Cargo.toml; do
+            CARGO_VERSION="$(python3 -c "
+          import re, pathlib
+          text = pathlib.Path('${toml}').read_text()
+          m = re.search(r'^version\s*=\s*\"(.+?)\"', text, re.MULTILINE)
+          print(m.group(1))
+          ")"
+            if [ "$CARGO_VERSION" != "${{ inputs.version }}" ]; then
+              echo "::error::${toml} version ($CARGO_VERSION) does not match requested version (${{ inputs.version }})"
+              exit 1
+            fi
+          done
+
+      - name: Check tag does not already exist
+        run: |
+          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "::error::Tag v${{ inputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Create and push tag
+        run: |
+          git tag "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+  build:
+    name: Build wheels
+    needs: validate-and-tag
+    uses: ./.github/workflows/build-wheels.yml
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: GitHub Release
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --title "v${{ inputs.version }}" \
+            --generate-notes \
+            dist/*
