@@ -180,7 +180,7 @@ def test_counter_race():
     )
 
     assert not result.property_holds       # lost-update bug found
-    assert result.executions_explored == 2  # only 2 of 6 interleavings needed
+    assert result.num_explored == 2  # only 2 of 6 interleavings needed
     print(result.explanation)              # human-readable trace of the race
 ```
 

@@ -41,7 +41,7 @@ Putting the two together:
    )
 
    if not result.property_holds:
-       print(f"Bug found after {result.executions_explored} executions")
+       print(f"Bug found after {result.num_explored} executions")
 
 1. DPOR picks an interleaving (based on conflict analysis).
 2. ``setup()`` creates fresh state; the threads run under that interleaving.
@@ -94,6 +94,11 @@ For these cases, use :doc:`trace markers <approaches>` with explicit
 scheduling instead --- you annotate the points where interleaving matters and
 enumerate the orderings by hand.
 
+Thread functions should also avoid external side effects (writing to files,
+sending network requests, modifying global state outside the ``setup`` object).
+DPOR replays each interleaving from scratch, so side effects from one replay
+will interfere with the next.
+
 
 Basic usage
 -----------
@@ -119,7 +124,7 @@ The ``explore_dpor()`` function is the main entry point:
    )
 
    assert not result.property_holds
-   assert result.executions_explored == 2  # only 2 of 6 interleavings needed
+   assert result.num_explored == 2  # only 2 of 6 interleavings needed
 
 **Parameters:**
 
@@ -164,21 +169,22 @@ The ``explore_dpor()`` function is the main entry point:
 Interpreting results
 --------------------
 
-``explore_dpor()`` returns a ``DporResult``:
+``explore_dpor()`` returns an ``InterleavingResult`` (the same type used by
+``explore_interleavings``):
 
 .. code-block:: python
 
    @dataclass
-   class DporResult:
+   class InterleavingResult:
        property_holds: bool                              # True if invariant held everywhere
-       executions_explored: int = 0                      # total interleavings tried
-       counterexample_schedule: list[int] | None = None  # first failing schedule
+       num_explored: int = 0                             # total interleavings tried
+       counterexample: list[int] | None = None           # first failing schedule
        failures: list[tuple[int, list[int]]] = ...       # all (execution_num, schedule) pairs
        explanation: str | None = None                    # human-readable trace of the race
        reproduction_attempts: int = 0                    # number of replay attempts
        reproduction_successes: int = 0                   # how many replays reproduced the failure
 
-``counterexample_schedule`` is a list of thread IDs representing the order in
+``counterexample`` is a list of thread IDs representing the order in
 which threads were scheduled. For example, ``[0, 0, 1, 1]`` means thread 0
 ran for two steps, then thread 1 ran for two steps.
 
@@ -186,6 +192,11 @@ When a race is found, ``explanation`` contains a formatted trace showing the
 interleaved source lines, the conflict pattern (lost update, write-write, etc.),
 and reproduction statistics. This is the same output for both ``explore_dpor``
 and ``explore_interleavings``.
+
+If ``num_explored`` is 1, your threads probably don't share any
+state --- the engine saw no conflicts and skipped everything. This is a sign
+that either the test is trivially correct or the shared state is not being
+accessed in a way the tracer can see (e.g. through a C extension).
 
 
 Example: verifying that a lock fixes a race
@@ -262,32 +273,3 @@ detected separately:
            invariant=lambda b: b.a + b.b == 200,
        )
        assert not result.property_holds  # total is not conserved without locking
-
-
-Tips
-----
-
-**Keep thread functions short.** Every bytecode instruction is a potential
-scheduling point. Long functions produce deep exploration trees and slow
-things down. Extract the concurrent kernel --- the part that actually touches
-shared state --- and test that.
-
-**Use ``preemption_bound=2`` (the default).** Empirical research shows this
-catches nearly all real bugs. Increasing the bound gives diminishing returns
-and exponentially more executions.
-
-**Use ``max_executions`` in CI.** Even with preemption bounding, the
-exploration can be large. Setting a cap ensures your test suite has a bounded
-runtime. If the cap is hit without finding a bug, the test still provides
-useful (though incomplete) coverage.
-
-**Inspect ``executions_explored``.** If DPOR reports that only 1 execution
-was explored, your threads probably don't share any state --- the engine
-saw no conflicts and skipped everything. This is a sign that either the
-test is correct or the shared state is not being accessed in a way the
-tracer can see (e.g. through a C extension).
-
-**Avoid external side effects in thread functions.** DPOR replays each
-interleaving from scratch. If thread functions write to files, send network
-requests, or modify global state outside the ``setup`` object, replays
-will interfere with each other.

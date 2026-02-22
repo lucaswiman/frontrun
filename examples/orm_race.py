@@ -338,7 +338,7 @@ def demo_dpor() -> None:
     )
 
     print(f"  property_holds       : {result.property_holds}")
-    print(f"  executions_explored  : {result.executions_explored}")
+    print(f"  num_explored         : {result.num_explored}")
     if not result.property_holds:
         print()
         print("  LOST UPDATE confirmed via DPOR.")

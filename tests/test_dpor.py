@@ -16,7 +16,8 @@ import threading
 
 from frontrun._dpor import PyDporEngine
 
-from frontrun.dpor import DporResult, explore_dpor
+from frontrun.common import InterleavingResult
+from frontrun.dpor import explore_dpor
 
 # ---------------------------------------------------------------------------
 # Low-level Rust engine tests (via PyO3)
@@ -242,7 +243,7 @@ class TestExploreDpor:
 
         assert not result.property_holds
         assert len(result.failures) > 0
-        assert result.counterexample_schedule is not None
+        assert result.counterexample is not None
 
     def test_atomic_increment_no_bug(self) -> None:
         """Each thread does a single atomic write. No race possible."""
@@ -340,7 +341,7 @@ class TestExploreDpor:
         assert result.property_holds
 
     def test_result_structure(self) -> None:
-        """DporResult should have expected fields."""
+        """explore_dpor result should have expected fields."""
 
         class Counter:
             def __init__(self) -> None:
@@ -358,12 +359,12 @@ class TestExploreDpor:
             preemption_bound=2,
         )
 
-        assert isinstance(result, DporResult)
+        assert isinstance(result, InterleavingResult)
         assert isinstance(result.property_holds, bool)
-        assert isinstance(result.executions_explored, int)
-        assert result.executions_explored >= 1
+        assert isinstance(result.num_explored, int)
+        assert result.num_explored >= 1
         if not result.property_holds:
-            assert result.counterexample_schedule is not None
+            assert result.counterexample is not None
             assert isinstance(result.failures, list)
 
     def test_augmented_assignment_bug(self) -> None:
@@ -431,7 +432,7 @@ class TestExploreDpor:
         )
 
         assert not result.property_holds
-        assert result.executions_explored >= 2
+        assert result.num_explored >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +459,7 @@ class TestEdgeCases:
         )
 
         assert result.property_holds
-        assert result.executions_explored == 1
+        assert result.num_explored == 1
 
     def test_max_executions_respected(self) -> None:
         """max_executions should limit exploration."""
@@ -479,4 +480,4 @@ class TestEdgeCases:
             preemption_bound=None,
         )
 
-        assert result.executions_explored <= 3
+        assert result.num_explored <= 3

@@ -79,11 +79,11 @@ needed.
 calls, trace fires around opcodes. They don't overlap — they fire at different
 times on different events.
 
-**Verified:** See `ideas/experiments/test_setprofile_c_calls.py`. `socket.connect`,
-`socket.sendall`, `socket.recv` all detected. Per-thread profiles are independent.
-Coexists with `sys.settrace` — both fire simultaneously. On 3.13 via
-`sys.monitoring`, INSTRUCTION + CALL events coexist on the same tool ID
-(see `test_monitoring_c_call.py`).
+**Implemented:** See `frontrun/_io_detection.py` (`make_io_profile_func`,
+`install_io_profile`). `socket.connect`, `socket.sendall`, `socket.recv` all
+detected. Per-thread profiles are independent. Coexists with `sys.settrace`.
+On 3.13 via `sys.monitoring`, INSTRUCTION + CALL events coexist on the same
+tool ID (see `experiments/test_monitoring_c_call.py`).
 
 ---
 

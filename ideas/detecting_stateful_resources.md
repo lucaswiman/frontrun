@@ -397,12 +397,9 @@ Higher layers override lower ones (if a plugin provides precise per-table tracki
 
 Toy experiments in `ideas/experiments/` verified each technique. Key results:
 
-### `sys.setprofile` (test_setprofile_c_calls.py)
+### `sys.setprofile` — **IMPLEMENTED** (see `frontrun/_io_detection.py`)
 
-- **`c_call` events fire for all socket operations:** `socket.connect`, `socket.sendall`, `socket.recv`, `socket.close` all detected. File I/O (`open`, `write`, `read`) also captured.
-- **Per-thread profiles work independently:** `sys.setprofile` is thread-local. Each thread's profile function sees only that thread's C calls — exactly what DPOR needs.
-- **Coexists with `sys.settrace`:** Both systems fire simultaneously without interference. `sys.settrace` captures Python call/return events while `sys.setprofile` captures C calls. Zero interaction issues.
-- **`__qualname__` available on C function objects:** `socket.sendall`, `socket.recv` etc. have `__qualname__` attributes, so matching against known resource functions is straightforward identity comparison (`arg is socket.socket.send`).
+Validated in experiment, now implemented in production code. `make_io_profile_func()` and `install_io_profile()` provide per-thread C-call detection for socket and file I/O, coexisting with `sys.settrace`.
 
 ### `sys.monitoring` C_CALL events (test_monitoring_c_call.py, Python 3.13)
 

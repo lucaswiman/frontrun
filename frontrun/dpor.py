@@ -40,7 +40,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
 from frontrun._cooperative import (
@@ -53,7 +52,6 @@ from frontrun._cooperative import (
     unpatch_locks,
 )
 from frontrun._deadlock import SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
-from frontrun._dpor import PyDporEngine, PyExecution  # type: ignore[reportAttributeAccessIssue]
 from frontrun._io_detection import (
     patch_io,
     set_io_reporter,
@@ -63,6 +61,16 @@ from frontrun._io_detection import (
 from frontrun._trace_format import TraceRecorder, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.cli import require_active as _require_frontrun_env
+from frontrun.common import InterleavingResult
+
+try:
+    from frontrun._dpor import PyDporEngine, PyExecution  # type: ignore[reportAttributeAccessIssue]
+except ModuleNotFoundError as _err:
+    raise ModuleNotFoundError(
+        "explore_dpor requires the frontrun._dpor Rust extension.\n"
+        "Build it with:  make build-dpor-3.14t   (or build-dpor-3.10 / build-dpor-3.14)\n"
+        "Or install from source:  pip install -e ."
+    ) from _err
 
 T = TypeVar("T")
 
@@ -75,33 +83,6 @@ _USE_SYS_MONITORING = _PY_VERSION >= (3, 12)
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class DporResult:
-    """Result of DPOR exploration.
-
-    Attributes:
-        property_holds: True if the invariant held under all explored interleavings.
-        executions_explored: How many distinct interleavings were explored.
-        counterexample_schedule: First failing schedule (list of thread IDs).
-        failures: All failing schedules: (execution number, schedule).
-        explanation: Human-readable explanation of the race condition, showing
-            interleaved source lines and the conflict pattern. None if no
-            race was found.
-        reproduction_attempts: Number of times the counterexample schedule
-            was re-run to test reproducibility.  0 if no counterexample.
-        reproduction_successes: How many of those re-runs reproduced the
-            invariant violation.
-    """
-
-    property_holds: bool
-    executions_explored: int = 0
-    counterexample_schedule: list[int] | None = None
-    failures: list[tuple[int, list[int]]] = field(default_factory=list)
-    explanation: str | None = None
-    reproduction_attempts: int = 0
-    reproduction_successes: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +882,7 @@ def explore_dpor(
     detect_io: bool = True,
     deadlock_timeout: float = 5.0,
     reproduce_on_failure: int = 10,
-) -> DporResult:
+) -> InterleavingResult:
     """Systematically explore interleavings using DPOR.
 
     This is the DPOR replacement for ``explore_interleavings()``. Instead of
@@ -933,7 +914,7 @@ def explore_dpor(
             (default 10).  Set to 0 to skip reproduction testing.
 
     Returns:
-        DporResult with exploration statistics and any counterexample found.
+        InterleavingResult with exploration statistics and any counterexample found.
 
     .. note::
 
@@ -953,7 +934,7 @@ def explore_dpor(
         max_executions=me,
     )
 
-    result = DporResult(property_holds=True)
+    result = InterleavingResult(property_holds=True)
     # Shared lock serialising ALL PyO3 calls to engine/execution objects.
     # On free-threaded Python, PyO3 &mut self borrows panic rather than
     # block when contested, so we need a Python-level lock shared across
@@ -994,16 +975,16 @@ def explore_dpor(
             runner._unpatch_io()
             runner._unpatch_locks()
 
-        result.executions_explored += 1
+        result.num_explored += 1
 
         if not invariant(state):
             result.property_holds = False
             with engine_lock:
                 schedule = execution.schedule_trace
             schedule_list = list(schedule)
-            result.failures.append((result.executions_explored, schedule_list))
-            if result.counterexample_schedule is None:
-                result.counterexample_schedule = schedule_list
+            result.failures.append((result.num_explored, schedule_list))
+            if result.counterexample is None:
+                result.counterexample = schedule_list
 
             # Replay the counterexample to measure reproducibility
             if reproduce_on_failure > 0 and result.reproduction_attempts == 0:
@@ -1031,7 +1012,7 @@ def explore_dpor(
                 result.explanation = format_trace(
                     recorder.events,
                     num_threads=num_threads,
-                    num_explored=result.executions_explored,
+                    num_explored=result.num_explored,
                     reproduction_attempts=result.reproduction_attempts,
                     reproduction_successes=result.reproduction_successes,
                 )

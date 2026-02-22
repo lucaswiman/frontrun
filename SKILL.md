@@ -146,14 +146,6 @@ if result.counterexample:
     print(f"Bug found! Schedule length: {len(result.counterexample)}")
 ```
 
-**Tuning tips:**
-
-- If no bug is found with 500 attempts, try increasing `max_ops` (longer
-  schedules reach deeper into the method body) or try a different seed.
-- If the bug is very rare, increase `max_attempts` to 1000–5000.
-- Short methods (5–15 opcodes) are found on the **first attempt** almost
-  every time.  Long methods or bugs behind locks need more attempts.
-
 ### Step 6 — Sweep Seeds
 
 Run 20 seeds to measure how reliably the bug is found:

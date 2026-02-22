@@ -179,8 +179,8 @@ class TestDporStopOnFirst:
             stop_on_first=True,
         )
         assert not result_early.property_holds
-        assert result_early.counterexample_schedule is not None
-        early_count = result_early.executions_explored
+        assert result_early.counterexample is not None
+        early_count = result_early.num_explored
 
         result_full = explore_dpor(
             setup=Counter,
@@ -189,7 +189,7 @@ class TestDporStopOnFirst:
             stop_on_first=False,
         )
         assert not result_full.property_holds
-        full_count = result_full.executions_explored
+        full_count = result_full.num_explored
         assert full_count >= early_count, (
             f"full exploration ({full_count}) should explore at least as many as early-stop ({early_count})"
         )
