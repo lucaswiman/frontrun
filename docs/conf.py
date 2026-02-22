@@ -36,6 +36,9 @@ html_theme = "furo"
 # Add any paths that contain custom static files here
 html_static_path = ["_static"]
 
+# Include custom CSS for Atkinson Hyperlegible fonts
+html_css_files = ["custom.css"]
+
 # Autodoc settings
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"

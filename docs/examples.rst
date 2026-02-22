@@ -238,3 +238,9 @@ Using bytecode instrumentation to automatically explore interleavings:
        print(f"Counterexample: value = {result.counterexample.value}")
    else:
        print("No race conditions found in explored interleavings")
+
+
+Real-World Case Study: SQLAlchemy ORM Race Condition
+-----------------------------------------------------
+
+For a comprehensive walkthrough of a real-world race condition in SQLAlchemy ORM code running against PostgreSQL, see :doc:`orm_race`. That case study demonstrates how Frontrun detects lost-update race conditions using both trace markers and bytecode exploration approaches.

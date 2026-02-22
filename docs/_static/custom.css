@@ -1,0 +1,28 @@
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital@0;1&family=Atkinson+Hyperlegible+Mono&display=swap');
+
+/* Use Atkinson Hyperlegible for body text */
+body,
+.body {
+    font-family: "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* Use Atkinson Hyperlegible Mono for code */
+code,
+.code,
+pre,
+.highlight {
+    font-family: "Atkinson Hyperlegible Mono", "Courier New", monospace;
+}
+
+/* Also apply to docstring code */
+.docstring code,
+.docstring pre {
+    font-family: "Atkinson Hyperlegible Mono", "Courier New", monospace;
+}
+
+/* Apply to inline code within content */
+p code,
+li code,
+td code {
+    font-family: "Atkinson Hyperlegible Mono", "Courier New", monospace;
+}
