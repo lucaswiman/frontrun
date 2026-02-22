@@ -28,6 +28,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.scripts]
+frontrun = "frontrun.cli:main"
+
 [project.entry-points.pytest11]
 frontrun = "frontrun.pytest_plugin"
 

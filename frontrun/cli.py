@@ -1,0 +1,165 @@
+"""frontrun CLI — launch subprocesses with I/O interception.
+
+Usage::
+
+    frontrun pytest -vv tests/test_concurrency.py
+    frontrun python -c "print('hello')"
+    frontrun uvicorn myapp:app
+
+The CLI sets up the environment so that:
+
+1. ``LD_PRELOAD`` (Linux) or ``DYLD_INSERT_LIBRARIES`` (macOS) points to
+   ``libfrontrun_io.so`` / ``libfrontrun_io.dylib``, which intercepts libc
+   I/O syscall wrappers (``connect``, ``send``, ``recv``, ``read``,
+   ``write``, ``close``, etc.) and reports fd-to-resource mappings back
+   to the DPOR scheduler.
+2. ``FRONTRUN_ACTIVE=1`` is set so that the frontrun library knows it is
+   running under the CLI and should apply monkey-patching automatically.
+3. The subprocess inherits the rest of the parent environment.
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+import subprocess
+import sys
+from pathlib import Path
+
+
+# Environment variable that signals frontrun is active
+FRONTRUN_ACTIVE_ENV = "FRONTRUN_ACTIVE"
+
+# Environment variable pointing to the preload library path
+FRONTRUN_PRELOAD_LIB_ENV = "FRONTRUN_PRELOAD_LIB"
+
+
+def _find_preload_library() -> Path | None:
+    """Locate the compiled libfrontrun_io shared library.
+
+    Search order:
+    1. ``FRONTRUN_PRELOAD_LIB`` environment variable (explicit override)
+    2. Next to this Python file (in-tree / editable install)
+    3. Adjacent to the frontrun_dpor extension module
+    4. In the frontrun-io build directory
+    """
+    # 1. Explicit override
+    env_path = os.environ.get(FRONTRUN_PRELOAD_LIB_ENV)
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            return p
+
+    system = platform.system()
+    if system == "Darwin":
+        lib_name = "libfrontrun_io.dylib"
+    else:
+        lib_name = "libfrontrun_io.so"
+
+    # 2. Next to this file
+    here = Path(__file__).resolve().parent
+    candidate = here / lib_name
+    if candidate.exists():
+        return candidate
+
+    # 3. Next to frontrun_dpor extension
+    try:
+        import frontrun_dpor  # type: ignore[import-untyped]
+
+        dpor_dir = Path(frontrun_dpor.__file__).resolve().parent  # type: ignore[arg-type]
+        candidate = dpor_dir / lib_name
+        if candidate.exists():
+            return candidate
+    except (ImportError, AttributeError, TypeError):
+        pass
+
+    # 4. In the frontrun-io build directory (development layout)
+    project_root = here.parent
+    for build_dir in [
+        project_root / "frontrun-io" / "target" / "release",
+        project_root / "frontrun-io" / "target" / "debug",
+        project_root / "target" / "release",
+        project_root / "target" / "debug",
+    ]:
+        candidate = build_dir / lib_name
+        if candidate.exists():
+            return candidate
+
+    return None
+
+
+def _build_env(preload_lib: Path | None) -> dict[str, str]:
+    """Build the subprocess environment with frontrun activation."""
+    env = os.environ.copy()
+    env[FRONTRUN_ACTIVE_ENV] = "1"
+
+    if preload_lib is not None:
+        lib_str = str(preload_lib)
+        env[FRONTRUN_PRELOAD_LIB_ENV] = lib_str
+
+        system = platform.system()
+        if system == "Darwin":
+            existing = env.get("DYLD_INSERT_LIBRARIES", "")
+            if existing:
+                env["DYLD_INSERT_LIBRARIES"] = f"{lib_str}:{existing}"
+            else:
+                env["DYLD_INSERT_LIBRARIES"] = lib_str
+        else:
+            # Linux and other ELF-based systems
+            existing = env.get("LD_PRELOAD", "")
+            if existing:
+                env["LD_PRELOAD"] = f"{lib_str}:{existing}"
+            else:
+                env["LD_PRELOAD"] = lib_str
+
+    return env
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for the ``frontrun`` CLI command."""
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if not argv:
+        print("Usage: frontrun <command> [args...]", file=sys.stderr)
+        print()
+        print("Run a command with frontrun I/O interception enabled.")
+        print()
+        print("Examples:")
+        print("  frontrun pytest -vv tests/")
+        print("  frontrun python -c \"import requests; requests.get('http://example.com')\"")
+        print("  frontrun uvicorn myapp:app")
+        print()
+        print("Environment variables:")
+        print(f"  {FRONTRUN_ACTIVE_ENV}=1       Set automatically; signals frontrun is active")
+        print(f"  {FRONTRUN_PRELOAD_LIB_ENV}  Override path to libfrontrun_io.so/.dylib")
+        return 1
+
+    preload_lib = _find_preload_library()
+    if preload_lib is not None:
+        print(f"frontrun: using preload library {preload_lib}", file=sys.stderr)
+    else:
+        print(
+            "frontrun: preload library not found; running with monkey-patching only",
+            file=sys.stderr,
+        )
+
+    env = _build_env(preload_lib)
+
+    try:
+        result = subprocess.run(argv, env=env)
+        return result.returncode
+    except FileNotFoundError:
+        print(f"frontrun: command not found: {argv[0]}", file=sys.stderr)
+        return 127
+    except KeyboardInterrupt:
+        return 130
+
+
+def is_active() -> bool:
+    """Return True if running under the ``frontrun`` CLI."""
+    return os.environ.get(FRONTRUN_ACTIVE_ENV) == "1"
+
+
+if __name__ == "__main__":
+    sys.exit(main())
