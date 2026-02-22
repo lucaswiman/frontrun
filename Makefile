@@ -34,6 +34,10 @@ build-dpor-%: .venv-%/activate $(DPOR_RUST_SOURCES)
 	uv pip install maturin --python=$(CURDIR)/.venv-$*/bin/python
 	cd frontrun-dpor && VIRTUAL_ENV=$(CURDIR)/.venv-$* $(CURDIR)/.venv-$*/bin/maturin develop --release
 
+# Build example venv with SQLAlchemy + psycopg2 for examples/orm_race.py
+build-examples-%: build-dpor-%
+	uv pip install sqlalchemy psycopg2-binary --python=$(CURDIR)/.venv-$*/bin/python
+
 .PHONY: default-venv
 default-venv: .venv-3.10/activate
 

@@ -16,6 +16,7 @@ Frontrun provides tools for controlling thread interleaving at a fine-grained le
    dpor
    api_reference
    examples
+   orm_race
    CASE_STUDIES
 
 
