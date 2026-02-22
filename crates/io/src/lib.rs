@@ -2,7 +2,17 @@
 //!
 //! Intercepts libc I/O syscall wrappers (`connect`, `send`, `recv`, `read`,
 //! `write`, `close`, etc.) to maintain a file-descriptor → resource mapping.
-//! Events are written to a log file specified by `FRONTRUN_IO_LOG`.
+//!
+//! Events are transmitted to the Python side via one of two channels:
+//!
+//! 1. **Pipe (preferred):** When `FRONTRUN_IO_FD` is set to a file descriptor
+//!    number, events are written directly to that fd (typically the write end
+//!    of an `os.pipe()`).  The fd stays open for the process lifetime, so
+//!    there is no open/close overhead per event.  The pipe's FIFO ordering
+//!    provides a natural total order without timestamps.
+//!
+//! 2. **Log file (legacy fallback):** When only `FRONTRUN_IO_LOG` is set,
+//!    events are appended to the named file (open + write + close per event).
 //!
 //! The dynamic linker resolves symbols in LD_PRELOAD libraries first, so when
 //! any library (libpq, libcurl, etc.) calls `send()`, it gets our `send()`.
@@ -13,7 +23,7 @@ use libc::{
     AF_INET6, AF_UNIX, RTLD_NEXT,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -49,6 +59,48 @@ macro_rules! resolve {
             None
         }
     }};
+}
+
+// ---------------------------------------------------------------------------
+// Portable errno helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+unsafe fn set_errno(val: c_int) {
+    *libc::__errno_location() = val;
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn set_errno(val: c_int) {
+    *libc::__error() = val;
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn get_errno() -> c_int {
+    *libc::__errno_location()
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn get_errno() -> c_int {
+    *libc::__error()
+}
+
+// ---------------------------------------------------------------------------
+// Portable thread-id helper
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+fn get_tid() -> i64 {
+    unsafe { libc::syscall(libc::SYS_gettid) as i64 }
+}
+
+#[cfg(target_os = "macos")]
+fn get_tid() -> i64 {
+    let mut tid: u64 = 0;
+    unsafe {
+        libc::pthread_threadid_np(0 as libc::pthread_t, &mut tid);
+    }
+    tid as i64
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +167,47 @@ static FD_MAP: std::sync::LazyLock<Mutex<FdMap>> =
     std::sync::LazyLock::new(|| Mutex::new(FdMap::new()));
 
 // ---------------------------------------------------------------------------
+// Pipe-based event transport (FRONTRUN_IO_FD)
+// ---------------------------------------------------------------------------
+//
+// When set, events are written to this persistent fd (the write end of a
+// pipe created by Python's IOEventDispatcher).  Much faster than file I/O
+// because there is no open/close per event.
+
+static PIPE_FD: AtomicI32 = AtomicI32::new(-1);
+static PIPE_FD_CHECKED: AtomicBool = AtomicBool::new(false);
+
+fn get_pipe_fd() -> Option<c_int> {
+    if !PIPE_FD_CHECKED.load(Ordering::Acquire) {
+        if let Ok(fd_str) = std::env::var("FRONTRUN_IO_FD") {
+            if let Ok(fd) = fd_str.parse::<c_int>() {
+                PIPE_FD.store(fd, Ordering::Release);
+            }
+        }
+        PIPE_FD_CHECKED.store(true, Ordering::Release);
+    }
+    let fd = PIPE_FD.load(Ordering::Acquire);
+    if fd >= 0 {
+        Some(fd)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Low-level write helper (uses real libc write, not our interceptor)
+// ---------------------------------------------------------------------------
+
+fn write_to_fd(fd: c_int, buf: &[u8]) {
+    type WriteFn = unsafe extern "C" fn(c_int, *const c_void, size_t) -> ssize_t;
+    if let Some(real_write) = resolve!(write, WriteFn) {
+        unsafe {
+            real_write(fd, buf.as_ptr() as *const c_void, buf.len());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Event logging
 // ---------------------------------------------------------------------------
 
@@ -139,14 +232,23 @@ fn report_io(fd: c_int, kind: &str) {
 }
 
 fn log_event(kind: &str, resource: &str, fd: c_int) {
-    // Write to log file if configured
+    let pid = unsafe { libc::getpid() };
+    let tid = get_tid();
+    let line = format!("{}\t{}\t{}\t{}\t{}\n", kind, resource, fd, pid, tid);
+    let buf = line.as_bytes();
+
+    // Prefer pipe fd (FRONTRUN_IO_FD) — no open/close overhead.
+    if let Some(pipe_fd) = get_pipe_fd() {
+        write_to_fd(pipe_fd, buf);
+        return;
+    }
+
+    // Fall back to log file (FRONTRUN_IO_LOG) — opens and closes per event.
     let log_path = match std::env::var("FRONTRUN_IO_LOG") {
         Ok(p) => p,
         Err(_) => return,
     };
 
-    // Use raw libc write to avoid recursion through our interceptors.
-    // Open with O_APPEND|O_CREAT|O_WRONLY.
     let path_cstr = match std::ffi::CString::new(log_path) {
         Ok(c) => c,
         Err(_) => return,
@@ -162,20 +264,9 @@ fn log_event(kind: &str, resource: &str, fd: c_int) {
         return;
     }
 
-    let pid = unsafe { libc::getpid() };
-    let tid = unsafe { libc::syscall(libc::SYS_gettid) };
-    let line = format!("{}\t{}\t{}\t{}\t{}\n", kind, resource, fd, pid, tid);
-    let buf = line.as_bytes();
+    write_to_fd(log_fd, buf);
 
-    // Use the real write (resolved), not our interceptor
-    type WriteFn = unsafe extern "C" fn(c_int, *const c_void, size_t) -> ssize_t;
-    if let Some(real_write) = resolve!(write, WriteFn) {
-        unsafe {
-            real_write(log_fd, buf.as_ptr() as *const c_void, buf.len());
-        }
-    }
-
-    // Use the real close
+    // Close the log file fd
     type CloseFn = unsafe extern "C" fn(c_int) -> c_int;
     if let Some(real_close) = resolve!(close, CloseFn) {
         unsafe {
@@ -261,6 +352,7 @@ fn fd_to_resource_via_getpeername(fd: c_int) -> Option<String> {
 // Helper: check if fd is a regular file and get its path
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "linux")]
 fn fd_to_file_resource(fd: c_int) -> Option<String> {
     let link_path = format!("/proc/self/fd/{}", fd);
     match std::fs::read_link(&link_path) {
@@ -274,6 +366,22 @@ fn fd_to_file_resource(fd: c_int) -> Option<String> {
             }
         }
         Err(_) => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fd_to_file_resource(fd: c_int) -> Option<String> {
+    let mut buf = [0i8; libc::PATH_MAX as usize];
+    let ret = unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) };
+    if ret == -1 {
+        return None;
+    }
+    let cstr = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+    let path_str = cstr.to_string_lossy();
+    if path_str.starts_with('/') {
+        Some(format!("file:{}", path_str))
+    } else {
+        None
     }
 }
 
@@ -322,14 +430,14 @@ pub unsafe extern "C" fn connect(
     let real = match resolve!(connect, ConnectFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
 
     let result = real(fd, addr, addrlen);
 
-    if result == 0 || *libc::__errno_location() == libc::EINPROGRESS {
+    if result == 0 || get_errno() == libc::EINPROGRESS {
         if let Some(_guard) = ReentrancyGuard::enter() {
             if let Some(resource) = sockaddr_to_resource(addr, addrlen) {
                 if let Ok(mut map) = FD_MAP.lock() {
@@ -355,7 +463,7 @@ pub unsafe extern "C" fn send(
     let real = match resolve!(send, SendFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -380,7 +488,7 @@ pub unsafe extern "C" fn sendto(
     let real = match resolve!(sendto, SendtoFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -407,7 +515,7 @@ pub unsafe extern "C" fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) ->
     let real = match resolve!(sendmsg, SendmsgFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -424,7 +532,7 @@ pub unsafe extern "C" fn write(fd: c_int, buf: *const c_void, count: size_t) -> 
     let real = match resolve!(write, WriteFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -446,7 +554,7 @@ pub unsafe extern "C" fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> 
     let real = match resolve!(writev, WritevFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -472,7 +580,7 @@ pub unsafe extern "C" fn recv(
     let real = match resolve!(recv, RecvFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -503,7 +611,7 @@ pub unsafe extern "C" fn recvfrom(
     let real = match resolve!(recvfrom, RecvfromFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -534,7 +642,7 @@ pub unsafe extern "C" fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> s
     let real = match resolve!(recvmsg, RecvmsgFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -551,7 +659,7 @@ pub unsafe extern "C" fn read(fd: c_int, buf: *mut c_void, count: size_t) -> ssi
     let real = match resolve!(read, ReadFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -573,7 +681,7 @@ pub unsafe extern "C" fn readv(fd: c_int, iov: *const iovec, iovcnt: c_int) -> s
     let real = match resolve!(readv, ReadvFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };
@@ -594,7 +702,7 @@ pub unsafe extern "C" fn close(fd: c_int) -> c_int {
     let real = match resolve!(close, CloseFn) {
         Some(f) => f,
         None => {
-            *libc::__errno_location() = libc::ENOSYS;
+            set_errno(libc::ENOSYS);
             return -1;
         }
     };

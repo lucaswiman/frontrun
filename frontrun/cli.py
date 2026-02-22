@@ -102,6 +102,27 @@ def _build_env(preload_lib: Path | None) -> dict[str, str]:
     return env
 
 
+def _warn_macos_sip(command: str) -> None:
+    """Warn if the target command may be SIP-protected on macOS.
+
+    macOS System Integrity Protection strips ``DYLD_INSERT_LIBRARIES``
+    from system binaries (those under ``/usr/bin/``, ``/usr/sbin/``,
+    etc.).  The preload library silently has no effect in that case.
+    Homebrew, pyenv, conda, and venv Python installs are unaffected.
+    """
+    import shutil
+
+    resolved = shutil.which(command) or command
+    sip_prefixes = ("/usr/bin/", "/usr/sbin/", "/usr/libexec/", "/bin/", "/sbin/")
+    if any(resolved.startswith(p) for p in sip_prefixes):
+        print(
+            f"frontrun: warning: {resolved} may be a macOS SIP-protected binary; "
+            "DYLD_INSERT_LIBRARIES will be stripped by the kernel. "
+            "Use a Homebrew, pyenv, or venv Python instead.",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``frontrun`` CLI command."""
     if argv is None:
@@ -125,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
     preload_lib = _find_preload_library()
     if preload_lib is not None:
         print(f"frontrun: using preload library {preload_lib}", file=sys.stderr)
+        if platform.system() == "Darwin":
+            _warn_macos_sip(argv[0])
     else:
         print(
             "frontrun: preload library not found; running with monkey-patching only",
