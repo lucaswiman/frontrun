@@ -52,6 +52,12 @@ jobs:
         if: runner.os != 'Linux'
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Build I/O interception library (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release -p frontrun-io
+          cp target/release/libfrontrun_io.dylib frontrun/libfrontrun_io.dylib
+
       - name: Build wheels (CPython)
         uses: PyO3/maturin-action@v1
         with:
