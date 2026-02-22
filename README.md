@@ -213,7 +213,19 @@ recv(fd=7, ...)                              →  report read from "socket:127.0
 close(fd=7)                                  →  remove fd=7 from map
 ```
 
-Events are logged to a file (set via `FRONTRUN_IO_LOG`) which the Python-side DPOR scheduler reads for conflict analysis.
+Events are transmitted to the Python side via one of two channels:
+
+- **Pipe (preferred):** `IOEventDispatcher` creates an `os.pipe()` and sets `FRONTRUN_IO_FD` to the write-end fd.  The Rust library writes directly to the pipe (no open/close overhead per event), and a Python reader thread dispatches events to registered listener callbacks in arrival order.  The pipe's FIFO ordering provides a natural total order without timestamps.
+- **Log file (legacy):** `FRONTRUN_IO_LOG` points to a temp file.  Events are appended per-call (open + write + close each time) and read back in batch after execution.
+
+```python
+from frontrun._preload_io import IOEventDispatcher
+
+with IOEventDispatcher() as dispatcher:
+    dispatcher.add_listener(lambda ev: print(f"{ev.kind} {ev.resource_id}"))
+    # ... run code under LD_PRELOAD / DYLD_INSERT_LIBRARIES ...
+# all events are also available as dispatcher.events
+```
 
 ## Async Support
 
@@ -330,6 +342,21 @@ pytest --no-frontrun-patch-locks   # explicitly disable even under CLI
 Tests that use `explore_interleavings()` or `explore_dpor()` will be
 **automatically skipped** when run without the frontrun CLI, preventing
 confusing failures when the environment isn't properly set up.
+
+## Platform Compatibility
+
+| Feature | Linux | macOS | Windows |
+|---|---|---|---|
+| Trace markers (sync + async) | Yes | Yes | Yes |
+| Bytecode exploration (sync + async) | Yes | Yes | Yes |
+| DPOR (Rust engine) | Yes | Yes | Yes |
+| `frontrun` CLI + C-level I/O interception | Yes | Yes | No |
+
+**Linux** is the primary development platform and has full support for all features including the `LD_PRELOAD` I/O interception library.
+
+**macOS** supports all features.  The `frontrun` CLI uses `DYLD_INSERT_LIBRARIES` to load `libfrontrun_io.dylib`.  Note that macOS System Integrity Protection (SIP) strips `DYLD_INSERT_LIBRARIES` from Apple-signed system binaries (`/usr/bin/python3`, etc.).  Use a Homebrew, pyenv, or venv Python to avoid this limitation.
+
+**Windows** support is limited to trace markers, bytecode exploration, and DPOR — the pure-Python and Rust PyO3 components that don't rely on `LD_PRELOAD`.  The `frontrun` CLI and C-level I/O interception library are not available on Windows because they depend on the Unix dynamic linker's symbol interposition mechanism, which has no direct Windows equivalent.  Any Windows support is purely theoretical and untested.  See [CONTRIBUTING.md](CONTRIBUTING.md) if you'd like to help.
 
 ## Development
 

@@ -17,3 +17,16 @@ please note which agent(s) were used in the PR description.
 This project is **not currently seeking contributors for new feature work**.
 If you have an idea for a new feature, please open an issue to discuss it
 rather than submitting a PR.
+
+## Windows Compatibility
+
+Windows compatibility patches are **especially welcome**.  Currently only
+trace markers, bytecode exploration, and DPOR work on Windows (the
+pure-Python and Rust PyO3 components).  The `frontrun` CLI and C-level
+I/O interception library rely on `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES`
+and have no Windows equivalent.  Possible avenues include:
+
+- IAT (Import Address Table) hooking or Detours-style function patching
+  for the I/O interception library.
+- A Windows-compatible `frontrun` CLI wrapper.
+- CI and test-suite support for Windows.
