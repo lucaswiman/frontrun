@@ -14,28 +14,66 @@
 //! 2. **Log file (legacy fallback):** When only `FRONTRUN_IO_LOG` is set,
 //!    events are appended to the named file (open + write + close per event).
 //!
-//! The dynamic linker resolves symbols in LD_PRELOAD libraries first, so when
-//! any library (libpq, libcurl, etc.) calls `send()`, it gets our `send()`.
-//! We do bookkeeping, then forward to the real libc function via `dlsym(RTLD_NEXT, ...)`.
+//! ## Platform differences
+//!
+//! **Linux:** The dynamic linker resolves symbols in LD_PRELOAD libraries first,
+//! so defining `write()` etc. directly interposes them.  We forward to the real
+//! libc functions via `dlsym(RTLD_NEXT, ...)`.
+//!
+//! **macOS:** Two-level namespaces prevent simple symbol overriding.  Instead we
+//! define `frontrun_write()` etc. and register a `__DATA,__interpose` table that
+//! tells dyld to replace calls to libSystem's functions with ours.  Forwarding
+//! uses raw arm64 syscalls (`svc #0x80`) to avoid infinite recursion (since
+//! `dlsym` itself calls `write`/`close` internally).
 
-use libc::{
-    c_char, c_int, c_void, iovec, msghdr, size_t, sockaddr, socklen_t, ssize_t, AF_INET,
-    AF_INET6, AF_UNIX, RTLD_NEXT,
-};
+use libc::{c_int, c_void, iovec, msghdr, size_t, sockaddr, socklen_t, ssize_t, AF_INET, AF_INET6, AF_UNIX};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Mutex;
 
+#[cfg(not(target_os = "macos"))]
+use libc::{c_char, RTLD_NEXT};
+#[cfg(not(target_os = "macos"))]
+use std::sync::atomic::AtomicUsize;
+
+// Fail at compile time on unsupported macOS architectures.
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+compile_error!("macOS I/O interception requires aarch64 (Apple Silicon)");
+
 // ---------------------------------------------------------------------------
-// Real libc function pointers (resolved lazily via dlsym)
+// Library readiness flag
 // ---------------------------------------------------------------------------
 //
-// We use AtomicUsize instead of OnceLock because these function pointers are
-// resolved extremely early in process startup (before Rust's standard library
-// may be fully initialized). AtomicUsize with relaxed ordering is safe here
-// because the stored value (a function pointer from dlsym) is immutable once
-// resolved, and the worst case of a data race is resolving it twice.
+// On macOS, our interposed functions are called during libSystem_initializer
+// (before main), when TLS and the allocator are not yet available.  We skip
+// interception until our constructor runs (after libSystem init completes).
+// On Linux, LD_PRELOAD doesn't have this issue, so READY defaults to true.
 
+#[cfg(target_os = "macos")]
+static READY: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(target_os = "macos"))]
+static READY: AtomicBool = AtomicBool::new(true);
+
+/// macOS library constructor — registered via `__DATA,__mod_init_func`.
+/// dyld calls this after libSystem is initialized but before main().
+#[cfg(target_os = "macos")]
+#[used]
+#[link_section = "__DATA,__mod_init_func"]
+static INIT_FN: unsafe extern "C" fn() = {
+    unsafe extern "C" fn _frontrun_io_init() {
+        READY.store(true, Ordering::Release);
+    }
+    _frontrun_io_init
+};
+
+// ---------------------------------------------------------------------------
+// Real libc function pointers — Linux only (resolved lazily via dlsym)
+// ---------------------------------------------------------------------------
+//
+// On macOS we use raw syscalls instead, so dlsym is not needed.
+
+#[cfg(not(target_os = "macos"))]
 macro_rules! resolve {
     ($name:ident, $ty:ty) => {{
         static ADDR: AtomicUsize = AtomicUsize::new(0);
@@ -104,11 +142,206 @@ fn get_tid() -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// Raw arm64 syscall wrappers — macOS only
+// ---------------------------------------------------------------------------
+//
+// On macOS, `dlsym(RTLD_NEXT, ...)` causes infinite recursion when called
+// from an interposed function because dlsym internally calls `write`/`close`.
+// Using raw `svc #0x80` syscalls bypasses libc entirely and avoids this.
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod raw_syscall {
+    use libc::{c_char, c_int, c_void, iovec, msghdr, size_t, sockaddr, socklen_t, ssize_t};
+
+    // macOS encodes the syscall class in the upper bits.  UNIX syscalls use
+    // class 2 (0x2000000).
+    const SYS_CLASS_UNIX: u64 = 0x2000000;
+
+    const SYS_READ: u64 = SYS_CLASS_UNIX | 3;
+    const SYS_WRITE: u64 = SYS_CLASS_UNIX | 4;
+    const SYS_OPEN: u64 = SYS_CLASS_UNIX | 5;
+    const SYS_CLOSE: u64 = SYS_CLASS_UNIX | 6;
+    const SYS_GETPID: u64 = SYS_CLASS_UNIX | 20;
+    const SYS_RECVMSG: u64 = SYS_CLASS_UNIX | 27;
+    const SYS_SENDMSG: u64 = SYS_CLASS_UNIX | 28;
+    const SYS_RECVFROM: u64 = SYS_CLASS_UNIX | 29;
+    const SYS_GETPEERNAME: u64 = SYS_CLASS_UNIX | 31;
+    const SYS_FCNTL: u64 = SYS_CLASS_UNIX | 92;
+    const SYS_CONNECT: u64 = SYS_CLASS_UNIX | 98;
+    const SYS_READV: u64 = SYS_CLASS_UNIX | 120;
+    const SYS_WRITEV: u64 = SYS_CLASS_UNIX | 121;
+    const SYS_SENDTO: u64 = SYS_CLASS_UNIX | 133;
+
+    /// Execute a raw arm64 syscall with up to 6 arguments.
+    ///
+    /// On return, if the carry flag is set the call failed and x0 contains the
+    /// errno value.  We store it via `set_errno` and return -1.
+    #[inline(always)]
+    unsafe fn syscall6(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
+        let ret: u64;
+        let err: u64;
+        core::arch::asm!(
+            "svc #0x80",
+            "cset {err:w}, cs",
+            inout("x16") num => _,
+            inout("x0") a0 => ret,
+            inout("x1") a1 => _,
+            inout("x2") a2 => _,
+            inout("x3") a3 => _,
+            inout("x4") a4 => _,
+            inout("x5") a5 => _,
+            err = out(reg) err,
+            options(nostack),
+        );
+        if err != 0 {
+            super::set_errno(ret as c_int);
+            -1
+        } else {
+            ret as i64
+        }
+    }
+
+    pub unsafe fn write(fd: c_int, buf: *const c_void, count: size_t) -> ssize_t {
+        syscall6(SYS_WRITE, fd as u64, buf as u64, count as u64, 0, 0, 0) as ssize_t
+    }
+
+    pub unsafe fn read(fd: c_int, buf: *mut c_void, count: size_t) -> ssize_t {
+        syscall6(SYS_READ, fd as u64, buf as u64, count as u64, 0, 0, 0) as ssize_t
+    }
+
+    pub unsafe fn open(path: *const c_char, flags: c_int, mode: c_int) -> c_int {
+        syscall6(SYS_OPEN, path as u64, flags as u64, mode as u64, 0, 0, 0) as c_int
+    }
+
+    pub unsafe fn close(fd: c_int) -> c_int {
+        syscall6(SYS_CLOSE, fd as u64, 0, 0, 0, 0, 0) as c_int
+    }
+
+    pub unsafe fn connect(fd: c_int, addr: *const sockaddr, addrlen: socklen_t) -> c_int {
+        syscall6(
+            SYS_CONNECT,
+            fd as u64,
+            addr as u64,
+            addrlen as u64,
+            0,
+            0,
+            0,
+        ) as c_int
+    }
+
+    pub unsafe fn sendto(
+        fd: c_int,
+        buf: *const c_void,
+        len: size_t,
+        flags: c_int,
+        addr: *const sockaddr,
+        addrlen: socklen_t,
+    ) -> ssize_t {
+        syscall6(
+            SYS_SENDTO,
+            fd as u64,
+            buf as u64,
+            len as u64,
+            flags as u64,
+            addr as u64,
+            addrlen as u64,
+        ) as ssize_t
+    }
+
+    /// `send()` has no dedicated macOS syscall — it is `sendto` with a NULL address.
+    pub unsafe fn send(fd: c_int, buf: *const c_void, len: size_t, flags: c_int) -> ssize_t {
+        sendto(fd, buf, len, flags, std::ptr::null(), 0)
+    }
+
+    pub unsafe fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t {
+        syscall6(SYS_SENDMSG, fd as u64, msg as u64, flags as u64, 0, 0, 0) as ssize_t
+    }
+
+    pub unsafe fn recvfrom(
+        fd: c_int,
+        buf: *mut c_void,
+        len: size_t,
+        flags: c_int,
+        addr: *mut sockaddr,
+        addrlen: *mut socklen_t,
+    ) -> ssize_t {
+        syscall6(
+            SYS_RECVFROM,
+            fd as u64,
+            buf as u64,
+            len as u64,
+            flags as u64,
+            addr as u64,
+            addrlen as u64,
+        ) as ssize_t
+    }
+
+    /// `recv()` has no dedicated macOS syscall — it is `recvfrom` with NULL address/len.
+    pub unsafe fn recv(fd: c_int, buf: *mut c_void, len: size_t, flags: c_int) -> ssize_t {
+        recvfrom(fd, buf, len, flags, std::ptr::null_mut(), std::ptr::null_mut())
+    }
+
+    pub unsafe fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t {
+        syscall6(SYS_RECVMSG, fd as u64, msg as u64, flags as u64, 0, 0, 0) as ssize_t
+    }
+
+    pub unsafe fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t {
+        syscall6(
+            SYS_WRITEV,
+            fd as u64,
+            iov as u64,
+            iovcnt as u64,
+            0,
+            0,
+            0,
+        ) as ssize_t
+    }
+
+    pub unsafe fn readv(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t {
+        syscall6(
+            SYS_READV,
+            fd as u64,
+            iov as u64,
+            iovcnt as u64,
+            0,
+            0,
+            0,
+        ) as ssize_t
+    }
+
+    pub unsafe fn getpid() -> c_int {
+        syscall6(SYS_GETPID, 0, 0, 0, 0, 0, 0) as c_int
+    }
+
+    pub unsafe fn getpeername(
+        fd: c_int,
+        addr: *mut sockaddr,
+        addrlen: *mut socklen_t,
+    ) -> c_int {
+        syscall6(
+            SYS_GETPEERNAME,
+            fd as u64,
+            addr as u64,
+            addrlen as u64,
+            0,
+            0,
+            0,
+        ) as c_int
+    }
+
+    pub unsafe fn fcntl(fd: c_int, cmd: c_int, arg: *mut c_void) -> c_int {
+        syscall6(SYS_FCNTL, fd as u64, cmd as u64, arg as u64, 0, 0, 0) as c_int
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-thread reentrancy guard
 // ---------------------------------------------------------------------------
 //
 // Prevents infinite recursion when our logging code calls write()/close()
-// which would trigger our interceptors again.
+// which would trigger our interceptors again.  On macOS this is belt-and-
+// suspenders since raw syscalls already bypass interposition, but it's cheap
+// insurance.
 
 thread_local! {
     static IN_HOOK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -195,9 +428,17 @@ fn get_pipe_fd() -> Option<c_int> {
 }
 
 // ---------------------------------------------------------------------------
-// Low-level write helper (uses real libc write, not our interceptor)
+// Low-level write helper (uses real write, not our interceptor)
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "macos")]
+fn write_to_fd(fd: c_int, buf: &[u8]) {
+    unsafe {
+        raw_syscall::write(fd, buf.as_ptr() as *const c_void, buf.len());
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn write_to_fd(fd: c_int, buf: &[u8]) {
     type WriteFn = unsafe extern "C" fn(c_int, *const c_void, size_t) -> ssize_t;
     if let Some(real_write) = resolve!(write, WriteFn) {
@@ -232,7 +473,11 @@ fn report_io(fd: c_int, kind: &str) {
 }
 
 fn log_event(kind: &str, resource: &str, fd: c_int) {
+    #[cfg(target_os = "macos")]
+    let pid = unsafe { raw_syscall::getpid() };
+    #[cfg(not(target_os = "macos"))]
     let pid = unsafe { libc::getpid() };
+
     let tid = get_tid();
     let line = format!("{}\t{}\t{}\t{}\t{}\n", kind, resource, fd, pid, tid);
     let buf = line.as_bytes();
@@ -253,6 +498,16 @@ fn log_event(kind: &str, resource: &str, fd: c_int) {
         Ok(c) => c,
         Err(_) => return,
     };
+
+    #[cfg(target_os = "macos")]
+    let log_fd = unsafe {
+        raw_syscall::open(
+            path_cstr.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+            0o644,
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
     let log_fd = unsafe {
         libc::open(
             path_cstr.as_ptr(),
@@ -260,17 +515,25 @@ fn log_event(kind: &str, resource: &str, fd: c_int) {
             0o644,
         )
     };
+
     if log_fd < 0 {
         return;
     }
 
     write_to_fd(log_fd, buf);
 
-    // Close the log file fd
-    type CloseFn = unsafe extern "C" fn(c_int) -> c_int;
-    if let Some(real_close) = resolve!(close, CloseFn) {
-        unsafe {
-            real_close(log_fd);
+    // Close the log file fd using platform-appropriate method.
+    #[cfg(target_os = "macos")]
+    unsafe {
+        raw_syscall::close(log_fd);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        type CloseFn = unsafe extern "C" fn(c_int) -> c_int;
+        if let Some(real_close) = resolve!(close, CloseFn) {
+            unsafe {
+                real_close(log_fd);
+            }
         }
     }
 }
@@ -334,12 +597,32 @@ fn sockaddr_to_resource(addr: *const sockaddr, addrlen: socklen_t) -> Option<Str
 }
 
 /// Try to get the peer address of a connected socket and convert to resource string.
+#[cfg(not(target_os = "macos"))]
 fn fd_to_resource_via_getpeername(fd: c_int) -> Option<String> {
     unsafe {
         let mut addr: libc::sockaddr_storage = std::mem::zeroed();
         let mut addrlen: socklen_t =
             std::mem::size_of::<libc::sockaddr_storage>() as socklen_t;
         let ret = libc::getpeername(fd, &mut addr as *mut _ as *mut sockaddr, &mut addrlen);
+        if ret == 0 {
+            sockaddr_to_resource(&addr as *const _ as *const sockaddr, addrlen)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fd_to_resource_via_getpeername(fd: c_int) -> Option<String> {
+    unsafe {
+        let mut addr: libc::sockaddr_storage = std::mem::zeroed();
+        let mut addrlen: socklen_t =
+            std::mem::size_of::<libc::sockaddr_storage>() as socklen_t;
+        let ret = raw_syscall::getpeername(
+            fd,
+            &mut addr as *mut _ as *mut sockaddr,
+            &mut addrlen,
+        );
         if ret == 0 {
             sockaddr_to_resource(&addr as *const _ as *const sockaddr, addrlen)
         } else {
@@ -372,7 +655,8 @@ fn fd_to_file_resource(fd: c_int) -> Option<String> {
 #[cfg(target_os = "macos")]
 fn fd_to_file_resource(fd: c_int) -> Option<String> {
     let mut buf = [0i8; libc::PATH_MAX as usize];
-    let ret = unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) };
+    let ret =
+        unsafe { raw_syscall::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr() as *mut c_void) };
     if ret == -1 {
         return None;
     }
@@ -415,309 +699,622 @@ fn ensure_fd_mapped(fd: c_int) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Intercepted libc functions
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Intercepted libc functions — Linux (LD_PRELOAD + dlsym)
+// ===========================================================================
 
-/// Intercept `connect()` — record fd → endpoint mapping.
-#[no_mangle]
-pub unsafe extern "C" fn connect(
-    fd: c_int,
-    addr: *const sockaddr,
-    addrlen: socklen_t,
-) -> c_int {
-    type ConnectFn = unsafe extern "C" fn(c_int, *const sockaddr, socklen_t) -> c_int;
-    let real = match resolve!(connect, ConnectFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
+#[cfg(not(target_os = "macos"))]
+mod linux_intercept {
+    use super::*;
+
+    /// Intercept `connect()` — record fd → endpoint mapping.
+    #[no_mangle]
+    pub unsafe extern "C" fn connect(
+        fd: c_int,
+        addr: *const sockaddr,
+        addrlen: socklen_t,
+    ) -> c_int {
+        type ConnectFn = unsafe extern "C" fn(c_int, *const sockaddr, socklen_t) -> c_int;
+        let real = match resolve!(connect, ConnectFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        let result = real(fd, addr, addrlen);
+
+        if result == 0 || get_errno() == libc::EINPROGRESS {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Some(resource) = sockaddr_to_resource(addr, addrlen) {
+                    if let Ok(mut map) = FD_MAP.lock() {
+                        map.insert(fd, resource.clone());
+                    }
+                    log_event("connect", &resource, fd);
+                }
+            }
         }
-    };
 
-    let result = real(fd, addr, addrlen);
+        result
+    }
 
-    if result == 0 || get_errno() == libc::EINPROGRESS {
-        if let Some(_guard) = ReentrancyGuard::enter() {
-            if let Some(resource) = sockaddr_to_resource(addr, addrlen) {
+    /// Intercept `send()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn send(
+        fd: c_int,
+        buf: *const c_void,
+        len: size_t,
+        flags: c_int,
+    ) -> ssize_t {
+        type SendFn = unsafe extern "C" fn(c_int, *const c_void, size_t, c_int) -> ssize_t;
+        let real = match resolve!(send, SendFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "write");
+        real(fd, buf, len, flags)
+    }
+
+    /// Intercept `sendto()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn sendto(
+        fd: c_int,
+        buf: *const c_void,
+        len: size_t,
+        flags: c_int,
+        dest_addr: *const sockaddr,
+        addrlen: socklen_t,
+    ) -> ssize_t {
+        type SendtoFn = unsafe extern "C" fn(
+            c_int,
+            *const c_void,
+            size_t,
+            c_int,
+            *const sockaddr,
+            socklen_t,
+        ) -> ssize_t;
+        let real = match resolve!(sendto, SendtoFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        if !dest_addr.is_null() {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Some(resource) = sockaddr_to_resource(dest_addr, addrlen) {
+                    if let Ok(mut map) = FD_MAP.lock() {
+                        map.insert(fd, resource);
+                    }
+                }
+            }
+        }
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "write");
+        real(fd, buf, len, flags, dest_addr, addrlen)
+    }
+
+    /// Intercept `sendmsg()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t {
+        type SendmsgFn = unsafe extern "C" fn(c_int, *const msghdr, c_int) -> ssize_t;
+        let real = match resolve!(sendmsg, SendmsgFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "write");
+        real(fd, msg, flags)
+    }
+
+    /// Intercept `write()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn write(fd: c_int, buf: *const c_void, count: size_t) -> ssize_t {
+        type WriteFn = unsafe extern "C" fn(c_int, *const c_void, size_t) -> ssize_t;
+        let real = match resolve!(write, WriteFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        if fd <= 2 {
+            return real(fd, buf, count);
+        }
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "write");
+        real(fd, buf, count)
+    }
+
+    /// Intercept `writev()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t {
+        type WritevFn = unsafe extern "C" fn(c_int, *const iovec, c_int) -> ssize_t;
+        let real = match resolve!(writev, WritevFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        if fd <= 2 {
+            return real(fd, iov, iovcnt);
+        }
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "write");
+        real(fd, iov, iovcnt)
+    }
+
+    /// Intercept `recv()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn recv(
+        fd: c_int,
+        buf: *mut c_void,
+        len: size_t,
+        flags: c_int,
+    ) -> ssize_t {
+        type RecvFn = unsafe extern "C" fn(c_int, *mut c_void, size_t, c_int) -> ssize_t;
+        let real = match resolve!(recv, RecvFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "read");
+        real(fd, buf, len, flags)
+    }
+
+    /// Intercept `recvfrom()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn recvfrom(
+        fd: c_int,
+        buf: *mut c_void,
+        len: size_t,
+        flags: c_int,
+        src_addr: *mut sockaddr,
+        addrlen: *mut socklen_t,
+    ) -> ssize_t {
+        type RecvfromFn = unsafe extern "C" fn(
+            c_int,
+            *mut c_void,
+            size_t,
+            c_int,
+            *mut sockaddr,
+            *mut socklen_t,
+        ) -> ssize_t;
+        let real = match resolve!(recvfrom, RecvfromFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "read");
+        let result = real(fd, buf, len, flags, src_addr, addrlen);
+
+        if result >= 0 && !src_addr.is_null() && !addrlen.is_null() {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Some(resource) =
+                    sockaddr_to_resource(src_addr as *const sockaddr, *addrlen)
+                {
+                    if let Ok(mut map) = FD_MAP.lock() {
+                        map.insert(fd, resource);
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Intercept `recvmsg()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t {
+        type RecvmsgFn = unsafe extern "C" fn(c_int, *mut msghdr, c_int) -> ssize_t;
+        let real = match resolve!(recvmsg, RecvmsgFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "read");
+        real(fd, msg, flags)
+    }
+
+    /// Intercept `read()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn read(fd: c_int, buf: *mut c_void, count: size_t) -> ssize_t {
+        type ReadFn = unsafe extern "C" fn(c_int, *mut c_void, size_t) -> ssize_t;
+        let real = match resolve!(read, ReadFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        if fd <= 2 {
+            return real(fd, buf, count);
+        }
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "read");
+        real(fd, buf, count)
+    }
+
+    /// Intercept `readv()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn readv(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t {
+        type ReadvFn = unsafe extern "C" fn(c_int, *const iovec, c_int) -> ssize_t;
+        let real = match resolve!(readv, ReadvFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        if fd <= 2 {
+            return real(fd, iov, iovcnt);
+        }
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "read");
+        real(fd, iov, iovcnt)
+    }
+
+    /// Intercept `close()` — remove fd from map.
+    #[no_mangle]
+    pub unsafe extern "C" fn close(fd: c_int) -> c_int {
+        type CloseFn = unsafe extern "C" fn(c_int) -> c_int;
+        let real = match resolve!(close, CloseFn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        if fd > 2 {
+            if let Some(_guard) = ReentrancyGuard::enter() {
                 if let Ok(mut map) = FD_MAP.lock() {
-                    map.insert(fd, resource.clone());
+                    if let Some(resource) = map.remove(fd) {
+                        drop(map);
+                        log_event("close", &resource, fd);
+                    }
                 }
-                log_event("connect", &resource, fd);
             }
         }
+
+        real(fd)
+    }
+}
+
+// ===========================================================================
+// Intercepted libc functions — macOS (DYLD_INSERT_LIBRARIES + __interpose)
+// ===========================================================================
+//
+// Functions are named `frontrun_<name>` to avoid colliding with the libSystem
+// symbols we are interposing.  Forwarding uses raw arm64 syscalls.
+
+#[cfg(target_os = "macos")]
+mod macos_intercept {
+    use super::*;
+
+    /// Intercept `connect()` — record fd → endpoint mapping.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_connect(
+        fd: c_int,
+        addr: *const sockaddr,
+        addrlen: socklen_t,
+    ) -> c_int {
+        let result = raw_syscall::connect(fd, addr, addrlen);
+
+        if !READY.load(Ordering::Acquire) {
+            return result;
+        }
+
+        if result == 0 || get_errno() == libc::EINPROGRESS {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Some(resource) = sockaddr_to_resource(addr, addrlen) {
+                    if let Ok(mut map) = FD_MAP.lock() {
+                        map.insert(fd, resource.clone());
+                    }
+                    log_event("connect", &resource, fd);
+                }
+            }
+        }
+
+        result
     }
 
-    result
-}
-
-/// Intercept `send()`.
-#[no_mangle]
-pub unsafe extern "C" fn send(
-    fd: c_int,
-    buf: *const c_void,
-    len: size_t,
-    flags: c_int,
-) -> ssize_t {
-    type SendFn = unsafe extern "C" fn(c_int, *const c_void, size_t, c_int) -> ssize_t;
-    let real = match resolve!(send, SendFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
+    /// Intercept `send()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_send(
+        fd: c_int,
+        buf: *const c_void,
+        len: size_t,
+        flags: c_int,
+    ) -> ssize_t {
+        if READY.load(Ordering::Acquire) {
+            ensure_fd_mapped(fd);
+            report_io(fd, "write");
         }
-    };
+        raw_syscall::send(fd, buf, len, flags)
+    }
 
-    ensure_fd_mapped(fd);
-    report_io(fd, "write");
-    real(fd, buf, len, flags)
-}
+    /// Intercept `sendto()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_sendto(
+        fd: c_int,
+        buf: *const c_void,
+        len: size_t,
+        flags: c_int,
+        dest_addr: *const sockaddr,
+        addrlen: socklen_t,
+    ) -> ssize_t {
+        if READY.load(Ordering::Acquire) {
+            if !dest_addr.is_null() {
+                if let Some(_guard) = ReentrancyGuard::enter() {
+                    if let Some(resource) = sockaddr_to_resource(dest_addr, addrlen) {
+                        if let Ok(mut map) = FD_MAP.lock() {
+                            map.insert(fd, resource);
+                        }
+                    }
+                }
+            }
 
-/// Intercept `sendto()`.
-#[no_mangle]
-pub unsafe extern "C" fn sendto(
-    fd: c_int,
-    buf: *const c_void,
-    len: size_t,
-    flags: c_int,
-    dest_addr: *const sockaddr,
-    addrlen: socklen_t,
-) -> ssize_t {
-    type SendtoFn =
-        unsafe extern "C" fn(c_int, *const c_void, size_t, c_int, *const sockaddr, socklen_t) -> ssize_t;
-    let real = match resolve!(sendto, SendtoFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
+            ensure_fd_mapped(fd);
+            report_io(fd, "write");
         }
-    };
+        raw_syscall::sendto(fd, buf, len, flags, dest_addr, addrlen)
+    }
 
-    if !dest_addr.is_null() {
-        if let Some(_guard) = ReentrancyGuard::enter() {
-            if let Some(resource) = sockaddr_to_resource(dest_addr, addrlen) {
+    /// Intercept `sendmsg()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_sendmsg(
+        fd: c_int,
+        msg: *const msghdr,
+        flags: c_int,
+    ) -> ssize_t {
+        if READY.load(Ordering::Acquire) {
+            ensure_fd_mapped(fd);
+            report_io(fd, "write");
+        }
+        raw_syscall::sendmsg(fd, msg, flags)
+    }
+
+    /// Intercept `write()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_write(
+        fd: c_int,
+        buf: *const c_void,
+        count: size_t,
+    ) -> ssize_t {
+        if fd > 2 && READY.load(Ordering::Acquire) {
+            ensure_fd_mapped(fd);
+            report_io(fd, "write");
+        }
+        raw_syscall::write(fd, buf, count)
+    }
+
+    /// Intercept `writev()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_writev(
+        fd: c_int,
+        iov: *const iovec,
+        iovcnt: c_int,
+    ) -> ssize_t {
+        if fd > 2 && READY.load(Ordering::Acquire) {
+            ensure_fd_mapped(fd);
+            report_io(fd, "write");
+        }
+        raw_syscall::writev(fd, iov, iovcnt)
+    }
+
+    /// Intercept `recv()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_recv(
+        fd: c_int,
+        buf: *mut c_void,
+        len: size_t,
+        flags: c_int,
+    ) -> ssize_t {
+        if READY.load(Ordering::Acquire) {
+            ensure_fd_mapped(fd);
+            report_io(fd, "read");
+        }
+        raw_syscall::recv(fd, buf, len, flags)
+    }
+
+    /// Intercept `recvfrom()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_recvfrom(
+        fd: c_int,
+        buf: *mut c_void,
+        len: size_t,
+        flags: c_int,
+        src_addr: *mut sockaddr,
+        addrlen: *mut socklen_t,
+    ) -> ssize_t {
+        if !READY.load(Ordering::Acquire) {
+            return raw_syscall::recvfrom(fd, buf, len, flags, src_addr, addrlen);
+        }
+
+        ensure_fd_mapped(fd);
+        report_io(fd, "read");
+        let result = raw_syscall::recvfrom(fd, buf, len, flags, src_addr, addrlen);
+
+        if result >= 0 && !src_addr.is_null() && !addrlen.is_null() {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Some(resource) =
+                    sockaddr_to_resource(src_addr as *const sockaddr, *addrlen)
+                {
+                    if let Ok(mut map) = FD_MAP.lock() {
+                        map.insert(fd, resource);
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Intercept `recvmsg()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_recvmsg(
+        fd: c_int,
+        msg: *mut msghdr,
+        flags: c_int,
+    ) -> ssize_t {
+        if READY.load(Ordering::Acquire) {
+            ensure_fd_mapped(fd);
+            report_io(fd, "read");
+        }
+        raw_syscall::recvmsg(fd, msg, flags)
+    }
+
+    /// Intercept `read()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_read(
+        fd: c_int,
+        buf: *mut c_void,
+        count: size_t,
+    ) -> ssize_t {
+        if fd > 2 && READY.load(Ordering::Acquire) {
+            ensure_fd_mapped(fd);
+            report_io(fd, "read");
+        }
+        raw_syscall::read(fd, buf, count)
+    }
+
+    /// Intercept `readv()`.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_readv(
+        fd: c_int,
+        iov: *const iovec,
+        iovcnt: c_int,
+    ) -> ssize_t {
+        if fd > 2 && READY.load(Ordering::Acquire) {
+            ensure_fd_mapped(fd);
+            report_io(fd, "read");
+        }
+        raw_syscall::readv(fd, iov, iovcnt)
+    }
+
+    /// Intercept `close()` — remove fd from map.
+    #[no_mangle]
+    pub unsafe extern "C" fn frontrun_close(fd: c_int) -> c_int {
+        if fd > 2 && READY.load(Ordering::Acquire) {
+            if let Some(_guard) = ReentrancyGuard::enter() {
                 if let Ok(mut map) = FD_MAP.lock() {
-                    map.insert(fd, resource);
+                    if let Some(resource) = map.remove(fd) {
+                        drop(map);
+                        log_event("close", &resource, fd);
+                    }
                 }
             }
         }
+
+        raw_syscall::close(fd)
+    }
+}
+
+// ===========================================================================
+// macOS dyld interpose table
+// ===========================================================================
+//
+// The `__DATA,__interpose` section tells dyld to replace calls to the
+// "original" function (from libSystem) with the "replacement" function
+// (our `frontrun_*` interceptor).
+
+#[cfg(target_os = "macos")]
+mod interpose {
+    use super::macos_intercept::*;
+
+    #[repr(C)]
+    struct InterposeEntry {
+        replacement: *const (),
+        original: *const (),
     }
 
-    ensure_fd_mapped(fd);
-    report_io(fd, "write");
-    real(fd, buf, len, flags, dest_addr, addrlen)
-}
+    // SAFETY: These are immutable function pointers resolved at load time.
+    unsafe impl Sync for InterposeEntry {}
 
-/// Intercept `sendmsg()`.
-#[no_mangle]
-pub unsafe extern "C" fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t {
-    type SendmsgFn = unsafe extern "C" fn(c_int, *const msghdr, c_int) -> ssize_t;
-    let real = match resolve!(sendmsg, SendmsgFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    ensure_fd_mapped(fd);
-    report_io(fd, "write");
-    real(fd, msg, flags)
-}
-
-/// Intercept `write()`.
-#[no_mangle]
-pub unsafe extern "C" fn write(fd: c_int, buf: *const c_void, count: size_t) -> ssize_t {
-    type WriteFn = unsafe extern "C" fn(c_int, *const c_void, size_t) -> ssize_t;
-    let real = match resolve!(write, WriteFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    // Skip stdin/stdout/stderr to avoid infinite recursion in logging
-    if fd <= 2 {
-        return real(fd, buf, count);
-    }
-
-    ensure_fd_mapped(fd);
-    report_io(fd, "write");
-    real(fd, buf, count)
-}
-
-/// Intercept `writev()`.
-#[no_mangle]
-pub unsafe extern "C" fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t {
-    type WritevFn = unsafe extern "C" fn(c_int, *const iovec, c_int) -> ssize_t;
-    let real = match resolve!(writev, WritevFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    if fd <= 2 {
-        return real(fd, iov, iovcnt);
-    }
-
-    ensure_fd_mapped(fd);
-    report_io(fd, "write");
-    real(fd, iov, iovcnt)
-}
-
-/// Intercept `recv()`.
-#[no_mangle]
-pub unsafe extern "C" fn recv(
-    fd: c_int,
-    buf: *mut c_void,
-    len: size_t,
-    flags: c_int,
-) -> ssize_t {
-    type RecvFn = unsafe extern "C" fn(c_int, *mut c_void, size_t, c_int) -> ssize_t;
-    let real = match resolve!(recv, RecvFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    ensure_fd_mapped(fd);
-    report_io(fd, "read");
-    real(fd, buf, len, flags)
-}
-
-/// Intercept `recvfrom()`.
-#[no_mangle]
-pub unsafe extern "C" fn recvfrom(
-    fd: c_int,
-    buf: *mut c_void,
-    len: size_t,
-    flags: c_int,
-    src_addr: *mut sockaddr,
-    addrlen: *mut socklen_t,
-) -> ssize_t {
-    type RecvfromFn = unsafe extern "C" fn(
-        c_int,
-        *mut c_void,
-        size_t,
-        c_int,
-        *mut sockaddr,
-        *mut socklen_t,
-    ) -> ssize_t;
-    let real = match resolve!(recvfrom, RecvfromFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    ensure_fd_mapped(fd);
-    report_io(fd, "read");
-    let result = real(fd, buf, len, flags, src_addr, addrlen);
-
-    if result >= 0 && !src_addr.is_null() && !addrlen.is_null() {
-        if let Some(_guard) = ReentrancyGuard::enter() {
-            if let Some(resource) =
-                sockaddr_to_resource(src_addr as *const sockaddr, *addrlen)
-            {
-                if let Ok(mut map) = FD_MAP.lock() {
-                    map.insert(fd, resource);
-                }
-            }
-        }
-    }
-
-    result
-}
-
-/// Intercept `recvmsg()`.
-#[no_mangle]
-pub unsafe extern "C" fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t {
-    type RecvmsgFn = unsafe extern "C" fn(c_int, *mut msghdr, c_int) -> ssize_t;
-    let real = match resolve!(recvmsg, RecvmsgFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    ensure_fd_mapped(fd);
-    report_io(fd, "read");
-    real(fd, msg, flags)
-}
-
-/// Intercept `read()`.
-#[no_mangle]
-pub unsafe extern "C" fn read(fd: c_int, buf: *mut c_void, count: size_t) -> ssize_t {
-    type ReadFn = unsafe extern "C" fn(c_int, *mut c_void, size_t) -> ssize_t;
-    let real = match resolve!(read, ReadFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    // Skip stdin/stdout/stderr
-    if fd <= 2 {
-        return real(fd, buf, count);
-    }
-
-    ensure_fd_mapped(fd);
-    report_io(fd, "read");
-    real(fd, buf, count)
-}
-
-/// Intercept `readv()`.
-#[no_mangle]
-pub unsafe extern "C" fn readv(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t {
-    type ReadvFn = unsafe extern "C" fn(c_int, *const iovec, c_int) -> ssize_t;
-    let real = match resolve!(readv, ReadvFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    if fd <= 2 {
-        return real(fd, iov, iovcnt);
-    }
-
-    ensure_fd_mapped(fd);
-    report_io(fd, "read");
-    real(fd, iov, iovcnt)
-}
-
-/// Intercept `close()` — remove fd from map.
-#[no_mangle]
-pub unsafe extern "C" fn close(fd: c_int) -> c_int {
-    type CloseFn = unsafe extern "C" fn(c_int) -> c_int;
-    let real = match resolve!(close, CloseFn) {
-        Some(f) => f,
-        None => {
-            set_errno(libc::ENOSYS);
-            return -1;
-        }
-    };
-
-    // Remove from map before closing
-    if fd > 2 {
-        if let Some(_guard) = ReentrancyGuard::enter() {
-            if let Ok(mut map) = FD_MAP.lock() {
-                if let Some(resource) = map.remove(fd) {
-                    drop(map);
-                    log_event("close", &resource, fd);
-                }
-            }
-        }
-    }
-
-    real(fd)
+    #[link_section = "__DATA,__interpose"]
+    #[used]
+    static INTERPOSE_TABLE: [InterposeEntry; 12] = [
+        InterposeEntry {
+            replacement: frontrun_connect as *const (),
+            original: libc::connect as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_send as *const (),
+            original: libc::send as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_sendto as *const (),
+            original: libc::sendto as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_sendmsg as *const (),
+            original: libc::sendmsg as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_write as *const (),
+            original: libc::write as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_writev as *const (),
+            original: libc::writev as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_recv as *const (),
+            original: libc::recv as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_recvfrom as *const (),
+            original: libc::recvfrom as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_recvmsg as *const (),
+            original: libc::recvmsg as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_read as *const (),
+            original: libc::read as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_readv as *const (),
+            original: libc::readv as *const (),
+        },
+        InterposeEntry {
+            replacement: frontrun_close as *const (),
+            original: libc::close as *const (),
+        },
+    ];
 }

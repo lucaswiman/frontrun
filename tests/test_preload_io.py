@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,9 @@ from frontrun._preload_io import (
 )
 from frontrun.cli import _find_preload_library
 
+_IS_MACOS = platform.system() == "Darwin"
+_PRELOAD_ENV_VAR = "DYLD_INSERT_LIBRARIES" if _IS_MACOS else "LD_PRELOAD"
+
 
 @pytest.fixture
 def preload_lib():
@@ -32,11 +36,12 @@ def preload_lib():
 class TestPreloadLibrary:
     """Test that the preload library intercepts I/O without crashing."""
 
+    @pytest.mark.skipif(_IS_MACOS, reason="macOS SIP strips DYLD_INSERT_LIBRARIES from /bin/echo")
     def test_echo_no_crash(self, preload_lib):
         """Basic smoke test: echo through preloaded process."""
         result = subprocess.run(
             ["/bin/echo", "hello"],
-            env={**os.environ, "LD_PRELOAD": str(preload_lib)},
+            env={**os.environ, _PRELOAD_ENV_VAR: str(preload_lib)},
             capture_output=True,
             text=True,
             timeout=10,
@@ -48,7 +53,7 @@ class TestPreloadLibrary:
         """Python interpreter works under preload."""
         result = subprocess.run(
             [sys.executable, "-c", "print('ok')"],
-            env={**os.environ, "LD_PRELOAD": str(preload_lib)},
+            env={**os.environ, _PRELOAD_ENV_VAR: str(preload_lib)},
             capture_output=True,
             text=True,
             timeout=30,
@@ -78,7 +83,7 @@ with open({data_path!r}, 'r') as f:
                 ],
                 env={
                     **os.environ,
-                    "LD_PRELOAD": str(preload_lib),
+                    _PRELOAD_ENV_VAR: str(preload_lib),
                     "FRONTRUN_IO_LOG": log_path,
                 },
                 capture_output=True,
@@ -107,7 +112,7 @@ with open({data_path!r}, 'r') as f:
 
         env = _build_env(preload_lib)
         assert env.get("FRONTRUN_ACTIVE") == "1"
-        assert str(preload_lib) in env.get("LD_PRELOAD", "")
+        assert str(preload_lib) in env.get(_PRELOAD_ENV_VAR, "")
 
 
 class TestEventParsing:
@@ -346,7 +351,7 @@ with open({data_path!r}, 'w') as f:
                 ],
                 env={
                     **os.environ,
-                    "LD_PRELOAD": str(preload_lib),
+                    _PRELOAD_ENV_VAR: str(preload_lib),
                     "FRONTRUN_IO_FD": str(w_fd),
                 },
                 capture_output=True,
