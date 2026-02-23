@@ -1,6 +1,6 @@
 [package]
 name = "frontrun-dpor"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "DPOR (Dynamic Partial Order Reduction) engine for frontrun concurrency testing"
 

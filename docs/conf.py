@@ -10,10 +10,9 @@ project = "Frontrun"
 copyright = "2026, Lucas Wiman"  # noqa: A001
 author = "Frontrun Contributors"
 
-# The short X.Y version
-version = "0.1"
-# The full version
-release = "0.1.0"
+from frontrun import __version__ as release
+
+version = ".".join(release.split(".")[:2])
 
 # Sphinx extensions
 extensions = [

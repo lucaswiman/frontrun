@@ -13,7 +13,7 @@ include = [
 
 [project]
 name = "frontrun"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions"
 readme = "README.md"
 requires-python = ">=3.10"
