@@ -27,6 +27,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Inject release version
+        if: github.event_name == 'release'
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if [[ $VERSION =~ ^v(.+)$ ]]; then VERSION="${BASH_REMATCH[1]}"; fi
+          python3 -c "
+          import re, pathlib
+          p = pathlib.Path('Cargo.toml')
+          p.write_text(re.sub(r'^version = .*', 'version = \"${VERSION}\"', p.read_text(), count=1, flags=re.MULTILINE))
+          "
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
         with:

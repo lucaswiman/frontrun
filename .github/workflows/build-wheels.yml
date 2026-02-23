@@ -3,6 +3,11 @@ name: Build Wheels
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      version:
+        description: 'Version to inject (from release tag). Leave empty for dev builds.'
+        required: false
+        type: string
 
 concurrency:
   group: wheels-${{ github.ref }}
@@ -14,6 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Inject release version
+        if: inputs.version != ''
+        run: python3 -c "
+          import re, pathlib;
+          p = pathlib.Path('Cargo.toml');
+          p.write_text(re.sub(r'^version = .*', 'version = \"${{ inputs.version }}\"', p.read_text(), count=1, flags=re.MULTILINE))
+          "
 
       - uses: PyO3/maturin-action@v1
         with:
@@ -37,6 +50,14 @@ jobs:
           - { os: macos-14, target: aarch64, label: "macOS aarch64" }
     steps:
       - uses: actions/checkout@v4
+
+      - name: Inject release version
+        if: inputs.version != ''
+        run: python3 -c "
+          import re, pathlib;
+          p = pathlib.Path('Cargo.toml');
+          p.write_text(re.sub(r'^version = .*', 'version = \"${{ inputs.version }}\"', p.read_text(), count=1, flags=re.MULTILINE))
+          "
 
       - name: Set up QEMU
         if: matrix.target == 'aarch64' && runner.os == 'Linux'

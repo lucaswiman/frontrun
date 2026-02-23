@@ -8,6 +8,8 @@ jobs:
   validate:
     name: Validate release
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,37 +38,12 @@ jobs:
             exit 1
           fi
 
-      - name: Validate pyproject.toml version
-        run: |
-          TOML_VERSION="$(python3 -c "
-          import tomllib, pathlib
-          d = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
-          print(d['project']['version'])
-          ")"
-          if [ "$TOML_VERSION" != "${{ steps.version.outputs.version }}" ]; then
-            echo "::error::pyproject.toml version ($TOML_VERSION) does not match release version (${{ steps.version.outputs.version }})"
-            exit 1
-          fi
-
-      - name: Validate Cargo.toml versions
-        run: |
-          for toml in crates/dpor/Cargo.toml crates/io/Cargo.toml; do
-            CARGO_VERSION="$(python3 -c "
-          import re, pathlib
-          text = pathlib.Path('${toml}').read_text()
-          m = re.search(r'^version\s*=\s*\"(.+?)\"', text, re.MULTILINE)
-          print(m.group(1))
-          ")"
-            if [ "$CARGO_VERSION" != "${{ steps.version.outputs.version }}" ]; then
-              echo "::error::${toml} version ($CARGO_VERSION) does not match release version (${{ steps.version.outputs.version }})"
-              exit 1
-            fi
-          done
-
   build:
     name: Build wheels
     needs: validate
     uses: ./.github/workflows/build-wheels.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
 
   publish:
     name: Publish to PyPI

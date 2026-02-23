@@ -23,4 +23,9 @@ DPOR (Dynamic Partial Order Reduction) systematic exploration::
     from frontrun.dpor import explore_dpor
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import version as _metadata_version
+
+try:
+    __version__: str = _metadata_version("frontrun")
+except Exception:
+    __version__ = "0.0.0"
