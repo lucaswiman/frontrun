@@ -2,15 +2,13 @@ name: Build and Deploy Docs
 
 on:
   push:
-    branches:
-      - main
     paths:
       - 'docs/**'
       - 'frontrun/**'
       - '.github/workflows/docs.yml'
   pull_request:
-    branches:
-      - main
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -49,6 +47,7 @@ jobs:
           make docs-html
 
       - name: Upload artifact
+        if: github.event_name == 'release'
         uses: actions/upload-pages-artifact@v3
         with:
           path: 'docs/_build/html'
@@ -57,7 +56,7 @@ jobs:
     name: Deploy Documentation
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'release'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
