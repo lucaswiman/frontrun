@@ -58,7 +58,7 @@ from frontrun._io_detection import (
     uninstall_io_profile,
     unpatch_io,
 )
-from frontrun._trace_format import TraceRecorder, format_trace
+from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import InterleavingResult
@@ -792,12 +792,14 @@ class DporBytecodeRunner:
                     while _frame is not None and not _should_trace_file(_frame.f_code.co_filename):
                         _frame = _frame.f_back
                     if _frame is not None:
+                        chain = build_call_chain(_frame, filter_fn=_should_trace_file)
                         _recorder.record(
                             thread_id=thread_id,
                             frame=_frame,
                             opcode="IO",
                             access_type=kind,
                             attr_name=resource_id,
+                            call_chain=chain,
                         )
 
             set_io_reporter(_io_reporter)

@@ -43,6 +43,7 @@ class TraceEvent:
     access_type: str | None = None  # "read", "write", or None
     attr_name: str | None = None  # e.g. "value", "balance"
     obj_type_name: str | None = None  # e.g. "Counter", "BankAccount"
+    call_chain: list[str] | None = None  # e.g. ["DB.dict", "do_incrs"]
 
 
 @dataclass(slots=True)
@@ -57,6 +58,45 @@ class SourceLineEvent:
     access_type: str | None = None  # "read", "write", or None (if mixed, "read+write")
     attr_name: str | None = None
     obj_type_name: str | None = None
+    call_chain: list[str] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Frame introspection helpers
+# ---------------------------------------------------------------------------
+
+
+def qualified_name(frame: Any) -> str:
+    """Get a qualified function name from a frame (e.g. ``DB.dict``)."""
+    code = frame.f_code
+    qualname = getattr(code, "co_qualname", None)  # Python 3.11+
+    if qualname is not None:
+        return qualname
+    # Fallback for 3.10: try to get class from 'self'
+    name = code.co_name
+    try:
+        self_obj = frame.f_locals.get("self")
+        if self_obj is not None:
+            return f"{type(self_obj).__name__}.{name}"
+    except Exception:
+        pass
+    return name
+
+
+def build_call_chain(frame: Any, *, filter_fn: Any, max_depth: int = 3) -> list[str] | None:
+    """Walk user-code frames from *frame* upward, returning qualified names.
+
+    ``filter_fn(filename) -> bool`` selects which frames are user code
+    (typically :func:`frontrun._tracing.should_trace_file`).
+    Returns ``None`` when the chain would be empty.
+    """
+    chain: list[str] = []
+    f: Any = frame
+    while f is not None and len(chain) < max_depth:
+        if filter_fn(f.f_code.co_filename):
+            chain.append(qualified_name(f))
+        f = f.f_back
+    return chain or None
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +128,7 @@ class TraceRecorder:
         attr_name: str | None = None,
         obj: Any = None,
         obj_type_name: str | None = None,
+        call_chain: list[str] | None = None,
     ) -> None:
         """Record one trace event from a frame object."""
         if not self.enabled:
@@ -110,6 +151,7 @@ class TraceRecorder:
             access_type=access_type,
             attr_name=attr_name,
             obj_type_name=obj_type_name,
+            call_chain=call_chain,
         )
         # Append under the recorder lock for ordering consistency
         with self._lock:
@@ -252,6 +294,7 @@ def deduplicate_to_source_lines(events: list[TraceEvent]) -> list[SourceLineEven
                     access_type=ev.access_type,
                     attr_name=ev.attr_name,
                     obj_type_name=ev.obj_type_name,
+                    call_chain=ev.call_chain,
                 )
             )
             prev_tid = ev.thread_id
@@ -379,9 +422,7 @@ def _find_conflicting_keys(events: list[SourceLineEvent]) -> set[tuple[str | Non
     return {key for key, tids in key_threads.items() if len(tids) > 1 and key in key_has_write}
 
 
-def _collapse_runs(
-    lines: list[SourceLineEvent], *, max_lines: int
-) -> list[SourceLineEvent | CollapsedRun]:
+def _collapse_runs(lines: list[SourceLineEvent], *, max_lines: int) -> list[SourceLineEvent | CollapsedRun]:
     """Collapse consecutive same-thread events, keeping first and last of each run."""
     if not lines:
         return []
@@ -441,9 +482,7 @@ def _merge_consecutive(events: list[SourceLineEvent]) -> list[SourceLineEvent]:
     return result
 
 
-def condense_trace(
-    lines: list[SourceLineEvent], *, max_lines: int = 30
-) -> list[SourceLineEvent | CollapsedRun]:
+def condense_trace(lines: list[SourceLineEvent], *, max_lines: int = 30) -> list[SourceLineEvent | CollapsedRun]:
     """Condense a trace to show only the essential interleaving.
 
     Strategy:
@@ -563,8 +602,12 @@ def format_trace(
                 else:
                     access_tag = f"  [{line_ev.access_type} {line_ev.attr_name}]"
 
+        chain_tag = ""
+        if line_ev.call_chain:
+            chain_tag = f"  in {' <- '.join(line_ev.call_chain)}"
+
         src = line_ev.source_line
-        parts.append(f"  {label} | {loc:<25s} {src}{access_tag}")
+        parts.append(f"  {label} | {loc:<25s} {src}{access_tag}{chain_tag}")
 
         # Optional opcode detail
         if show_opcodes:

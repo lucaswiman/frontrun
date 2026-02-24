@@ -251,6 +251,49 @@ class TestReadModifyWrite:
         assert result.property_holds, result.explanation
 
 
+class TestTraceCallChain:
+    """Verify that DPOR I/O traces include call chain info."""
+
+    def test_trace_shows_call_chain(self) -> None:
+        """I/O traces should show which function the open() is called from."""
+        tmpdir = tempfile.mkdtemp()
+        path = os.path.join(tmpdir, "val.txt")
+
+        class FileVal:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                with open(path, "w") as f:
+                    f.write("0")
+
+            def _read(self) -> int:
+                with self.lock:
+                    with open(path) as f:
+                        return int(f.read())
+
+            def _write(self, val: int) -> None:
+                with self.lock:
+                    with open(path, "w") as f:
+                        f.write(str(val))
+
+            def increment(self) -> None:
+                val = self._read()
+                self._write(val + 1)
+
+            def value(self) -> int:
+                return self._read()
+
+        result = explore_dpor(
+            setup=FileVal,
+            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            invariant=lambda c: c.value() == 2,
+        )
+        assert not result.property_holds
+        assert result.explanation is not None
+        # Should show "in" with a call chain like "FileVal._read <- FileVal.increment"
+        assert " in " in result.explanation
+        assert "FileVal." in result.explanation
+
+
 class TestTraceQuality:
     """Verify that DPOR I/O traces are concise and informative."""
 
@@ -329,7 +372,5 @@ class TestTraceQuality:
         assert not result.property_holds
         assert result.explanation is not None
         # Count actual trace lines (between the header and footer)
-        trace_lines = [
-            line for line in result.explanation.split("\n") if line.strip().startswith("Thread ")
-        ]
+        trace_lines = [line for line in result.explanation.split("\n") if line.strip().startswith("Thread ")]
         assert len(trace_lines) <= 15, f"Trace too verbose: {len(trace_lines)} lines\n{result.explanation}"

@@ -14,10 +14,12 @@ from frontrun._trace_format import (
     SourceLineEvent,
     TraceEvent,
     TraceRecorder,
+    build_call_chain,
     classify_conflict,
     deduplicate_to_source_lines,
     filter_to_shared_accesses,
     format_trace,
+    qualified_name,
 )
 
 # ---------------------------------------------------------------------------
@@ -293,6 +295,209 @@ class TestFormatting:
         output = format_trace(events, num_threads=2, reproduction_attempts=10, reproduction_successes=0)
         assert "0/10" in output
         assert "0%" in output
+
+
+# ---------------------------------------------------------------------------
+# Call chain helpers
+# ---------------------------------------------------------------------------
+
+
+class TestQualifiedName:
+    def test_qualname_from_co_qualname(self) -> None:
+        """Uses co_qualname when available (Python 3.11+)."""
+        import sys
+
+        class FakeCode:
+            co_filename = "test.py"
+            co_name = "dict"
+
+        class FakeFrame:
+            f_code = FakeCode()
+            f_lineno = 1
+            f_locals: dict[str, object] = {}
+
+        if sys.version_info >= (3, 11):
+            FakeCode.co_qualname = "DB.dict"  # type: ignore[attr-defined]
+            assert qualified_name(FakeFrame()) == "DB.dict"
+        else:
+            # Falls back to co_name
+            assert qualified_name(FakeFrame()) == "dict"
+
+    def test_qualname_from_self(self) -> None:
+        """Falls back to type(self).__name__ on 3.10."""
+        import sys
+
+        if sys.version_info >= (3, 11):
+            return  # co_qualname takes precedence; tested above
+
+        class DB:
+            pass
+
+        class FakeCode:
+            co_filename = "test.py"
+            co_name = "dict"
+
+        class FakeFrame:
+            f_code = FakeCode()
+            f_lineno = 1
+            f_locals = {"self": DB()}
+
+        assert qualified_name(FakeFrame()) == "DB.dict"
+
+
+class TestBuildCallChain:
+    def test_chain_from_nested_frames(self) -> None:
+        """Builds a chain of qualified names from nested frames."""
+
+        class FakeCode:
+            co_filename = "test.py"
+            co_name = "inner"
+
+        class FakeCodeOuter:
+            co_filename = "test.py"
+            co_name = "outer"
+
+        class OuterFrame:
+            f_code = FakeCodeOuter()
+            f_lineno = 1
+            f_locals: dict[str, object] = {}
+            f_back = None
+
+        class InnerFrame:
+            f_code = FakeCode()
+            f_lineno = 5
+            f_locals: dict[str, object] = {}
+            f_back = OuterFrame()
+
+        chain = build_call_chain(InnerFrame(), filter_fn=lambda fn: fn == "test.py")
+        assert chain == ["inner", "outer"]
+
+    def test_chain_filters_non_user_frames(self) -> None:
+        """Skips frames that don't pass the filter."""
+
+        class UserCode:
+            co_filename = "test.py"
+            co_name = "user_func"
+
+        class LibCode:
+            co_filename = "/lib/python3.14/threading.py"
+            co_name = "run"
+
+        class TopFrame:
+            f_code = UserCode()
+            f_lineno = 1
+            f_locals: dict[str, object] = {}
+            f_back = None
+
+        class MiddleFrame:
+            f_code = LibCode()
+            f_lineno = 10
+            f_locals: dict[str, object] = {}
+            f_back = TopFrame()
+
+        class InnerFrame:
+            f_code = UserCode()
+            f_lineno = 5
+            f_locals: dict[str, object] = {}
+            f_back = MiddleFrame()
+
+        chain = build_call_chain(InnerFrame(), filter_fn=lambda fn: fn == "test.py")
+        assert chain == ["user_func", "user_func"]
+
+    def test_empty_chain_returns_none(self) -> None:
+        """Returns None when no frames pass the filter."""
+
+        class LibCode:
+            co_filename = "/lib/threading.py"
+            co_name = "run"
+
+        class Frame:
+            f_code = LibCode()
+            f_lineno = 1
+            f_locals: dict[str, object] = {}
+            f_back = None
+
+        chain = build_call_chain(Frame(), filter_fn=lambda fn: fn == "test.py")
+        assert chain is None
+
+    def test_max_depth_limits_chain(self) -> None:
+        """Chain is truncated at max_depth."""
+
+        class Code:
+            co_filename = "test.py"
+            co_name = "f"
+
+        class F3:
+            f_code = Code()
+            f_lineno = 1
+            f_locals: dict[str, object] = {}
+            f_back = None
+
+        class F2:
+            f_code = Code()
+            f_lineno = 2
+            f_locals: dict[str, object] = {}
+            f_back = F3()
+
+        class F1:
+            f_code = Code()
+            f_lineno = 3
+            f_locals: dict[str, object] = {}
+            f_back = F2()
+
+        chain = build_call_chain(F1(), filter_fn=lambda fn: True, max_depth=2)
+        assert chain is not None
+        assert len(chain) == 2
+
+
+class TestCallChainFormatting:
+    def test_call_chain_shown_in_trace(self) -> None:
+        """format_trace includes call chain info when present."""
+        events = [
+            TraceEvent(0, 0, "test.py", 10, "dict", "IO", "read", "file:/tmp/db.json", None, ["DB.dict", "do_incrs"]),
+            TraceEvent(1, 1, "test.py", 10, "dict", "IO", "read", "file:/tmp/db.json", None, ["DB.dict", "do_incrs"]),
+        ]
+        output = format_trace(events, num_threads=2, num_explored=1)
+        assert "in DB.dict <- do_incrs" in output
+
+    def test_no_call_chain_when_none(self) -> None:
+        """No chain tag when call_chain is None."""
+        events = [
+            TraceEvent(0, 0, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
+            TraceEvent(1, 1, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
+        ]
+        output = format_trace(events, num_threads=2, num_explored=1)
+        assert " in " not in output or "interleavings" in output.split(" in ")[0]
+
+    def test_call_chain_propagated_through_dedup(self) -> None:
+        """call_chain survives deduplicate_to_source_lines."""
+        events = [
+            TraceEvent(0, 0, "test.py", 10, "dict", "IO", "read", "file:/tmp/x", None, ["DB.dict", "main"]),
+        ]
+        lines = deduplicate_to_source_lines(events)
+        assert len(lines) == 1
+        assert lines[0].call_chain == ["DB.dict", "main"]
+
+
+# ---------------------------------------------------------------------------
+# InterleavingResult repr
+# ---------------------------------------------------------------------------
+
+
+class TestInterleavingResultRepr:
+    def test_short_counterexample_shown_fully(self) -> None:
+        from frontrun.common import InterleavingResult
+
+        r = InterleavingResult(property_holds=False, counterexample=[0, 1, 0, 1], num_explored=3)
+        assert "[0, 1, 0, 1]" in repr(r)
+
+    def test_long_counterexample_truncated(self) -> None:
+        from frontrun.common import InterleavingResult
+
+        r = InterleavingResult(property_holds=False, counterexample=[0] * 500, num_explored=3)
+        s = repr(r)
+        assert "500 steps" in s
+        assert s.count("0") < 20  # not dumping all 500
 
 
 # ---------------------------------------------------------------------------
