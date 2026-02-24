@@ -228,7 +228,7 @@ Using bytecode instrumentation to automatically explore interleavings:
        seed=42,
    )
 
-   assert not result.property_holds, result.explanation
+   assert result.property_holds, result.explanation
 
 
 Real-World Case Study: SQLAlchemy ORM Race Condition

@@ -120,7 +120,7 @@ class Counter:
         temp = self.value
         self.value = temp + 1
 
-def test_counter_no_race():
+def test_counter_is_atomic():
     result = explore_interleavings(
         setup=lambda: Counter(value=0),
         threads=[
@@ -133,10 +133,10 @@ def test_counter_no_race():
         seed=42,
     )
 
-    assert not result.property_holds, result.explanation
+    assert result.property_holds, result.explanation
 ```
 
-When a race is found, `result.explanation` contains a human-readable trace showing which source lines executed in which order, the conflict pattern (e.g. lost update), and reproduction statistics:
+This test will fail because `Counter.increment` is not atomic — and when it does, `result.explanation` is a human-readable trace showing what went wrong:
 
 ```
 Race condition found after 3 interleavings.
@@ -170,15 +170,14 @@ class Counter:
         temp = self.value
         self.value = temp + 1
 
-def test_counter_race():
+def test_counter_is_atomic():
     result = explore_dpor(
         setup=Counter,
         threads=[lambda c: c.increment(), lambda c: c.increment()],
         invariant=lambda c: c.value == 2,
     )
 
-    assert not result.property_holds, result.explanation  # lost-update bug found
-    assert result.num_explored == 2  # only 2 of 6 interleavings needed
+    assert result.property_holds, result.explanation
 ```
 
 Like `explore_interleavings`, DPOR produces `result.explanation` with the interleaved trace and reproduction statistics when a race is found.
@@ -294,7 +293,7 @@ async def test_async_counter_race():
         max_attempts=200,
     )
 
-    assert not result.property_holds, result.explanation
+    assert result.property_holds, result.explanation
 ```
 
 Like its threaded counterpart, `explore_interleavings` generates random await-point-level schedules and checks that the invariant holds. Each task runs as a separate async coroutine, and you explicitly mark await points with `await await_point()` where context switches can occur.

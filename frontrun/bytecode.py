@@ -28,7 +28,7 @@ Example — find a race condition with random schedule exploration:
     ...     threads=[lambda c: c.increment(), lambda c: c.increment()],
     ...     invariant=lambda c: c.value == 2,
     ... )
-    >>> assert not result.property_holds  # race condition found!
+    >>> assert result.property_holds, result.explanation  # fails — lost update!
 """
 
 import random

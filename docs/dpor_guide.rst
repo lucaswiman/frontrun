@@ -40,7 +40,7 @@ Putting the two together:
        invariant=lambda s: s.is_consistent(), # checked after all threads finish
    )
 
-   assert not result.property_holds, result.explanation
+   assert result.property_holds, result.explanation
 
 1. DPOR picks an interleaving (based on conflict analysis).
 2. ``setup()`` creates fresh state; the threads run under that interleaving.
@@ -122,8 +122,7 @@ The ``explore_dpor()`` function is the main entry point:
        invariant=lambda c: c.value == 2,
    )
 
-   assert not result.property_holds, result.explanation
-   assert result.num_explored == 2  # only 2 of 6 interleavings needed
+   assert result.property_holds, result.explanation
 
 **Parameters:**
 
@@ -233,7 +232,7 @@ a lock eliminates it:
            threads=[lambda c: c.increment(), lambda c: c.increment()],
            invariant=lambda c: c.value == 2,
        )
-       assert not result.property_holds, result.explanation
+       assert result.property_holds, result.explanation  # fails — has a race!
 
    def test_safe_counter_is_correct():
        result = explore_dpor(
@@ -271,4 +270,4 @@ detected separately:
            threads=[lambda b: b.transfer(50), lambda b: b.transfer(50)],
            invariant=lambda b: b.a + b.b == 200,
        )
-       assert not result.property_holds, result.explanation
+       assert result.property_holds, result.explanation  # fails — total is not conserved

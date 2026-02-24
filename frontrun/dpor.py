@@ -30,7 +30,7 @@ Usage::
         threads=[lambda c: c.increment(), lambda c: c.increment()],
         invariant=lambda c: c.value == 2,
     )
-    assert not result.property_holds  # lost-update bug found
+    assert result.property_holds, result.explanation  # fails — lost update!
 """
 
 from __future__ import annotations
