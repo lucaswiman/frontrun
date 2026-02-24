@@ -80,6 +80,15 @@ def _build_env(preload_lib: Path | None) -> dict[str, str]:
     env = os.environ.copy()
     env[FRONTRUN_ACTIVE_ENV] = "1"
 
+    # Add the directory of the current Python executable (venv's bin) to PATH
+    # so that commands like 'pytest' resolve to the same venv
+    venv_bin = Path(sys.executable).parent
+    existing_path = env.get("PATH", "")
+    if existing_path:
+        env["PATH"] = f"{venv_bin}:{existing_path}"
+    else:
+        env["PATH"] = str(venv_bin)
+
     if preload_lib is not None:
         lib_str = str(preload_lib)
         env[FRONTRUN_PRELOAD_LIB_ENV] = lib_str
