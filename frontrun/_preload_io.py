@@ -30,6 +30,7 @@ Where *kind* is one of: ``connect``, ``read``, ``write``, ``close``.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import tempfile
 import threading
@@ -71,6 +72,33 @@ def _parse_event_line(line: str) -> PreloadIOEvent | None:
         )
     except (ValueError, IndexError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Direct pipe-fd setter via ctypes (bypasses cached env-var lookup)
+# ---------------------------------------------------------------------------
+
+
+def _set_preload_pipe_fd(fd: int) -> bool:
+    """Directly set the pipe fd in the LD_PRELOAD library.
+
+    The Rust preload library caches ``FRONTRUN_IO_FD`` on first use, so
+    setting the env var after any I/O has occurred (e.g. during Python
+    startup) has no effect.  This function calls the exported
+    ``frontrun_io_set_pipe_fd`` symbol to update the cached value directly.
+
+    Returns ``True`` if the call succeeded, ``False`` if the library
+    is not loaded or the symbol is unavailable.
+    """
+    try:
+        lib = ctypes.CDLL(None)
+        func = lib.frontrun_io_set_pipe_fd
+        func.argtypes = [ctypes.c_int]
+        func.restype = None
+        func(fd)
+        return True
+    except (OSError, AttributeError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +170,10 @@ class IOEventDispatcher:
         os.environ["FRONTRUN_IO_FD"] = str(w)
         # Also clear FRONTRUN_IO_LOG so the Rust side prefers the pipe.
         os.environ.pop("FRONTRUN_IO_LOG", None)
+        # Directly update the cached pipe fd in the LD_PRELOAD library.
+        # The Rust side caches FRONTRUN_IO_FD on first use, so setting the
+        # env var alone is not enough if any I/O occurred during startup.
+        _set_preload_pipe_fd(w)
 
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
@@ -156,6 +188,10 @@ class IOEventDispatcher:
         if self._stopped:
             return
         self._stopped = True
+
+        # Reset the cached pipe fd in the LD_PRELOAD library before closing,
+        # so the Rust side stops writing to the about-to-be-closed fd.
+        _set_preload_pipe_fd(-1)
 
         # Close write end so the reader sees EOF.
         if self._write_fd is not None:

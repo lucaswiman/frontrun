@@ -428,6 +428,19 @@ fn get_pipe_fd() -> Option<c_int> {
     }
 }
 
+/// Directly set (or reset) the pipe fd used for event transport.
+///
+/// Called from Python via ctypes when [`IOEventDispatcher`] creates a pipe
+/// after the library has already been loaded (and `get_pipe_fd` has cached
+/// the initial "not set" state from process startup).
+///
+/// Pass `-1` to disable pipe transport (reverts to log-file fallback).
+#[no_mangle]
+pub extern "C" fn frontrun_io_set_pipe_fd(fd: c_int) {
+    PIPE_FD.store(fd, Ordering::Release);
+    PIPE_FD_CHECKED.store(true, Ordering::Release);
+}
+
 // ---------------------------------------------------------------------------
 // Low-level write helper (uses real write, not our interceptor)
 // ---------------------------------------------------------------------------
