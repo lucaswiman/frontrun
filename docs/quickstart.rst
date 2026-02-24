@@ -1,15 +1,18 @@
 Quick Start
 ===========
 
-This guide will get you up and running with Frontrun using **Trace Markers**.
+This guide covers the basics using **trace markers** --- the simplest approach.
+For automatic race finding without manual markers, see :doc:`dpor_guide` (systematic
+exploration) or :doc:`approaches` (bytecode exploration).
 
 
-Basic Example: Triggering a Race Condition
--------------------------------------------
+Triggering a Race Condition
+----------------------------
 
 .. code-block:: python
 
-   from frontrun.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.common import Schedule, Step
+   from frontrun.trace_markers import TraceExecutor
 
    class Counter:
        def __init__(self):
@@ -39,13 +42,19 @@ Basic Example: Triggering a Race Condition
        assert counter.value == 1  # One increment lost
 
 
-Understanding Trace Markers
-----------------------------
+How Trace Markers Work
+-----------------------
 
 Trace markers are comments of the form ``# frontrun: <name>`` that tell
 Frontrun where synchronization points are. A marker **gates** the code that
 follows it: when a thread reaches a marker, it pauses until the scheduler grants
 it a turn. Only then does the gated code execute.
+
+Under the hood, each thread runs with a ``sys.settrace`` callback that fires
+on every source line. The callback checks whether the line contains a
+``# frontrun:`` comment (via a ``MarkerRegistry`` that caches marker locations
+per file). When a marker is hit, the thread blocks on a ``threading.Condition``
+until the scheduler advances to that step.
 
 Two placement styles are supported:
 
@@ -86,7 +95,7 @@ A schedule defines the execution order of marked synchronization points:
 
 .. code-block:: python
 
-   from frontrun.trace_markers import Schedule, Step
+   from frontrun.common import Schedule, Step
 
    schedule = Schedule([
        Step("thread1", "marker_name_1"),
@@ -95,16 +104,12 @@ A schedule defines the execution order of marked synchronization points:
        Step("thread2", "marker_name_2"),
    ])
 
-Each ``Step`` specifies:
-
-- The thread/task name
-- The marker name to execute at that step
+Each ``Step`` specifies the thread/task name and the marker name to execute at
+that step.
 
 
 Running with Controlled Interleaving
 -------------------------------------
-
-Execute your code with a specific schedule:
 
 .. code-block:: python
 
@@ -132,9 +137,6 @@ pauses until the scheduler grants it a turn; only then does the gated ``await``
 execute. Between two markers the task runs without interruption from other
 scheduled tasks.
 
-Here is a complete async example — the same lost-update race as the sync
-version, but with ``await`` boundaries:
-
 .. code-block:: python
 
    from frontrun.async_trace_markers import AsyncTraceExecutor
@@ -159,7 +161,7 @@ version, but with ``await`` boundaries:
    def test_async_counter_lost_update():
        counter = AsyncCounter()
 
-       # Both tasks read before either writes — triggers the lost update
+       # Both tasks read before either writes --- triggers the lost update
        schedule = Schedule([
            Step("task1", "read_value"),
            Step("task2", "read_value"),
@@ -173,7 +175,7 @@ version, but with ``await`` boundaries:
            "task2": counter.increment,
        })
 
-       # Both tasks read 0, then both write 1 — one increment is lost
+       # Both tasks read 0, then both write 1 --- one increment is lost
        assert counter.value == 1
 
    def test_async_counter_serialized():

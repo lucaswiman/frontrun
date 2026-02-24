@@ -1,105 +1,71 @@
-Approaches to Concurrency Control
-==================================
+How Frontrun Works
+==================
 
-Frontrun provides three approaches for controlling thread interleaving.
+Frontrun provides three approaches for controlling thread interleaving. They
+operate at different levels of granularity and make different trade-offs between
+interpretability, coverage, and the kinds of bugs they can find.
 
 
-Trace Markers
---------------
+DPOR (Systematic Exploration)
+------------------------------
 
-Trace Markers use lightweight comment-based markers to define synchronization
-points in your code, requiring no semantic code changes.
+DPOR (Dynamic Partial Order Reduction) *systematically* explores every
+meaningfully different thread interleaving. Where the bytecode explorer
+samples randomly, DPOR guarantees completeness: every distinct interleaving
+is tried exactly once and redundant orderings are never re-run.
 
-**How It Works:**
-
-Each thread is run with a ``sys.settrace`` callback that fires on every source
-line. The callback scans each line for ``# frontrun: <name>`` comments using a
-``MarkerRegistry`` that caches marker locations per file. When a marker is hit,
-the thread calls ``ThreadCoordinator.wait_for_turn()`` which blocks until the
-schedule says it's that thread's turn to proceed past that marker. This gives
-deterministic control over the order threads reach each synchronization point,
-without changing any executable code — markers are just comments.
-
-A marker **gates** the code that follows it. Name markers after the operation
-they gate (e.g. ``read_value``, ``write_balance``) rather than with temporal
-prefixes like ``before_`` or ``after_``.
+Like the bytecode explorer, DPOR instruments at the opcode level and needs no
+manual markers. It automatically detects attribute reads/writes, subscript
+accesses, and lock operations. The exploration engine is written in Rust for
+performance.
 
 .. code-block:: python
 
-   from frontrun.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.dpor import explore_dpor
 
    class Counter:
        def __init__(self):
            self.value = 0
 
        def increment(self):
-           temp = self.value  # frontrun: read_value
-           temp += 1
-           self.value = temp  # frontrun: write_value
+           temp = self.value
+           self.value = temp + 1
 
+   result = explore_dpor(
+       setup=Counter,
+       threads=[lambda c: c.increment(), lambda c: c.increment()],
+       invariant=lambda c: c.value == 2,
+   )
+   assert result.property_holds, result.explanation
 
-**Async Support:**
+When a race is found, ``result.explanation`` contains an interleaved source-line
+trace showing which threads accessed which shared state and the conflict pattern.
+DPOR's traces are more interpretable than the bytecode explorer's because DPOR
+*knows why* the interleaving matters --- it detected specific conflicting accesses
+to the same object and chose to explore the alternative ordering.
 
-Async trace markers use the same comment-based syntax. Each async task runs in
-its own thread (via ``asyncio.run``), with the same ``sys.settrace`` mechanism
-controlling interleaving between tasks.
+**Scope:** DPOR explores alternative schedules only where it detects a
+conflict at the bytecode level (two threads accessing the same Python object
+with at least one write). It does *not* see shared state managed entirely in
+C extensions --- database rows accessed through libpq, NumPy arrays modified
+in C, Redis keys managed by hiredis. For those cases the code runs fine, but
+DPOR concludes (incorrectly) that the threads are independent and explores
+only one interleaving.
 
-The synchronization contract:
+When run under the ``frontrun`` CLI, a native
+``LD_PRELOAD`` library intercepts C-level I/O operations (``send``,
+``recv``, ``read``, ``write``, etc.), so even opaque database drivers and
+Redis clients are covered --- see :ref:`c-level-io-interception` below.
 
-- A marker gates the next ``await`` expression (or the line it's on if inline).
-  When a task reaches a marker, it pauses until the scheduler grants it a turn.
-  Only then does the gated ``await`` execute.
-- Between two markers, the task runs without interruption from other scheduled
-  tasks. Any intermediate ``await`` calls within that span complete normally.
-- Because async code can only interleave at ``await`` points, markers should be
-  placed to gate the ``await`` expressions whose ordering you want to control.
-
-.. code-block:: python
-
-   from frontrun.async_trace_markers import AsyncTraceExecutor
-   from frontrun.common import Schedule, Step
-
-   class AsyncCounter:
-       def __init__(self):
-           self.value = 0
-
-       async def get_count(self):
-           """Read the counter value (simulates async I/O like database read)."""
-           return self.value
-
-       async def set_count(self, value):
-           """Write the counter value (simulates async I/O like database write)."""
-           self.value = value
-
-       async def increment(self):
-           """Increment with a race condition between read and write."""
-           # frontrun: read_counter
-           current = await self.get_count()
-           # frontrun: write_counter
-           await self.set_count(current + 1)
-
-   # Alternative: markers inside the async methods themselves
-   class AsyncCounterAlt:
-       def __init__(self):
-           self.value = 0
-
-       async def get_count(self):
-           # frontrun: read_counter
-           return self.value
-
-       async def set_count(self, value):
-           # frontrun: write_counter
-           self.value = value
-
-       async def increment(self):
-           current = await self.get_count()
-           await self.set_count(current + 1)
+For a practical guide see :doc:`dpor_guide`. For the algorithm details and
+theory see :doc:`dpor`.
 
 
 Bytecode Instrumentation
 -------------------------
 
-Bytecode instrumentation automatically inserts checkpoints into functions using Python bytecode rewriting. No manual marker insertion is needed.
+Bytecode instrumentation automatically instruments functions at the opcode
+level --- no markers needed.
 
 **How It Works:**
 
@@ -107,11 +73,11 @@ Each thread is run with a ``sys.settrace`` callback that sets
 ``f_trace_opcodes = True`` on every frame, so the callback fires at every
 *bytecode instruction* rather than every source line. At each opcode the thread
 calls ``scheduler.wait_for_turn()``, which blocks until the schedule says it's
-that thread's turn. Only user code is traced — stdlib and threading internals
+that thread's turn. Only user code is traced --- stdlib and threading internals
 are skipped.
 
 Because the scheduler controls which thread runs each opcode, any blocking call
-that happens in C code (like ``threading.Lock.acquire()``) would deadlock — the
+that happens in C code (like ``threading.Lock.acquire()``) would deadlock --- the
 blocked thread holds a scheduler turn but can't make progress. To prevent this,
 all standard threading and queue primitives (``Lock``, ``RLock``,
 ``Semaphore``, ``BoundedSemaphore``, ``Event``, ``Condition``, ``Queue``,
@@ -152,11 +118,20 @@ returning any counterexample schedule.
 
        assert result.property_holds, result.explanation
 
-When a race is found, ``result.explanation`` contains an interleaved source-line
-trace showing which threads accessed which shared state, the conflict pattern
-(e.g. lost update, write-write), and reproduction statistics. The
-``reproduce_on_failure`` parameter (default 10) controls how many times the
-counterexample schedule is replayed to measure reproducibility.
+``explore_interleavings()`` often finds races very quickly --- sometimes on the
+first attempt --- because even a single random schedule has a reasonable chance
+of interleaving the critical section. It can also catch races that are invisible
+to DPOR: if a C extension mutates shared state in a way that breaks your
+invariant, bytecode exploration will stumble into the bad interleaving even
+though it can't *see* the C-level conflict. DPOR can't, because it only
+explores alternative orderings where it detected a Python-level conflict.
+
+The trade-off is interpretability. When a race is found, ``result.explanation``
+contains an interleaved source-line trace and a best-effort conflict
+classification, but the bytecode explorer doesn't *know why* the interleaving
+matters the way DPOR does. The ``reproduce_on_failure`` parameter (default 10)
+controls how many times the counterexample schedule is replayed to measure
+reproducibility.
 
 **Controlled Interleaving (Internal/Advanced):**
 
@@ -173,56 +148,80 @@ debugging this library or building tooling on top of it, rather than for general
    are likewise best treated as ephemeral debugging artifacts rather than long-lived test fixtures.
 
    The async variant (``frontrun.async_bytecode``) uses ``await_point()`` markers rather
-   than opcodes, so its schedules are stable — see that module for details.
-
-**Limitations:**
-
-- Results may vary across Python versions
-- Some bytecode patterns may not be instrumented correctly
-- Performance impact is higher than trace markers
+   than opcodes, so its schedules are stable --- see that module for details.
 
 
-DPOR (Systematic Exploration)
-------------------------------
+Trace Markers
+--------------
 
-DPOR (Dynamic Partial Order Reduction) *systematically* explores every
-meaningfully different thread interleaving. Where the bytecode explorer
-samples randomly, DPOR guarantees completeness: every distinct interleaving
-is tried exactly once and redundant orderings are never re-run.
+Trace Markers use lightweight comment-based markers to define synchronization
+points in your code, requiring no semantic code changes.
 
-Like the bytecode explorer, DPOR instruments at the opcode level and needs no
-manual markers. It automatically detects attribute reads/writes, subscript
-accesses, and lock operations. The exploration engine is written in Rust for
-performance.
+**How It Works:**
+
+Each thread is run with a ``sys.settrace`` callback that fires on every source
+line. The callback scans each line for ``# frontrun: <name>`` comments using a
+``MarkerRegistry`` that caches marker locations per file. When a marker is hit,
+the thread calls ``ThreadCoordinator.wait_for_turn()`` which blocks until the
+schedule says it's that thread's turn to proceed past that marker. This gives
+deterministic control over the order threads reach each synchronization point,
+without changing any executable code --- markers are just comments.
+
+A marker **gates** the code that follows it. Name markers after the operation
+they gate (e.g. ``read_value``, ``write_balance``) rather than with temporal
+prefixes like ``before_`` or ``after_``.
 
 .. code-block:: python
 
-   from frontrun.dpor import explore_dpor
+   from frontrun.common import Schedule, Step
+   from frontrun.trace_markers import TraceExecutor
 
    class Counter:
        def __init__(self):
            self.value = 0
 
        def increment(self):
-           temp = self.value
-           self.value = temp + 1
+           temp = self.value  # frontrun: read_value
+           temp += 1
+           self.value = temp  # frontrun: write_value
 
-   result = explore_dpor(
-       setup=Counter,
-       threads=[lambda c: c.increment(), lambda c: c.increment()],
-       invariant=lambda c: c.value == 2,
-   )
-   assert result.property_holds, result.explanation
 
-**Scope:** DPOR explores alternative schedules only where it detects a
-conflict at the bytecode level (two threads accessing the same Python object
-with at least one write). When run under the ``frontrun`` CLI, a native
-``LD_PRELOAD`` library intercepts C-level I/O operations (``send``,
-``recv``, ``read``, ``write``, etc.), so even opaque database drivers and
-Redis clients are covered --- see :ref:`c-level-io-interception` below.
+**Async Support:**
 
-For a practical guide see :doc:`dpor_guide`. For the algorithm details and
-theory see :doc:`dpor`.
+Async trace markers use the same comment-based syntax. Each async task runs in
+its own thread (via ``asyncio.run``), with the same ``sys.settrace`` mechanism
+controlling interleaving between tasks.
+
+The synchronization contract:
+
+- A marker gates the next ``await`` expression (or the line it's on if inline).
+  When a task reaches a marker, it pauses until the scheduler grants it a turn.
+  Only then does the gated ``await`` execute.
+- Between two markers, the task runs without interruption from other scheduled
+  tasks. Any intermediate ``await`` calls within that span complete normally.
+- Because async code can only interleave at ``await`` points, markers should be
+  placed to gate the ``await`` expressions whose ordering you want to control.
+
+.. code-block:: python
+
+   from frontrun.async_trace_markers import AsyncTraceExecutor
+   from frontrun.common import Schedule, Step
+
+   class AsyncCounter:
+       def __init__(self):
+           self.value = 0
+
+       async def get_count(self):
+           return self.value
+
+       async def set_count(self, value):
+           self.value = value
+
+       async def increment(self):
+           # frontrun: read_counter
+           current = await self.get_count()
+           # frontrun: write_counter
+           await self.set_count(current + 1)
 
 
 Automatic I/O Detection

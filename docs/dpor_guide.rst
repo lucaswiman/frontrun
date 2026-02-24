@@ -89,9 +89,19 @@ fine, it just won't explore the interesting schedules. Because the external
 operations look independent, DPOR concludes that reordering them cannot change
 the outcome and skips all the alternative interleavings where the bugs hide.
 
-For these cases, use :doc:`trace markers <approaches>` with explicit
-scheduling instead --- you annotate the points where interleaving matters and
-enumerate the orderings by hand.
+For these cases, there are two alternatives:
+
+- **Bytecode exploration** (``explore_interleavings()``) doesn't need to
+  *understand* why a schedule is bad --- it checks an invariant after each run
+  and reports when the invariant fails.  If a C extension mutates shared state
+  in a way that breaks your invariant, bytecode exploration will often find the
+  bad interleaving by chance.  It won't know *why* it's bad (the error trace
+  is less interpretable than DPOR's), but it will find it.  See
+  :doc:`approaches` for details.
+
+- **Trace markers** let you annotate the points where interleaving matters and
+  enumerate the orderings by hand.  This is the most reliable approach when you
+  already know the race window.
 
 Thread functions should also avoid external side effects (writing to files,
 sending network requests, modifying global state outside the ``setup`` object).
