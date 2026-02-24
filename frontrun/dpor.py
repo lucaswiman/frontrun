@@ -779,11 +779,26 @@ class DporBytecodeRunner:
         _dpor_tls.pending_io = []
 
         if self.detect_io:
+            _recorder = scheduler.trace_recorder
 
             def _io_reporter(resource_id: str, kind: str) -> None:
                 object_key = _make_object_key(hash(resource_id), resource_id)
                 pending: list[tuple[int, str]] = _dpor_tls.pending_io
                 pending.append((object_key, kind))
+                # Record I/O event in the trace for human-readable output
+                if _recorder is not None:
+                    _frame = sys._getframe(1)
+                    # Walk up to find user code (skip frontrun internals)
+                    while _frame is not None and not _should_trace_file(_frame.f_code.co_filename):
+                        _frame = _frame.f_back
+                    if _frame is not None:
+                        _recorder.record(
+                            thread_id=thread_id,
+                            frame=_frame,
+                            opcode="IO",
+                            access_type=kind,
+                            attr_name=resource_id,
+                        )
 
             set_io_reporter(_io_reporter)
 

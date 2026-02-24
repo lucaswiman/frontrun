@@ -133,9 +133,7 @@ def test_counter_no_race():
         seed=42,
     )
 
-    assert not result.property_holds, "Expected a race condition"
-    # result.explanation contains a human-readable trace of the race
-    print(result.explanation)
+    assert not result.property_holds, result.explanation
 ```
 
 When a race is found, `result.explanation` contains a human-readable trace showing which source lines executed in which order, the conflict pattern (e.g. lost update), and reproduction statistics:
@@ -179,9 +177,8 @@ def test_counter_race():
         invariant=lambda c: c.value == 2,
     )
 
-    assert not result.property_holds       # lost-update bug found
+    assert not result.property_holds, result.explanation  # lost-update bug found
     assert result.num_explored == 2  # only 2 of 6 interleavings needed
-    print(result.explanation)              # human-readable trace of the race
 ```
 
 Like `explore_interleavings`, DPOR produces `result.explanation` with the interleaved trace and reproduction statistics when a race is found.
@@ -297,8 +294,7 @@ async def test_async_counter_race():
         max_attempts=200,
     )
 
-    assert not result.property_holds  # race condition found
-    print(result.explanation)
+    assert not result.property_holds, result.explanation
 ```
 
 Like its threaded counterpart, `explore_interleavings` generates random await-point-level schedules and checks that the invariant holds. Each task runs as a separate async coroutine, and you explicitly mark await points with `await await_point()` where context switches can occur.

@@ -328,12 +328,26 @@ class BytecodeShuffler:
         if not self.detect_io:
             return
         scheduler = self.scheduler
+        recorder = scheduler.trace_recorder
 
         def _io_reporter(resource_id: str, kind: str) -> None:
             # Force a scheduling point around IO operations so the random
             # exploration can try different orderings of IO vs other threads.
             if not scheduler._finished and not scheduler._error:
                 scheduler.wait_for_turn(thread_id)
+            # Record I/O event in the trace for human-readable output
+            if recorder is not None:
+                _frame = sys._getframe(1)
+                while _frame is not None and not _should_trace_file(_frame.f_code.co_filename):
+                    _frame = _frame.f_back
+                if _frame is not None:
+                    recorder.record(
+                        thread_id=thread_id,
+                        frame=_frame,
+                        opcode="IO",
+                        access_type=kind,
+                        attr_name=resource_id,
+                    )
 
         set_io_reporter(_io_reporter)
 
