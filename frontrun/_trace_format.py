@@ -602,15 +602,15 @@ def format_trace(
                 else:
                     access_tag = f"  [{line_ev.access_type} {line_ev.attr_name}]"
 
-        chain_tag = ""
-        if line_ev.call_chain:
-            chain_tag = f"  in {' <- '.join(line_ev.call_chain)}"
-
         src = line_ev.source_line
         parts.append(f"  {label} | {loc:<25s} {src}")
         if access_tag:
             indent = " " * (2 + max_thread_label) + " | "
-            parts.append(f"{indent}{access_tag.lstrip()}{chain_tag}")
+            parts.append(f"{indent}{access_tag.lstrip()}")
+        if line_ev.call_chain:
+            indent = " " * (2 + max_thread_label) + " | "
+            chain_str = " <- ".join(line_ev.call_chain)
+            parts.append(f"{indent}Called from {chain_str}")
 
         # Optional opcode detail
         if show_opcodes:

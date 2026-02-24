@@ -458,7 +458,7 @@ class TestCallChainFormatting:
             TraceEvent(1, 1, "test.py", 10, "dict", "IO", "read", "file:/tmp/db.json", None, ["DB.dict", "do_incrs"]),
         ]
         output = format_trace(events, num_threads=2, num_explored=1)
-        assert "in DB.dict <- do_incrs" in output
+        assert "Called from DB.dict <- do_incrs" in output
 
     def test_no_call_chain_when_none(self) -> None:
         """No chain tag when call_chain is None."""

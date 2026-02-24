@@ -289,8 +289,8 @@ class TestTraceCallChain:
         )
         assert not result.property_holds
         assert result.explanation is not None
-        # Should show "in" with a call chain like "FileVal._read <- FileVal.increment"
-        assert " in " in result.explanation
+        # Should show "Called from" with a call chain like "FileVal._read <- FileVal.increment"
+        assert "Called from" in result.explanation
         assert "FileVal." in result.explanation
 
 
