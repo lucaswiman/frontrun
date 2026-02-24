@@ -281,3 +281,69 @@ detected separately:
            invariant=lambda b: b.a + b.b == 200,
        )
        assert result.property_holds, result.explanation  # fails — total is not conserved
+
+
+Known issue: DPOR doesn't consume ``LD_PRELOAD`` events
+---------------------------------------------------------
+
+When run under the ``frontrun`` CLI, the ``LD_PRELOAD`` library
+(``libfrontrun_io.so``) intercepts C-level I/O --- including opaque
+database drivers like psycopg2/libpq. These events *are* captured and
+written to a pipe via ``FRONTRUN_IO_FD``. But DPOR does not currently
+read from that pipe. The result is that C-level I/O conflicts (two
+threads hitting the same ``host:port`` through a C extension) are
+invisible to DPOR even though the interception infrastructure exists
+and works.
+
+This is why ``explore_dpor()`` reports ``property_holds=True`` on the
+SQLAlchemy/psycopg2 lost-update example (see :doc:`orm_race`): both
+threads connect to ``127.0.0.1:5432``, and the ``LD_PRELOAD`` library
+does intercept libpq's ``send()`` / ``recv()`` calls, but nobody on the
+Python side reads the events, so DPOR never learns about the conflict.
+
+DPOR's Python-level I/O detection (``detect_io=True``) only patches
+``socket.socket`` methods at the Python class level. C extensions that
+call libc ``send()``/``recv()`` directly bypass these patches entirely.
+
+**Proposed fix:**
+
+The plumbing is largely in place. ``IOEventDispatcher`` in
+``_preload_io.py`` already creates a pipe, sets ``FRONTRUN_IO_FD``,
+and reads events on a background thread with per-event listener
+callbacks. Each event carries a ``tid`` (OS thread ID). DPOR's
+``_io_reporter`` callback (in ``DporBytecodeRunner._setup_dpor_tls``)
+already knows how to feed I/O events into the engine via
+``_dpor_tls.pending_io`` → ``engine.report_io_access()``.
+
+Connecting them requires:
+
+1. **Start an ``IOEventDispatcher``** at the beginning of
+   ``explore_dpor()`` (when ``detect_io=True`` and ``FRONTRUN_ACTIVE``
+   is set, indicating the ``LD_PRELOAD`` library is loaded).
+
+2. **Map OS thread IDs to DPOR thread IDs.** Each DPOR-managed thread
+   can record ``threading.get_native_id()`` → ``thread_id`` at thread
+   start. The dispatcher's listener callback looks up the DPOR
+   ``thread_id`` from the event's ``tid``.
+
+3. **Feed preload events into ``pending_io``.** The listener callback
+   constructs an ``object_key`` from the event's ``resource_id``
+   (e.g. ``socket:127.0.0.1:5432``) and appends it to the appropriate
+   thread's ``pending_io`` list, which is flushed to the Rust engine
+   at the next scheduling point.
+
+4. **Timing.** Since DPOR single-steps opcodes and only one thread runs
+   at a time, a preload event that arrives between two scheduling points
+   belongs to ``_current_thread``. The ``tid`` on the event provides a
+   safety check: if it doesn't match the expected OS thread, the event
+   can be deferred or attributed by ``tid`` lookup.
+
+5. **Stop the dispatcher** after exploration completes.
+
+The main subtlety is that preload events arrive asynchronously on the
+reader thread. The scheduler must either poll for pending preload events
+at each scheduling point (alongside the existing ``pending_io`` flush),
+or the listener callback must append directly to the running thread's
+``pending_io`` list (which requires the ``tid`` → ``thread_id`` mapping
+to be thread-safe and the ``pending_io`` list to tolerate cross-thread
+appends).

@@ -195,13 +195,6 @@ a way that triggers the database-level race. It doesn't need to
 Why DPOR misses this race
 ---------------------------
 
-DPOR (Dynamic Partial Order Reduction) explores alternative interleavings
-only where it detects a *conflict* --- two threads accessing the same Python
-object with at least one write.  In this example, each thread creates its own
-SQLAlchemy ``Session`` and gets its own ``User`` ORM object. From Python's
-perspective, the threads never share an object. The shared state lives in
-PostgreSQL, not in process memory.
-
 .. code-block:: text
 
    $ frontrun python examples/orm_race.py
@@ -213,17 +206,36 @@ PostgreSQL, not in process memory.
      num_explored         : 1
      No lost update found.
 
-DPOR ran both threads to completion sequentially, saw no shared-memory
-conflicts, and concluded that there was nothing to explore. It explored
-exactly one interleaving and declared the code safe. This is the correct
-behavior given DPOR's model --- the threads *are* independent at the
-Python level. The bug is invisible to any analysis that operates on
-Python objects rather than database state.
+DPOR ran both threads to completion sequentially, saw no conflicts, and
+concluded there was nothing to explore. This seems wrong --- both threads
+are talking to the same Postgres instance on ``127.0.0.1:5432``, and the
+``LD_PRELOAD`` library *does* intercept libpq's ``send()`` and ``recv()``
+calls. Those events are captured and written to the pipe. But DPOR never
+reads them.
 
-For database-level races where the shared state lives in an external
-server, use trace markers with explicit scheduling (Demo 1) or bytecode
-exploration (Demo 2) which doesn't need to understand *why* a schedule
-is bad.
+The issue is an integration gap: ``explore_dpor()`` uses Python-level
+monkey-patching (``_io_detection.patch_io()``) to detect socket I/O, but
+psycopg2 calls libc ``send()``/``recv()`` directly from C, bypassing the
+Python-level patches entirely. The ``IOEventDispatcher`` in
+``_preload_io.py`` knows how to read LD_PRELOAD events from the pipe, but
+DPOR doesn't instantiate one. The interception infrastructure exists and
+works; it just isn't wired into the DPOR scheduler yet.
+
+There is also a more fundamental issue: even if DPOR saw the socket
+conflicts, the two threads share a *database row*, not a Python object.
+Each thread creates its own ``Session`` and gets its own ``User`` ORM
+instance. The socket-level conflict (both threads talk to
+``127.0.0.1:5432``) is a necessary signal for DPOR to explore alternative
+orderings, but it's a coarse one --- it would cause DPOR to explore
+reorderings of *all* database I/O, not just the conflicting row access.
+Whether this is precise enough to be useful in practice is an open
+question.
+
+See :doc:`dpor_guide` for a detailed description of the proposed fix and
+the ``IOEventDispatcher`` integration.
+
+For now, use trace markers with explicit scheduling (Demo 1) or bytecode
+exploration (Demo 2) for database-level races.
 
 
 Demo 3 --- Naive threading (intermittent)

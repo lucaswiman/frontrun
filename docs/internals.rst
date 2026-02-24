@@ -348,6 +348,16 @@ of which approach (or no approach) is active on the Python side.  Events
 from the Rust interception library are available via
 ``IOEventDispatcher`` for any consumer.
 
+.. note::
+
+   Currently, neither DPOR nor the bytecode explorer consumes
+   ``LD_PRELOAD`` events.  The ``IOEventDispatcher`` exists and works,
+   but ``explore_dpor()`` doesn't instantiate one --- it relies solely
+   on Python-level monkey-patching for I/O detection.  This means C
+   extensions that call libc ``send()``/``recv()`` directly (e.g.
+   psycopg2 via libpq) produce events that go unread.  See
+   :doc:`dpor_guide` for the proposed fix.
+
 .. list-table:: Mechanism usage by approach
    :header-rows: 1
    :widths: 30 14 14 14 14 14
@@ -419,9 +429,17 @@ to ``LD_PRELOAD`` (intercepts the underlying libc call).
 **C-extension internal calls** (e.g. libpq calling libc ``send()``
 inside ``PQexec()``):  Invisible to ``sys.settrace``, ``sys.setprofile``,
 and monkey-patching.  Visible *only* to ``LD_PRELOAD``, which intercepts
-at the libc level regardless of who called it.
+at the libc level regardless of who called it.  Currently not consumed
+by DPOR or the bytecode explorer (see note above).
 
-**External server state** (e.g. a row in PostgreSQL):  Invisible to
-everything.  The shared state lives in a separate process.  No amount of
-instrumentation on the Python side can see that two sessions are reading
-the same row.  For these cases, use trace markers with manual scheduling.
+**External server state** (e.g. a row in PostgreSQL):  The socket-level
+conflict (two threads talking to ``127.0.0.1:5432``) *is* visible to
+``LD_PRELOAD``.  But the ``LD_PRELOAD`` library can only see that two
+threads are using the same socket endpoint --- it can't distinguish a
+``SELECT`` on table A from an ``UPDATE`` on table B.  If the preload
+events were wired into DPOR, it would explore reorderings of all
+database I/O between the two threads, which is a coarse but potentially
+useful signal.  The underlying row-level conflict is invisible to any
+client-side instrumentation; only the database server knows which rows
+are being accessed.  For precise control over database-level races, use
+trace markers with manual scheduling.
