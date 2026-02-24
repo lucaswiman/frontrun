@@ -1,6 +1,6 @@
 # Frontrun
 
-A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions.
+A library for deterministic concurrency testing.
 
 ```bash
 pip install frontrun
@@ -8,23 +8,27 @@ pip install frontrun
 
 ## Overview
 
-Frontrun is named after the insider trading crime where someone uses insider information to make a timed trade for maximum profit.
-The principle is the same in this library, except that you used insider information about event ordering for maximum concurrency bugs!
+Frontrun is named after the insider trading crime where someone uses insider information to make a timed trade for maximum profit. The principle is the same here, except you use insider information about event ordering for maximum concurrency bugs.
 
-Frontrun provides tools for controlling thread interleaving at a fine-grained level, allowing you to:
+The core problem: race conditions are hard to test because they depend on timing. A test that passes 95% of the time is worse than a test that always fails, because it breeds false confidence. Frontrun replaces timing-dependent thread interleaving with deterministic scheduling, so race conditions either always happen or never happen.
 
-- **Deterministically reproduce race conditions** - Force specific execution ordering to make race conditions happen reliably in tests
-- **Test concurrent code exhaustively** - Explore different execution orders to find bugs
-- **Verify synchronization correctness** - Ensure that proper locking prevents race conditions
+Three approaches, in order of decreasing interpretability:
 
-Instead of relying on timing-based race detection (which is unreliable), Frontrun lets you control exactly when threads execute, making concurrency testing deterministic and reproducible.
+1. **DPOR** — Systematically explores every meaningfully different interleaving. When it finds a race, it tells you exactly which shared-memory accesses conflicted and in what order. Powered by a Rust engine using vector clocks to prune redundant orderings.
+
+2. **Bytecode exploration** — Generates random opcode-level schedules and checks an invariant under each one. Often finds races very efficiently (sometimes on the first attempt), and can catch races that are invisible to DPOR (e.g. shared state inside C extensions). The trade-off: error traces show *what happened* but not *why* — you get the interleaving that broke the invariant, not a causal explanation.
+
+3. **Trace markers** — Comment-based synchronization points (`# frontrun: marker_name`) that let you force a specific execution order. Useful when you already know the race window and want to reproduce it deterministically in a test.
+
+All three have async variants. A C-level `LD_PRELOAD` library intercepts libc I/O for database drivers and other opaque extensions.
 
 ## Quick Start: Bank Account Race Condition
 
-Here's a pytest test that uses Frontrun to trigger a race condition:
+A pytest test that uses trace markers to trigger a lost-update race:
 
 ```python
-from frontrun.trace_markers import Schedule, Step, TraceExecutor
+from frontrun.common import Schedule, Step
+from frontrun.trace_markers import TraceExecutor
 
 class BankAccount:
     def __init__(self, balance=0):
@@ -57,57 +61,67 @@ def test_transfer_lost_update():
 
 ## Case Studies
 
-See [detailed case studies](docs/CASE_STUDIES.rst) of searching for concurrency bugs in ten libraries: TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3, SQLAlchemy, amqtt, and pykka. Run the test suites with: `PYTHONPATH=frontrun python frontrun/docs/tests/run_external_tests.py`
+46 concurrency bugs found across 12 libraries by running bytecode exploration directly against unmodified library code: TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3, SQLAlchemy, amqtt, pykka, and tenacity. See [detailed case studies](docs/CASE_STUDIES.rst).
 
 ## Usage Approaches
 
-Frontrun provides three ways to test concurrent code:
+### 1. DPOR (Systematic Exploration)
 
-### 1. Trace Markers
+DPOR (Dynamic Partial Order Reduction) *systematically* explores every meaningfully different thread interleaving. It automatically detects shared-memory accesses at the bytecode level — attribute reads/writes, subscript accesses, lock operations — and uses vector clocks to determine which orderings are equivalent. Two interleavings that differ only in the order of independent operations (two reads of different objects, say) produce the same outcome, so DPOR runs only one representative from each equivalence class.
 
-Trace markers are special comments (`# frontrun: <marker-name>`) which mark particular synchronization points in multithreaded or async code. These are intended to make it easier to reproduce race conditions in test cases and inspect whether some race conditions are possible.
-
-The execution ordering is controlled with a "schedule" object that says what order the threads / markers should run in.
-
-Each thread runs with a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback that pauses at markers and waits for a schedule to grant the next execution turn. This gives deterministic control over execution order without modifying code semantics — markers are just comments. A marker **gates** the code that follows it: the thread pauses at the marker and only executes the gated code after the scheduler grants it a turn. Name markers after the operation they gate (e.g. `read_value`, `write_balance`) rather than with temporal prefixes like `before_` or `after_`.
-
-Markers can be placed inline or on a separate line before the operation:
+When a race is found, the error trace shows the exact sequence of conflicting accesses and which threads were involved:
 
 ```python
-from frontrun.trace_markers import Schedule, Step, TraceExecutor
+from frontrun.dpor import explore_dpor
 
 class Counter:
     def __init__(self):
         self.value = 0
 
     def increment(self):
-        temp = self.value  # frontrun: read_value
-        temp += 1
-        self.value = temp  # frontrun: write_value
+        temp = self.value
+        self.value = temp + 1
 
-def test_counter_lost_update():
-    counter = Counter()
+def test_counter_is_atomic():
+    result = explore_dpor(
+        setup=Counter,
+        threads=[lambda c: c.increment(), lambda c: c.increment()],
+        invariant=lambda c: c.value == 2,
+    )
 
-    schedule = Schedule([
-        Step("thread1", "read_value"),
-        Step("thread2", "read_value"),
-        Step("thread1", "write_value"),
-        Step("thread2", "write_value"),
-    ])
-
-    executor = TraceExecutor(schedule)
-    executor.run("thread1", counter.increment)
-    executor.run("thread2", counter.increment)
-    executor.wait(timeout=5.0)
-
-    assert counter.value == 1  # One increment lost
+    assert result.property_holds, result.explanation
 ```
 
-### 2. Bytecode Manipulation
+This test fails because `Counter.increment` is not atomic. The `result.explanation` shows the conflict:
 
-Automatically instrument functions using bytecode rewriting — no markers needed. Each thread fires a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback at every bytecode instruction, pausing at each one to wait for its scheduler turn. This gives fine-grained control but requires monkey-patching standard threading primitives (`Lock`, `Semaphore`, `Event`, `Queue`, etc.) to prevent deadlocks.
+```
+Race condition found after 2 interleavings.
 
-`explore_interleavings()` does property-based exploration in the style of [Hypothesis](https://hypothesis.readthedocs.io/): it generates random opcode-level schedules and checks that an invariant holds under each one, returning any counterexample schedule.
+  Write-write conflict: threads 0 and 1 both wrote to value.
+
+  Thread 0 | counter.py:7             temp = self.value
+           | [read Counter.value]
+  Thread 0 | counter.py:8             self.value = temp + 1
+           | [write Counter.value]
+  Thread 1 | counter.py:7             temp = self.value
+           | [read Counter.value]
+  Thread 1 | counter.py:8             self.value = temp + 1
+           | [write Counter.value]
+
+  Reproduced 10/10 times (100%)
+```
+
+DPOR explored exactly 2 interleavings out of the 6 possible (the other 4 are equivalent to one of the first two). For a detailed walkthrough of how this works, see the [DPOR algorithm documentation](docs/dpor.rst).
+
+**Scope and limitations:** DPOR tracks conflicts at the Python bytecode level. It sees attribute reads/writes, subscript operations, and lock acquire/release. It does *not* see shared state managed entirely in C extensions (database rows, NumPy arrays, Redis keys). For those, the code runs fine but DPOR concludes — incorrectly — that the threads are independent and explores only one interleaving. Direct socket I/O is detected via monkey-patching when `detect_io=True` (the default), and the `frontrun` CLI adds C-level interception via `LD_PRELOAD` for opaque drivers.
+
+### 2. Bytecode Exploration
+
+Bytecode exploration generates random opcode-level schedules and checks an invariant under each one, in the style of [Hypothesis](https://hypothesis.readthedocs.io/). Each thread fires a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback at every bytecode instruction, pausing to wait for its scheduler turn. No markers or annotations needed.
+
+`explore_interleavings()` often finds races very quickly — sometimes on the first attempt. It can also find races that are invisible to DPOR, because it doesn't need to understand *why* a schedule is bad; it just checks whether the invariant holds after the threads finish. If a C extension mutates shared state in a way that breaks your invariant, bytecode exploration will stumble into it. DPOR won't, because it can't see the C-level mutation.
+
+The trade-off: error traces are less interpretable. You get the specific opcode schedule that broke the invariant and a best-effort interleaved source trace, but not the causal conflict analysis that DPOR provides.
 
 ```python
 from frontrun.bytecode import explore_interleavings
@@ -136,53 +150,65 @@ def test_counter_is_atomic():
     assert result.property_holds, result.explanation
 ```
 
-This test will fail because `Counter.increment` is not atomic — and when it does, `result.explanation` is a human-readable trace showing what went wrong:
+This fails with output like:
 
 ```
-Race condition found after 3 interleavings.
+Race condition found after 1 interleavings.
 
   Lost update: threads 0 and 1 both read value before either wrote it back.
 
-  Thread 0 | counter.py:7             temp = self.value  [read Counter.value]
-  Thread 1 | counter.py:7             temp = self.value  [read Counter.value]
-  Thread 0 | counter.py:8             self.value = temp + 1  [write Counter.value]
-  Thread 1 | counter.py:8             self.value = temp + 1  [write Counter.value]
+  Thread 1 | counter.py:7             temp = self.value
+           | [read value]
+  Thread 0 | counter.py:7             temp = self.value
+           | [read value]
+  Thread 1 | counter.py:8             self.value = temp + 1
+           | [write value]
+  Thread 0 | counter.py:8             self.value = temp + 1
+           | [write value]
 
-  Reproduced 8/10 times (80%)
+  Reproduced 10/10 times (100%)
 ```
 
 The `reproduce_on_failure` parameter (default 10) controls how many times the counterexample schedule is replayed to measure reproducibility. Set to 0 to skip.
 
-### 3. DPOR (Systematic Exploration)
+> **Note:** Opcode-level schedules are not stable across Python versions. CPython does not guarantee bytecode compatibility between releases, so a counterexample from Python 3.12 may not reproduce on 3.13. Treat counterexample schedules as ephemeral debugging artifacts.
 
-DPOR (Dynamic Partial Order Reduction) *systematically* explores every meaningfully different thread interleaving. Unlike the bytecode explorer which samples randomly, DPOR guarantees that every distinct interleaving is tried exactly once — and redundant orderings are never re-run.
+### 3. Trace Markers
 
-The engine automatically detects shared-memory accesses (attribute reads/writes) at the bytecode level — no annotations needed. It tracks which operations conflict and uses vector clocks to skip equivalent orderings.
+Trace markers are special comments (`# frontrun: <marker-name>`) that mark synchronization points in multithreaded or async code. A [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback pauses each thread at its markers and waits for a schedule to grant the next execution turn. This gives deterministic control over execution order without modifying code semantics — markers are just comments.
+
+A marker **gates** the code that follows it: the thread pauses at the marker and only executes the gated code after the scheduler says so. Name markers after the operation they gate (e.g. `read_value`, `write_balance`) rather than with temporal prefixes like `before_` or `after_`.
 
 ```python
-from frontrun.dpor import explore_dpor
+from frontrun.common import Schedule, Step
+from frontrun.trace_markers import TraceExecutor
 
 class Counter:
     def __init__(self):
         self.value = 0
 
     def increment(self):
-        temp = self.value
-        self.value = temp + 1
+        temp = self.value  # frontrun: read_value
+        temp += 1
+        self.value = temp  # frontrun: write_value
 
-def test_counter_is_atomic():
-    result = explore_dpor(
-        setup=Counter,
-        threads=[lambda c: c.increment(), lambda c: c.increment()],
-        invariant=lambda c: c.value == 2,
-    )
+def test_counter_lost_update():
+    counter = Counter()
 
-    assert result.property_holds, result.explanation
+    schedule = Schedule([
+        Step("thread1", "read_value"),
+        Step("thread2", "read_value"),
+        Step("thread1", "write_value"),
+        Step("thread2", "write_value"),
+    ])
+
+    executor = TraceExecutor(schedule)
+    executor.run("thread1", counter.increment)
+    executor.run("thread2", counter.increment)
+    executor.wait(timeout=5.0)
+
+    assert counter.value == 1  # One increment lost
 ```
-
-Like `explore_interleavings`, DPOR produces `result.explanation` with the interleaved trace and reproduction statistics when a race is found.
-
-**Scope and limitations:** DPOR explores alternative schedules only where it sees a conflict (two threads accessing the same Python object with at least one write). Direct socket I/O operations are detected automatically when `detect_io=True` (the default), so network conflicts are explored. When run under the `frontrun` CLI, a native `LD_PRELOAD` library intercepts C-level I/O operations (see [C-Level I/O Interception](#c-level-io-interception) below), so even opaque database drivers and Redis clients are covered.
 
 ### Automatic I/O Detection
 
@@ -270,7 +296,7 @@ def test_async_counter_lost_update():
 
 ### Async Bytecode Exploration
 
-Async bytecode exploration works similarly to the threaded bytecode approach, but at await points instead of opcodes:
+Async bytecode exploration works at await points instead of opcodes, making schedules stable across Python versions:
 
 ```python
 import asyncio
@@ -295,8 +321,6 @@ async def test_async_counter_race():
 
     assert result.property_holds, result.explanation
 ```
-
-Like its threaded counterpart, `explore_interleavings` generates random await-point-level schedules and checks that the invariant holds. Each task runs as a separate async coroutine, and you explicitly mark await points with `await await_point()` where context switches can occur.
 
 ## CLI
 
@@ -351,7 +375,7 @@ confusing failures when the environment isn't properly set up.
 
 **macOS** supports all features.  The `frontrun` CLI uses `DYLD_INSERT_LIBRARIES` to load `libfrontrun_io.dylib`.  Note that macOS System Integrity Protection (SIP) strips `DYLD_INSERT_LIBRARIES` from Apple-signed system binaries (`/usr/bin/python3`, etc.).  Use a Homebrew, pyenv, or venv Python to avoid this limitation.
 
-**Windows** support is limited to trace markers, bytecode exploration, and DPOR — the pure-Python and Rust PyO3 components that don't rely on `LD_PRELOAD`.  The `frontrun` CLI and C-level I/O interception library are not available on Windows because they depend on the Unix dynamic linker's symbol interposition mechanism, which has no direct Windows equivalent.  Any Windows support is purely theoretical and untested.  See [CONTRIBUTING.md](CONTRIBUTING.md) if you'd like to help.
+**Windows** support is limited to trace markers, bytecode exploration, and DPOR — the pure-Python and Rust PyO3 components that don't rely on `LD_PRELOAD`.  The `frontrun` CLI and C-level I/O interception library are not available on Windows because they depend on the Unix dynamic linker's symbol interposition mechanism, which has no direct Windows equivalent.
 
 ## Development
 

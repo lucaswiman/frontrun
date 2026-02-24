@@ -33,7 +33,7 @@ from collections.abc import Callable
 from typing import Any
 
 from frontrun._cooperative import real_condition, real_lock
-from frontrun.common import Schedule
+from frontrun.common import Schedule, Step  # noqa: F401 — re-exported for public API
 
 MARKER_PATTERN = re.compile(r"#\s*frontrun:\s*(\w+)")
 

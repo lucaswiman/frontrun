@@ -45,7 +45,7 @@ A minimal SQLAlchemy model and the buggy handler that increments
 
    engine = create_engine("postgresql:///frontrun_test")
 
-The handler that every demo runs — one per thread, each with its own
+The handler that every demo runs --- one per thread, each with its own
 session:
 
 .. code-block:: python
@@ -60,8 +60,8 @@ Two concurrent calls should leave ``login_count == 2``.  The race makes
 it ``1``.
 
 
-Demo 1 — Trace markers (deterministic)
----------------------------------------
+Demo 1 --- Trace markers (deterministic)
+-----------------------------------------
 
 Trace markers (``# frontrun: orm_read`` / ``# frontrun: orm_write``)
 on the ``session.get()`` and ``session.commit()`` lines let
@@ -112,12 +112,12 @@ Output:
      both SELECTs to run before either UPDATE on every execution.
 
 
-Demo 2 — Bytecode exploration (automatic)
------------------------------------------
+Demo 2 --- Bytecode exploration (automatic)
+--------------------------------------------
 
 ``explore_interleavings`` generates random opcode-level schedules,
 running both handlers against the real database on each attempt.
-No trace markers are needed — the explorer finds the bad interleaving
+No trace markers are needed --- the explorer finds the bad interleaving
 on its own:
 
 .. code-block:: python
@@ -143,7 +143,7 @@ on its own:
        invariant=lambda s: _read_count() == 2,
        max_attempts=50,
        seed=42,
-       detect_io=True,    # C-level sockets detected via LD_PRELOAD
+       detect_io=False,    # psycopg2 uses C-level sockets
    )
 
 Output:
@@ -164,17 +164,14 @@ Output:
 
      Race condition found after 1 interleavings.
 
-       Lost update: threads 0 and 1 both read login_count before either wrote it back.
+       Write-write conflict: threads 0 and 1 both wrote to login_count.
 
-
-       Thread 1 | orm_race.py:238           user = session.get(User, 1)  [read .get]
-       Thread 0 | orm_race.py:238           user = session.get(User, 1)  [read .get]
-       Thread 0 | orm_race.py:240           user.login_count = user.login_count + 1  [read .login_count]
-       Thread 1 | orm_race.py:240           user.login_count = user.login_count + 1  [read .login_count]
-       Thread 0 | orm_race.py:240           user.login_count = user.login_count + 1  [write .login_count]
-       Thread 1 | orm_race.py:240           user.login_count = user.login_count + 1  [write .login_count]
-       Thread 1 | orm_race.py:241           session.commit()  [read .commit]
-       Thread 0 | orm_race.py:241           session.commit()  [read .commit]
+       Thread 0 | orm_race.py:242           user.login_count = user.login_count + 1
+                | [read login_count]
+       Thread 1 | orm_race.py:242           user.login_count = user.login_count + 1
+                | [read+write login_count]
+       Thread 0 | orm_race.py:242           user.login_count = user.login_count + 1
+                | [write login_count]
 
        Reproduced 5/5 times (100%)
 
@@ -185,19 +182,74 @@ The explorer found the race on its very first attempt and reproduced it
 read ``login_count`` (via ``session.get``) before either writes, so
 both compute ``0 + 1 = 1``.
 
+Note that while the trace reports a conflict on ``login_count``, this
+refers to the *ORM object's Python attribute*, not the database column.
+Each thread has its own ``User`` instance (from separate sessions), so
+the threads are not actually racing on the same Python object. The real
+shared state lives in Postgres. Bytecode exploration finds the bug
+anyway because the random schedule happens to interleave the threads in
+a way that triggers the database-level race. It doesn't need to
+*understand* the conflict to stumble into it.
 
-Demo 3 — Naive threading (intermittent)
-----------------------------------------
 
-Plain threads against real Postgres, with a random 0–15 ms start offset
+Why DPOR misses this race
+---------------------------
+
+.. code-block:: text
+
+   $ frontrun python examples/orm_race.py
+
+   ...
+   Demo 3: SQLAlchemy lost update  (DPOR — systematic exploration)
+
+     property_holds       : True
+     num_explored         : 1
+     No lost update found.
+
+DPOR ran both threads to completion sequentially, saw no conflicts, and
+concluded there was nothing to explore. This seems wrong --- both threads
+are talking to the same Postgres instance on ``127.0.0.1:5432``, and the
+``LD_PRELOAD`` library *does* intercept libpq's ``send()`` and ``recv()``
+calls. Those events are captured and written to the pipe. But DPOR never
+reads them.
+
+The issue is an integration gap: ``explore_dpor()`` uses Python-level
+monkey-patching (``_io_detection.patch_io()``) to detect socket I/O, but
+psycopg2 calls libc ``send()``/``recv()`` directly from C, bypassing the
+Python-level patches entirely. The ``IOEventDispatcher`` in
+``_preload_io.py`` knows how to read LD_PRELOAD events from the pipe, but
+DPOR doesn't instantiate one. The interception infrastructure exists and
+works; it just isn't wired into the DPOR scheduler yet.
+
+There is also a more fundamental issue: even if DPOR saw the socket
+conflicts, the two threads share a *database row*, not a Python object.
+Each thread creates its own ``Session`` and gets its own ``User`` ORM
+instance. The socket-level conflict (both threads talk to
+``127.0.0.1:5432``) is a necessary signal for DPOR to explore alternative
+orderings, but it's a coarse one --- it would cause DPOR to explore
+reorderings of *all* database I/O, not just the conflicting row access.
+Whether this is precise enough to be useful in practice is an open
+question.
+
+See :doc:`dpor_guide` for a detailed description of the proposed fix and
+the ``IOEventDispatcher`` integration.
+
+For now, use trace markers with explicit scheduling (Demo 1) or bytecode
+exploration (Demo 2) for database-level races.
+
+
+Demo 3 --- Naive threading (intermittent)
+------------------------------------------
+
+Plain threads against real Postgres, with a random 0--15 ms start offset
 modelling realistic request-arrival timing.  The race reproduces only a
-fraction of the time — exactly the kind of flaky bug that slips through
+fraction of the time --- exactly the kind of flaky bug that slips through
 CI:
 
 .. code-block:: text
 
    ======================================================================
-   Demo 3: Naive threading + SQLAlchemy  (500 trials)
+   Demo 4: Naive threading + SQLAlchemy  (500 trials)
    ======================================================================
 
      Running both handlers in plain threads against real Postgres.
@@ -205,15 +257,15 @@ CI:
      request arrival timing.  Counting how often the race manifests...
 
      Trials:   500
-     Failures: 23
-     Rate:     4.6%
+     Failures: 76
+     Rate:     15.2%
 
-     The race manifested in 23/500 trials (4.6%).
+     The race manifested in 76/500 trials (15.2%).
      frontrun makes it 100% reproducible.
 
-With ordinary threads the bug surfaces roughly 5–10 % of the time
-(the exact rate varies with system load).  The two frontrun approaches
-above both catch it deterministically, every time.
+With ordinary threads the bug surfaces roughly 10--15% of the time
+(the exact rate varies with system load).  Trace markers and bytecode
+exploration both catch it deterministically, every time.
 
 
 Running the example yourself
@@ -222,10 +274,10 @@ Running the example yourself
 .. code-block:: bash
 
    # Build the virtualenv with SQLAlchemy + psycopg2, and the I/O library
-   make build-examples-3.14t build-io   # or build-examples-3.10
+   make build-examples-3.10 build-io
 
    # Create the test database (if it doesn't exist)
    createdb frontrun_test
 
    # Run via the frontrun CLI for C-level I/O interception
-   frontrun .venv-3.14t/bin/python examples/orm_race.py
+   frontrun .venv-3.10/bin/python examples/orm_race.py

@@ -1,9 +1,22 @@
 Frontrun Documentation
 ======================
 
-A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions.
+Deterministic concurrency testing for Python.
 
-Frontrun provides tools for controlling thread interleaving at a fine-grained level, allowing you to deterministically reproduce race conditions in tests and verify that your synchronization primitives work correctly.
+Race conditions are hard to test because they depend on timing. A test that
+passes 95% of the time is worse than a test that always fails, because it
+breeds false confidence. Frontrun replaces timing-dependent thread interleaving
+with deterministic scheduling, so race conditions either always happen or
+never happen.
+
+Three approaches, in order of decreasing interpretability:
+
+1. **DPOR** --- systematic exploration of every meaningfully different
+   interleaving, with causal conflict analysis.
+2. **Bytecode exploration** --- random opcode-level schedules that often find
+   races very efficiently, including races invisible to DPOR.
+3. **Trace markers** --- comment-based synchronization points for reproducing
+   a known race window.
 
 .. toctree::
    :maxdepth: 2
@@ -14,31 +27,23 @@ Frontrun provides tools for controlling thread interleaving at a fine-grained le
    approaches
    dpor_guide
    dpor
-   api_reference
    examples
    orm_race
+   internals
+   api_reference
    CASE_STUDIES
-
-
-Key Features
-------------
-
-- **Deterministically reproduce race conditions** - Force specific execution ordering to make race conditions happen reliably in tests
-- **Test concurrent code exhaustively** - Explore different execution orders to find bugs
-- **Verify synchronization correctness** - Ensure that proper locking prevents race conditions
-- **Lightweight integration** - No need to modify third-party code when using trace markers
-
-Instead of relying on timing-based race detection (which is unreliable), Frontrun lets you control exactly when threads execute, making concurrency testing deterministic and reproducible.
 
 
 Getting Started
 ---------------
 
-**Trace Markers** are a lightweight, comment-based approach that requires minimal code changes:
+The simplest entry point is **trace markers** --- comment-based synchronization
+points that let you force a specific execution order:
 
 .. code-block:: python
 
-   from frontrun.trace_markers import Schedule, Step, TraceExecutor
+   from frontrun.common import Schedule, Step
+   from frontrun.trace_markers import TraceExecutor
 
    class Counter:
        def __init__(self):
@@ -65,7 +70,8 @@ Getting Started
 
        assert counter.value == 1  # One increment lost
 
-For more information, see :doc:`quickstart` and :doc:`approaches`.
+For automatic race finding without manual markers, see :doc:`dpor_guide` (systematic)
+or :doc:`approaches` (random bytecode exploration).
 
 
 Indices and Tables

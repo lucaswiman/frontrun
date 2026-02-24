@@ -1,6 +1,33 @@
 API Reference
 =============
 
+Common Data Structures
+-----------------------
+
+.. automodule:: frontrun.common
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
+DPOR (Systematic Exploration)
+------------------------------
+
+.. automodule:: frontrun.dpor
+   :members: explore_dpor
+   :undoc-members:
+   :show-inheritance:
+
+
+Bytecode Instrumentation
+-------------------------
+
+.. automodule:: frontrun.bytecode
+   :members: explore_interleavings
+   :undoc-members:
+   :show-inheritance:
+
+
 Trace Markers
 --------------
 
@@ -14,15 +41,6 @@ Async Trace Markers
 --------------------
 
 .. automodule:: frontrun.async_trace_markers
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-
-Bytecode Instrumentation
--------------------------
-
-.. automodule:: frontrun.bytecode
    :members:
    :undoc-members:
    :show-inheritance:
