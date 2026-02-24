@@ -286,10 +286,11 @@ library writes event records directly to the pipe.  A Python reader
 thread dispatches events to registered callbacks in arrival order.  The
 pipe's FIFO semantics provide a natural total order without timestamps.
 
-**Log file transport (legacy):** ``FRONTRUN_IO_LOG`` points to a
+**Log file transport (debugging only):** ``FRONTRUN_IO_LOG`` points to a
 temporary file.  Events are appended per-call (open + write + close
-each time) and read back in batch after execution.  Higher overhead than
-the pipe transport, but simpler.
+each time) and read back in batch after execution.  This approach is
+intended for testing and debugging the frontrun framework itself.  It has
+higher overhead than the pipe transport.
 
 The ``frontrun`` CLI sets up the ``LD_PRELOAD`` environment automatically:
 

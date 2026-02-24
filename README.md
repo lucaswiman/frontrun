@@ -14,11 +14,11 @@ The core problem: race conditions are hard to test because they depend on timing
 
 Three approaches, in order of decreasing interpretability:
 
-1. **DPOR** — Systematically explores every meaningfully different interleaving. When it finds a race, it tells you exactly which shared-memory accesses conflicted and in what order. Powered by a Rust engine using vector clocks to prune redundant orderings.
+1. **Trace markers** — Comment-based synchronization points (`# frontrun: marker_name`) that let you force a specific execution order. Useful when you already know the race window and want to reproduce it deterministically in a test.
 
-2. **Bytecode exploration** — Generates random opcode-level schedules and checks an invariant under each one. Often finds races very efficiently (sometimes on the first attempt), and can catch races that are invisible to DPOR (e.g. shared state inside C extensions). The trade-off: error traces show *what happened* but not *why* — you get the interleaving that broke the invariant, not a causal explanation.
+2. **DPOR** — Systematically explores every meaningfully different interleaving. When it finds a race, it tells you exactly which shared-memory accesses conflicted and in what order. Powered by a Rust engine using vector clocks to prune redundant orderings.
 
-3. **Trace markers** — Comment-based synchronization points (`# frontrun: marker_name`) that let you force a specific execution order. Useful when you already know the race window and want to reproduce it deterministically in a test.
+3. **Bytecode exploration** — Generates random opcode-level schedules and checks an invariant under each one. Often finds races very efficiently (sometimes on the first attempt), and can catch races that are invisible to DPOR (e.g. shared state inside C extensions). The trade-off: error traces show *what happened* but not *why* — you get the interleaving that broke the invariant, not a causal explanation.
 
 All three have async variants. A C-level `LD_PRELOAD` library intercepts libc I/O for database drivers and other opaque extensions.
 
@@ -65,7 +65,44 @@ def test_transfer_lost_update():
 
 ## Usage Approaches
 
-### 1. DPOR (Systematic Exploration)
+### 1. Trace Markers
+
+Trace markers are special comments (`# frontrun: <marker-name>`) that mark synchronization points in multithreaded or async code. A [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback pauses each thread at its markers and waits for a schedule to grant the next execution turn. This gives deterministic control over execution order without modifying code semantics — markers are just comments.
+
+A marker **gates** the code that follows it: the thread pauses at the marker and only executes the gated code after the scheduler says so. Name markers after the operation they gate (e.g. `read_value`, `write_balance`) rather than with temporal prefixes like `before_` or `after_`.
+
+```python
+from frontrun.common import Schedule, Step
+from frontrun.trace_markers import TraceExecutor
+
+class Counter:
+    def __init__(self):
+        self.value = 0
+
+    def increment(self):
+        temp = self.value  # frontrun: read_value
+        temp += 1
+        self.value = temp  # frontrun: write_value
+
+def test_counter_lost_update():
+    counter = Counter()
+
+    schedule = Schedule([
+        Step("thread1", "read_value"),
+        Step("thread2", "read_value"),
+        Step("thread1", "write_value"),
+        Step("thread2", "write_value"),
+    ])
+
+    executor = TraceExecutor(schedule)
+    executor.run("thread1", counter.increment)
+    executor.run("thread2", counter.increment)
+    executor.wait(timeout=5.0)
+
+    assert counter.value == 1  # One increment lost
+```
+
+### 2. DPOR (Systematic Exploration)
 
 DPOR (Dynamic Partial Order Reduction) *systematically* explores every meaningfully different thread interleaving. It automatically detects shared-memory accesses at the bytecode level — attribute reads/writes, subscript accesses, lock operations — and uses vector clocks to determine which orderings are equivalent. Two interleavings that differ only in the order of independent operations (two reads of different objects, say) produce the same outcome, so DPOR runs only one representative from each equivalence class.
 
@@ -115,7 +152,7 @@ DPOR explored exactly 2 interleavings out of the 6 possible (the other 4 are equ
 
 **Scope and limitations:** DPOR tracks conflicts at the Python bytecode level. It sees attribute reads/writes, subscript operations, and lock acquire/release. It does *not* see shared state managed entirely in C extensions (database rows, NumPy arrays, Redis keys). For those, the code runs fine but DPOR concludes — incorrectly — that the threads are independent and explores only one interleaving. Direct socket I/O is detected via monkey-patching when `detect_io=True` (the default), and the `frontrun` CLI adds C-level interception via `LD_PRELOAD` for opaque drivers.
 
-### 2. Bytecode Exploration
+### 3. Bytecode Exploration
 
 Bytecode exploration generates random opcode-level schedules and checks an invariant under each one, in the style of [Hypothesis](https://hypothesis.readthedocs.io/). Each thread fires a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback at every bytecode instruction, pausing to wait for its scheduler turn. No markers or annotations needed.
 
@@ -172,43 +209,6 @@ Race condition found after 1 interleavings.
 The `reproduce_on_failure` parameter (default 10) controls how many times the counterexample schedule is replayed to measure reproducibility. Set to 0 to skip.
 
 > **Note:** Opcode-level schedules are not stable across Python versions. CPython does not guarantee bytecode compatibility between releases, so a counterexample from Python 3.12 may not reproduce on 3.13. Treat counterexample schedules as ephemeral debugging artifacts.
-
-### 3. Trace Markers
-
-Trace markers are special comments (`# frontrun: <marker-name>`) that mark synchronization points in multithreaded or async code. A [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback pauses each thread at its markers and waits for a schedule to grant the next execution turn. This gives deterministic control over execution order without modifying code semantics — markers are just comments.
-
-A marker **gates** the code that follows it: the thread pauses at the marker and only executes the gated code after the scheduler says so. Name markers after the operation they gate (e.g. `read_value`, `write_balance`) rather than with temporal prefixes like `before_` or `after_`.
-
-```python
-from frontrun.common import Schedule, Step
-from frontrun.trace_markers import TraceExecutor
-
-class Counter:
-    def __init__(self):
-        self.value = 0
-
-    def increment(self):
-        temp = self.value  # frontrun: read_value
-        temp += 1
-        self.value = temp  # frontrun: write_value
-
-def test_counter_lost_update():
-    counter = Counter()
-
-    schedule = Schedule([
-        Step("thread1", "read_value"),
-        Step("thread2", "read_value"),
-        Step("thread1", "write_value"),
-        Step("thread2", "write_value"),
-    ])
-
-    executor = TraceExecutor(schedule)
-    executor.run("thread1", counter.increment)
-    executor.run("thread2", counter.increment)
-    executor.wait(timeout=5.0)
-
-    assert counter.value == 1  # One increment lost
-```
 
 ### Automatic I/O Detection
 
