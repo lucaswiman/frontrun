@@ -1032,12 +1032,20 @@ def explore_dpor(
                 successes = 0
                 for _ in range(reproduce_on_failure):
                     try:
+                        # DPOR processes I/O events within the same scheduling
+                        # step as the triggering opcode (via pending_io), so
+                        # its schedule is pure opcode-level.  The bytecode
+                        # shuffler's _io_reporter adds extra scheduling steps
+                        # for each I/O event, which would desync the replay.
+                        # Disable detect_io during replay so the step counts
+                        # match; the actual I/O still happens as a side effect
+                        # of opcode execution.
                         replay_state = run_with_schedule(
                             schedule_list,
                             setup,
                             threads,
                             timeout=timeout_per_run,
-                            detect_io=detect_io,
+                            detect_io=False,
                             deadlock_timeout=deadlock_timeout,
                         )
                         if not invariant(replay_state):

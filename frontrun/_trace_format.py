@@ -607,7 +607,10 @@ def format_trace(
             chain_tag = f"  in {' <- '.join(line_ev.call_chain)}"
 
         src = line_ev.source_line
-        parts.append(f"  {label} | {loc:<25s} {src}{access_tag}{chain_tag}")
+        parts.append(f"  {label} | {loc:<25s} {src}")
+        if access_tag:
+            indent = " " * (2 + max_thread_label) + " | "
+            parts.append(f"{indent}{access_tag.lstrip()}{chain_tag}")
 
         # Optional opcode detail
         if show_opcodes:
