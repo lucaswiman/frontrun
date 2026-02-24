@@ -27,6 +27,12 @@ pub struct Thread {
     pub id: usize,
     pub causality: VersionVec,
     pub dpor_vv: VersionVec,
+    /// I/O vector clock: tracks scheduling increments and thread
+    /// spawn/join but NOT lock-based happens-before.  Used by
+    /// `process_io_access` so that file/socket accesses from different
+    /// threads always appear potentially concurrent even when they
+    /// happen inside separate lock acquisitions of the same lock.
+    pub io_vv: VersionVec,
     pub finished: bool,
     pub blocked: bool,
 }
@@ -37,6 +43,7 @@ impl Thread {
             id,
             causality: VersionVec::new(num_threads),
             dpor_vv: VersionVec::new(num_threads),
+            io_vv: VersionVec::new(num_threads),
             finished: false,
             blocked: false,
         }

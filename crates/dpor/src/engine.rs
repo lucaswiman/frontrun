@@ -97,6 +97,7 @@ impl DporEngine {
         }
         let chosen = self.path.schedule(&runnable, execution.active_thread, self.num_threads)?;
         execution.threads[chosen].dpor_vv.increment(chosen);
+        execution.threads[chosen].io_vv.increment(chosen);
         execution.active_thread = chosen;
         execution.schedule_trace.push(chosen);
         Some(chosen)
@@ -126,6 +127,34 @@ impl DporEngine {
         object_state.record_access(access, kind);
     }
 
+    /// Like [`process_access`] but uses the thread's `io_vv` instead of
+    /// `dpor_vv`.  Because `io_vv` does not include lock-based
+    /// happens-before edges, I/O accesses from different threads always
+    /// appear potentially concurrent — even when they occur inside
+    /// separate lock acquisitions.  This lets DPOR explore interleavings
+    /// around file/socket operations and catch TOCTOU races.
+    pub fn process_io_access(
+        &mut self,
+        execution: &mut Execution,
+        thread_id: usize,
+        object_id: ObjectId,
+        kind: AccessKind,
+    ) {
+        let current_path_id = self.path.current_position().saturating_sub(1);
+        let current_io_vv = execution.threads[thread_id].io_vv.clone();
+
+        let object_state = execution.objects.entry(object_id).or_insert_with(ObjectState::new);
+
+        for prev_access in object_state.dependent_accesses(kind, thread_id) {
+            if !prev_access.happens_before(&current_io_vv) {
+                self.path.backtrack(prev_access.path_id, thread_id);
+            }
+        }
+
+        let access = Access::new(current_path_id, current_io_vv, thread_id);
+        object_state.record_access(access, kind);
+    }
+
     pub fn process_sync(
         &mut self,
         execution: &mut Execution,
@@ -147,14 +176,18 @@ impl DporEngine {
             SyncEvent::ThreadJoin { joined_thread } => {
                 let joined_causality = execution.threads[joined_thread].causality.clone();
                 let joined_dpor_vv = execution.threads[joined_thread].dpor_vv.clone();
+                let joined_io_vv = execution.threads[joined_thread].io_vv.clone();
                 execution.threads[thread_id].causality.join(&joined_causality);
                 execution.threads[thread_id].dpor_vv.join(&joined_dpor_vv);
+                execution.threads[thread_id].io_vv.join(&joined_io_vv);
             }
             SyncEvent::ThreadSpawn { child_thread } => {
                 let parent_causality = execution.threads[thread_id].causality.clone();
                 let parent_dpor_vv = execution.threads[thread_id].dpor_vv.clone();
+                let parent_io_vv = execution.threads[thread_id].io_vv.clone();
                 execution.threads[child_thread].causality.join(&parent_causality);
                 execution.threads[child_thread].dpor_vv.join(&parent_dpor_vv);
+                execution.threads[child_thread].io_vv.join(&parent_io_vv);
             }
         }
     }

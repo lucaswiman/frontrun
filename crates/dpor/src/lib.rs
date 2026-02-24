@@ -86,6 +86,29 @@ impl PyDporEngine {
         Ok(())
     }
 
+    /// Report an I/O access (file/socket).  Uses a separate vector clock
+    /// that ignores lock-based happens-before, so I/O from different
+    /// threads is always treated as potentially concurrent.
+    fn report_io_access(
+        &mut self,
+        execution: &mut PyExecution,
+        thread_id: usize,
+        object_id: u64,
+        kind: &str,
+    ) -> PyResult<()> {
+        let access_kind = match kind {
+            "read" => AccessKind::Read,
+            "write" => AccessKind::Write,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("kind must be 'read' or 'write', got '{kind}'"),
+                ))
+            }
+        };
+        self.inner.process_io_access(&mut execution.inner, thread_id, object_id, access_kind);
+        Ok(())
+    }
+
     /// Report a synchronization event.
     /// event_type: "lock_acquire", "lock_release", "thread_join", "thread_spawn"
     /// sync_id: identifier for the sync primitive or thread

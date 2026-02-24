@@ -53,6 +53,7 @@ compile_error!("macOS I/O interception requires aarch64 (Apple Silicon)");
 static READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 static READY: AtomicBool = AtomicBool::new(true);
 
 /// macOS library constructor — registered via `__DATA,__mod_init_func`.
