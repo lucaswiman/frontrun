@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import threading
 from functools import partial
 
@@ -8,10 +9,8 @@ from frontrun.bytecode import explore_interleavings
 
 
 class DB:
-    def __init__(self, storage='/tmp/db.json'):
+    def __init__(self, storage: str):
         self.storage = storage
-        if os.path.isfile(storage):
-            os.remove(storage)
         with open(self.storage, 'w') as f:
             f.write(json.dumps({}))
         self.lock = threading.Lock()
@@ -46,8 +45,9 @@ items2 = [
 ]
 
 def test_dpor():
+    path = os.path.join(tempfile.mkdtemp(), 'db.json')
     result = explore_dpor(
-        setup=lambda: DB(),
+        setup=lambda: DB(path),
         threads=[partial(do_incrs, items=items1), partial(do_incrs, items=items2)],
         invariant=lambda db: db.dict() == {"goat": 2, "cat": 2},
     )
@@ -55,8 +55,9 @@ def test_dpor():
 
 
 def test_bytecode():
+    path = os.path.join(tempfile.mkdtemp(), 'db.json')
     result = explore_interleavings(
-        setup=lambda: DB(),
+        setup=lambda: DB(path),
         threads=[partial(do_incrs, items=items1), partial(do_incrs, items=items2)],
         invariant=lambda db: db.dict() == {"goat": 2, "cat": 2},
     )

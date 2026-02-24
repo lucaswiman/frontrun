@@ -228,12 +228,7 @@ Using bytecode instrumentation to automatically explore interleavings:
        seed=42,
    )
 
-   if not result.property_holds:
-       print(f"Race condition found!")
-       print(f"Explored {result.num_explored} different interleavings")
-       print(f"Counterexample: value = {result.counterexample.value}")
-   else:
-       print("No race conditions found in explored interleavings")
+   assert result.property_holds, result.explanation
 
 
 Real-World Case Study: SQLAlchemy ORM Race Condition

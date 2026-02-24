@@ -137,7 +137,7 @@ returning any counterexample schedule.
            temp = self.value
            self.value = temp + 1
 
-   def test_counter_increment_is_not_atomic():
+   def test_counter_is_atomic():
        result = explore_interleavings(
            setup=lambda: Counter(value=0),
            threads=[
@@ -150,9 +150,7 @@ returning any counterexample schedule.
            seed=42,
        )
 
-       assert not result.property_holds
-       # result.explanation has a human-readable trace of the race
-       print(result.explanation)
+       assert result.property_holds, result.explanation
 
 When a race is found, ``result.explanation`` contains an interleaved source-line
 trace showing which threads accessed which shared state, the conflict pattern
@@ -214,8 +212,7 @@ performance.
        threads=[lambda c: c.increment(), lambda c: c.increment()],
        invariant=lambda c: c.value == 2,
    )
-   assert not result.property_holds  # lost-update bug found in 2 executions
-   print(result.explanation)         # human-readable trace of the race
+   assert result.property_holds, result.explanation
 
 **Scope:** DPOR explores alternative schedules only where it detects a
 conflict at the bytecode level (two threads accessing the same Python object

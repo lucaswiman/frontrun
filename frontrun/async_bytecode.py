@@ -32,7 +32,7 @@ Example — find a race condition with random schedule exploration:
     ...     tasks=[lambda c: c.increment(), lambda c: c.increment()],
     ...     invariant=lambda c: c.value == 2,
     ... ))
-    >>> assert not result.property_holds  # race condition found!
+    >>> assert result.property_holds, result.explanation  # fails — lost update!
 
 The await_point() function marks explicit yield points where context switches
 can occur. This is analogous to bytecode.py's opcode-level tracing, but for

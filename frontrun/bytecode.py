@@ -28,7 +28,7 @@ Example — find a race condition with random schedule exploration:
     ...     threads=[lambda c: c.increment(), lambda c: c.increment()],
     ...     invariant=lambda c: c.value == 2,
     ... )
-    >>> assert not result.property_holds  # race condition found!
+    >>> assert result.property_holds, result.explanation  # fails — lost update!
 """
 
 import random
@@ -53,7 +53,7 @@ from frontrun._io_detection import (
     set_io_reporter,
     unpatch_io,
 )
-from frontrun._trace_format import TraceRecorder, format_trace
+from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import InterleavingResult
@@ -328,12 +328,28 @@ class BytecodeShuffler:
         if not self.detect_io:
             return
         scheduler = self.scheduler
+        recorder = scheduler.trace_recorder
 
         def _io_reporter(resource_id: str, kind: str) -> None:
             # Force a scheduling point around IO operations so the random
             # exploration can try different orderings of IO vs other threads.
             if not scheduler._finished and not scheduler._error:
                 scheduler.wait_for_turn(thread_id)
+            # Record I/O event in the trace for human-readable output
+            if recorder is not None:
+                _frame = sys._getframe(1)
+                while _frame is not None and not _should_trace_file(_frame.f_code.co_filename):
+                    _frame = _frame.f_back
+                if _frame is not None:
+                    chain = build_call_chain(_frame, filter_fn=_should_trace_file)
+                    recorder.record(
+                        thread_id=thread_id,
+                        frame=_frame,
+                        opcode="IO",
+                        access_type=kind,
+                        attr_name=resource_id,
+                        call_chain=chain,
+                    )
 
         set_io_reporter(_io_reporter)
 

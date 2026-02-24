@@ -43,6 +43,7 @@ class TraceEvent:
     access_type: str | None = None  # "read", "write", or None
     attr_name: str | None = None  # e.g. "value", "balance"
     obj_type_name: str | None = None  # e.g. "Counter", "BankAccount"
+    call_chain: list[str] | None = None  # e.g. ["DB.dict", "do_incrs"]
 
 
 @dataclass(slots=True)
@@ -57,6 +58,45 @@ class SourceLineEvent:
     access_type: str | None = None  # "read", "write", or None (if mixed, "read+write")
     attr_name: str | None = None
     obj_type_name: str | None = None
+    call_chain: list[str] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Frame introspection helpers
+# ---------------------------------------------------------------------------
+
+
+def qualified_name(frame: Any) -> str:
+    """Get a qualified function name from a frame (e.g. ``DB.dict``)."""
+    code = frame.f_code
+    qualname = getattr(code, "co_qualname", None)  # Python 3.11+
+    if qualname is not None:
+        return qualname
+    # Fallback for 3.10: try to get class from 'self'
+    name = code.co_name
+    try:
+        self_obj = frame.f_locals.get("self")
+        if self_obj is not None:
+            return f"{type(self_obj).__name__}.{name}"
+    except Exception:
+        pass
+    return name
+
+
+def build_call_chain(frame: Any, *, filter_fn: Any, max_depth: int = 3) -> list[str] | None:
+    """Walk user-code frames from *frame* upward, returning qualified names.
+
+    ``filter_fn(filename) -> bool`` selects which frames are user code
+    (typically :func:`frontrun._tracing.should_trace_file`).
+    Returns ``None`` when the chain would be empty.
+    """
+    chain: list[str] = []
+    f: Any = frame
+    while f is not None and len(chain) < max_depth:
+        if filter_fn(f.f_code.co_filename):
+            chain.append(qualified_name(f))
+        f = f.f_back
+    return chain or None
 
 
 # ---------------------------------------------------------------------------
@@ -87,13 +127,14 @@ class TraceRecorder:
         access_type: str | None = None,
         attr_name: str | None = None,
         obj: Any = None,
+        obj_type_name: str | None = None,
+        call_chain: list[str] | None = None,
     ) -> None:
         """Record one trace event from a frame object."""
         if not self.enabled:
             return
         code = frame.f_code
-        obj_type_name: str | None = None
-        if obj is not None:
+        if obj_type_name is None and obj is not None:
             obj_type_name = type(obj).__name__
 
         with self._lock:
@@ -110,6 +151,7 @@ class TraceRecorder:
             access_type=access_type,
             attr_name=attr_name,
             obj_type_name=obj_type_name,
+            call_chain=call_chain,
         )
         # Append under the recorder lock for ordering consistency
         with self._lock:
@@ -206,7 +248,10 @@ def deduplicate_to_source_lines(events: list[TraceEvent]) -> list[SourceLineEven
 
     When multiple opcodes on the same source line produce events (e.g.,
     LOAD_ATTR then STORE_ATTR for ``self.value += 1``), merge them into
-    a single entry with a combined access_type.
+    a single entry with a combined access_type — but only when they
+    access the same (obj_type, attr_name) key.  Events with different
+    keys on the same line get separate entries so that filtering can
+    distinguish them later (e.g. an attribute read vs an I/O event).
     """
     if not events:
         return []
@@ -215,11 +260,14 @@ def deduplicate_to_source_lines(events: list[TraceEvent]) -> list[SourceLineEven
     prev_tid = -1
     prev_lineno = -1
     prev_filename = ""
+    prev_key: tuple[str | None, str | None] = (None, None)
 
     for ev in events:
         same_line = ev.thread_id == prev_tid and ev.lineno == prev_lineno and ev.filename == prev_filename
+        ev_key = (ev.obj_type_name, ev.attr_name)
+        same_key = ev_key == prev_key
 
-        if same_line and result:
+        if same_line and same_key and result:
             last = result[-1]
             # Merge access types
             if last.access_type != ev.access_type and ev.access_type is not None:
@@ -246,11 +294,13 @@ def deduplicate_to_source_lines(events: list[TraceEvent]) -> list[SourceLineEven
                     access_type=ev.access_type,
                     attr_name=ev.attr_name,
                     obj_type_name=ev.obj_type_name,
+                    call_chain=ev.call_chain,
                 )
             )
             prev_tid = ev.thread_id
             prev_lineno = ev.lineno
             prev_filename = ev.filename
+            prev_key = ev_key
 
     return result
 
@@ -348,6 +398,124 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
 
 
 # ---------------------------------------------------------------------------
+# Trace condensation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CollapsedRun:
+    """Placeholder for a collapsed sequence of events from one thread."""
+
+    count: int
+    thread_id: int
+
+
+def _find_conflicting_keys(events: list[SourceLineEvent]) -> set[tuple[str | None, str | None]]:
+    """Find (obj_type, attr_name) pairs accessed by multiple threads with at least one write."""
+    key_threads: dict[tuple[str | None, str | None], set[int]] = {}
+    key_has_write: set[tuple[str | None, str | None]] = set()
+    for ev in events:
+        key = (ev.obj_type_name, ev.attr_name)
+        key_threads.setdefault(key, set()).add(ev.thread_id)
+        if ev.access_type in ("write", "read+write"):
+            key_has_write.add(key)
+    return {key for key, tids in key_threads.items() if len(tids) > 1 and key in key_has_write}
+
+
+def _collapse_runs(lines: list[SourceLineEvent], *, max_lines: int) -> list[SourceLineEvent | CollapsedRun]:
+    """Collapse consecutive same-thread events, keeping first and last of each run."""
+    if not lines:
+        return []
+
+    # Group into runs of consecutive events from the same thread
+    runs: list[tuple[int, list[SourceLineEvent]]] = []
+    current_tid = -1
+    current_run: list[SourceLineEvent] = []
+    for ev in lines:
+        if ev.thread_id != current_tid:
+            if current_run:
+                runs.append((current_tid, current_run))
+            current_tid = ev.thread_id
+            current_run = [ev]
+        else:
+            current_run.append(ev)
+    if current_run:
+        runs.append((current_tid, current_run))
+
+    result: list[SourceLineEvent | CollapsedRun] = []
+    for tid, run in runs:
+        if len(run) <= 3:
+            result.extend(run)
+        else:
+            result.append(run[0])
+            result.append(CollapsedRun(count=len(run) - 2, thread_id=tid))
+            result.append(run[-1])
+
+    # Final cap: if still too long, take first half + last half
+    if len(result) > max_lines:
+        half = max_lines // 2
+        omitted = len(result) - max_lines
+        result = result[:half] + [CollapsedRun(count=omitted, thread_id=-1)] + result[-half:]
+
+    return result
+
+
+def _merge_consecutive(events: list[SourceLineEvent]) -> list[SourceLineEvent]:
+    """Merge consecutive same-thread same-line events after filtering.
+
+    After conflict-key filtering removes irrelevant events, previously
+    non-adjacent entries with the same thread+line may become neighbours.
+    This pass collapses them just like :func:`deduplicate_to_source_lines`.
+    """
+    if not events:
+        return []
+    result: list[SourceLineEvent] = [events[0]]
+    for ev in events[1:]:
+        prev = result[-1]
+        if ev.thread_id == prev.thread_id and ev.lineno == prev.lineno and ev.filename == prev.filename:
+            if ev.access_type in ("write", "read+write") and prev.access_type == "read":
+                prev.access_type = "read+write"
+            elif ev.access_type in ("read", "read+write") and prev.access_type == "write":
+                prev.access_type = "read+write"
+        else:
+            result.append(ev)
+    return result
+
+
+def condense_trace(lines: list[SourceLineEvent], *, max_lines: int = 30) -> list[SourceLineEvent | CollapsedRun]:
+    """Condense a trace to show only the essential interleaving.
+
+    Strategy:
+    1. Always filter to events involved in cross-thread data conflicts
+       (same attribute accessed by 2+ threads with at least one write).
+       After filtering, re-merge consecutive same-line events that were
+       previously separated by now-removed entries.
+    2. If still too long, collapse single-thread runs (keep first/last).
+    3. Cap at ``max_lines``.
+
+    Returns a mixed list of :class:`SourceLineEvent` and :class:`CollapsedRun`
+    placeholders for the formatter to render.
+    """
+    # Always try to filter to cross-thread conflicting attributes —
+    # this removes method lookups, lock accesses, and other noise
+    # regardless of overall trace length.
+    conflicting_keys = _find_conflicting_keys(lines)
+    if conflicting_keys:
+        filtered = [ev for ev in lines if (ev.obj_type_name, ev.attr_name) in conflicting_keys]
+        if filtered:
+            merged = _merge_consecutive(filtered)
+            if len(merged) <= max_lines:
+                return list(merged)
+            lines = merged
+
+    if len(lines) <= max_lines:
+        return list(lines)
+
+    # Strategy 2: collapse single-thread runs
+    return _collapse_runs(lines, max_lines=max_lines)
+
+
+# ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
 
@@ -362,6 +530,7 @@ def format_trace(
     show_opcodes: bool = False,
     reproduction_attempts: int = 0,
     reproduction_successes: int = 0,
+    max_lines: int = 30,
 ) -> str:
     """Format a trace as a human-readable interleaved source-line display.
 
@@ -374,6 +543,7 @@ def format_trace(
         show_opcodes: If True, include opcode-level detail for each line.
         reproduction_attempts: How many times the schedule was replayed.
         reproduction_successes: How many replays reproduced the failure.
+        max_lines: Maximum trace lines before condensation (default 30).
 
     Returns:
         Multi-line string suitable for printing or attaching to test output.
@@ -392,6 +562,9 @@ def format_trace(
 
     conflict = classify_conflict(lines)
 
+    # Condense trace to show only the essential interleaving
+    condensed = condense_trace(lines, max_lines=max_lines)
+
     # Build output
     parts: list[str] = []
 
@@ -408,8 +581,15 @@ def format_trace(
     parts.append("")
     max_thread_label = max(len(name) for name in thread_names)
 
-    # Compute short filename (just the basename)
-    for line_ev in lines:
+    for item in condensed:
+        if isinstance(item, CollapsedRun):
+            if item.thread_id >= 0:
+                parts.append(f"  {'':>{max_thread_label}} | ... {item.count} more lines from Thread {item.thread_id}")
+            else:
+                parts.append(f"  {'':>{max_thread_label}} | ... {item.count} more lines omitted")
+            continue
+
+        line_ev = item
         label = thread_names[line_ev.thread_id].ljust(max_thread_label)
         short_file = _short_filename(line_ev.filename)
         loc = f"{short_file}:{line_ev.lineno}"
@@ -420,10 +600,17 @@ def format_trace(
                 if line_ev.obj_type_name:
                     access_tag = f"  [{line_ev.access_type} {line_ev.obj_type_name}.{line_ev.attr_name}]"
                 else:
-                    access_tag = f"  [{line_ev.access_type} .{line_ev.attr_name}]"
+                    access_tag = f"  [{line_ev.access_type} {line_ev.attr_name}]"
+
+        chain_tag = ""
+        if line_ev.call_chain:
+            chain_tag = f"  in {' <- '.join(line_ev.call_chain)}"
 
         src = line_ev.source_line
-        parts.append(f"  {label} | {loc:<25s} {src}{access_tag}")
+        parts.append(f"  {label} | {loc:<25s} {src}")
+        if access_tag:
+            indent = " " * (2 + max_thread_label) + " | "
+            parts.append(f"{indent}{access_tag.lstrip()}{chain_tag}")
 
         # Optional opcode detail
         if show_opcodes:

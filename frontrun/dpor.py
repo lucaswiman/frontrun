@@ -30,7 +30,7 @@ Usage::
         threads=[lambda c: c.increment(), lambda c: c.increment()],
         invariant=lambda c: c.value == 2,
     )
-    assert not result.property_holds  # lost-update bug found
+    assert result.property_holds, result.explanation  # fails — lost update!
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ from frontrun._io_detection import (
     uninstall_io_profile,
     unpatch_io,
 )
-from frontrun._trace_format import TraceRecorder, format_trace
+from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import InterleavingResult
@@ -779,11 +779,28 @@ class DporBytecodeRunner:
         _dpor_tls.pending_io = []
 
         if self.detect_io:
+            _recorder = scheduler.trace_recorder
 
             def _io_reporter(resource_id: str, kind: str) -> None:
                 object_key = _make_object_key(hash(resource_id), resource_id)
                 pending: list[tuple[int, str]] = _dpor_tls.pending_io
                 pending.append((object_key, kind))
+                # Record I/O event in the trace for human-readable output
+                if _recorder is not None:
+                    _frame = sys._getframe(1)
+                    # Walk up to find user code (skip frontrun internals)
+                    while _frame is not None and not _should_trace_file(_frame.f_code.co_filename):
+                        _frame = _frame.f_back
+                    if _frame is not None:
+                        chain = build_call_chain(_frame, filter_fn=_should_trace_file)
+                        _recorder.record(
+                            thread_id=thread_id,
+                            frame=_frame,
+                            opcode="IO",
+                            access_type=kind,
+                            attr_name=resource_id,
+                            call_chain=chain,
+                        )
 
             set_io_reporter(_io_reporter)
 
@@ -1015,12 +1032,20 @@ def explore_dpor(
                 successes = 0
                 for _ in range(reproduce_on_failure):
                     try:
+                        # DPOR processes I/O events within the same scheduling
+                        # step as the triggering opcode (via pending_io), so
+                        # its schedule is pure opcode-level.  The bytecode
+                        # shuffler's _io_reporter adds extra scheduling steps
+                        # for each I/O event, which would desync the replay.
+                        # Disable detect_io during replay so the step counts
+                        # match; the actual I/O still happens as a side effect
+                        # of opcode execution.
                         replay_state = run_with_schedule(
                             schedule_list,
                             setup,
                             threads,
                             timeout=timeout_per_run,
-                            detect_io=detect_io,
+                            detect_io=False,
                             deadlock_timeout=deadlock_timeout,
                         )
                         if not invariant(replay_state):

@@ -79,3 +79,14 @@ class InterleavingResult:
     explanation: str | None = None
     reproduction_attempts: int = 0
     reproduction_successes: int = 0
+
+    def __repr__(self) -> str:
+        ce = self.counterexample
+        if ce is not None and len(ce) > 10:
+            ce_repr = f"[{', '.join(map(str, ce[:5]))}, ...({len(ce)} steps)]"
+        else:
+            ce_repr = repr(ce)
+        return (
+            f"InterleavingResult(property_holds={self.property_holds}, "
+            f"counterexample={ce_repr}, num_explored={self.num_explored})"
+        )

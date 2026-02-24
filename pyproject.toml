@@ -77,6 +77,7 @@ ignore = [
     "F841",   # Unused variable (often intentional in test setup)
     "C408",   # Unnecessary dict() call (dict() with kwargs is more readable)
     "PERF203",  # try-except in loop (performance suggestion, acceptable for test code)
+    "UP015",    # Unnecessary open mode "r" (explicit mode aids readability in I/O tests)
 ]
 
 [tool.pyright]
