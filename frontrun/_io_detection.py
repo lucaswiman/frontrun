@@ -154,7 +154,7 @@ def _traced_open(*args: Any, **kwargs: Any) -> Any:
             resource_id = _file_resource_id(path)
             # Determine read vs write from mode
             mode = args[1] if len(args) > 1 else kwargs.get("mode", "r")
-            if isinstance(mode, str) and any(c in mode for c in "waxb+"):
+            if isinstance(mode, str) and any(c in mode for c in "wax+"):
                 reporter(resource_id, "write")
             else:
                 reporter(resource_id, "read")

@@ -241,6 +241,19 @@ class DporScheduler:
         with self._condition:
             if frame is not None:
                 _process_opcode(frame, self, thread_id)
+            # Flush deferred I/O reports when the thread is outside all locks.
+            # This must happen at report_and_wait level (not only inside
+            # _process_opcode) to guarantee it fires even when _process_opcode
+            # returns early due to unresolved instructions.
+            _pending_io: list[tuple[int, str]] | None = getattr(_dpor_tls, "pending_io", None)
+            if _pending_io and getattr(_dpor_tls, "lock_depth", 0) == 0:
+                _elock = self._engine_lock
+                _engine = self.engine
+                _execution = self.execution
+                for _obj_key, _io_kind in _pending_io:
+                    with _elock:
+                        _engine.report_io_access(_execution, thread_id, _obj_key, _io_kind)
+                _pending_io.clear()
             while True:
                 if self._finished or self._error:
                     return False
@@ -736,6 +749,7 @@ class DporBytecodeRunner:
                         waiter_set.discard(thread_id)
                         execution.unblock_thread(thread_id)
                     engine.report_sync(execution, thread_id, "lock_acquire", obj_id)
+                _dpor_tls.lock_depth = getattr(_dpor_tls, "lock_depth", 0) + 1
                 return
             if event == "lock_release":
                 with engine_lock:
@@ -743,6 +757,7 @@ class DporBytecodeRunner:
                     for waiter in waiters:
                         execution.unblock_thread(waiter)
                     engine.report_sync(execution, thread_id, "lock_release", obj_id)
+                _dpor_tls.lock_depth = max(0, getattr(_dpor_tls, "lock_depth", 1) - 1)
                 # Wake threads that may now be schedulable
                 with scheduler._condition:
                     scheduler._condition.notify_all()
@@ -757,13 +772,18 @@ class DporBytecodeRunner:
         _dpor_tls.engine = engine
         _dpor_tls.execution = execution
 
-        # IO detection: report socket/file accesses as resource conflicts
+        # IO detection: defer I/O reports until the thread exits all locks
+        # so that the DPOR backtrack point lands at a scheduling point where
+        # the other thread can actually run (not blocked on the lock).
+        _dpor_tls.lock_depth = 0
+        _dpor_tls.pending_io = []
+
         if self.detect_io:
 
             def _io_reporter(resource_id: str, kind: str) -> None:
                 object_key = _make_object_key(hash(resource_id), resource_id)
-                with engine_lock:
-                    engine.report_access(execution, thread_id, object_key, kind)
+                pending: list[tuple[int, str]] = _dpor_tls.pending_io
+                pending.append((object_key, kind))
 
             set_io_reporter(_io_reporter)
 
@@ -778,6 +798,8 @@ class DporBytecodeRunner:
         _dpor_tls.thread_id = None
         _dpor_tls.engine = None
         _dpor_tls.execution = None
+        _dpor_tls.lock_depth = 0
+        _dpor_tls.pending_io = []
 
     def _run_thread_settrace(
         self,
