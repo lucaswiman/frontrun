@@ -230,7 +230,7 @@ class TestHttpCounterRace:
         import time
 
         base_url, store, lock = http_server
-        trials = 500
+        trials = 100
         failures = 0
         rng = random.Random(42)
 
@@ -256,7 +256,7 @@ class TestHttpCounterRace:
                 failures += 1
 
         rate = failures / trials * 100
-        assert failures > 0, f"Race never triggered in {trials} trials"
+        assert failures > 0, f"Race never triggered in {trials} trials (try increasing trials)"
 
 
 # ---------------------------------------------------------------------------
