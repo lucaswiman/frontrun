@@ -385,6 +385,11 @@ class CooperativeSemaphore:
     ``threading.Semaphore``, because the real Semaphore's ``__init__``
     references Condition/Lock from ``threading``'s globals which may be
     patched.
+
+    Reports ``lock_acquire``/``lock_release`` sync events to the DPOR
+    engine so that it establishes happens-before edges between release
+    and subsequent acquire, preventing false-positive race reports on
+    Semaphore-protected critical sections.
     """
 
     _value: int
@@ -395,6 +400,12 @@ class CooperativeSemaphore:
             raise ValueError("semaphore initial value must be >= 0")
         self._value = value
         self._lock = real_lock()
+        self._object_id = id(self)
+
+    def _report(self, event: str) -> None:
+        reporter = get_sync_reporter()
+        if reporter is not None:
+            reporter(event, self._object_id)
 
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
         from frontrun._deadlock import SchedulerAbort
@@ -404,6 +415,7 @@ class CooperativeSemaphore:
         if self._value > 0:
             self._value -= 1
             self._lock.release()
+            self._report("lock_acquire")
             return True
         self._lock.release()
 
@@ -420,6 +432,7 @@ class CooperativeSemaphore:
                     if self._value > 0:
                         self._value -= 1
                         self._lock.release()
+                        self._report("lock_acquire")
                         return True
                     self._lock.release()
                     if time.monotonic() >= deadline:
@@ -430,12 +443,17 @@ class CooperativeSemaphore:
                 if self._value > 0:
                     self._value -= 1
                     self._lock.release()
+                    self._report("lock_acquire")
                     return True
                 self._lock.release()
                 time.sleep(0.001)
 
         # Spin-yield loop for managed threads
         scheduler, thread_id = ctx
+        # Tell the DPOR engine this thread is waiting for the semaphore.
+        # This blocks the thread in the engine so the scheduler picks
+        # the semaphore holder instead, avoiding starvation.
+        self._report("lock_wait")
         while True:
             # Aggressive error check (option 6)
             if scheduler._error:
@@ -444,6 +462,7 @@ class CooperativeSemaphore:
             if self._value > 0:
                 self._value -= 1
                 self._lock.release()
+                self._report("lock_acquire")
                 return True
             self._lock.release()
             if scheduler._finished:
@@ -453,6 +472,7 @@ class CooperativeSemaphore:
                     if self._value > 0:
                         self._value -= 1
                         self._lock.release()
+                        self._report("lock_acquire")
                         return True
                     self._lock.release()
                     time.sleep(0.001)
@@ -465,6 +485,7 @@ class CooperativeSemaphore:
         self._lock.acquire()
         self._value += n
         self._lock.release()
+        self._report("lock_release")
 
     def __enter__(self) -> "CooperativeSemaphore":
         self.acquire()
