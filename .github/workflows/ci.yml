@@ -82,6 +82,18 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
+      postgres:
+        image: postgres:16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: frontrun_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -100,3 +112,5 @@ jobs:
 
       - name: Run integration tests
         run: make test-integration-3.14t
+        env:
+          DATABASE_URL: postgresql://postgres@localhost:5432/frontrun_test
