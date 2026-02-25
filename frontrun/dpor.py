@@ -177,11 +177,12 @@ class _PreloadBridge:
     at each scheduling point via :meth:`drain`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dispatcher: Any = None) -> None:
         self._lock = real_lock()
         self._tid_to_dpor: dict[int, int] = {}
         self._pending: dict[int, list[tuple[int, str, str]]] = {}
         self._active = False
+        self._dispatcher = dispatcher  # IOEventDispatcher (for poll())
 
     def register_thread(self, os_tid: int, dpor_id: int) -> None:
         """Map an OS thread ID to a DPOR logical thread ID."""
@@ -234,7 +235,13 @@ class _PreloadBridge:
         """Return and clear buffered events for a DPOR thread.
 
         Each item is ``(object_key, kind, resource_id)``.
+
+        On free-threaded Python the background reader may not have
+        processed pipe data yet, so we poll the dispatcher first to
+        flush any pending bytes into listener callbacks.
         """
+        if self._dispatcher is not None:
+            self._dispatcher.poll()
         with self._lock:
             events = self._pending.get(dpor_id)
             if events:
@@ -1115,8 +1122,8 @@ def explore_dpor(
     if detect_io:
         from frontrun._preload_io import IOEventDispatcher
 
-        preload_bridge = _PreloadBridge()
         preload_dispatcher = IOEventDispatcher()
+        preload_bridge = _PreloadBridge(dispatcher=preload_dispatcher)
         preload_dispatcher.add_listener(preload_bridge.listener)
         preload_dispatcher.start()
 

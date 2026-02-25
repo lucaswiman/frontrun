@@ -31,11 +31,15 @@ Where *kind* is one of: ``connect``, ``read``, ``write``, ``close``.
 from __future__ import annotations
 
 import ctypes
+import fcntl
 import os
+import select as _select_mod
 import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+
+from frontrun._cooperative import real_lock
 
 
 @dataclass
@@ -134,7 +138,11 @@ class IOEventDispatcher:
         self._write_fd: int | None = None
         self._reader_thread: threading.Thread | None = None
         self._listeners: list[IOEventListener] = []
-        self._lock = threading.Lock()
+        # Use real (non-cooperative) locks so the background reader thread
+        # is never affected by frontrun's cooperative lock patching.
+        self._lock = real_lock()
+        self._pipe_lock = real_lock()  # serialises pipe reads between reader thread and poll()
+        self._buf = b""  # partial-line buffer, protected by _pipe_lock
         self._started = False
         self._stopped = False
         self._events: list[PreloadIOEvent] = []
@@ -165,6 +173,11 @@ class IOEventDispatcher:
         if self._started:
             return
         r, w = os.pipe()
+        # Make the read end non-blocking so poll() and the reader thread
+        # can share it safely under _pipe_lock without blocking each other.
+        flags = fcntl.fcntl(r, fcntl.F_GETFL)
+        fcntl.fcntl(r, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
         self._read_fd = r
         self._write_fd = w
         os.environ["FRONTRUN_IO_FD"] = str(w)
@@ -214,28 +227,75 @@ class IOEventDispatcher:
                 pass
             self._read_fd = None
 
-    def _reader_loop(self) -> None:
-        """Background thread: read lines from pipe, parse, dispatch."""
-        assert self._read_fd is not None
-        buf = b""
-        while True:
-            try:
-                chunk = os.read(self._read_fd, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break  # EOF — write end closed
-            buf += chunk
-            while b"\n" in buf:
-                line_bytes, buf = buf.split(b"\n", 1)
+    def _read_and_dispatch(self) -> list[PreloadIOEvent]:
+        """Read available pipe data under _pipe_lock, parse complete lines.
+
+        Returns parsed events (caller dispatches to listeners).
+        The pipe read end is non-blocking, so this never blocks.
+        """
+        events: list[PreloadIOEvent] = []
+        with self._pipe_lock:
+            assert self._read_fd is not None
+            while True:
+                try:
+                    chunk = os.read(self._read_fd, 65536)
+                except BlockingIOError:
+                    break
+                except OSError:
+                    break
+                if not chunk:
+                    break  # EOF
+                self._buf += chunk
+            while b"\n" in self._buf:
+                line_bytes, self._buf = self._buf.split(b"\n", 1)
                 line = line_bytes.decode("utf-8", errors="replace")
                 event = _parse_event_line(line)
                 if event is not None:
-                    with self._lock:
-                        self._events.append(event)
-                        listeners = list(self._listeners)
-                    for listener in listeners:
-                        listener(event)
+                    events.append(event)
+        return events
+
+    def _dispatch_events(self, events: list[PreloadIOEvent]) -> None:
+        """Store events and invoke listeners (outside _pipe_lock)."""
+        for event in events:
+            with self._lock:
+                self._events.append(event)
+                listeners = list(self._listeners)
+            for listener in listeners:
+                listener(event)
+
+    def _reader_loop(self) -> None:
+        """Background thread: wait for pipe data via select, then read and dispatch."""
+        assert self._read_fd is not None
+        read_fd = self._read_fd
+        while True:
+            try:
+                ready, _, _ = _select_mod.select([read_fd], [], [], 0.05)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                continue
+            events = self._read_and_dispatch()
+            if events:
+                self._dispatch_events(events)
+            # Detect EOF: select returned ready but no data was read and
+            # no events were parsed.  Check if we got an empty read (the
+            # _buf would still be empty if the chunk was b"").
+            elif self._stopped:
+                break
+
+    def poll(self) -> None:
+        """Synchronously read all available pipe data and dispatch events.
+
+        On free-threaded Python (3.13t+) the background reader thread may
+        not have processed pipe data by the time the calling thread reaches
+        its next scheduling point.  Calling ``poll()`` from the DPOR drain
+        path ensures events are available immediately.
+        """
+        if self._read_fd is None or self._stopped:
+            return
+        events = self._read_and_dispatch()
+        if events:
+            self._dispatch_events(events)
 
     # Context manager support
     def __enter__(self) -> IOEventDispatcher:
