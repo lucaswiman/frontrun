@@ -132,7 +132,7 @@ class TestPreloadDporIntegration:
             fd = os.open(path, os.O_RDONLY)
             data = os.read(fd, 100)
             os.close(fd)
-            val = int(data)
+            val = int(data) if data else 0
             # Write incremented value using raw POSIX I/O
             fd = os.open(path, os.O_WRONLY | os.O_TRUNC)
             os.write(fd, str(val + 1).encode())
@@ -142,7 +142,7 @@ class TestPreloadDporIntegration:
             fd = os.open(path, os.O_RDONLY)
             data = os.read(fd, 100)
             os.close(fd)
-            return int(data) == 2
+            return data != b"" and int(data) == 2
 
         result = explore_dpor(
             setup=State,
