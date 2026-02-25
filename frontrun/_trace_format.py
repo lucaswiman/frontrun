@@ -430,10 +430,7 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
                     if is_io:
                         io_fallback = io_fallback or ConflictInfo(
                             pattern="write_write",
-                            summary=(
-                                f"Concurrent database I/O: threads {t_a} and {t_b} "
-                                f"both sent queries to {attr}."
-                            ),
+                            summary=(f"Concurrent database I/O: threads {t_a} and {t_b} both sent queries to {attr}."),
                             attr_name=attr,
                         )
                     else:
