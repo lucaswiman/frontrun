@@ -234,27 +234,31 @@ Output:
 
        Write-write conflict: threads 0 and 1 both wrote to login_count.
 
-       Thread 0 | send/recv socket:127.0.0.1:5432
-       Thread 1 | send/recv socket:127.0.0.1:5432
-       Thread 1 | orm_race.py:323       user.login_count = user.login_count + 1
-                | [read+write User.login_count]
-       Thread 1 | send/recv socket:127.0.0.1:5432
+       Thread 0 | send socket:unix:/var/run/postgresql/.s.PGSQL.5432
        Thread 0 | orm_race.py:323       user.login_count = user.login_count + 1
                 | [read+write User.login_count]
-       Thread 0 | send/recv socket:127.0.0.1:5432
+       Thread 1 | send socket:unix:/var/run/postgresql/.s.PGSQL.5432
+       Thread 1 | orm_race.py:323       user.login_count = user.login_count + 1
+                | [read+write User.login_count]
+       Thread 0 | send/recv socket:unix:/var/run/postgresql/.s.PGSQL.5432
+       Thread 1 | send/recv socket:unix:/var/run/postgresql/.s.PGSQL.5432
 
 DPOR detected the lost update in just 2 interleavings.  The trace
 interleaves C-level socket I/O (libpq ``send``/``recv``) with
 Python-level attribute accesses, telling the full story:
 
-1. Thread 0 sends a SELECT to Postgres and receives the result
+1. Thread 0 sends a ``SELECT`` to Postgres and receives the result
    (``login_count = 0``).
-2. Thread 1 does the same --- both threads now hold stale reads.
-3. Thread 1 computes ``0 + 1 = 1`` and commits.
-4. Thread 0 computes ``0 + 1 = 1`` (using its stale value) and commits,
-   silently overwriting Thread 1's increment.
+2. Thread 0 computes ``0 + 1 = 1`` in Python (``user.login_count =
+   user.login_count + 1``) but has not yet committed.
+3. Thread 1 sends its own ``SELECT`` and receives ``login_count = 0``
+   (Thread 0's update hasn't been committed).
+4. Thread 1 also computes ``0 + 1 = 1``.
+5. Thread 0 sends ``UPDATE … SET login_count = 1`` and ``COMMIT``.
+6. Thread 1 sends ``UPDATE … SET login_count = 1`` and ``COMMIT``,
+   silently overwriting Thread 0's increment.
 
-The I/O events (``send/recv socket:…``) come from the ``LD_PRELOAD``
+The I/O events (``send``/``recv socket:…``) come from the ``LD_PRELOAD``
 library intercepting libpq's C-level socket calls.  DPOR uses these as
 conflict points to explore alternative thread orderings around database
 operations --- even though psycopg2 never goes through Python's
