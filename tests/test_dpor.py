@@ -481,3 +481,319 @@ class TestEdgeCases:
         )
 
         assert result.num_explored <= 3
+
+
+# ---------------------------------------------------------------------------
+# Global variable races (LOAD_GLOBAL / STORE_GLOBAL tracking)
+# ---------------------------------------------------------------------------
+
+_global_counter = 0
+
+
+class _GlobalCounterState:
+    def __init__(self) -> None:
+        global _global_counter
+        _global_counter = 0
+
+
+def _global_increment(_state: _GlobalCounterState) -> None:
+    global _global_counter
+    tmp = _global_counter
+    _global_counter = tmp + 1
+
+
+def _global_invariant(_state: _GlobalCounterState) -> bool:
+    return _global_counter == 2
+
+
+_simple_global = 0
+
+
+class _SimpleGlobalState:
+    def __init__(self) -> None:
+        global _simple_global
+        _simple_global = 0
+
+
+def _simple_global_inc(_state: _SimpleGlobalState) -> None:
+    global _simple_global
+    _simple_global += 1
+
+
+def _simple_global_check(_state: _SimpleGlobalState) -> bool:
+    return _simple_global == 2
+
+
+class TestGlobalVariableRace:
+    """DPOR detects lost-update on module-level globals (LOAD_GLOBAL / STORE_GLOBAL)."""
+
+    def test_dpor_detects_global_race(self) -> None:
+        result = explore_dpor(
+            setup=_GlobalCounterState,
+            threads=[_global_increment, _global_increment],
+            invariant=_global_invariant,
+            detect_io=False,
+            deadlock_timeout=5.0,
+        )
+        assert not result.property_holds, "DPOR should detect the global-variable lost-update race"
+
+    def test_dpor_detects_augmented_global_assignment(self) -> None:
+        """``global_var += 1`` compiles to LOAD_GLOBAL + BINARY_OP + STORE_GLOBAL."""
+        result = explore_dpor(
+            setup=_SimpleGlobalState,
+            threads=[_simple_global_inc, _simple_global_inc],
+            invariant=_simple_global_check,
+            detect_io=False,
+            deadlock_timeout=5.0,
+        )
+        assert not result.property_holds, "DPOR should detect the global += lost-update race"
+
+    def test_barrier_proves_global_race_is_real(self) -> None:
+        """Barrier-forced interleaving proves the lost update is real."""
+        global _global_counter
+        barrier = threading.Barrier(2)
+
+        def handler() -> None:
+            global _global_counter
+            tmp = _global_counter
+            barrier.wait()
+            _global_counter = tmp + 1
+
+        for _ in range(10):
+            _global_counter = 0
+            t1 = threading.Thread(target=handler)
+            t2 = threading.Thread(target=handler)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            if _global_counter != 2:
+                return
+        raise AssertionError("Barrier-forced global race never triggered in 10 attempts")
+
+    def test_barrier_proves_augmented_assign_race_is_real(self) -> None:
+        global _simple_global
+        barrier = threading.Barrier(2)
+
+        def handler() -> None:
+            global _simple_global
+            tmp = _simple_global
+            barrier.wait()
+            _simple_global = tmp + 1
+
+        for _ in range(10):
+            _simple_global = 0
+            t1 = threading.Thread(target=handler)
+            t2 = threading.Thread(target=handler)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            if _simple_global != 2:
+                return
+        raise AssertionError("Barrier-forced global += race never triggered")
+
+
+# ---------------------------------------------------------------------------
+# C-level container method races (CALL handler tracks builtin methods)
+# ---------------------------------------------------------------------------
+
+
+class _ListAppendState:
+    def __init__(self) -> None:
+        self.items: list[str] = []
+        self.max_size = 1
+
+
+def _list_append_thread(state: _ListAppendState) -> None:
+    if len(state.items) < state.max_size:
+        state.items.append("item")
+
+
+def _list_append_invariant(state: _ListAppendState) -> bool:
+    return len(state.items) <= state.max_size
+
+
+class _SetAddState:
+    def __init__(self) -> None:
+        self.seen: set[str] = set()
+        self.first_adders = 0
+
+
+def _set_check_and_add(state: _SetAddState) -> None:
+    if "shared-item" not in state.seen:
+        state.first_adders += 1
+        state.seen.add("shared-item")
+
+
+def _set_add_invariant(state: _SetAddState) -> bool:
+    return state.first_adders == 1
+
+
+class TestContainerMethodRace:
+    """DPOR detects C-level container mutations (list.append, set.add, etc.)."""
+
+    def test_dpor_detects_list_append_race(self) -> None:
+        """list.append() executes in C but the CALL handler reports the write."""
+        result = explore_dpor(
+            setup=_ListAppendState,
+            threads=[_list_append_thread, _list_append_thread],
+            invariant=_list_append_invariant,
+            detect_io=False,
+            deadlock_timeout=5.0,
+        )
+        assert not result.property_holds, "DPOR should detect the list.append check-then-act race"
+
+    def test_dpor_detects_set_add_race(self) -> None:
+        """set.add() executes in C but the CALL handler reports the write."""
+        result = explore_dpor(
+            setup=_SetAddState,
+            threads=[_set_check_and_add, _set_check_and_add],
+            invariant=_set_add_invariant,
+            detect_io=False,
+            deadlock_timeout=5.0,
+        )
+        assert not result.property_holds, "DPOR should detect the set.add check-then-act race"
+
+    def test_barrier_proves_list_append_race_is_real(self) -> None:
+        barrier = threading.Barrier(2)
+        items: list[str] = []
+
+        def handler() -> None:
+            size = len(items)
+            barrier.wait()
+            if size < 1:
+                items.append("item")
+
+        for _ in range(10):
+            items.clear()
+            t1 = threading.Thread(target=handler)
+            t2 = threading.Thread(target=handler)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            if len(items) > 1:
+                return
+        raise AssertionError("Barrier-forced list.append race never triggered")
+
+    def test_barrier_proves_set_add_race_is_real(self) -> None:
+        barrier = threading.Barrier(2)
+        seen: set[str] = set()
+        first_count = [0]
+
+        def handler() -> None:
+            present = "shared-item" in seen
+            barrier.wait()
+            if not present:
+                first_count[0] += 1
+                seen.add("shared-item")
+
+        for _ in range(10):
+            seen.clear()
+            first_count[0] = 0
+            t1 = threading.Thread(target=handler)
+            t2 = threading.Thread(target=handler)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            if first_count[0] != 1:
+                return
+        raise AssertionError("Barrier-forced set.add race never triggered")
+
+
+# ---------------------------------------------------------------------------
+# Sync primitive correctness (Lock and Semaphore protect critical sections)
+# ---------------------------------------------------------------------------
+
+
+class _SemaphoreCounterState:
+    def __init__(self) -> None:
+        self.counter = 0
+        self.sem = threading.Semaphore(1)
+
+
+def _semaphore_increment(state: _SemaphoreCounterState) -> None:
+    state.sem.acquire()
+    tmp = state.counter
+    state.counter = tmp + 1
+    state.sem.release()
+
+
+def _semaphore_invariant(state: _SemaphoreCounterState) -> bool:
+    return state.counter == 2
+
+
+class _LockCounterState:
+    def __init__(self) -> None:
+        self.counter = 0
+        self.lock = threading.Lock()
+
+
+def _lock_increment(state: _LockCounterState) -> None:
+    state.lock.acquire()
+    tmp = state.counter
+    state.counter = tmp + 1
+    state.lock.release()
+
+
+def _lock_invariant(state: _LockCounterState) -> bool:
+    return state.counter == 2
+
+
+_tracked_dict: dict[str, int] = {}
+
+
+class _TrackedDictState:
+    def __init__(self) -> None:
+        _tracked_dict.clear()
+
+
+def _tracked_dict_inc(_state: _TrackedDictState) -> None:
+    current = _tracked_dict.get("count", 0)
+    _tracked_dict["count"] = current + 1
+
+
+def _tracked_dict_inv(_state: _TrackedDictState) -> bool:
+    return _tracked_dict.get("count") == 2
+
+
+class TestSyncPrimitiveCorrectness:
+    """DPOR correctly handles lock/semaphore-protected critical sections."""
+
+    def test_dpor_correctly_handles_semaphore(self) -> None:
+        result = explore_dpor(
+            setup=_SemaphoreCounterState,
+            threads=[_semaphore_increment, _semaphore_increment],
+            invariant=_semaphore_invariant,
+            detect_io=False,
+            deadlock_timeout=5.0,
+        )
+        assert result.property_holds, (
+            "DPOR incorrectly reports a race on Semaphore-protected code! "
+            "CooperativeSemaphore sync reporting may be broken."
+        )
+
+    def test_dpor_correctly_handles_lock(self) -> None:
+        result = explore_dpor(
+            setup=_LockCounterState,
+            threads=[_lock_increment, _lock_increment],
+            invariant=_lock_invariant,
+            detect_io=False,
+            deadlock_timeout=5.0,
+        )
+        assert result.property_holds, (
+            "DPOR incorrectly reports a race on Lock-protected code! Lock sync reporting may be broken."
+        )
+
+    def test_dpor_detects_global_dict_race(self) -> None:
+        """DPOR detects the race via STORE_SUBSCR even though the dict is loaded via LOAD_GLOBAL."""
+        result = explore_dpor(
+            setup=_TrackedDictState,
+            threads=[_tracked_dict_inc, _tracked_dict_inc],
+            invariant=_tracked_dict_inv,
+            detect_io=False,
+            deadlock_timeout=5.0,
+        )
+        assert not result.property_holds, "DPOR should detect this via STORE_SUBSCR tracking"

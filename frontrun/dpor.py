@@ -444,11 +444,35 @@ class DporScheduler:
 # ---------------------------------------------------------------------------
 
 
-# Types whose C-level methods mutate opaquely (invisible to bytecode tracing).
-# When a builtin_function_or_method bound to one of these types is CALLed,
-# we conservatively report a WRITE on the container.
-_MUTABLE_CONTAINER_TYPES = (list, set, dict, bytearray)
+# C-level method access classification.
+#
+# Python bytecode tracing can't see inside C method calls — list.append(),
+# set.add(), dict.update(), etc. all execute opaquely.  We detect these in the
+# CALL handler by checking if the callable is a builtin_function_or_method
+# (i.e. bound to a C-implemented object) and classifying the call as a read or
+# write based on the method name.
+#
+# Design: immutable types are excluded entirely (calling str.upper() can't
+# cause a data race).  For mutable types, known read-only methods report READ;
+# everything else defaults to WRITE.
 _BUILTIN_METHOD_TYPE = type(len)  # builtin_function_or_method
+
+_IMMUTABLE_TYPES = (str, bytes, int, float, bool, complex, tuple, frozenset, type(None))
+
+# C-level methods that are read-only (don't mutate the object).
+_C_METHOD_READ_ONLY = frozenset({
+    # Lookup / iteration (common to multiple container types)
+    "__contains__", "__getitem__", "__len__", "__iter__", "__reversed__",
+    # list / tuple
+    "count", "index",
+    # dict
+    "get", "keys", "values", "items",
+    # set
+    "issubset", "issuperset", "isdisjoint",
+    "union", "intersection", "difference", "symmetric_difference",
+    # copy
+    "copy", "__copy__",
+})
 
 
 def _make_object_key(obj_id: int, name: Any) -> int:
@@ -591,12 +615,21 @@ def _process_opcode(
             try:
                 val = getattr(obj, attr)
                 shadow.push(val)
-                # If the loaded value is a mutable container, also report a
-                # READ on the container itself.  This creates the read-side of
-                # a conflict when another thread mutates the container via a
-                # C-level method call (list.append, set.add, etc.).
-                if isinstance(val, _MUTABLE_CONTAINER_TYPES):
-                    _report_read(engine, execution, thread_id, val, "__container__", elock)
+                # When the loaded value is a mutable object (but NOT a bound
+                # method), report a READ on the object itself.  This detects
+                # cases where a container is read indirectly — e.g. passed
+                # to len() or iterated — creating a conflict with C-level
+                # method WRITEs (append, add, etc.) reported by the CALL
+                # handler below.
+                #
+                # We skip bound methods (loading .append is not a container
+                # read) and immutable types (no mutation possible).
+                if (
+                    val is not None
+                    and type(val) is not _BUILTIN_METHOD_TYPE
+                    and not isinstance(val, _IMMUTABLE_TYPES)
+                ):
+                    _report_read(engine, execution, thread_id, val, "__cmethods__", elock)
             except Exception:
                 shadow.push(None)
         else:
@@ -694,19 +727,25 @@ def _process_opcode(
     # === Function/method calls ===
 
     elif op in ("CALL", "CALL_FUNCTION", "CALL_METHOD", "CALL_KW", "CALL_FUNCTION_KW", "CALL_FUNCTION_EX"):
-        # Detect C-level method mutations on mutable containers.
-        # When a builtin method bound to a list/set/dict/bytearray is
-        # CALLed, we conservatively report a WRITE on the container.
-        # This is the write-side counterpart to the container READ
-        # reported by LOAD_ATTR above.
+        # Detect C-level method calls and classify as read or write.
+        #
+        # Scan the shadow stack for a builtin_function_or_method.  If
+        # found and its __self__ is not an immutable type, report an
+        # access on the object: READ for known read-only methods (e.g.
+        # __getitem__, count), WRITE for everything else (append, add,
+        # clear, sort, etc.).
         argc = instr.arg or 0
         scan_depth = min(argc + 3, len(shadow.stack))
         for i in range(scan_depth):
             item = shadow.stack[-(i + 1)]
             if item is not None and type(item) is _BUILTIN_METHOD_TYPE:
                 self_obj = getattr(item, "__self__", None)
-                if self_obj is not None and isinstance(self_obj, _MUTABLE_CONTAINER_TYPES):
-                    _report_write(engine, execution, thread_id, self_obj, "__container__", elock)
+                if self_obj is not None and not isinstance(self_obj, _IMMUTABLE_TYPES):
+                    method_name = getattr(item, "__name__", None)
+                    if method_name in _C_METHOD_READ_ONLY:
+                        _report_read(engine, execution, thread_id, self_obj, "__cmethods__", elock)
+                    else:
+                        _report_write(engine, execution, thread_id, self_obj, "__cmethods__", elock)
                     break
         # Standard stack effect handling.
         try:
