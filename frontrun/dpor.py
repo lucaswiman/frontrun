@@ -217,14 +217,16 @@ class _PreloadBridge:
             dpor_id = self._tid_to_dpor.get(event.tid)
             if dpor_id is None:
                 return
-            # For network I/O (sockets) we can't distinguish queries from
-            # mutations at the libc level, so treat all as writes.  For
-            # file I/O we use the actual kind so that concurrent reads
-            # don't create unnecessary conflicts.
-            if event.resource_id.startswith("socket:"):
-                kind = "write"
-            else:
-                kind = "write" if event.kind == "write" else "read"
+            # Map libc I/O operations to DPOR access kinds.  Using the
+            # actual send/recv distinction (write/read) is critical: the
+            # DPOR engine's ObjectState tracks per-thread latest-read and
+            # latest-write separately.  If we treated all socket I/O as
+            # "write", only the LAST write per thread would be tracked,
+            # and early access positions (e.g. a SELECT recv) would be
+            # overwritten by later ones (e.g. a COMMIT recv).  With
+            # read/write distinction, DPOR iteratively backtracks through
+            # the send/recv pairs to reach the critical interleaving.
+            kind = "write" if event.kind == "write" else "read"
             obj_key = _make_object_key(hash(event.resource_id), event.resource_id)
             self._pending.setdefault(dpor_id, []).append((obj_key, kind))
 
@@ -339,6 +341,14 @@ class DporScheduler:
             # This must happen at report_and_wait level (not only inside
             # _process_opcode) to guarantee it fires even when _process_opcode
             # returns early due to unresolved instructions.
+            #
+            # All events flushed in one report_and_wait share the same
+            # path_id (from the most recent schedule() call).  The Rust
+            # engine's process_io_access uses record_io_access (keeps the
+            # FIRST access per thread, not the latest) so early accesses
+            # like a SELECT recv aren't overwritten by later ones like a
+            # COMMIT ack.  This ensures DPOR backtracks to the earliest
+            # (most useful) position for each thread.
             if _pending_io and getattr(_dpor_tls, "lock_depth", 0) == 0:
                 _elock = self._engine_lock
                 _engine = self.engine

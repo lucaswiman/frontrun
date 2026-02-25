@@ -152,7 +152,7 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_io_vv, thread_id);
-        object_state.record_access(access, kind);
+        object_state.record_io_access(access, kind);
     }
 
     pub fn process_sync(

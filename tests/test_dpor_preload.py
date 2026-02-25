@@ -39,9 +39,9 @@ class TestPreloadBridge:
         events_1 = bridge.drain(1)
         assert len(events_0) == 1, "Thread 0 should have 1 event"
         assert len(events_1) == 1, "Thread 1 should have 1 event"
-        # Both events should be treated as writes (external resource)
+        # Events preserve their original kind (write stays write, read stays read)
         assert events_0[0][1] == "write"
-        assert events_1[0][1] == "write"
+        assert events_1[0][1] == "read"
 
     def test_ignores_unregistered_tids(self) -> None:
         """Events from unknown TIDs (setup, invariant, reader thread) are ignored."""

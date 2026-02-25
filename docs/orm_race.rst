@@ -192,53 +192,67 @@ a way that triggers the database-level race. It doesn't need to
 *understand* the conflict to stumble into it.
 
 
-Why DPOR misses this race
----------------------------
+Demo 3 --- DPOR systematic exploration
+---------------------------------------
+
+``explore_dpor`` with ``detect_io=True`` uses the ``LD_PRELOAD`` library
+to intercept C-level ``send()``/``recv()`` calls from psycopg2 (which
+bypasses Python's socket module).  The intercepted I/O events are routed
+through ``IOEventDispatcher`` → ``_PreloadBridge`` → the DPOR engine,
+which treats them as conflict points on the shared resource
+(``socket:127.0.0.1:5432``).
+
+.. code-block:: python
+
+   from frontrun.dpor import explore_dpor
+
+   result = explore_dpor(
+       setup=_State,
+       threads=[_thread_fn, _thread_fn],
+       invariant=lambda s: _read_count() == 2,
+       detect_io=True,
+       deadlock_timeout=15.0,
+   )
+
+Output:
 
 .. code-block:: text
 
-   $ frontrun python examples/orm_race.py
-
-   ...
+   ======================================================================
    Demo 3: SQLAlchemy lost update  (DPOR — systematic exploration)
+   ======================================================================
 
-     property_holds       : True
-     num_explored         : 1
-     No lost update found.
+     DPOR systematically explores all meaningfully different
+     interleavings.  C-level I/O is intercepted via LD_PRELOAD.
 
-DPOR ran both threads to completion sequentially, saw no conflicts, and
-concluded there was nothing to explore. This seems wrong --- both threads
-are talking to the same Postgres instance on ``127.0.0.1:5432``, and the
-``LD_PRELOAD`` library *does* intercept libpq's ``send()`` and ``recv()``
-calls. Those events are captured and written to the pipe. But DPOR never
-reads them.
+     property_holds       : False
+     num_explored         : 2
 
-The issue is an integration gap: ``explore_dpor()`` uses Python-level
-monkey-patching (``_io_detection.patch_io()``) to detect socket I/O, but
-psycopg2 calls libc ``send()``/``recv()`` directly from C, bypassing the
-Python-level patches entirely. The ``IOEventDispatcher`` in
-``_preload_io.py`` knows how to read LD_PRELOAD events from the pipe, but
-DPOR doesn't instantiate one. The interception infrastructure exists and
-works; it just isn't wired into the DPOR scheduler yet.
+     LOST UPDATE confirmed via DPOR.
 
-There is also a more fundamental issue: even if DPOR saw the socket
-conflicts, the two threads share a *database row*, not a Python object.
-Each thread creates its own ``Session`` and gets its own ``User`` ORM
-instance. The socket-level conflict (both threads talk to
-``127.0.0.1:5432``) is a necessary signal for DPOR to explore alternative
-orderings, but it's a coarse one --- it would cause DPOR to explore
-reorderings of *all* database I/O, not just the conflicting row access.
-Whether this is precise enough to be useful in practice is an open
-question.
+     Race condition found after 2 interleavings.
 
-See :doc:`dpor_guide` for a detailed description of the proposed fix and
-the ``IOEventDispatcher`` integration.
+       Write-write conflict: threads 0 and 1 both wrote to login_count.
 
-For now, use trace markers with explicit scheduling (Demo 1) or bytecode
-exploration (Demo 2) for database-level races.
+       Thread 1 | orm_race.py:323       user.login_count = user.login_count + 1
+                | [read+write User.login_count]
+       Thread 0 | orm_race.py:323       user.login_count = user.login_count + 1
+                | [read+write User.login_count]
+
+DPOR detected the lost update in just 2 interleavings.  The LD_PRELOAD
+library intercepts libpq's socket I/O at the C level and reports it to
+the DPOR engine as conflict points.  This lets DPOR explore alternative
+thread orderings around database operations --- even though psycopg2 never
+goes through Python's ``socket`` module.
+
+The trace shows the exact Python line where the conflict occurs: both
+threads read ``User.login_count`` (via ``session.get``) and write a
+stale value back (via ``session.commit``).  Because the threads use
+separate ORM sessions, there is no Python-level shared state --- the real
+conflict is the database row, and DPOR finds it via the network I/O.
 
 
-Demo 3 --- Naive threading (intermittent)
+Demo 4 --- Naive threading (intermittent)
 ------------------------------------------
 
 Plain threads against real Postgres, with a random 0--15 ms start offset
@@ -264,8 +278,8 @@ CI:
      frontrun makes it 100% reproducible.
 
 With ordinary threads the bug surfaces roughly 10--15% of the time
-(the exact rate varies with system load).  Trace markers and bytecode
-exploration both catch it deterministically, every time.
+(the exact rate varies with system load).  Trace markers, bytecode
+exploration, and DPOR all catch it deterministically, every time.
 
 
 Running the example yourself

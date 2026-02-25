@@ -87,6 +87,22 @@ impl ObjectState {
             }
         }
     }
+
+    /// Like [`record_access`] but keeps the **first** (earliest) access for
+    /// each thread rather than overwriting with the latest.  Used for I/O
+    /// objects where the earliest position creates the most useful backtrack
+    /// target (e.g. between a SELECT and UPDATE in a database transaction).
+    pub fn record_io_access(&mut self, access: Access, kind: AccessKind) {
+        let thread_id = access.thread_id;
+        match kind {
+            AccessKind::Read => {
+                self.per_thread_read.entry(thread_id).or_insert(access);
+            }
+            AccessKind::Write => {
+                self.per_thread_write.entry(thread_id).or_insert(access);
+            }
+        }
+    }
 }
 
 impl Default for ObjectState {
