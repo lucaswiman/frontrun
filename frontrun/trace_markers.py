@@ -7,6 +7,9 @@ execution schedule using Python's tracing facilities.
 
 Example usage:
     ```python
+    from frontrun.common import Schedule, Step
+    from frontrun.trace_markers import TraceExecutor
+
     def worker_function():
         x = read_data()  # frontrun: read
         write_data(x)    # frontrun: write
@@ -33,7 +36,7 @@ from collections.abc import Callable
 from typing import Any
 
 from frontrun._cooperative import real_condition, real_lock
-from frontrun.common import Schedule, Step  # noqa: F401 — re-exported for public API
+from frontrun.common import Schedule
 
 MARKER_PATTERN = re.compile(r"#\s*frontrun:\s*(\w+)")
 
