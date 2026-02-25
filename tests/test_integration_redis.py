@@ -27,6 +27,8 @@ Running::
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import threading
 import time
@@ -41,12 +43,27 @@ except ImportError:
 from frontrun.dpor import explore_dpor
 
 # Use a non-default port to avoid colliding with a user's Redis.
-_REDIS_PORT = 16399
+# CI can override via REDIS_PORT env var (e.g. when using a service container).
+_REDIS_PORT = int(os.environ.get("REDIS_PORT", "16399"))
 
 
 @pytest.fixture(scope="module")
 def redis_port():
-    """Start a throwaway Redis server on a unique port and yield it."""
+    """Provide a Redis port, starting a server if one isn't already listening."""
+    # Try connecting to an existing Redis (e.g. CI service container).
+    r = redis_lib.Redis(port=_REDIS_PORT)
+    try:
+        r.ping()
+        r.close()
+        yield _REDIS_PORT
+        return
+    except redis_lib.ConnectionError:
+        r.close()
+
+    # No Redis found — start our own.
+    if not shutil.which("redis-server"):
+        pytest.skip("redis-server not installed and no Redis listening on port " + str(_REDIS_PORT))
+
     proc = subprocess.Popen(
         [
             "redis-server",
@@ -63,7 +80,6 @@ def redis_port():
         stderr=subprocess.DEVNULL,
     )
     time.sleep(0.5)
-    # Verify it's running
     r = redis_lib.Redis(port=_REDIS_PORT)
     try:
         r.ping()
