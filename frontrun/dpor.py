@@ -460,19 +460,35 @@ _BUILTIN_METHOD_TYPE = type(len)  # builtin_function_or_method
 _IMMUTABLE_TYPES = (str, bytes, int, float, bool, complex, tuple, frozenset, type(None))
 
 # C-level methods that are read-only (don't mutate the object).
-_C_METHOD_READ_ONLY = frozenset({
-    # Lookup / iteration (common to multiple container types)
-    "__contains__", "__getitem__", "__len__", "__iter__", "__reversed__",
-    # list / tuple
-    "count", "index",
-    # dict
-    "get", "keys", "values", "items",
-    # set
-    "issubset", "issuperset", "isdisjoint",
-    "union", "intersection", "difference", "symmetric_difference",
-    # copy
-    "copy", "__copy__",
-})
+_C_METHOD_READ_ONLY = frozenset(
+    {
+        # Lookup / iteration (common to multiple container types)
+        "__contains__",
+        "__getitem__",
+        "__len__",
+        "__iter__",
+        "__reversed__",
+        # list / tuple
+        "count",
+        "index",
+        # dict
+        "get",
+        "keys",
+        "values",
+        "items",
+        # set
+        "issubset",
+        "issuperset",
+        "isdisjoint",
+        "union",
+        "intersection",
+        "difference",
+        "symmetric_difference",
+        # copy
+        "copy",
+        "__copy__",
+    }
+)
 
 
 def _make_object_key(obj_id: int, name: Any) -> int:
@@ -624,11 +640,7 @@ def _process_opcode(
                 #
                 # We skip bound methods (loading .append is not a container
                 # read) and immutable types (no mutation possible).
-                if (
-                    val is not None
-                    and type(val) is not _BUILTIN_METHOD_TYPE
-                    and not isinstance(val, _IMMUTABLE_TYPES)
-                ):
+                if val is not None and type(val) is not _BUILTIN_METHOD_TYPE and not isinstance(val, _IMMUTABLE_TYPES):
                     _report_read(engine, execution, thread_id, val, "__cmethods__", elock)
             except Exception:
                 shadow.push(None)
@@ -641,6 +653,24 @@ def _process_opcode(
         _report_write(engine, execution, thread_id, obj, instr.argval, elock)
         if recorder is not None and obj is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=instr.argval, obj=obj)
+
+    elif op == "LOAD_METHOD":
+        # Python 3.10 only (replaced by LOAD_ATTR with method flag in 3.11+).
+        # Pops owner, pushes (method, self/NULL) — net stack effect +1.
+        obj = shadow.pop()
+        attr = instr.argval
+        _report_read(engine, execution, thread_id, obj, attr, elock)
+        if recorder is not None and obj is not None:
+            recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=attr, obj=obj)
+        if obj is not None:
+            try:
+                shadow.push(getattr(obj, attr))
+            except Exception:
+                shadow.push(None)
+        else:
+            shadow.push(None)
+        # Extra push for the self/NULL slot (LOAD_METHOD pushes 2 values).
+        shadow.push(None)
 
     elif op == "DELETE_ATTR":
         obj = shadow.pop()
