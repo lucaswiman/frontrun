@@ -44,9 +44,9 @@ build-io: $(IO_RUST_SOURCES)
 	cp target/release/libfrontrun_io.so frontrun/libfrontrun_io.so 2>/dev/null || \
 	cp target/release/libfrontrun_io.dylib frontrun/libfrontrun_io.dylib 2>/dev/null || true
 
-# Build integration test venv with redis + requests for integration tests
+# Build integration test venv with redis, requests, sqlalchemy, psycopg2
 build-integration-%: build-dpor-%
-	uv pip install redis requests --python=$(CURDIR)/.venv-$*/bin/python
+	uv pip install redis requests sqlalchemy psycopg2-binary --python=$(CURDIR)/.venv-$*/bin/python
 
 # Build example venv with SQLAlchemy + psycopg2 for examples/orm_race.py
 build-examples-%: build-dpor-%
@@ -64,10 +64,10 @@ test-%: build-dpor-% build-io
 # Main test target - runs tests for all Python versions
 test: $(addprefix test-,$(PYTHON_VERSIONS))
 
-# Integration tests (Redis + HTTP) for a specific Python version.
-# Requires redis-server to be installed.
+# Integration tests (Redis, HTTP, JSON file, ORM) for a specific Python version.
+# Redis tests require redis-server; ORM tests require Postgres (skipped if unavailable).
 test-integration-%: build-integration-% build-io
-	PATH=$(CURDIR)/.venv-$*/bin:$$PATH $(CURDIR)/.venv-$*/bin/frontrun pytest $(PYTEST_ARGS) tests/test_integration_redis.py tests/test_integration_http.py
+	PATH=$(CURDIR)/.venv-$*/bin:$$PATH $(CURDIR)/.venv-$*/bin/frontrun pytest $(PYTEST_ARGS) tests/test_integration_redis.py tests/test_integration_http.py tests/test_integration_json_file.py tests/test_integration_orm.py
 
 # Integration tests for all Python versions
 test-integration: $(addprefix test-integration-,$(PYTHON_VERSIONS))
