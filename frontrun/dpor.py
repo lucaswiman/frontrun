@@ -1179,6 +1179,7 @@ def explore_dpor(
 
                 # Replay the counterexample to measure reproducibility
                 if reproduce_on_failure > 0 and result.reproduction_attempts == 0:
+                    from frontrun._preload_io import _set_preload_pipe_fd
                     from frontrun.bytecode import run_with_schedule
 
                     # Pause LD_PRELOAD pipe writes during replay.  The replay
@@ -1188,8 +1189,6 @@ def explore_dpor(
                     # reader thread may block on FD_MAP held by that same worker
                     # — a deadlock.  Disabling the pipe fd avoids this entirely;
                     # detect_io is already False for replays anyway.
-                    from frontrun._preload_io import _set_preload_pipe_fd
-
                     _set_preload_pipe_fd(-1)
 
                     successes = 0
