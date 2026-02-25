@@ -180,7 +180,7 @@ class _PreloadBridge:
     def __init__(self) -> None:
         self._lock = real_lock()
         self._tid_to_dpor: dict[int, int] = {}
-        self._pending: dict[int, list[tuple[int, str]]] = {}
+        self._pending: dict[int, list[tuple[int, str, str]]] = {}
         self._active = False
 
     def register_thread(self, os_tid: int, dpor_id: int) -> None:
@@ -228,10 +228,13 @@ class _PreloadBridge:
             # the send/recv pairs to reach the critical interleaving.
             kind = "write" if event.kind == "write" else "read"
             obj_key = _make_object_key(hash(event.resource_id), event.resource_id)
-            self._pending.setdefault(dpor_id, []).append((obj_key, kind))
+            self._pending.setdefault(dpor_id, []).append((obj_key, kind, event.resource_id))
 
-    def drain(self, dpor_id: int) -> list[tuple[int, str]]:
-        """Return and clear buffered events for a DPOR thread."""
+    def drain(self, dpor_id: int) -> list[tuple[int, str, str]]:
+        """Return and clear buffered events for a DPOR thread.
+
+        Each item is ``(object_key, kind, resource_id)``.
+        """
         with self._lock:
             events = self._pending.get(dpor_id)
             if events:
@@ -332,11 +335,19 @@ class DporScheduler:
             if self._preload_bridge is not None:
                 _preload_events = self._preload_bridge.drain(thread_id)
                 if _preload_events:
+                    # Record into trace for human-readable output.  These events
+                    # come from C extensions (e.g. libpq) with no Python frame.
+                    _recorder = self.trace_recorder
+                    if _recorder is not None:
+                        for _, _kind, _resource_id in _preload_events:
+                            _recorder.record_io(thread_id, _resource_id, _kind)
+                    # Convert 3-tuples to 2-tuples for the pending list
+                    _io_pairs = [(_key, _kind) for _key, _kind, _ in _preload_events]
                     if _pending_io is not None:
-                        _pending_io.extend(_preload_events)
+                        _pending_io.extend(_io_pairs)
                     else:
-                        _dpor_tls.pending_io = _preload_events
-                        _pending_io = _preload_events
+                        _dpor_tls.pending_io = _io_pairs
+                        _pending_io = _io_pairs
             # Flush deferred I/O reports when the thread is outside all locks.
             # This must happen at report_and_wait level (not only inside
             # _process_opcode) to guarantee it fires even when _process_opcode

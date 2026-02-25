@@ -157,6 +157,32 @@ class TraceRecorder:
         with self._lock:
             self.events.append(ev)
 
+    def record_io(
+        self,
+        thread_id: int,
+        resource_id: str,
+        kind: str,
+    ) -> None:
+        """Record an I/O event that has no Python frame (e.g. C-level socket I/O)."""
+        if not self.enabled:
+            return
+        with self._lock:
+            step = self._step
+            self._step += 1
+        ev = TraceEvent(
+            step_index=step,
+            thread_id=thread_id,
+            filename="<C extension>",
+            lineno=0,
+            function_name="",
+            opcode="IO",
+            access_type=kind,
+            attr_name=resource_id,
+            obj_type_name="IO",
+        )
+        with self._lock:
+            self.events.append(ev)
+
     def record_from_opcode(
         self,
         thread_id: int,
@@ -330,16 +356,24 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
         return ConflictInfo(pattern="unknown", summary="No shared-state accesses recorded.")
 
     # Track per-attribute access sequences across threads
-    # Group by attr_name, look for cross-thread read-before-write patterns
+    # Group by (obj_type, attr_name), look for cross-thread read-before-write patterns
     attr_accesses: dict[str, list[tuple[int, str]]] = {}  # attr -> [(thread_id, access_type), ...]
+    io_attrs: set[str] = set()  # attributes that come from I/O events
     for ev in events:
         key = ev.attr_name or "(unknown)"
         attr_accesses.setdefault(key, []).append((ev.thread_id, ev.access_type or "unknown"))
+        if ev.obj_type_name == "IO":
+            io_attrs.add(key)
 
+    # Process non-I/O attributes first so Python-level conflicts take
+    # priority over raw socket-level ones in the summary line.
+    io_fallback: ConflictInfo | None = None
     for attr, accesses in attr_accesses.items():
         threads_involved = sorted({tid for tid, _ in accesses})
         if len(threads_involved) < 2:
             continue
+
+        is_io = attr in io_attrs
 
         # Check for lost-update pattern: two threads both read before either writes
         # Pattern: R_a ... R_b ... W_a ... W_b (or W_b before W_a)
@@ -366,14 +400,24 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
                     writes_start = min(w_a, w_b)
                     if r_a < writes_start and r_b < writes_start:
                         obj_desc = attr
-                        return ConflictInfo(
-                            pattern="lost_update",
-                            summary=(
-                                f"Lost update: threads {t_a} and {t_b} both read "
-                                f"{obj_desc} before either wrote it back."
-                            ),
-                            attr_name=attr,
-                        )
+                        if is_io:
+                            io_fallback = io_fallback or ConflictInfo(
+                                pattern="lost_update",
+                                summary=(
+                                    f"Lost update via database I/O: threads {t_a} and {t_b} "
+                                    f"both queried {obj_desc} before either committed."
+                                ),
+                                attr_name=attr,
+                            )
+                        else:
+                            return ConflictInfo(
+                                pattern="lost_update",
+                                summary=(
+                                    f"Lost update: threads {t_a} and {t_b} both read "
+                                    f"{obj_desc} before either wrote it back."
+                                ),
+                                attr_name=attr,
+                            )
 
         # Check for write-write without reads (simple overwrite)
         for t_a in threads_involved:
@@ -383,11 +427,24 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
                 w_a = first_write.get(t_a)
                 w_b = first_write.get(t_b)
                 if w_a is not None and w_b is not None:
-                    return ConflictInfo(
-                        pattern="write_write",
-                        summary=f"Write-write conflict: threads {t_a} and {t_b} both wrote to {attr}.",
-                        attr_name=attr,
-                    )
+                    if is_io:
+                        io_fallback = io_fallback or ConflictInfo(
+                            pattern="write_write",
+                            summary=(
+                                f"Concurrent database I/O: threads {t_a} and {t_b} "
+                                f"both sent queries to {attr}."
+                            ),
+                            attr_name=attr,
+                        )
+                    else:
+                        return ConflictInfo(
+                            pattern="write_write",
+                            summary=f"Write-write conflict: threads {t_a} and {t_b} both wrote to {attr}.",
+                            attr_name=attr,
+                        )
+
+    if io_fallback is not None:
+        return io_fallback
 
     # Fallback: we recorded shared accesses but couldn't classify the pattern
     all_threads = sorted({ev.thread_id for ev in events})
@@ -591,22 +648,32 @@ def format_trace(
 
         line_ev = item
         label = thread_names[line_ev.thread_id].ljust(max_thread_label)
-        short_file = _short_filename(line_ev.filename)
-        loc = f"{short_file}:{line_ev.lineno}"
-        access_tag = ""
-        if line_ev.access_type:
-            access_tag = f"  [{line_ev.access_type}]"
-            if line_ev.attr_name:
-                if line_ev.obj_type_name:
-                    access_tag = f"  [{line_ev.access_type} {line_ev.obj_type_name}.{line_ev.attr_name}]"
-                else:
-                    access_tag = f"  [{line_ev.access_type} {line_ev.attr_name}]"
 
-        src = line_ev.source_line
-        parts.append(f"  {label} | {loc:<25s} {src}")
-        if access_tag:
-            indent = " " * (2 + max_thread_label) + " | "
-            parts.append(f"{indent}{access_tag.lstrip()}")
+        # I/O events from C extensions have no source location
+        is_io = line_ev.obj_type_name == "IO"
+        if is_io:
+            resource = line_ev.attr_name or "unknown"
+            io_verb = {"read": "recv", "write": "send", "read+write": "send/recv"}.get(
+                line_ev.access_type or "", line_ev.access_type or ""
+            )
+            parts.append(f"  {label} | {io_verb} {resource}")
+        else:
+            short_file = _short_filename(line_ev.filename)
+            loc = f"{short_file}:{line_ev.lineno}"
+            access_tag = ""
+            if line_ev.access_type:
+                access_tag = f"  [{line_ev.access_type}]"
+                if line_ev.attr_name:
+                    if line_ev.obj_type_name:
+                        access_tag = f"  [{line_ev.access_type} {line_ev.obj_type_name}.{line_ev.attr_name}]"
+                    else:
+                        access_tag = f"  [{line_ev.access_type} {line_ev.attr_name}]"
+
+            src = line_ev.source_line
+            parts.append(f"  {label} | {loc:<25s} {src}")
+            if access_tag:
+                indent = " " * (2 + max_thread_label) + " | "
+                parts.append(f"{indent}{access_tag.lstrip()}")
         if line_ev.call_chain:
             indent = " " * (2 + max_thread_label) + " | "
             chain_str = " <- ".join(line_ev.call_chain)
