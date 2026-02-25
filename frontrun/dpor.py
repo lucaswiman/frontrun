@@ -39,6 +39,7 @@ import dis
 import sys
 import threading
 import time
+import types
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -444,6 +445,53 @@ class DporScheduler:
 # ---------------------------------------------------------------------------
 
 
+# C-level method access classification.
+#
+# Python bytecode tracing can't see inside C method calls — list.append(),
+# set.add(), dict.update(), etc. all execute opaquely.  We detect these in the
+# CALL handler by checking if the callable is a builtin_function_or_method
+# (i.e. bound to a C-implemented object) and classifying the call as a read or
+# write based on the method name.
+#
+# Design: immutable types are excluded entirely (calling str.upper() can't
+# cause a data race).  For mutable types, known read-only methods report READ;
+# everything else defaults to WRITE.
+_BUILTIN_METHOD_TYPE = type(len)  # builtin_function_or_method
+
+_IMMUTABLE_TYPES = (str, bytes, int, float, bool, complex, tuple, frozenset, type(None), types.ModuleType)
+
+# C-level methods that are read-only (don't mutate the object).
+_C_METHOD_READ_ONLY = frozenset(
+    {
+        # Lookup / iteration (common to multiple container types)
+        "__contains__",
+        "__getitem__",
+        "__len__",
+        "__iter__",
+        "__reversed__",
+        # list / tuple
+        "count",
+        "index",
+        # dict
+        "get",
+        "keys",
+        "values",
+        "items",
+        # set
+        "issubset",
+        "issuperset",
+        "isdisjoint",
+        "union",
+        "intersection",
+        "difference",
+        "symmetric_difference",
+        # copy
+        "copy",
+        "__copy__",
+    }
+)
+
+
 def _make_object_key(obj_id: int, name: Any) -> int:
     """Create a non-negative u64 object key for the Rust engine."""
     return hash((obj_id, name)) & 0xFFFFFFFFFFFFFFFF
@@ -511,6 +559,9 @@ def _process_opcode(
     elif op == "LOAD_GLOBAL":
         val = frame.f_globals.get(instr.argval)
         shadow.push(val)
+        # Report a READ on the module's globals dict for this variable name.
+        # Without this, LOAD_GLOBAL/STORE_GLOBAL races are invisible to DPOR.
+        _report_read(engine, execution, thread_id, frame.f_globals, instr.argval, elock)
 
     elif op == "LOAD_DEREF":
         val = frame.f_locals.get(instr.argval)
@@ -579,7 +630,19 @@ def _process_opcode(
             recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=attr, obj=obj)
         if obj is not None:
             try:
-                shadow.push(getattr(obj, attr))
+                val = getattr(obj, attr)
+                shadow.push(val)
+                # When the loaded value is a mutable object (but NOT a bound
+                # method), report a READ on the object itself.  This detects
+                # cases where a container is read indirectly — e.g. passed
+                # to len() or iterated — creating a conflict with C-level
+                # method WRITEs (append, add, etc.) reported by the CALL
+                # handler below.
+                #
+                # We skip bound methods (loading .append is not a container
+                # read) and immutable types (no mutation possible).
+                if val is not None and type(val) is not _BUILTIN_METHOD_TYPE and not isinstance(val, _IMMUTABLE_TYPES):
+                    _report_read(engine, execution, thread_id, val, "__cmethods__", elock)
             except Exception:
                 shadow.push(None)
         else:
@@ -591,6 +654,24 @@ def _process_opcode(
         _report_write(engine, execution, thread_id, obj, instr.argval, elock)
         if recorder is not None and obj is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=instr.argval, obj=obj)
+
+    elif op == "LOAD_METHOD":
+        # Python 3.10 only (replaced by LOAD_ATTR with method flag in 3.11+).
+        # Pops owner, pushes (method, self/NULL) — net stack effect +1.
+        obj = shadow.pop()
+        attr = instr.argval
+        _report_read(engine, execution, thread_id, obj, attr, elock)
+        if recorder is not None and obj is not None:
+            recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=attr, obj=obj)
+        if obj is not None:
+            try:
+                shadow.push(getattr(obj, attr))
+            except Exception:
+                shadow.push(None)
+        else:
+            shadow.push(None)
+        # Extra push for the self/NULL slot (LOAD_METHOD pushes 2 values).
+        shadow.push(None)
 
     elif op == "DELETE_ATTR":
         obj = shadow.pop()
@@ -653,7 +734,12 @@ def _process_opcode(
 
     # === Store instructions ===
 
-    elif op in ("STORE_FAST", "STORE_GLOBAL", "STORE_DEREF"):
+    elif op == "STORE_GLOBAL":
+        shadow.pop()
+        # Report a WRITE on the module's globals dict for this variable name.
+        _report_write(engine, execution, thread_id, frame.f_globals, instr.argval, elock)
+
+    elif op in ("STORE_FAST", "STORE_DEREF"):
         shadow.pop()
 
     elif op == "STORE_FAST_STORE_FAST":
@@ -669,9 +755,42 @@ def _process_opcode(
     elif op == "POP_TOP":
         shadow.pop()
 
+    # === Function/method calls ===
+
+    elif op in ("CALL", "CALL_FUNCTION", "CALL_METHOD", "CALL_KW", "CALL_FUNCTION_KW", "CALL_FUNCTION_EX"):
+        # Detect C-level method calls and classify as read or write.
+        #
+        # Scan the shadow stack for a builtin_function_or_method.  If
+        # found and its __self__ is not an immutable type, report an
+        # access on the object: READ for known read-only methods (e.g.
+        # __getitem__, count), WRITE for everything else (append, add,
+        # clear, sort, etc.).
+        argc = instr.arg or 0
+        scan_depth = min(argc + 3, len(shadow.stack))
+        for i in range(scan_depth):
+            item = shadow.stack[-(i + 1)]
+            if item is not None and type(item) is _BUILTIN_METHOD_TYPE:
+                self_obj = getattr(item, "__self__", None)
+                if self_obj is not None and not isinstance(self_obj, _IMMUTABLE_TYPES):
+                    method_name = getattr(item, "__name__", None)
+                    if method_name in _C_METHOD_READ_ONLY:
+                        _report_read(engine, execution, thread_id, self_obj, "__cmethods__", elock)
+                    else:
+                        _report_write(engine, execution, thread_id, self_obj, "__cmethods__", elock)
+                    break
+        # Standard stack effect handling.
+        try:
+            effect = dis.stack_effect(instr.opcode, instr.arg or 0)
+            for _ in range(max(0, -effect)):
+                shadow.pop()
+            for _ in range(max(0, effect)):
+                shadow.push(None)
+        except (ValueError, TypeError):
+            shadow.clear()
+
     else:
         # Fallback: use dis.stack_effect for unknown opcodes.
-        # This handles CALL, PUSH_NULL, RESUME, PRECALL, and any
+        # This handles PUSH_NULL, RESUME, PRECALL, and any
         # version-specific opcodes we don't explicitly handle.
         try:
             effect = dis.stack_effect(instr.opcode, instr.arg or 0)
