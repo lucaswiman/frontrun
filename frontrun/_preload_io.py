@@ -290,8 +290,20 @@ class IOEventDispatcher:
         not have processed pipe data by the time the calling thread reaches
         its next scheduling point.  Calling ``poll()`` from the DPOR drain
         path ensures events are available immediately.
+
+        Uses ``select()`` as a fast guard: ``select`` is not intercepted by
+        the LD_PRELOAD library, whereas ``os.read`` is — each intercepted
+        read triggers ``getpeername`` + ``readlink`` syscalls on the pipe fd.
+        Skipping ``os.read`` when the pipe is empty avoids that overhead on
+        every opcode boundary.
         """
         if self._read_fd is None or self._stopped:
+            return
+        try:
+            ready, _, _ = _select_mod.select([self._read_fd], [], [], 0)
+        except (OSError, ValueError):
+            return
+        if not ready:
             return
         events = self._read_and_dispatch()
         if events:
