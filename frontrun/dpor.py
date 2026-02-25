@@ -457,6 +457,8 @@ class DporScheduler:
 # cause a data race).  For mutable types, known read-only methods report READ;
 # everything else defaults to WRITE.
 _BUILTIN_METHOD_TYPE = type(len)  # builtin_function_or_method
+_WRAPPER_DESCRIPTOR_TYPE = type(object.__setattr__)  # wrapper_descriptor
+_METHOD_WRAPPER_TYPE = type("".__str__)  # method-wrapper
 
 _IMMUTABLE_TYPES = (str, bytes, int, float, bool, complex, tuple, frozenset, type(None), types.ModuleType)
 
@@ -466,6 +468,7 @@ _C_METHOD_READ_ONLY = frozenset(
         # Lookup / iteration (common to multiple container types)
         "__contains__",
         "__getitem__",
+        "__getattribute__",
         "__len__",
         "__iter__",
         "__reversed__",
@@ -492,6 +495,34 @@ _C_METHOD_READ_ONLY = frozenset(
 )
 
 
+# ---------------------------------------------------------------------------
+# Passthrough builtins: functions that operate on their ARGUMENTS rather than
+# __self__.  Keyed by id(function) for O(1) lookup.
+# Format: {id(fn): (access_kind, obj_arg_index, name_arg_index_or_None)}
+# ---------------------------------------------------------------------------
+import builtins as _builtins_mod
+import operator as _operator_mod
+
+_PASSTHROUGH_BUILTINS: dict[int, tuple[str, int, int | None]] = {}
+
+
+def _register_passthrough(fn: Any, kind: str, obj_idx: int, name_idx: int | None) -> None:
+    _PASSTHROUGH_BUILTINS[id(fn)] = (kind, obj_idx, name_idx)
+
+
+# Attribute writers: setattr(obj, name, val), delattr(obj, name)
+_register_passthrough(_builtins_mod.setattr, "write", 0, 1)
+_register_passthrough(_builtins_mod.getattr, "read", 0, 1)
+_register_passthrough(_builtins_mod.delattr, "write", 0, 1)
+_register_passthrough(_builtins_mod.hasattr, "read", 0, 1)
+# operator module item access: operator.setitem(d, k, v), etc.
+_register_passthrough(_operator_mod.setitem, "write", 0, 1)
+_register_passthrough(_operator_mod.getitem, "read", 0, 1)
+_register_passthrough(_operator_mod.delitem, "write", 0, 1)
+# len() reads the container (needed to detect check-then-act races)
+_register_passthrough(_builtins_mod.len, "read", 0, None)
+
+
 def _make_object_key(obj_id: int, name: Any) -> int:
     """Create a non-negative u64 object key for the Rust engine."""
     return hash((obj_id, name)) & 0xFFFFFFFFFFFFFFFF
@@ -511,6 +542,18 @@ def _report_write(
     if obj is not None:
         with lock:
             engine.report_access(execution, thread_id, _make_object_key(id(obj), name), "write")
+
+
+def _subscript_key_name(key: Any) -> Any:
+    """Normalize a subscript key for object key computation.
+
+    For string keys, return the string directly so it matches LOAD_ATTR/STORE_ATTR
+    argval (e.g. 'value' instead of "'value'").  For non-string keys, use repr()
+    as a fallback to distinguish types (e.g. int 0 vs string '0').
+    """
+    if isinstance(key, str):
+        return key
+    return repr(key)
 
 
 def _process_opcode(
@@ -558,14 +601,37 @@ def _process_opcode(
 
     elif op == "LOAD_GLOBAL":
         val = frame.f_globals.get(instr.argval)
+        if val is None:
+            # Fall back to builtins (setattr, getattr, type, dict, object, etc.)
+            _fb = getattr(frame, "f_builtins", None)
+            if isinstance(_fb, dict):
+                val = _fb.get(instr.argval)
         shadow.push(val)
         # Report a READ on the module's globals dict for this variable name.
         # Without this, LOAD_GLOBAL/STORE_GLOBAL races are invisible to DPOR.
         _report_read(engine, execution, thread_id, frame.f_globals, instr.argval, elock)
 
+    elif op == "LOAD_NAME":
+        # Used in exec/eval code (module-level scope).  Like LOAD_GLOBAL
+        # but checks locals first, then globals, then builtins.
+        val = frame.f_locals.get(instr.argval)
+        if val is None:
+            val = frame.f_globals.get(instr.argval)
+        if val is None:
+            _fb = getattr(frame, "f_builtins", None)
+            if isinstance(_fb, dict):
+                val = _fb.get(instr.argval)
+        shadow.push(val)
+
     elif op == "LOAD_DEREF":
         val = frame.f_locals.get(instr.argval)
         shadow.push(val)
+        # Report a READ on closure cell/free variables so DPOR sees
+        # cross-thread conflicts.  Using code as the identity works because
+        # threads sharing a closure function share the same code object.
+        varname = instr.argval
+        if varname in code.co_freevars or varname in code.co_cellvars:
+            _report_read(engine, execution, thread_id, code, varname, elock)
 
     elif op in ("LOAD_CONST", "LOAD_CONST_IMMORTAL", "LOAD_CONST_MORTAL"):
         shadow.push(instr.argval)
@@ -626,8 +692,20 @@ def _process_opcode(
         obj = shadow.pop()
         attr = instr.argval
         _report_read(engine, execution, thread_id, obj, attr, elock)
+        # Also report on obj.__dict__ so LOAD_ATTR conflicts with
+        # STORE_SUBSCR on the same __dict__ (cross-path detection).
+        if obj is not None:
+            try:
+                _obj_dict = object.__getattribute__(obj, "__dict__")
+                _report_read(engine, execution, thread_id, _obj_dict, attr, elock)
+            except AttributeError:
+                pass
         if recorder is not None and obj is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=attr, obj=obj)
+        # On 3.11+, LOAD_ATTR with method flag (bit 0 of arg) pushes an
+        # extra NULL/self slot before the callable.  Match CPython's stack.
+        if _PY_VERSION >= (3, 11) and instr.arg is not None and instr.arg & 1:
+            shadow.push(None)  # NULL/self slot
         if obj is not None:
             try:
                 val = getattr(obj, attr)
@@ -652,6 +730,14 @@ def _process_opcode(
         obj = shadow.pop()  # TOS = object
         _val = shadow.pop()  # TOS1 = value
         _report_write(engine, execution, thread_id, obj, instr.argval, elock)
+        # Also report on obj.__dict__ so STORE_ATTR conflicts with
+        # STORE_SUBSCR on the same __dict__ (cross-path detection).
+        if obj is not None:
+            try:
+                _obj_dict = object.__getattribute__(obj, "__dict__")
+                _report_write(engine, execution, thread_id, _obj_dict, instr.argval, elock)
+            except AttributeError:
+                pass
         if recorder is not None and obj is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=instr.argval, obj=obj)
 
@@ -686,25 +772,28 @@ def _process_opcode(
         # with subscript oparg).
         key = shadow.pop()
         container = shadow.pop()
-        _report_read(engine, execution, thread_id, container, repr(key), elock)
+        _kname = _subscript_key_name(key)
+        _report_read(engine, execution, thread_id, container, _kname, elock)
         if recorder is not None and container is not None:
-            recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=repr(key), obj=container)
+            recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=_kname, obj=container)
         shadow.push(None)
 
     elif op == "STORE_SUBSCR":
         key = shadow.pop()
         container = shadow.pop()
         _val = shadow.pop()
-        _report_write(engine, execution, thread_id, container, repr(key), elock)
+        _kname = _subscript_key_name(key)
+        _report_write(engine, execution, thread_id, container, _kname, elock)
         if recorder is not None and container is not None:
-            recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=repr(key), obj=container)
+            recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=_kname, obj=container)
 
     elif op == "DELETE_SUBSCR":
         key = shadow.pop()
         container = shadow.pop()
-        _report_write(engine, execution, thread_id, container, repr(key), elock)
+        _kname = _subscript_key_name(key)
+        _report_write(engine, execution, thread_id, container, _kname, elock)
         if recorder is not None and container is not None:
-            recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=repr(key), obj=container)
+            recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=_kname, obj=container)
 
     # === Arithmetic and binary operations ===
 
@@ -715,9 +804,10 @@ def _process_opcode(
         if argrepr and ("[" in argrepr or "NB_SUBSCR" in argrepr.upper()):
             key = shadow.pop()
             container = shadow.pop()
-            _report_read(engine, execution, thread_id, container, repr(key), elock)
+            _kname = _subscript_key_name(key)
+            _report_read(engine, execution, thread_id, container, _kname, elock)
             if recorder is not None and container is not None:
-                recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=repr(key), obj=container)
+                recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=_kname, obj=container)
             shadow.push(None)
         else:
             shadow.pop()
@@ -739,7 +829,14 @@ def _process_opcode(
         # Report a WRITE on the module's globals dict for this variable name.
         _report_write(engine, execution, thread_id, frame.f_globals, instr.argval, elock)
 
-    elif op in ("STORE_FAST", "STORE_DEREF"):
+    elif op == "STORE_DEREF":
+        shadow.pop()
+        # Report a WRITE on closure cell/free variables.
+        varname = instr.argval
+        if varname in code.co_freevars or varname in code.co_cellvars:
+            _report_write(engine, execution, thread_id, code, varname, elock)
+
+    elif op == "STORE_FAST":
         shadow.pop()
 
     elif op == "STORE_FAST_STORE_FAST":
@@ -760,16 +857,49 @@ def _process_opcode(
     elif op in ("CALL", "CALL_FUNCTION", "CALL_METHOD", "CALL_KW", "CALL_FUNCTION_KW", "CALL_FUNCTION_EX"):
         # Detect C-level method calls and classify as read or write.
         #
-        # Scan the shadow stack for a builtin_function_or_method.  If
-        # found and its __self__ is not an immutable type, report an
-        # access on the object: READ for known read-only methods (e.g.
-        # __getitem__, count), WRITE for everything else (append, add,
-        # clear, sort, etc.).
+        # Three detection strategies, tried in order:
+        # 1. Passthrough builtins (setattr, getattr, operator.setitem, etc.)
+        #    — operate on their arguments rather than __self__
+        # 2. Bound C methods (list.append, dict.update, etc.)
+        #    — __self__ is the mutable target object
+        # 3. Wrapper descriptors (object.__setattr__, dict.__setitem__, etc.)
+        #    — unbound C type methods, first argument is the target
         argc = instr.arg or 0
         scan_depth = min(argc + 3, len(shadow.stack))
+        _call_handled = False
+
         for i in range(scan_depth):
             item = shadow.stack[-(i + 1)]
-            if item is not None and type(item) is _BUILTIN_METHOD_TYPE:
+            if item is None:
+                continue
+            item_type = type(item)
+
+            # --- Strategy 1: Passthrough builtins ---
+            # These are builtins whose __self__ is a module (builtins, operator)
+            # but that access their ARGUMENTS.  Identified by id(function).
+            _pt = _PASSTHROUGH_BUILTINS.get(id(item))
+            if _pt is not None:
+                _pt_kind, _pt_obj_idx, _pt_name_idx = _pt
+                # Arguments are always in the top `argc` positions on the stack
+                # regardless of Python version (3.10: [func, args], 3.11-3.13:
+                # [NULL, func, args], 3.14: [func, NULL, args]).
+                if argc >= _pt_obj_idx + 1:
+                    _pt_target = shadow.stack[-(argc - _pt_obj_idx)]
+                    _pt_attr: Any = "__cmethods__"
+                    if _pt_name_idx is not None and argc >= _pt_name_idx + 1:
+                        _raw = shadow.stack[-(argc - _pt_name_idx)]
+                        if isinstance(_raw, str):
+                            _pt_attr = _raw
+                    if _pt_target is not None and not isinstance(_pt_target, _IMMUTABLE_TYPES):
+                        if _pt_kind == "read":
+                            _report_read(engine, execution, thread_id, _pt_target, _pt_attr, elock)
+                        else:
+                            _report_write(engine, execution, thread_id, _pt_target, _pt_attr, elock)
+                _call_handled = True
+                break
+
+            # --- Strategy 2: Bound C methods (existing behavior) ---
+            if item_type is _BUILTIN_METHOD_TYPE or item_type is _METHOD_WRAPPER_TYPE:
                 self_obj = getattr(item, "__self__", None)
                 if self_obj is not None and not isinstance(self_obj, _IMMUTABLE_TYPES):
                     method_name = getattr(item, "__name__", None)
@@ -777,7 +907,26 @@ def _process_opcode(
                         _report_read(engine, execution, thread_id, self_obj, "__cmethods__", elock)
                     else:
                         _report_write(engine, execution, thread_id, self_obj, "__cmethods__", elock)
+                    _call_handled = True
                     break
+                # __self__ is immutable (e.g. module) — fall through to continue scan
+
+            # --- Strategy 3: Wrapper descriptors (unbound C type methods) ---
+            if item_type is _WRAPPER_DESCRIPTOR_TYPE:
+                objclass = getattr(item, "__objclass__", None)
+                if objclass is not None and not issubclass(objclass, _IMMUTABLE_TYPES):
+                    # First argument (self) is always at the bottom of the argc args
+                    if argc >= 1:
+                        _wd_target = shadow.stack[-argc]
+                        if _wd_target is not None and not isinstance(_wd_target, _IMMUTABLE_TYPES):
+                            method_name = getattr(item, "__name__", None)
+                            if method_name in _C_METHOD_READ_ONLY:
+                                _report_read(engine, execution, thread_id, _wd_target, "__cmethods__", elock)
+                            else:
+                                _report_write(engine, execution, thread_id, _wd_target, "__cmethods__", elock)
+                _call_handled = True
+                break
+
         # Standard stack effect handling.
         try:
             effect = dis.stack_effect(instr.opcode, instr.arg or 0)
