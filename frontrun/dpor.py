@@ -160,6 +160,97 @@ _dpor_tls = threading.local()
 
 
 # ---------------------------------------------------------------------------
+# LD_PRELOAD I/O event bridge
+# ---------------------------------------------------------------------------
+
+
+class _PreloadBridge:
+    """Routes I/O events from the LD_PRELOAD library to DPOR threads.
+
+    The LD_PRELOAD library intercepts C-level ``send()``/``recv()`` calls
+    (e.g. from psycopg2's libpq) and writes events to a pipe.  An
+    :class:`~frontrun._preload_io.IOEventDispatcher` reads the pipe in a
+    background thread and invokes :meth:`listener` for each event.
+
+    This bridge maps OS thread IDs to DPOR logical thread IDs and buffers
+    events in per-thread lists.  The DPOR scheduler drains these buffers
+    at each scheduling point via :meth:`drain`.
+    """
+
+    def __init__(self, dispatcher: Any = None) -> None:
+        self._lock = real_lock()
+        self._tid_to_dpor: dict[int, int] = {}
+        self._pending: dict[int, list[tuple[int, str, str]]] = {}
+        self._active = False
+        self._dispatcher = dispatcher  # IOEventDispatcher (for poll())
+
+    def register_thread(self, os_tid: int, dpor_id: int) -> None:
+        """Map an OS thread ID to a DPOR logical thread ID."""
+        with self._lock:
+            self._tid_to_dpor[os_tid] = dpor_id
+            self._pending.setdefault(dpor_id, [])
+            self._active = True
+
+    def unregister_thread(self, os_tid: int) -> None:
+        """Remove an OS thread ID mapping."""
+        with self._lock:
+            self._tid_to_dpor.pop(os_tid, None)
+            if not self._tid_to_dpor:
+                self._active = False
+
+    def clear(self) -> None:
+        """Clear all mappings and pending events (between executions)."""
+        with self._lock:
+            self._tid_to_dpor.clear()
+            self._pending.clear()
+            self._active = False
+
+    def listener(self, event: Any) -> None:
+        """IOEventDispatcher callback — buffer the event for the right thread."""
+        if not self._active:
+            return
+        # Skip close events — closing a file descriptor doesn't mutate the
+        # external resource and creates many spurious conflict points that
+        # force DPOR to explore uninteresting interleavings first.
+        if event.kind == "close":
+            return
+        with self._lock:
+            dpor_id = self._tid_to_dpor.get(event.tid)
+            if dpor_id is None:
+                return
+            # Map libc I/O operations to DPOR access kinds.  Using the
+            # actual send/recv distinction (write/read) is critical: the
+            # DPOR engine's ObjectState tracks per-thread latest-read and
+            # latest-write separately.  If we treated all socket I/O as
+            # "write", only the LAST write per thread would be tracked,
+            # and early access positions (e.g. a SELECT recv) would be
+            # overwritten by later ones (e.g. a COMMIT recv).  With
+            # read/write distinction, DPOR iteratively backtracks through
+            # the send/recv pairs to reach the critical interleaving.
+            kind = "write" if event.kind == "write" else "read"
+            obj_key = _make_object_key(hash(event.resource_id), event.resource_id)
+            self._pending.setdefault(dpor_id, []).append((obj_key, kind, event.resource_id))
+
+    def drain(self, dpor_id: int) -> list[tuple[int, str, str]]:
+        """Return and clear buffered events for a DPOR thread.
+
+        Each item is ``(object_key, kind, resource_id)``.
+
+        On free-threaded Python the background reader may not have
+        processed pipe data yet, so we poll the dispatcher first to
+        flush any pending bytes into listener callbacks.
+        """
+        if self._dispatcher is not None:
+            self._dispatcher.poll()
+        with self._lock:
+            events = self._pending.get(dpor_id)
+            if events:
+                self._pending[dpor_id] = []
+                return events
+            return []
+
+
+# ---------------------------------------------------------------------------
 # DPOR Opcode Scheduler
 # ---------------------------------------------------------------------------
 
@@ -182,12 +273,14 @@ class DporScheduler:
         engine_lock: threading.Lock | None = None,
         deadlock_timeout: float = 5.0,
         trace_recorder: TraceRecorder | None = None,
+        preload_bridge: _PreloadBridge | None = None,
     ) -> None:
         self.engine = engine
         self.execution = execution
         self.num_threads = num_threads
         self.deadlock_timeout = deadlock_timeout
         self.trace_recorder = trace_recorder
+        self._preload_bridge = preload_bridge
         # On free-threaded Python, PyO3 &mut self borrows are non-blocking
         # (try-or-panic).  A single engine_lock serialises ALL calls to the
         # engine and execution objects across worker threads, the sync
@@ -241,11 +334,39 @@ class DporScheduler:
         with self._condition:
             if frame is not None:
                 _process_opcode(frame, self, thread_id)
+            # Merge LD_PRELOAD I/O events (C-level send/recv from e.g.
+            # psycopg2) into the thread's pending_io list.  The preload
+            # bridge buffers events from the pipe reader thread, keyed by
+            # DPOR thread ID.
+            _pending_io: list[tuple[int, str]] | None = getattr(_dpor_tls, "pending_io", None)
+            if self._preload_bridge is not None:
+                _preload_events = self._preload_bridge.drain(thread_id)
+                if _preload_events:
+                    # Record into trace for human-readable output.  These events
+                    # come from C extensions (e.g. libpq) with no Python frame.
+                    _recorder = self.trace_recorder
+                    if _recorder is not None:
+                        for _, _kind, _resource_id in _preload_events:
+                            _recorder.record_io(thread_id, _resource_id, _kind)
+                    # Convert 3-tuples to 2-tuples for the pending list
+                    _io_pairs = [(_key, _kind) for _key, _kind, _ in _preload_events]
+                    if _pending_io is not None:
+                        _pending_io.extend(_io_pairs)
+                    else:
+                        _dpor_tls.pending_io = _io_pairs
+                        _pending_io = _io_pairs
             # Flush deferred I/O reports when the thread is outside all locks.
             # This must happen at report_and_wait level (not only inside
             # _process_opcode) to guarantee it fires even when _process_opcode
             # returns early due to unresolved instructions.
-            _pending_io: list[tuple[int, str]] | None = getattr(_dpor_tls, "pending_io", None)
+            #
+            # All events flushed in one report_and_wait share the same
+            # path_id (from the most recent schedule() call).  The Rust
+            # engine's process_io_access uses record_io_access (keeps the
+            # FIRST access per thread, not the latest) so early accesses
+            # like a SELECT recv aren't overwritten by later ones like a
+            # COMMIT ack.  This ensures DPOR backtracks to the earliest
+            # (most useful) position for each thread.
             if _pending_io and getattr(_dpor_tls, "lock_depth", 0) == 0:
                 _elock = self._engine_lock
                 _engine = self.engine
@@ -581,9 +702,11 @@ class DporBytecodeRunner:
         self,
         scheduler: DporScheduler,
         detect_io: bool = True,
+        preload_bridge: _PreloadBridge | None = None,
     ) -> None:
         self.scheduler = scheduler
         self.detect_io = detect_io
+        self._preload_bridge = preload_bridge
         self.threads: list[threading.Thread] = []
         self.errors: dict[int, Exception] = {}
         self._lock_patched = False
@@ -778,6 +901,10 @@ class DporBytecodeRunner:
         _dpor_tls.lock_depth = 0
         _dpor_tls.pending_io = []
 
+        # Register OS TID → DPOR thread ID mapping for LD_PRELOAD events.
+        if self._preload_bridge is not None:
+            self._preload_bridge.register_thread(threading.get_native_id(), thread_id)
+
         if self.detect_io:
             _recorder = scheduler.trace_recorder
 
@@ -806,6 +933,8 @@ class DporBytecodeRunner:
 
     def _teardown_dpor_tls(self) -> None:
         """Clean up both shared and DPOR-specific TLS."""
+        if self._preload_bridge is not None:
+            self._preload_bridge.unregister_thread(threading.get_native_id())
         if self.detect_io:
             set_io_reporter(None)
             uninstall_io_profile()
@@ -980,101 +1109,141 @@ def explore_dpor(
     # worker threads, the sync reporter, and the main loop.
     engine_lock = real_lock()
 
-    while True:
-        with engine_lock:
-            execution = engine.begin_execution()
-        recorder = TraceRecorder()
-        scheduler = DporScheduler(
-            engine,
-            execution,
-            num_threads,
-            engine_lock=engine_lock,
-            deadlock_timeout=deadlock_timeout,
-            trace_recorder=recorder,
-        )
-        runner = DporBytecodeRunner(scheduler, detect_io=detect_io)
+    # Set up the LD_PRELOAD → DPOR bridge for C-level I/O detection.
+    # When code under test uses C extensions that call libc send()/recv()
+    # directly (e.g. psycopg2/libpq), the Python-level monkey-patches in
+    # _io_detection can't see those calls.  The LD_PRELOAD library
+    # intercepts them at the C level and writes events to a pipe.  The
+    # IOEventDispatcher reads the pipe in a background thread and the
+    # _PreloadBridge routes events to the correct DPOR thread for
+    # conflict analysis.
+    preload_dispatcher = None
+    preload_bridge: _PreloadBridge | None = None
+    if detect_io:
+        from frontrun._preload_io import IOEventDispatcher
 
-        runner._patch_locks()
-        runner._patch_io()
-        try:
-            state = setup()
+        preload_dispatcher = IOEventDispatcher()
+        preload_bridge = _PreloadBridge(dispatcher=preload_dispatcher)
+        preload_dispatcher.add_listener(preload_bridge.listener)
+        preload_dispatcher.start()
 
-            def make_thread_func(thread_func: Callable[[T], None], s: T) -> Callable[[], None]:
-                def wrapper() -> None:
-                    thread_func(s)
-
-                return wrapper
-
-            funcs = [make_thread_func(t, state) for t in threads]
-            try:
-                runner.run(funcs, timeout=timeout_per_run)
-            except TimeoutError:
-                pass
-        finally:
-            runner._unpatch_io()
-            runner._unpatch_locks()
-
-        result.num_explored += 1
-
-        if not invariant(state):
-            result.property_holds = False
+    try:
+        while True:
             with engine_lock:
-                schedule = execution.schedule_trace
-            schedule_list = list(schedule)
-            result.failures.append((result.num_explored, schedule_list))
-            if result.counterexample is None:
-                result.counterexample = schedule_list
+                execution = engine.begin_execution()
+            recorder = TraceRecorder()
+            # Clear bridge state for this new execution.
+            if preload_bridge is not None:
+                preload_bridge.clear()
+            scheduler = DporScheduler(
+                engine,
+                execution,
+                num_threads,
+                engine_lock=engine_lock,
+                deadlock_timeout=deadlock_timeout,
+                trace_recorder=recorder,
+                preload_bridge=preload_bridge,
+            )
+            runner = DporBytecodeRunner(scheduler, detect_io=detect_io, preload_bridge=preload_bridge)
 
-            # Replay the counterexample to measure reproducibility
-            if reproduce_on_failure > 0 and result.reproduction_attempts == 0:
-                from frontrun.bytecode import run_with_schedule
+            runner._patch_locks()
+            runner._patch_io()
+            try:
+                state = setup()
 
-                successes = 0
-                for _ in range(reproduce_on_failure):
-                    try:
-                        # DPOR processes I/O events within the same scheduling
-                        # step as the triggering opcode (via pending_io), so
-                        # its schedule is pure opcode-level.  The bytecode
-                        # shuffler's _io_reporter adds extra scheduling steps
-                        # for each I/O event, which would desync the replay.
-                        # Disable detect_io during replay so the step counts
-                        # match; the actual I/O still happens as a side effect
-                        # of opcode execution.
-                        replay_state = run_with_schedule(
-                            schedule_list,
-                            setup,
-                            threads,
-                            timeout=timeout_per_run,
-                            detect_io=False,
-                            deadlock_timeout=deadlock_timeout,
-                        )
-                        if not invariant(replay_state):
-                            successes += 1
-                    except Exception:
-                        pass  # timeout / crash during replay — not a reproduction
-                result.reproduction_attempts = reproduce_on_failure
-                result.reproduction_successes = successes
+                def make_thread_func(thread_func: Callable[[T], None], s: T) -> Callable[[], None]:
+                    def wrapper() -> None:
+                        thread_func(s)
 
-            if result.explanation is None:
-                result.explanation = format_trace(
-                    recorder.events,
-                    num_threads=num_threads,
-                    num_explored=result.num_explored,
-                    reproduction_attempts=result.reproduction_attempts,
-                    reproduction_successes=result.reproduction_successes,
-                )
-            if stop_on_first:
-                # Clear cache before returning
-                with _INSTR_CACHE_LOCK:
-                    _INSTR_CACHE.clear()
-                return result
+                    return wrapper
 
-        # Clear instruction cache between executions to avoid stale code ids
-        with _INSTR_CACHE_LOCK:
-            _INSTR_CACHE.clear()
+                funcs = [make_thread_func(t, state) for t in threads]
+                try:
+                    runner.run(funcs, timeout=timeout_per_run)
+                except TimeoutError:
+                    pass
+            finally:
+                runner._unpatch_io()
+                runner._unpatch_locks()
 
-        with engine_lock:
-            if not engine.next_execution():
-                break
+            result.num_explored += 1
+
+            if not invariant(state):
+                result.property_holds = False
+                with engine_lock:
+                    schedule = execution.schedule_trace
+                schedule_list = list(schedule)
+                result.failures.append((result.num_explored, schedule_list))
+                if result.counterexample is None:
+                    result.counterexample = schedule_list
+
+                # Replay the counterexample to measure reproducibility
+                if reproduce_on_failure > 0 and result.reproduction_attempts == 0:
+                    from frontrun._preload_io import _set_preload_pipe_fd
+                    from frontrun.bytecode import run_with_schedule
+
+                    # Pause LD_PRELOAD pipe writes during replay.  The replay
+                    # threads do file I/O that the LD_PRELOAD library intercepts,
+                    # generating pipe events.  If the pipe buffer fills up (64 KB),
+                    # the LD_PRELOAD write() blocks the worker thread while the
+                    # reader thread may block on FD_MAP held by that same worker
+                    # — a deadlock.  Disabling the pipe fd avoids this entirely;
+                    # detect_io is already False for replays anyway.
+                    _set_preload_pipe_fd(-1)
+
+                    successes = 0
+                    for _ in range(reproduce_on_failure):
+                        try:
+                            # DPOR processes I/O events within the same scheduling
+                            # step as the triggering opcode (via pending_io), so
+                            # its schedule is pure opcode-level.  The bytecode
+                            # shuffler's _io_reporter adds extra scheduling steps
+                            # for each I/O event, which would desync the replay.
+                            # Disable detect_io during replay so the step counts
+                            # match; the actual I/O still happens as a side effect
+                            # of opcode execution.
+                            replay_state = run_with_schedule(
+                                schedule_list,
+                                setup,
+                                threads,
+                                timeout=timeout_per_run,
+                                detect_io=False,
+                                deadlock_timeout=deadlock_timeout,
+                            )
+                            if not invariant(replay_state):
+                                successes += 1
+                        except Exception:
+                            pass  # timeout / crash during replay — not a reproduction
+                    result.reproduction_attempts = reproduce_on_failure
+                    result.reproduction_successes = successes
+
+                    # Re-enable pipe writes for subsequent DPOR executions.
+                    if preload_dispatcher is not None and preload_dispatcher._write_fd is not None:
+                        _set_preload_pipe_fd(preload_dispatcher._write_fd)
+
+                if result.explanation is None:
+                    result.explanation = format_trace(
+                        recorder.events,
+                        num_threads=num_threads,
+                        num_explored=result.num_explored,
+                        reproduction_attempts=result.reproduction_attempts,
+                        reproduction_successes=result.reproduction_successes,
+                    )
+                if stop_on_first:
+                    # Clear cache before returning
+                    with _INSTR_CACHE_LOCK:
+                        _INSTR_CACHE.clear()
+                    return result
+
+            # Clear instruction cache between executions to avoid stale code ids
+            with _INSTR_CACHE_LOCK:
+                _INSTR_CACHE.clear()
+
+            with engine_lock:
+                if not engine.next_execution():
+                    break
+    finally:
+        if preload_dispatcher is not None:
+            preload_dispatcher.stop()
 
     return result

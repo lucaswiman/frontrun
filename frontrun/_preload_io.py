@@ -30,11 +30,16 @@ Where *kind* is one of: ``connect``, ``read``, ``write``, ``close``.
 
 from __future__ import annotations
 
+import ctypes
+import fcntl
 import os
+import select as _select_mod
 import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+
+from frontrun._cooperative import real_lock
 
 
 @dataclass
@@ -74,6 +79,52 @@ def _parse_event_line(line: str) -> PreloadIOEvent | None:
 
 
 # ---------------------------------------------------------------------------
+# Direct pipe-fd setter via ctypes (bypasses cached env-var lookup)
+# ---------------------------------------------------------------------------
+
+
+def _set_preload_pipe_fd(fd: int) -> bool:
+    """Directly set the pipe fd in the LD_PRELOAD library.
+
+    The Rust preload library caches ``FRONTRUN_IO_FD`` on first use, so
+    setting the env var after any I/O has occurred (e.g. during Python
+    startup) has no effect.  This function calls the exported
+    ``frontrun_io_set_pipe_fd`` symbol to update the cached value directly.
+
+    Returns ``True`` if the call succeeded, ``False`` if the library
+    is not loaded or the symbol is unavailable.
+    """
+    try:
+        lib = ctypes.CDLL(None)
+        func = lib.frontrun_io_set_pipe_fd
+        func.argtypes = [ctypes.c_int]
+        func.restype = None
+        func(fd)
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def _set_preload_pipe_read_fd(fd: int) -> bool:
+    """Tell the LD_PRELOAD library which fd is the pipe read end.
+
+    Reads on this fd bypass interception entirely — no ``ensure_fd_mapped``
+    overhead, no ``FD_MAP`` contention.  This prevents deadlocks where the
+    pipe reader thread blocks on FD_MAP inside LD_PRELOAD's ``read()`` hook
+    while holding ``_pipe_lock``.
+    """
+    try:
+        lib = ctypes.CDLL(None)
+        func = lib.frontrun_io_set_pipe_read_fd
+        func.argtypes = [ctypes.c_int]
+        func.restype = None
+        func(fd)
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Pipe-based transport with listener callbacks
 # ---------------------------------------------------------------------------
 
@@ -106,7 +157,11 @@ class IOEventDispatcher:
         self._write_fd: int | None = None
         self._reader_thread: threading.Thread | None = None
         self._listeners: list[IOEventListener] = []
-        self._lock = threading.Lock()
+        # Use real (non-cooperative) locks so the background reader thread
+        # is never affected by frontrun's cooperative lock patching.
+        self._lock = real_lock()
+        self._pipe_lock = real_lock()  # serialises pipe reads between reader thread and poll()
+        self._buf = b""  # partial-line buffer, protected by _pipe_lock
         self._started = False
         self._stopped = False
         self._events: list[PreloadIOEvent] = []
@@ -137,11 +192,24 @@ class IOEventDispatcher:
         if self._started:
             return
         r, w = os.pipe()
+        # Make the read end non-blocking so poll() and the reader thread
+        # can share it safely under _pipe_lock without blocking each other.
+        flags = fcntl.fcntl(r, fcntl.F_GETFL)
+        fcntl.fcntl(r, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
         self._read_fd = r
         self._write_fd = w
         os.environ["FRONTRUN_IO_FD"] = str(w)
         # Also clear FRONTRUN_IO_LOG so the Rust side prefers the pipe.
         os.environ.pop("FRONTRUN_IO_LOG", None)
+        # Directly update the cached pipe fd in the LD_PRELOAD library.
+        # The Rust side caches FRONTRUN_IO_FD on first use, so setting the
+        # env var alone is not enough if any I/O occurred during startup.
+        _set_preload_pipe_fd(w)
+        # Tell the LD_PRELOAD library which fd is the pipe read end so it
+        # skips interception on reads from it (avoids ensure_fd_mapped
+        # overhead and FD_MAP contention that can deadlock the reader thread).
+        _set_preload_pipe_read_fd(r)
 
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
@@ -156,6 +224,11 @@ class IOEventDispatcher:
         if self._stopped:
             return
         self._stopped = True
+
+        # Reset the cached pipe fds in the LD_PRELOAD library before closing,
+        # so the Rust side stops writing to the about-to-be-closed fd.
+        _set_preload_pipe_fd(-1)
+        _set_preload_pipe_read_fd(-1)
 
         # Close write end so the reader sees EOF.
         if self._write_fd is not None:
@@ -178,28 +251,90 @@ class IOEventDispatcher:
                 pass
             self._read_fd = None
 
-    def _reader_loop(self) -> None:
-        """Background thread: read lines from pipe, parse, dispatch."""
-        assert self._read_fd is not None
-        buf = b""
-        while True:
-            try:
-                chunk = os.read(self._read_fd, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break  # EOF — write end closed
-            buf += chunk
-            while b"\n" in buf:
-                line_bytes, buf = buf.split(b"\n", 1)
+    def _read_parse_dispatch(self) -> tuple[list[PreloadIOEvent], bool]:
+        """Read pipe data, parse events, and dispatch to listeners — all under ``_pipe_lock``.
+
+        Holding ``_pipe_lock`` across the entire read→parse→dispatch cycle
+        ensures there is no window where an event has been read from the pipe
+        but not yet delivered to listeners.  Without this, ``poll()`` (called
+        from the DPOR scheduling path) could see an empty pipe while the
+        reader thread is mid-dispatch, causing I/O events to be attributed
+        to a later scheduling step and triggering exponential DPOR path
+        explosion on free-threaded Python.
+
+        Returns ``(events, got_data)`` where *got_data* is True when at
+        least one byte was read from the pipe (used for EOF detection).
+        """
+        with self._pipe_lock:
+            assert self._read_fd is not None
+            got_data = False
+            while True:
+                try:
+                    chunk = os.read(self._read_fd, 65536)
+                except BlockingIOError:
+                    break
+                except OSError:
+                    break
+                if not chunk:
+                    break  # EOF
+                got_data = True
+                self._buf += chunk
+            events: list[PreloadIOEvent] = []
+            while b"\n" in self._buf:
+                line_bytes, self._buf = self._buf.split(b"\n", 1)
                 line = line_bytes.decode("utf-8", errors="replace")
                 event = _parse_event_line(line)
                 if event is not None:
-                    with self._lock:
-                        self._events.append(event)
-                        listeners = list(self._listeners)
-                    for listener in listeners:
-                        listener(event)
+                    events.append(event)
+            # Dispatch while still holding _pipe_lock so that poll() callers
+            # are guaranteed to see all dispatched events in listener buffers
+            # by the time they acquire _pipe_lock themselves.
+            for event in events:
+                with self._lock:
+                    self._events.append(event)
+                    listeners = list(self._listeners)
+                for listener in listeners:
+                    listener(event)
+        return events, got_data
+
+    def _reader_loop(self) -> None:
+        """Background thread: wait for pipe data via select, then read and dispatch."""
+        assert self._read_fd is not None
+        read_fd = self._read_fd
+        while True:
+            try:
+                ready, _, _ = _select_mod.select([read_fd], [], [], 0.05)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                continue
+            events, got_data = self._read_parse_dispatch()
+            if not events and not got_data and self._stopped:
+                break
+
+    def poll(self) -> None:
+        """Synchronously read all available pipe data and dispatch events.
+
+        On free-threaded Python (3.13t+) the background reader thread may
+        not have processed pipe data by the time the calling thread reaches
+        its next scheduling point.  Calling ``poll()`` from the DPOR drain
+        path ensures events are available immediately.
+
+        Uses ``select()`` as a fast guard: ``select`` is not intercepted by
+        the LD_PRELOAD library, whereas ``os.read`` is — each intercepted
+        read triggers ``getpeername`` + ``readlink`` syscalls on the pipe fd.
+        Skipping ``os.read`` when the pipe is empty avoids that overhead on
+        every opcode boundary.
+        """
+        if self._read_fd is None or self._stopped:
+            return
+        try:
+            ready, _, _ = _select_mod.select([self._read_fd], [], [], 0)
+        except (OSError, ValueError):
+            return
+        if not ready:
+            return
+        self._read_parse_dispatch()
 
     # Context manager support
     def __enter__(self) -> IOEventDispatcher:

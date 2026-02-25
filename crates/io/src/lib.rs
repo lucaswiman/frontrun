@@ -411,6 +411,13 @@ static FD_MAP: std::sync::LazyLock<Mutex<FdMap>> =
 static PIPE_FD: AtomicI32 = AtomicI32::new(-1);
 static PIPE_FD_CHECKED: AtomicBool = AtomicBool::new(false);
 
+/// The read end of the event pipe.  Reads on this fd must bypass
+/// interception entirely — otherwise the LD_PRELOAD `read()` hook
+/// acquires `FD_MAP` and calls `ensure_fd_mapped()`, adding overhead
+/// and potential contention that can deadlock the pipe reader thread
+/// on free-threaded Python.
+static PIPE_READ_FD: AtomicI32 = AtomicI32::new(-1);
+
 fn get_pipe_fd() -> Option<c_int> {
     if !PIPE_FD_CHECKED.load(Ordering::Acquire) {
         if let Ok(fd_str) = std::env::var("FRONTRUN_IO_FD") {
@@ -426,6 +433,33 @@ fn get_pipe_fd() -> Option<c_int> {
     } else {
         None
     }
+}
+
+/// Directly set (or reset) the pipe fd used for event transport.
+///
+/// Called from Python via ctypes when [`IOEventDispatcher`] creates a pipe
+/// after the library has already been loaded (and `get_pipe_fd` has cached
+/// the initial "not set" state from process startup).
+///
+/// Pass `-1` to disable pipe transport (reverts to log-file fallback).
+#[no_mangle]
+pub extern "C" fn frontrun_io_set_pipe_fd(fd: c_int) {
+    PIPE_FD.store(fd, Ordering::Release);
+    PIPE_FD_CHECKED.store(true, Ordering::Release);
+}
+
+/// Set (or clear) the read end of the event pipe so that `read()`
+/// interception skips it entirely.  Pass `-1` to clear.
+#[no_mangle]
+pub extern "C" fn frontrun_io_set_pipe_read_fd(fd: c_int) {
+    PIPE_READ_FD.store(fd, Ordering::Release);
+}
+
+/// Returns true if `fd` is one of the pipe fds used for event transport
+/// and should be excluded from interception.
+#[inline]
+fn is_pipe_fd(fd: c_int) -> bool {
+    fd == PIPE_FD.load(Ordering::Relaxed) || fd == PIPE_READ_FD.load(Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------------------
@@ -832,7 +866,7 @@ mod linux_intercept {
             }
         };
 
-        if fd <= 2 {
+        if fd <= 2 || is_pipe_fd(fd) {
             return real(fd, buf, count);
         }
 
@@ -853,7 +887,7 @@ mod linux_intercept {
             }
         };
 
-        if fd <= 2 {
+        if fd <= 2 || is_pipe_fd(fd) {
             return real(fd, iov, iovcnt);
         }
 
@@ -958,7 +992,7 @@ mod linux_intercept {
             }
         };
 
-        if fd <= 2 {
+        if fd <= 2 || is_pipe_fd(fd) {
             return real(fd, buf, count);
         }
 
@@ -979,7 +1013,7 @@ mod linux_intercept {
             }
         };
 
-        if fd <= 2 {
+        if fd <= 2 || is_pipe_fd(fd) {
             return real(fd, iov, iovcnt);
         }
 
@@ -1000,7 +1034,7 @@ mod linux_intercept {
             }
         };
 
-        if fd > 2 {
+        if fd > 2 && !is_pipe_fd(fd) {
             if let Some(_guard) = ReentrancyGuard::enter() {
                 if let Ok(mut map) = FD_MAP.lock() {
                     if let Some(resource) = map.remove(fd) {
@@ -1116,7 +1150,7 @@ mod macos_intercept {
         buf: *const c_void,
         count: size_t,
     ) -> ssize_t {
-        if fd > 2 && READY.load(Ordering::Acquire) {
+        if fd > 2 && !is_pipe_fd(fd) && READY.load(Ordering::Acquire) {
             ensure_fd_mapped(fd);
             report_io(fd, "write");
         }
@@ -1130,7 +1164,7 @@ mod macos_intercept {
         iov: *const iovec,
         iovcnt: c_int,
     ) -> ssize_t {
-        if fd > 2 && READY.load(Ordering::Acquire) {
+        if fd > 2 && !is_pipe_fd(fd) && READY.load(Ordering::Acquire) {
             ensure_fd_mapped(fd);
             report_io(fd, "write");
         }
@@ -1206,7 +1240,7 @@ mod macos_intercept {
         buf: *mut c_void,
         count: size_t,
     ) -> ssize_t {
-        if fd > 2 && READY.load(Ordering::Acquire) {
+        if fd > 2 && !is_pipe_fd(fd) && READY.load(Ordering::Acquire) {
             ensure_fd_mapped(fd);
             report_io(fd, "read");
         }
@@ -1220,7 +1254,7 @@ mod macos_intercept {
         iov: *const iovec,
         iovcnt: c_int,
     ) -> ssize_t {
-        if fd > 2 && READY.load(Ordering::Acquire) {
+        if fd > 2 && !is_pipe_fd(fd) && READY.load(Ordering::Acquire) {
             ensure_fd_mapped(fd);
             report_io(fd, "read");
         }
@@ -1230,7 +1264,7 @@ mod macos_intercept {
     /// Intercept `close()` — remove fd from map.
     #[no_mangle]
     pub unsafe extern "C" fn frontrun_close(fd: c_int) -> c_int {
-        if fd > 2 && READY.load(Ordering::Acquire) {
+        if fd > 2 && !is_pipe_fd(fd) && READY.load(Ordering::Acquire) {
             if let Some(_guard) = ReentrancyGuard::enter() {
                 if let Ok(mut map) = FD_MAP.lock() {
                     if let Some(resource) = map.remove(fd) {
