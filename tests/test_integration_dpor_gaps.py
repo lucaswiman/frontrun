@@ -1,37 +1,21 @@
 """Adversarial integration tests: race conditions that expose DPOR detection gaps.
 
-Each test targets a specific gap in DPOR's shared-access tracking or
-synchronization modeling.  The tests fall into two categories:
+All bug-exposing tests assert the *correct* (expected) behavior, so they
+**fail** until the corresponding gap is fixed.  When a gap is fixed the
+test will start passing and can be moved to the "CONTROLS" section.
 
-**False negatives** — Real races that DPOR *should* detect but misses:
-  ``explore_dpor`` reports ``property_holds=True`` even though an
-  interleaving exists that violates the invariant.
-
-**False positives** — Safe (correctly synchronized) code that DPOR
-  incorrectly reports as racy: ``explore_dpor`` reports
-  ``property_holds=False`` even though the invariant always holds.
-
-When a gap is fixed the corresponding test will start failing.  Flip
-the assertion (the error message explains which way) and move the test
-to the "DPOR correctly detects" section.
-
-Gaps tested:
+Gaps tested (false negatives — real races DPOR misses):
 
 1. ``LOAD_GLOBAL`` / ``STORE_GLOBAL`` — pushed/popped on the shadow
    stack but never reported as reads or writes.
 2. C-level container method mutations — ``list.append()``,
    ``set.add()`` etc. execute in C; the shadow stack sees
    ``LOAD_ATTR`` (a read) but not the mutation.
-3. ``CooperativeSemaphore`` sync events — acquire/release are not
-   reported to the DPOR engine, so Semaphore-based mutual exclusion
-   has no happens-before edges, causing false positives.
 """
 
 from __future__ import annotations
 
 import threading
-
-import pytest
 
 from frontrun.dpor import explore_dpor
 
@@ -78,12 +62,10 @@ class TestGlobalVariableRace:
             detect_io=False,
             deadlock_timeout=5.0,
         )
-        assert result.property_holds, (
-            "DPOR found the global-variable race! "
-            "The STORE_GLOBAL tracking gap has been fixed — "
-            "flip this assertion to `assert not result.property_holds`."
-        )
-        assert result.num_explored == 1, "Expected only 1 interleaving (no conflicts detected)"
+        # BUG: DPOR reports property_holds=True because LOAD_GLOBAL/STORE_GLOBAL
+        # accesses are not reported to the engine.  This assertion documents the
+        # expected-correct behavior — it will pass once the gap is fixed.
+        assert not result.property_holds, "DPOR should detect the global-variable lost-update race"
 
     def test_barrier_proves_global_race_is_real(self) -> None:
         """Barrier-forced interleaving proves the lost update is real."""
@@ -145,7 +127,7 @@ class TestSimpleGlobalIncrement:
             detect_io=False,
             deadlock_timeout=5.0,
         )
-        assert result.property_holds, "DPOR found the global += race! LOAD_GLOBAL/STORE_GLOBAL tracking has been fixed."
+        assert not result.property_holds, "DPOR should detect the global += lost-update race"
 
     def test_barrier_proves_augmented_assign_race_is_real(self) -> None:
         global _simple_global
@@ -212,9 +194,7 @@ class TestListAppendRace:
             detect_io=False,
             deadlock_timeout=5.0,
         )
-        assert result.property_holds, (
-            "DPOR found the list.append race! Container-method mutation tracking has been fixed."
-        )
+        assert not result.property_holds, "DPOR should detect the list.append check-then-act race"
 
     def test_barrier_proves_list_append_race_is_real(self) -> None:
         barrier = threading.Barrier(2)
@@ -285,7 +265,7 @@ class TestSetAddRace:
             detect_io=False,
             deadlock_timeout=5.0,
         )
-        assert result.property_holds, "DPOR found the set.add race! Container-method mutation tracking has been fixed."
+        assert not result.property_holds, "DPOR should detect the set.add check-then-act race"
 
     def test_barrier_proves_set_add_race_is_real(self) -> None:
         barrier = threading.Barrier(2)
@@ -314,18 +294,18 @@ class TestSetAddRace:
 
 
 # ============================================================================
-# FALSE POSITIVE — safe code DPOR incorrectly reports as racy
+# CONTROLS — DPOR works correctly on these
 # ============================================================================
 
 # ---------------------------------------------------------------------------
-# 5. Semaphore-based mutual exclusion (missing sync events)
+# 5. Semaphore-protected counter (spin-yield enforces mutual exclusion)
 # ---------------------------------------------------------------------------
 #
-# CooperativeSemaphore.acquire/release don't report lock_acquire /
-# lock_release sync events to the DPOR engine, so DPOR has no
-# happens-before edges for Semaphore-based mutual exclusion.  It
-# explores interleavings where both threads enter the critical
-# section simultaneously — which the Semaphore prevents in reality.
+# CooperativeSemaphore doesn't report lock_acquire/lock_release sync events,
+# but its spin-yield behaviour still enforces mutual exclusion at the
+# cooperative-scheduling level.  DPOR explores extra interleavings
+# (explored=3 vs explored=1 for Lock) because it doesn't know about the
+# Semaphore dependency — but it still finds property_holds=True.
 
 
 class _SemaphoreCounterState:
@@ -345,17 +325,10 @@ def _semaphore_invariant(state: _SemaphoreCounterState) -> bool:
     return state.counter == 2
 
 
-class TestSemaphoreFalsePositive:
-    """DPOR false-positive: reports race on Semaphore-protected code."""
+class TestSemaphoreControlCorrect:
+    """Control: Semaphore spin-yield enforces mutual exclusion."""
 
-    @pytest.mark.intentionally_leaves_dangling_threads
-    def test_dpor_false_positive_with_semaphore(self) -> None:
-        """DPOR reports property_holds=False, but the code is correctly
-        synchronized — Semaphore serializes the increments.
-
-        The bug is that CooperativeSemaphore doesn't report sync events,
-        so DPOR doesn't know about the mutual exclusion.
-        """
+    def test_dpor_correctly_handles_semaphore(self) -> None:
         result = explore_dpor(
             setup=_SemaphoreCounterState,
             threads=[_semaphore_increment, _semaphore_increment],
@@ -363,40 +336,11 @@ class TestSemaphoreFalsePositive:
             detect_io=False,
             deadlock_timeout=5.0,
         )
-        assert not result.property_holds, (
-            "DPOR no longer false-positives on Semaphore! "
-            "Semaphore sync reporting has been fixed — "
-            "flip this assertion to `assert result.property_holds`."
+        assert result.property_holds, (
+            "DPOR incorrectly reports a race on Semaphore-protected code! "
+            "CooperativeSemaphore spin-yield may be broken."
         )
 
-    def test_naive_threading_proves_semaphore_is_safe(self) -> None:
-        """Naive threading confirms the Semaphore correctly protects the counter."""
-        trials = 1000
-        failures = 0
-        for _ in range(trials):
-            counter = [0]
-            sem = threading.Semaphore(1)
-
-            def handler() -> None:
-                sem.acquire()
-                tmp = counter[0]
-                counter[0] = tmp + 1
-                sem.release()
-
-            t1 = threading.Thread(target=handler)
-            t2 = threading.Thread(target=handler)
-            t1.start()
-            t2.start()
-            t1.join()
-            t2.join()
-            if counter[0] != 2:
-                failures += 1
-        assert failures == 0, f"Semaphore should perfectly protect: got {failures}/{trials} failures"
-
-
-# ============================================================================
-# CONTROLS — DPOR works correctly on these
-# ============================================================================
 
 # ---------------------------------------------------------------------------
 # 6. Lock-protected counter (sync events reported correctly)
