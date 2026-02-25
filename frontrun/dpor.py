@@ -39,6 +39,7 @@ import dis
 import sys
 import threading
 import time
+import types
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -457,7 +458,7 @@ class DporScheduler:
 # everything else defaults to WRITE.
 _BUILTIN_METHOD_TYPE = type(len)  # builtin_function_or_method
 
-_IMMUTABLE_TYPES = (str, bytes, int, float, bool, complex, tuple, frozenset, type(None))
+_IMMUTABLE_TYPES = (str, bytes, int, float, bool, complex, tuple, frozenset, type(None), types.ModuleType)
 
 # C-level methods that are read-only (don't mutate the object).
 _C_METHOD_READ_ONLY = frozenset(
