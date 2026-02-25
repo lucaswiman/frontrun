@@ -702,10 +702,6 @@ def _process_opcode(
                 pass
         if recorder is not None and obj is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=attr, obj=obj)
-        # On 3.11+, LOAD_ATTR with method flag (bit 0 of arg) pushes an
-        # extra NULL/self slot before the callable.  Match CPython's stack.
-        if _PY_VERSION >= (3, 11) and instr.arg is not None and instr.arg & 1:
-            shadow.push(None)  # NULL/self slot
         if obj is not None:
             try:
                 val = getattr(obj, attr)
@@ -724,6 +720,11 @@ def _process_opcode(
             except Exception:
                 shadow.push(None)
         else:
+            shadow.push(None)
+        # On 3.11+, LOAD_ATTR with method flag (bit 0 of arg) pushes an
+        # extra self/NULL slot after the callable, matching LOAD_METHOD's
+        # stack layout: [value, NULL].
+        if _PY_VERSION >= (3, 11) and instr.arg is not None and instr.arg & 1:
             shadow.push(None)
 
     elif op == "STORE_ATTR":

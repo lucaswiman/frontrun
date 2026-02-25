@@ -64,34 +64,26 @@ class _OperatorModuleState:
         self.data: dict[str, int] = {"count": 0}
 
 
-def _make_closure_list_checker() -> tuple[object, object, object]:
-    items: list[str] = ["only-item"]
-    pop_count = 0
+def _make_closure_list_checker() -> tuple[object, object]:
+    items: list[str] = []
+    count = 0
 
-    def try_pop() -> None:
-        nonlocal pop_count
-        if len(items) > 0:
-            try:
-                items.pop()
-            except IndexError:
-                pass
-            pop_count += 1
+    def append_and_count() -> None:
+        nonlocal count
+        items.append("x")
+        count = len(items)
 
-    def get_pop_count() -> int:
-        return pop_count
+    def get_count() -> int:
+        return count
 
-    def get_items() -> list[str]:
-        return items
-
-    return try_pop, get_pop_count, get_items
+    return append_and_count, get_count
 
 
 class _ClosureListState:
     def __init__(self) -> None:
-        try_pop, get_pop_count, get_items = _make_closure_list_checker()
-        self.try_pop = try_pop
-        self.get_pop_count = get_pop_count
-        self.get_items = get_items
+        append_and_count, get_count = _make_closure_list_checker()
+        self.append_and_count = append_and_count
+        self.get_count = get_count
 
 
 class _TypeSetattrState:
@@ -305,8 +297,8 @@ class TestClosureListCompoundRace:
     def test_dpor_detects_closure_list_race(self) -> None:
         result = explore_dpor(
             setup=_ClosureListState,
-            threads=[lambda s: s.try_pop(), lambda s: s.try_pop()],
-            invariant=lambda s: s.get_pop_count() <= 1,
+            threads=[lambda s: s.append_and_count(), lambda s: s.append_and_count()],
+            invariant=lambda s: s.get_count() == 2,
             detect_io=False,
             deadlock_timeout=5.0,
         )
