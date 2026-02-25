@@ -1181,6 +1181,17 @@ def explore_dpor(
                 if reproduce_on_failure > 0 and result.reproduction_attempts == 0:
                     from frontrun.bytecode import run_with_schedule
 
+                    # Pause LD_PRELOAD pipe writes during replay.  The replay
+                    # threads do file I/O that the LD_PRELOAD library intercepts,
+                    # generating pipe events.  If the pipe buffer fills up (64 KB),
+                    # the LD_PRELOAD write() blocks the worker thread while the
+                    # reader thread may block on FD_MAP held by that same worker
+                    # — a deadlock.  Disabling the pipe fd avoids this entirely;
+                    # detect_io is already False for replays anyway.
+                    from frontrun._preload_io import _set_preload_pipe_fd
+
+                    _set_preload_pipe_fd(-1)
+
                     successes = 0
                     for _ in range(reproduce_on_failure):
                         try:
@@ -1206,6 +1217,10 @@ def explore_dpor(
                             pass  # timeout / crash during replay — not a reproduction
                     result.reproduction_attempts = reproduce_on_failure
                     result.reproduction_successes = successes
+
+                    # Re-enable pipe writes for subsequent DPOR executions.
+                    if preload_dispatcher is not None and preload_dispatcher._write_fd is not None:
+                        _set_preload_pipe_fd(preload_dispatcher._write_fd)
 
                 if result.explanation is None:
                     result.explanation = format_trace(

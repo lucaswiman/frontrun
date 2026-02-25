@@ -105,6 +105,25 @@ def _set_preload_pipe_fd(fd: int) -> bool:
         return False
 
 
+def _set_preload_pipe_read_fd(fd: int) -> bool:
+    """Tell the LD_PRELOAD library which fd is the pipe read end.
+
+    Reads on this fd bypass interception entirely — no ``ensure_fd_mapped``
+    overhead, no ``FD_MAP`` contention.  This prevents deadlocks where the
+    pipe reader thread blocks on FD_MAP inside LD_PRELOAD's ``read()`` hook
+    while holding ``_pipe_lock``.
+    """
+    try:
+        lib = ctypes.CDLL(None)
+        func = lib.frontrun_io_set_pipe_read_fd
+        func.argtypes = [ctypes.c_int]
+        func.restype = None
+        func(fd)
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Pipe-based transport with listener callbacks
 # ---------------------------------------------------------------------------
@@ -187,6 +206,10 @@ class IOEventDispatcher:
         # The Rust side caches FRONTRUN_IO_FD on first use, so setting the
         # env var alone is not enough if any I/O occurred during startup.
         _set_preload_pipe_fd(w)
+        # Tell the LD_PRELOAD library which fd is the pipe read end so it
+        # skips interception on reads from it (avoids ensure_fd_mapped
+        # overhead and FD_MAP contention that can deadlock the reader thread).
+        _set_preload_pipe_read_fd(r)
 
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
@@ -202,9 +225,10 @@ class IOEventDispatcher:
             return
         self._stopped = True
 
-        # Reset the cached pipe fd in the LD_PRELOAD library before closing,
+        # Reset the cached pipe fds in the LD_PRELOAD library before closing,
         # so the Rust side stops writing to the about-to-be-closed fd.
         _set_preload_pipe_fd(-1)
+        _set_preload_pipe_read_fd(-1)
 
         # Close write end so the reader sees EOF.
         if self._write_fd is not None:
@@ -227,15 +251,23 @@ class IOEventDispatcher:
                 pass
             self._read_fd = None
 
-    def _read_and_dispatch(self) -> list[PreloadIOEvent]:
-        """Read available pipe data under _pipe_lock, parse complete lines.
+    def _read_parse_dispatch(self) -> tuple[list[PreloadIOEvent], bool]:
+        """Read pipe data, parse events, and dispatch to listeners — all under ``_pipe_lock``.
 
-        Returns parsed events (caller dispatches to listeners).
-        The pipe read end is non-blocking, so this never blocks.
+        Holding ``_pipe_lock`` across the entire read→parse→dispatch cycle
+        ensures there is no window where an event has been read from the pipe
+        but not yet delivered to listeners.  Without this, ``poll()`` (called
+        from the DPOR scheduling path) could see an empty pipe while the
+        reader thread is mid-dispatch, causing I/O events to be attributed
+        to a later scheduling step and triggering exponential DPOR path
+        explosion on free-threaded Python.
+
+        Returns ``(events, got_data)`` where *got_data* is True when at
+        least one byte was read from the pipe (used for EOF detection).
         """
-        events: list[PreloadIOEvent] = []
         with self._pipe_lock:
             assert self._read_fd is not None
+            got_data = False
             while True:
                 try:
                     chunk = os.read(self._read_fd, 65536)
@@ -245,23 +277,25 @@ class IOEventDispatcher:
                     break
                 if not chunk:
                     break  # EOF
+                got_data = True
                 self._buf += chunk
+            events: list[PreloadIOEvent] = []
             while b"\n" in self._buf:
                 line_bytes, self._buf = self._buf.split(b"\n", 1)
                 line = line_bytes.decode("utf-8", errors="replace")
                 event = _parse_event_line(line)
                 if event is not None:
                     events.append(event)
-        return events
-
-    def _dispatch_events(self, events: list[PreloadIOEvent]) -> None:
-        """Store events and invoke listeners (outside _pipe_lock)."""
-        for event in events:
-            with self._lock:
-                self._events.append(event)
-                listeners = list(self._listeners)
-            for listener in listeners:
-                listener(event)
+            # Dispatch while still holding _pipe_lock so that poll() callers
+            # are guaranteed to see all dispatched events in listener buffers
+            # by the time they acquire _pipe_lock themselves.
+            for event in events:
+                with self._lock:
+                    self._events.append(event)
+                    listeners = list(self._listeners)
+                for listener in listeners:
+                    listener(event)
+        return events, got_data
 
     def _reader_loop(self) -> None:
         """Background thread: wait for pipe data via select, then read and dispatch."""
@@ -274,13 +308,8 @@ class IOEventDispatcher:
                 break
             if not ready:
                 continue
-            events = self._read_and_dispatch()
-            if events:
-                self._dispatch_events(events)
-            # Detect EOF: select returned ready but no data was read and
-            # no events were parsed.  Check if we got an empty read (the
-            # _buf would still be empty if the chunk was b"").
-            elif self._stopped:
+            events, got_data = self._read_parse_dispatch()
+            if not events and not got_data and self._stopped:
                 break
 
     def poll(self) -> None:
@@ -305,9 +334,7 @@ class IOEventDispatcher:
             return
         if not ready:
             return
-        events = self._read_and_dispatch()
-        if events:
-            self._dispatch_events(events)
+        self._read_parse_dispatch()
 
     # Context manager support
     def __enter__(self) -> IOEventDispatcher:
