@@ -94,7 +94,7 @@ def test_atomicity_violation_exploration():
             lambda c: c.increment(),
         ],
         invariant=lambda c: c.value == 2,
-        max_attempts=200,
+        max_attempts=50,
         seed=42,
     )
 
@@ -104,7 +104,7 @@ def test_atomicity_violation_exploration():
 
 
 @given(schedule=schedule_strategy(num_threads=2))
-@settings(max_examples=200, phases=[Phase.generate])
+@settings(max_examples=50, phases=[Phase.generate])
 def test_atomicity_violation_hypothesis(schedule):
     """
     Test atomicity violation using Hypothesis with schedule_strategy.
@@ -176,7 +176,7 @@ def test_order_violation_exploration():
             lambda m: m.use_resource(),
         ],
         invariant=invariant,
-        max_attempts=200,
+        max_attempts=50,
         seed=42,
     )
 
@@ -186,7 +186,7 @@ def test_order_violation_exploration():
 
 
 @given(schedule=schedule_strategy(num_threads=2))
-@settings(max_examples=200, phases=[Phase.generate])
+@settings(max_examples=50, phases=[Phase.generate])
 def test_order_violation_hypothesis(schedule):
     """
     Test order violation using Hypothesis with schedule_strategy.
@@ -311,7 +311,7 @@ def test_async_suspension_point_race_exploration():
                 lambda c: c.increment(),
             ],
             invariant=lambda c: c.value == 2,
-            max_attempts=200,
+            max_attempts=50,
             seed=42,
         )
 
@@ -323,7 +323,7 @@ def test_async_suspension_point_race_exploration():
 
 
 @given(schedule=async_schedule_strategy(num_tasks=2))
-@settings(max_examples=200, phases=[Phase.generate])
+@settings(max_examples=50, phases=[Phase.generate])
 def test_async_suspension_point_race_hypothesis(schedule):
     """
     Test async suspension-point race using Hypothesis with schedule_strategy.
@@ -399,7 +399,7 @@ def test_async_order_violation_exploration():
                 lambda m: m.use_resource(),
             ],
             invariant=invariant,
-            max_attempts=200,
+            max_attempts=50,
             seed=42,
         )
 

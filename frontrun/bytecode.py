@@ -443,6 +443,18 @@ class BytecodeShuffler:
             for t in self.threads:
                 remaining = max(0, deadline - time.monotonic())
                 t.join(timeout=remaining)
+
+            # Signal scheduler to abort if any threads are still alive.
+            # On free-threaded Python, condition notifications can be lost
+            # and threads may still be blocked in wait_for_turn.
+            alive = [t for t in self.threads if t.is_alive()]
+            if alive:
+                self.scheduler._error = TimeoutError(f"Timed out waiting for {len(alive)} thread(s) to complete")
+                with self.scheduler._condition:
+                    self.scheduler._condition.notify_all()
+                # Give threads a brief grace period to notice the error
+                for t in alive:
+                    t.join(timeout=0.5)
         finally:
             if use_monitoring:
                 self._teardown_monitoring()
@@ -546,6 +558,7 @@ def explore_interleavings(
     detect_io: bool = True,
     deadlock_timeout: float = 5.0,
     reproduce_on_failure: int = 10,
+    total_timeout: float | None = None,
 ) -> InterleavingResult:
     """Search for interleavings that violate an invariant.
 
@@ -580,6 +593,9 @@ def explore_interleavings(
         reproduce_on_failure: When a counterexample is found, replay the
             same schedule this many times to measure reproducibility
             (default 10).  Set to 0 to skip reproduction testing.
+        total_timeout: Maximum total time in seconds for the entire
+            exploration (default None = unlimited).  When exceeded, returns
+            results gathered so far.
 
     Returns:
         InterleavingResult with the outcome.  The ``unique_interleavings``
@@ -591,8 +607,11 @@ def explore_interleavings(
     num_threads = len(threads)
     result = InterleavingResult(property_holds=True, num_explored=0)
     seen_schedule_hashes: set[int] = set()
+    total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
     for _ in range(max_attempts):
+        if total_deadline is not None and time.monotonic() > total_deadline:
+            break
         num_rounds = rng.randint(1, max(1, max_ops // num_threads))
         schedule: list[int] = []
         for _ in range(num_rounds):

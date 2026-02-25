@@ -1142,6 +1142,18 @@ class DporBytecodeRunner:
             for t in self.threads:
                 remaining = max(0, deadline - time.monotonic())
                 t.join(timeout=remaining)
+
+            # Signal scheduler to abort if any threads are still alive.
+            # On free-threaded Python, condition notifications can be lost
+            # and threads may still be blocked in wait_for_turn.
+            alive = [t for t in self.threads if t.is_alive()]
+            if alive:
+                self.scheduler._error = TimeoutError(f"Timed out waiting for {len(alive)} thread(s) to complete")
+                with self.scheduler._condition:
+                    self.scheduler._condition.notify_all()
+                # Give threads a brief grace period to notice the error
+                for t in alive:
+                    t.join(timeout=0.5)
         finally:
             if use_monitoring:
                 self._teardown_monitoring()
@@ -1169,6 +1181,7 @@ def explore_dpor(
     detect_io: bool = True,
     deadlock_timeout: float = 5.0,
     reproduce_on_failure: int = 10,
+    total_timeout: float | None = None,
 ) -> InterleavingResult:
     """Systematically explore interleavings using DPOR.
 
@@ -1199,6 +1212,9 @@ def explore_dpor(
         reproduce_on_failure: When a counterexample is found, replay the
             same schedule this many times to measure reproducibility
             (default 10).  Set to 0 to skip reproduction testing.
+        total_timeout: Maximum total time in seconds for the entire
+            exploration (default None = unlimited).  When exceeded, returns
+            results gathered so far.
 
     Returns:
         InterleavingResult with exploration statistics and any counterexample found.
@@ -1227,6 +1243,7 @@ def explore_dpor(
     # block when contested, so we need a Python-level lock shared across
     # worker threads, the sync reporter, and the main loop.
     engine_lock = real_lock()
+    total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
     # Set up the LD_PRELOAD → DPOR bridge for C-level I/O detection.
     # When code under test uses C extensions that call libc send()/recv()
@@ -1248,6 +1265,8 @@ def explore_dpor(
 
     try:
         while True:
+            if total_deadline is not None and time.monotonic() > total_deadline:
+                break
             with engine_lock:
                 execution = engine.begin_execution()
             recorder = TraceRecorder()

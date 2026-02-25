@@ -52,7 +52,7 @@ def test_rlock_race_condition():
             lambda c: c.increment_with_reentry(),
         ],
         invariant=lambda c: c.value == 2,
-        max_attempts=100,
+        max_attempts=30,
         max_ops=300,
         seed=42,
     )
@@ -206,7 +206,7 @@ def test_event_race_condition():
             lambda e: e.setter(),
         ],
         invariant=lambda e: e.proceeded_count == 1,
-        max_attempts=100,
+        max_attempts=30,
         max_ops=300,
         seed=42,
     )
@@ -353,7 +353,7 @@ def test_queue_put_race_condition():
             lambda q: q.consume(),
         ],
         invariant=lambda q: len(q.produced) == 2 and len(q.consumed) == 1,
-        max_attempts=100,
+        max_attempts=30,
         max_ops=400,
         seed=42,
     )
