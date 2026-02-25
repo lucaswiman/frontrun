@@ -22,6 +22,8 @@ def should_trace_file(filename: str) -> bool:
     """Check whether a file is user code that should be traced."""
     if filename == _THREADING_FILE:
         return False
+    # Skip frozen stdlib modules ("<frozen importlib._bootstrap>" etc.) but
+    # allow exec/eval/compile code ("<string>", "<generated>", etc.).
     if filename.startswith("<frozen"):
         return False
     if filename.startswith(_FRONTRUN_DIR):
