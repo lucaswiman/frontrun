@@ -307,6 +307,11 @@ class DporScheduler:
         # on a cooperative lock, and unblock them when the lock is released.
         self._lock_waiters: dict[int, set[int]] = {}
 
+        # Maps iterator id → original container object. When GET_ITER creates
+        # an iterator from a mutable container, we record the mapping so that
+        # FOR_ITER can report reads on the underlying container.
+        self._iter_to_container: dict[int, Any] = {}
+
         # Request the first scheduling decision
         self._current_thread = self._schedule_next()
 
@@ -336,8 +341,6 @@ class DporScheduler:
 
     def _report_and_wait(self, frame: Any | None, thread_id: int) -> bool:
         with self._condition:
-            if frame is not None:
-                _process_opcode(frame, self, thread_id)
             # Merge LD_PRELOAD I/O events (C-level send/recv from e.g.
             # psycopg2) into the thread's pending_io list.  The preload
             # bridge buffers events from the pipe reader thread, keyed by
@@ -383,6 +386,16 @@ class DporScheduler:
                 if self._finished or self._error:
                     return False
                 if self._current_thread == thread_id:
+                    # Process opcode accesses only when it's our turn.
+                    # Deferring this until the thread is scheduled ensures
+                    # that accesses are recorded at the correct path_id
+                    # (after any intervening operations by other threads).
+                    # Without this, a preempted thread's accesses land at the
+                    # preemption branch where the other thread is Active,
+                    # making backtracks at that position impossible.
+                    if frame is not None:
+                        _process_opcode(frame, self, thread_id)
+                        frame = None  # only process once
                     # It's our turn. After executing one opcode, schedule next.
                     next_thread = self._schedule_next()
                     self._current_thread = next_thread
@@ -497,6 +510,20 @@ _C_METHOD_READ_ONLY = frozenset(
     }
 )
 
+# C-level methods on immutable types that iterate their FIRST ARGUMENT.
+# The method's __self__ is immutable (e.g. str for str.join), so the standard
+# C-method handler skips them.  We detect these by name and report a READ on
+# the first argument instead.
+_IMMUTABLE_SELF_ARG_READERS = frozenset({"join"})
+
+# Type constructors that iterate their first argument (read it).
+# These are `type` objects (list, dict, bytes, etc.) called as constructors.
+# The CALL handler needs to report a READ on the first argument when one of
+# these types is called.
+_CONTAINER_CONSTRUCTORS: frozenset[type] = frozenset(
+    {list, dict, set, frozenset, tuple, bytes, bytearray, enumerate, zip, map, filter, reversed}
+)
+
 
 # ---------------------------------------------------------------------------
 # Passthrough builtins: functions that operate on their ARGUMENTS rather than
@@ -524,6 +551,19 @@ _register_passthrough(_operator_mod.getitem, "read", 0, 1)
 _register_passthrough(_operator_mod.delitem, "write", 0, 1)
 # len() reads the container (needed to detect check-then-act races)
 _register_passthrough(_builtins_mod.len, "read", 0, None)
+# Container-iterating builtins: these read their first argument by iterating it.
+# Without explicit registration, DPOR doesn't see the read because __self__ is a
+# module (builtins / _functools) which is immutable.
+_register_passthrough(_builtins_mod.sorted, "read", 0, None)
+_register_passthrough(_builtins_mod.min, "read", 0, None)
+_register_passthrough(_builtins_mod.max, "read", 0, None)
+_register_passthrough(_builtins_mod.sum, "read", 0, None)
+_register_passthrough(_builtins_mod.any, "read", 0, None)
+_register_passthrough(_builtins_mod.all, "read", 0, None)
+_register_passthrough(_builtins_mod.next, "read", 0, None)
+import functools as _functools_mod
+
+_register_passthrough(_functools_mod.reduce, "read", 1, None)
 
 
 def _make_object_key(obj_id: int, name: Any) -> int:
@@ -557,6 +597,35 @@ def _subscript_key_name(key: Any) -> Any:
     if isinstance(key, str):
         return key
     return repr(key)
+
+
+def _expand_slice_reads(
+    engine: PyDporEngine,
+    execution: PyExecution,
+    thread_id: int,
+    container: Any,
+    key: Any,
+    lock: threading.Lock,
+) -> None:
+    """For slice subscript reads, report individual element reads.
+
+    When a slice like ``buf[0:4]`` is read, DPOR only sees a single read on
+    key ``'slice(0, 4, None)'``.  Individual element writes like ``buf[0] = x``
+    use key ``'0'``.  These keys don't match, so DPOR doesn't see the conflict.
+
+    This function expands a slice read into per-element reads so that each
+    write position gets its own conflict point, enabling DPOR to explore
+    interleavings where the slice read happens between individual writes.
+    """
+    if not isinstance(key, slice):
+        return
+    try:
+        length = len(container)
+    except (TypeError, AttributeError):
+        return
+    indices = range(*key.indices(length))
+    for idx in indices:
+        _report_read(engine, execution, thread_id, container, repr(idx), lock)
 
 
 def _process_opcode(
@@ -610,6 +679,11 @@ def _process_opcode(
             if isinstance(_fb, dict):
                 val = _fb.get(instr.argval)
         shadow.push(val)
+        # On 3.11+, LOAD_GLOBAL with NULL flag (bit 0 of arg) pushes an
+        # extra NULL slot after the value, matching the stack layout
+        # expected by CALL: [callable, NULL, args...].
+        if _PY_VERSION >= (3, 11) and instr.arg is not None and instr.arg & 1:
+            shadow.push(None)
         # Report a READ on the module's globals dict for this variable name.
         # Without this, LOAD_GLOBAL/STORE_GLOBAL races are invisible to DPOR.
         _report_read(engine, execution, thread_id, frame.f_globals, instr.argval, elock)
@@ -778,6 +852,12 @@ def _process_opcode(
         container = shadow.pop()
         _kname = _subscript_key_name(key)
         _report_read(engine, execution, thread_id, container, _kname, elock)
+        # Container-level read for conflict with C-methods and different subscript keys.
+        if container is not None and not isinstance(container, _IMMUTABLE_TYPES):
+            _report_read(engine, execution, thread_id, container, "__cmethods__", elock)
+            # For slice accesses, also report reads on individual element keys
+            # so DPOR sees per-element conflicts with STORE_SUBSCR writes.
+            _expand_slice_reads(engine, execution, thread_id, container, key, elock)
         if recorder is not None and container is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=_kname, obj=container)
         shadow.push(None)
@@ -788,6 +868,14 @@ def _process_opcode(
         _val = shadow.pop()
         _kname = _subscript_key_name(key)
         _report_write(engine, execution, thread_id, container, _kname, elock)
+        # Also report a container-level write so subscript writes conflict
+        # with C-method reads (e.g. len(), iteration) and with subscript
+        # reads using different keys (e.g. slice vs element).
+        # Uses regular (last-access) semantics: keeping the LAST write
+        # position enables cascading backtracks that progressively interleave
+        # reads between individual writes across multiple DPOR executions.
+        if container is not None and not isinstance(container, _IMMUTABLE_TYPES):
+            _report_write(engine, execution, thread_id, container, "__cmethods__", elock)
         if recorder is not None and container is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=_kname, obj=container)
 
@@ -796,6 +884,9 @@ def _process_opcode(
         container = shadow.pop()
         _kname = _subscript_key_name(key)
         _report_write(engine, execution, thread_id, container, _kname, elock)
+        # Container-level write for delete too (regular last-access semantics).
+        if container is not None and not isinstance(container, _IMMUTABLE_TYPES):
+            _report_write(engine, execution, thread_id, container, "__cmethods__", elock)
         if recorder is not None and container is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=_kname, obj=container)
 
@@ -810,6 +901,11 @@ def _process_opcode(
             container = shadow.pop()
             _kname = _subscript_key_name(key)
             _report_read(engine, execution, thread_id, container, _kname, elock)
+            # Container-level read for subscript access (same as BINARY_SUBSCR).
+            if container is not None and not isinstance(container, _IMMUTABLE_TYPES):
+                _report_read(engine, execution, thread_id, container, "__cmethods__", elock)
+                # For slice accesses, also report reads on individual element keys
+                _expand_slice_reads(engine, execution, thread_id, container, key, elock)
             if recorder is not None and container is not None:
                 recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=_kname, obj=container)
             shadow.push(None)
@@ -856,6 +952,78 @@ def _process_opcode(
     elif op == "POP_TOP":
         shadow.pop()
 
+    # === Build instructions (slice, list, etc.) ===
+
+    elif op == "BUILD_SLICE":
+        # BUILD_SLICE pops 2 or 3 items (start, stop, [step]) and pushes a slice object.
+        # The fallback stack_effect handler adjusts the size correctly, but we need
+        # the ACTUAL slice object on the shadow stack so that BINARY_SUBSCR can
+        # detect slice accesses and expand them into per-element reads.
+        argc = instr.arg or 2
+        items: list[Any] = [shadow.pop() for _ in range(argc)]
+        items.reverse()
+        try:
+            if argc == 2:
+                shadow.push(slice(items[0], items[1]))
+            else:
+                shadow.push(slice(items[0], items[1], items[2]))
+        except (TypeError, ValueError):
+            shadow.push(None)
+
+    # === Iterator operations ===
+    # GET_ITER creates an iterator from a container. We record the mapping
+    # so that FOR_ITER can report reads on the original container.
+
+    elif op == "GET_ITER":
+        # stack: [iterable] → [iterator]
+        # GET_ITER pops the iterable and pushes an iterator (stack effect = 0).
+        # We record the iterable→iterator mapping via a mutable marker on the
+        # shadow stack so that FOR_ITER can report per-element reads.
+        iterable = shadow.peek()
+        if iterable is not None and not isinstance(iterable, _IMMUTABLE_TYPES):
+            shadow.pop()
+            # Mutable list marker: [tag, container, iteration_counter]
+            # The counter tracks which element index FOR_ITER is reading,
+            # enabling per-element conflict detection with STORE_SUBSCR writes.
+            shadow.push(["__iter_source__", iterable, 0])
+        else:
+            shadow.pop()
+            shadow.push(None)
+
+    elif op == "FOR_ITER":
+        # stack: [iterator] → [iterator, next_value] or [−iterator] (exhausted)
+        # FOR_ITER calls __next__ on the iterator. If the iterator was created
+        # from a mutable container (tracked via GET_ITER), report reads on it.
+        # stack effect = +1 (pushes the yielded value; TOS is the iterator).
+        # We peek at the iterator marker to find the underlying container.
+        top = shadow.peek()
+        if isinstance(top, list) and len(top) == 3 and top[0] == "__iter_source__":
+            _iter_container = top[1]
+            _iter_counter = top[2]
+            if _iter_container is not None and not isinstance(_iter_container, _IMMUTABLE_TYPES):
+                # Per-element read using the iteration counter as the key.
+                # For lists, counter 0, 1, 2... matches STORE_SUBSCR keys "0", "1", "2"...
+                # This creates per-element conflicts enabling fine-grained interleaving.
+                _report_read(engine, execution, thread_id, _iter_container, repr(_iter_counter), elock)
+                # Coarse-grained read for conflict with C-method writes (append,
+                # insert, etc.) and other container-level operations.  Uses regular
+                # (last-access) semantics: each iteration overwrites the previous read
+                # position.  This means backtracks target the LAST iteration, which
+                # allows the other thread to interleave after some elements have
+                # already been read — catching mid-iteration mutation races.
+                _report_read(engine, execution, thread_id, _iter_container, "__cmethods__", elock)
+            # Increment counter for next iteration (mutable list, in-place update).
+            top[2] = _iter_counter + 1
+        shadow.push(None)  # push the yielded value
+
+    elif op == "END_FOR":
+        # End of for loop — pops the exhausted iterator value.
+        shadow.pop()
+
+    elif op == "POP_ITER":
+        # Python 3.14: pops the iterator itself at end of for loop.
+        shadow.pop()
+
     # === Function/method calls ===
 
     elif op in ("CALL", "CALL_FUNCTION", "CALL_METHOD", "CALL_KW", "CALL_FUNCTION_KW", "CALL_FUNCTION_EX"):
@@ -871,6 +1039,10 @@ def _process_opcode(
         argc = instr.arg or 0
         scan_depth = min(argc + 3, len(shadow.stack))
         _call_handled = False
+        # When a container constructor (enumerate, zip, etc.) wraps a mutable
+        # iterable, we save the source container so that GET_ITER → FOR_ITER
+        # can report per-element reads on the underlying container.
+        _constructor_source: Any = None
 
         for i in range(scan_depth):
             item = shadow.stack[-(i + 1)]
@@ -913,7 +1085,34 @@ def _process_opcode(
                         _report_write(engine, execution, thread_id, self_obj, "__cmethods__", elock)
                     _call_handled = True
                     break
-                # __self__ is immutable (e.g. module) — fall through to continue scan
+                # __self__ is immutable (e.g. str, module) — check if the method
+                # iterates its first argument (e.g. str.join reads the iterable).
+                if self_obj is not None:
+                    method_name = getattr(item, "__name__", None)
+                    if method_name in _IMMUTABLE_SELF_ARG_READERS and argc >= 1:
+                        _arg_target = shadow.stack[-argc]
+                        if _arg_target is not None and not isinstance(_arg_target, _IMMUTABLE_TYPES):
+                            _report_read(engine, execution, thread_id, _arg_target, "__cmethods__", elock)
+                        _call_handled = True
+                        break
+                    # Otherwise fall through to continue scan
+
+            # --- Strategy 2b: Type constructors that iterate arguments ---
+            # list(iterable), dict(iterable), bytes(iterable), enumerate(iterable),
+            # zip(iter1, iter2), map(func, iterable), filter(func, iterable), etc.
+            if item_type is type and item in _CONTAINER_CONSTRUCTORS:
+                # Report a READ on each mutable argument (they get iterated).
+                # Also save the first mutable arg as the "source container" so that
+                # if this constructor result is iterated via FOR_ITER, the reads
+                # are attributed to the underlying container (not the wrapper).
+                for _ci in range(argc):
+                    _c_arg = shadow.stack[-(argc - _ci)]
+                    if _c_arg is not None and not isinstance(_c_arg, _IMMUTABLE_TYPES):
+                        _report_read(engine, execution, thread_id, _c_arg, "__cmethods__", elock)
+                        if _constructor_source is None:
+                            _constructor_source = _c_arg
+                _call_handled = True
+                break
 
             # --- Strategy 3: Wrapper descriptors (unbound C type methods) ---
             if item_type is _WRAPPER_DESCRIPTOR_TYPE:
@@ -940,6 +1139,13 @@ def _process_opcode(
                 shadow.push(None)
         except (ValueError, TypeError):
             shadow.clear()
+
+        # Fixup: when a container constructor (enumerate, zip, map, etc.) wraps
+        # a mutable iterable, replace the None result on TOS with the source
+        # container.  This way GET_ITER picks it up and FOR_ITER can report
+        # per-element reads on the underlying container during iteration.
+        if _constructor_source is not None and shadow.stack:
+            shadow.stack[-1] = _constructor_source
 
     else:
         # Fallback: use dis.stack_effect for unknown opcodes.
