@@ -60,6 +60,7 @@ from frontrun._io_detection import (
     unpatch_io,
 )
 from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
+from frontrun._tracing import is_dynamic_code as _is_dynamic_code
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import InterleavingResult
@@ -275,6 +276,7 @@ class DporScheduler:
         deadlock_timeout: float = 5.0,
         trace_recorder: TraceRecorder | None = None,
         preload_bridge: _PreloadBridge | None = None,
+        detect_io: bool = False,
     ) -> None:
         self.engine = engine
         self.execution = execution
@@ -282,6 +284,7 @@ class DporScheduler:
         self.deadlock_timeout = deadlock_timeout
         self.trace_recorder = trace_recorder
         self._preload_bridge = preload_bridge
+        self._detect_io = detect_io
         # On free-threaded Python, PyO3 &mut self borrows are non-blocking
         # (try-or-panic).  A single engine_lock serialises ALL calls to the
         # engine and execution objects across worker threads, the sync
@@ -1008,13 +1011,24 @@ class DporBytecodeRunner:
 
     def _make_trace(self, thread_id: int) -> Callable[..., Any]:
         scheduler = self.scheduler
+        _detect_io = scheduler._detect_io
 
         def trace(frame: Any, event: str, arg: Any) -> Any:
             if scheduler._finished or scheduler._error:
                 return None
 
             if event == "call":
-                if _should_trace_file(frame.f_code.co_filename):
+                filename = frame.f_code.co_filename
+                if _should_trace_file(filename):
+                    # Skip dynamically generated code (<string>, etc.)
+                    # unless its caller is user code.  In I/O mode, skip
+                    # all dynamic code unconditionally.
+                    if _is_dynamic_code(filename):
+                        if _detect_io:
+                            return None
+                        caller = frame.f_back
+                        if caller is None or not _should_trace_file(caller.f_code.co_filename):
+                            return None
                     frame.f_trace_opcodes = True
                     return trace
                 return None
@@ -1047,6 +1061,8 @@ class DporBytecodeRunner:
 
         scheduler = self.scheduler
 
+        _detect_io = scheduler._detect_io
+
         def handle_py_start(code: Any, instruction_offset: int) -> Any:
             # Only use mon.DISABLE for code that should *never* be traced
             # (stdlib, site-packages, frontrun internals).  Do NOT disable
@@ -1055,6 +1071,13 @@ class DporBytecodeRunner:
             # corrupting monitoring state for subsequent DPOR iterations
             # and tests that share the same tool ID.
             if not _should_trace_file(code.co_filename):
+                return mon.DISABLE  # type: ignore[attr-defined]
+            # In I/O-detection mode, skip dynamically generated code
+            # (e.g. dataclass __init__ from exec/compile in libraries).
+            # These create thousands of extra scheduling points that
+            # drown out I/O-based backtrack points.  Safe to DISABLE
+            # because each exec() creates a fresh code object.
+            if _detect_io and code.co_filename.startswith("<"):
                 return mon.DISABLE  # type: ignore[attr-defined]
             return None
 
@@ -1072,6 +1095,18 @@ class DporBytecodeRunner:
                 return None
             if not _should_trace_file(code.co_filename):
                 return None
+            # Skip dynamically generated code (<string>, etc.) unless its
+            # caller is user code.  Libraries use exec/compile internally
+            # (dataclass __init__, SQLAlchemy methods) creating thousands
+            # of scheduling points in non-user code.  In I/O mode, skip
+            # all dynamic code unconditionally.
+            if _is_dynamic_code(code.co_filename):
+                if _detect_io:
+                    return None
+                frame = sys._getframe(1)
+                caller = frame.f_back
+                if caller is None or not _should_trace_file(caller.f_code.co_filename):
+                    return None
 
             thread_id = getattr(_dpor_tls, "thread_id", None)
             if thread_id is None:
@@ -1431,6 +1466,7 @@ def explore_dpor(
                 deadlock_timeout=deadlock_timeout,
                 trace_recorder=recorder,
                 preload_bridge=preload_bridge,
+                detect_io=detect_io,
             )
             runner = DporBytecodeRunner(scheduler, detect_io=detect_io, preload_bridge=preload_bridge)
 

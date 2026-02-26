@@ -32,3 +32,13 @@ def should_trace_file(filename: str) -> bool:
         if filename.startswith(skip_dir):
             return False
     return True
+
+
+def is_dynamic_code(filename: str) -> bool:
+    """Check whether a filename indicates dynamically generated code.
+
+    Returns True for filenames like ``<string>``, ``<generated>``, ``<stdin>``
+    that are produced by ``exec()``, ``compile()``, or interactive mode.
+    Does NOT match ``<frozen ...>`` (already excluded by ``should_trace_file``).
+    """
+    return filename.startswith("<")
