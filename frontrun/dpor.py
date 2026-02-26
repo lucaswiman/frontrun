@@ -579,7 +579,6 @@ def _report_read(
             engine.report_access(execution, thread_id, _make_object_key(id(obj), name), "read")
 
 
-
 def _report_write(
     engine: PyDporEngine, execution: PyExecution, thread_id: int, obj: Any, name: Any, lock: threading.Lock
 ) -> None:
