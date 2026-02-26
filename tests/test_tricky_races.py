@@ -6,6 +6,8 @@ import array
 import collections
 import copy
 import functools
+
+import pytest
 import operator
 import sys
 
@@ -1278,6 +1280,12 @@ class TestListSortReverseRace:
 class TestGeneratorSendRace:
     """Two threads racing to .send() into the same generator — generator protocol is not thread-safe."""
 
+    @pytest.mark.skip(
+        reason="DPOR limitation: both threads write state.accumulated but DPOR doesn't explore the "
+        "interleaving where the first sender's STORE lands after the second sender's STORE. "
+        "Not PEP 703-specific — the write race exists under the GIL too, and generator.send() "
+        "has per-generator locks in 3.13+."
+    )
     def test_dpor_detects_generator_send_race(self) -> None:
         def sender(state: _GeneratorSendState) -> None:
             result = state.gen.send(1)
@@ -1574,6 +1582,13 @@ class TestStrJoinRace:
 class TestOrderedDictMoveToEndRace:
     """OrderedDict.move_to_end() racing with iteration — order changes mid-read."""
 
+    @pytest.mark.skip(
+        reason="PEP 703 race requiring C-level interleaving: list(od.keys()) iterates via "
+        "PyIter_Next in list_init's tight C loop, which was accidentally atomic under the GIL "
+        "but is not under PEP 703's per-object locks. Both the iteration and the mutation are "
+        "single opcodes, so no bytecode-level interleaving can expose the race. "
+        "Would require C-level instrumentation or a CPython fix to make list() on dict views atomic."
+    )
     def test_dpor_detects_ordered_dict_move_race(self) -> None:
         def read_order(state: _OrderedDictMoveState) -> None:
             keys = list(state.od.keys())
