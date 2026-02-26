@@ -44,18 +44,20 @@ DPOR's traces are more interpretable than the bytecode explorer's because DPOR
 *knows why* the interleaving matters --- it detected specific conflicting accesses
 to the same object and chose to explore the alternative ordering.
 
-**Scope:** DPOR explores alternative schedules only where it detects a
-conflict at the bytecode level (two threads accessing the same Python object
-with at least one write). It does *not* see shared state managed entirely in
-C extensions --- database rows accessed through libpq, NumPy arrays modified
-in C, Redis keys managed by hiredis. For those cases the code runs fine, but
-DPOR concludes (incorrectly) that the threads are independent and explores
-only one interleaving.
-
-When run under the ``frontrun`` CLI, a native
+**Scope:** DPOR explores alternative schedules where it detects a
+conflict --- either two threads accessing the same Python object (with at
+least one write) or two threads performing I/O on the same network
+endpoint or file path. When run under the ``frontrun`` CLI, a native
 ``LD_PRELOAD`` library intercepts C-level I/O operations (``send``,
-``recv``, ``read``, ``write``, etc.), so even opaque database drivers and
-Redis clients are covered --- see :ref:`c-level-io-interception` below.
+``recv``, ``read``, ``write``, etc.) and feeds them into the DPOR
+engine, so even opaque database drivers (libpq, mysqlclient) and Redis
+clients (hiredis) are covered --- see :ref:`c-level-io-interception`
+below.
+
+DPOR cannot see shared state that is managed entirely inside a C
+extension without any I/O --- for example, in-process mutations of NumPy
+arrays or C-level caches. For those cases DPOR concludes (incorrectly)
+that the threads are independent.
 
 For a practical guide see :doc:`dpor_guide`. For the algorithm details and
 theory see :doc:`dpor`.
@@ -121,10 +123,10 @@ returning any counterexample schedule.
 ``explore_interleavings()`` often finds races very quickly --- sometimes on the
 first attempt --- because even a single random schedule has a reasonable chance
 of interleaving the critical section. It can also catch races that are invisible
-to DPOR: if a C extension mutates shared state in a way that breaks your
-invariant, bytecode exploration will stumble into the bad interleaving even
-though it can't *see* the C-level conflict. DPOR can't, because it only
-explores alternative orderings where it detected a Python-level conflict.
+to DPOR: if a C extension mutates shared state *without any I/O* (e.g.
+in-process C-level mutations), bytecode exploration may stumble into the
+bad interleaving through random scheduling even though neither tool can
+see the C-level conflict directly.
 
 The trade-off is interpretability. When a race is found, ``result.explanation``
 contains an interleaved source-line trace and a best-effort conflict
@@ -267,8 +269,11 @@ The library maintains a process-global file-descriptor → resource map:
    recv(fd=7, ...)                              →  report read from "socket:127.0.0.1:5432"
    close(fd=7)                                  →  remove fd=7 from map
 
-Events are logged to a file (set via ``FRONTRUN_IO_LOG``) which the
-Python-side DPOR scheduler reads for conflict analysis.
+Events are communicated to the Python side via a pipe
+(``FRONTRUN_IO_FD``).  An ``IOEventDispatcher`` reads the pipe on a
+background thread and delivers events to registered listeners.  When
+DPOR is active, a ``_PreloadBridge`` listener routes events to the DPOR
+engine for conflict analysis.
 
 **Building:**
 
