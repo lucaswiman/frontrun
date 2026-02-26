@@ -22,7 +22,9 @@ def should_trace_file(filename: str) -> bool:
     """Check whether a file is user code that should be traced."""
     if filename == _THREADING_FILE:
         return False
-    if filename.startswith("<"):
+    # Skip frozen stdlib modules ("<frozen importlib._bootstrap>" etc.) but
+    # allow exec/eval/compile code ("<string>", "<generated>", etc.).
+    if filename.startswith("<frozen"):
         return False
     if filename.startswith(_FRONTRUN_DIR):
         return False
@@ -30,3 +32,13 @@ def should_trace_file(filename: str) -> bool:
         if filename.startswith(skip_dir):
             return False
     return True
+
+
+def is_dynamic_code(filename: str) -> bool:
+    """Check whether a filename indicates dynamically generated code.
+
+    Returns True for filenames like ``<string>``, ``<generated>``, ``<stdin>``
+    that are produced by ``exec()``, ``compile()``, or interactive mode.
+    Does NOT match ``<frozen ...>`` (already excluded by ``should_trace_file``).
+    """
+    return filename.startswith("<")

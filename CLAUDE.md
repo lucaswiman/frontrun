@@ -21,12 +21,28 @@ Use the Makefile to build virtualenvs. Prefer working in the **3.14t** (free-thr
 - Run tools via e.g. `.venv-3.14t/bin/pytest`, `.venv-3.14t/bin/python`
 - Use `frontrun` CLI to run commands with I/O interception: `frontrun pytest -v tests/`
 
+## Running tests
+
+Always use `make test-<version>` to run tests. This builds the DPOR extension and I/O library, then runs pytest through the `frontrun` CLI wrapper (which sets up `LD_PRELOAD` for C-level I/O interception). Do **not** run `.venv-3.14t/bin/pytest` directly — tests that use `explore_dpor()` will be skipped or misconfigured without the `frontrun` wrapper.
+
+- `make test-3.14t` / `make test-3.10` / `make test-3.14` — single version
+- `make test` — all Python versions (3.10, 3.14, 3.14t)
+- Override pytest args: `make test-3.14t PYTEST_ARGS="-v --timeout=120 -k test_name"`
+
+### Integration tests (Redis, HTTP, ORM)
+
+Integration tests require additional packages and services:
+
+- `make build-integration-3.14t` / `make build-integration-3.10` — install redis, requests, sqlalchemy, psycopg2-binary
+- `make test-integration-3.14t` — run integration tests only
+- Redis and Postgres are available but not running by default. Start them with:
+  - `redis-server --daemonize yes`
+  - `sudo pg_ctlcluster 16 main start`
+
 ## Commands
 
 - `make check` — lint + type-check
 - `make lint` / `make type-check` — run separately
-- `make test` — all Python versions (3.10, 3.14, 3.14t); needs Rust DPOR + I/O build
-- `make test-3.14t` / `make test-3.10` — single version (builds DPOR + I/O automatically)
 - `make clean` — remove artifacts
 - Auto-fix: `ruff check --fix frontrun tests && ruff format frontrun tests`
 
