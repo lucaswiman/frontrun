@@ -35,6 +35,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Redis
+dump.rdb
+
 # Rust build output (Cargo workspace)
 target/
 
