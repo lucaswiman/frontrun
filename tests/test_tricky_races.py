@@ -6,10 +6,10 @@ import array
 import collections
 import copy
 import functools
-
-import pytest
 import operator
 import sys
+
+import pytest
 
 from frontrun.dpor import explore_dpor
 
