@@ -579,23 +579,6 @@ def _report_read(
             engine.report_access(execution, thread_id, _make_object_key(id(obj), name), "read")
 
 
-def _report_first_read(
-    engine: PyDporEngine, execution: PyExecution, thread_id: int, obj: Any, name: Any, lock: threading.Lock
-) -> None:
-    """Like _report_read but uses first-access semantics (keeps earliest access per thread)."""
-    if obj is not None:
-        with lock:
-            engine.report_first_access(execution, thread_id, _make_object_key(id(obj), name), "read")
-
-
-def _report_first_write(
-    engine: PyDporEngine, execution: PyExecution, thread_id: int, obj: Any, name: Any, lock: threading.Lock
-) -> None:
-    """Like _report_write but uses first-access semantics (keeps earliest access per thread)."""
-    if obj is not None:
-        with lock:
-            engine.report_first_access(execution, thread_id, _make_object_key(id(obj), name), "write")
-
 
 def _report_write(
     engine: PyDporEngine, execution: PyExecution, thread_id: int, obj: Any, name: Any, lock: threading.Lock
@@ -1105,7 +1088,7 @@ def _process_opcode(
                     break
                 # __self__ is immutable (e.g. str, module) — check if the method
                 # iterates its first argument (e.g. str.join reads the iterable).
-                if self_obj is not None and isinstance(self_obj, _IMMUTABLE_TYPES):
+                if self_obj is not None:
                     method_name = getattr(item, "__name__", None)
                     if method_name in _IMMUTABLE_SELF_ARG_READERS and argc >= 1:
                         _arg_target = shadow.stack[-argc]
