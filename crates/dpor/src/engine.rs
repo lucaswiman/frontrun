@@ -127,6 +127,38 @@ impl DporEngine {
         object_state.record_access(access, kind);
     }
 
+    /// Like [`process_access`] but uses first-access recording semantics
+    /// (keeps the earliest access per thread rather than the latest).
+    /// Uses the regular `dpor_vv` for happens-before computation, so
+    /// lock-based synchronization is still respected.
+    ///
+    /// This is useful for container-level access keys (`__cmethods__`)
+    /// where a thread performs multiple writes to the same container.
+    /// By keeping the first write position, DPOR can backtrack to the
+    /// earliest point, enabling exploration of interleavings where
+    /// another thread runs between the first and subsequent writes.
+    pub fn process_first_access(
+        &mut self,
+        execution: &mut Execution,
+        thread_id: usize,
+        object_id: ObjectId,
+        kind: AccessKind,
+    ) {
+        let current_path_id = self.path.current_position().saturating_sub(1);
+        let current_dpor_vv = execution.threads[thread_id].dpor_vv.clone();
+
+        let object_state = execution.objects.entry(object_id).or_insert_with(ObjectState::new);
+
+        for prev_access in object_state.dependent_accesses(kind, thread_id) {
+            if !prev_access.happens_before(&current_dpor_vv) {
+                self.path.backtrack(prev_access.path_id, thread_id);
+            }
+        }
+
+        let access = Access::new(current_path_id, current_dpor_vv, thread_id);
+        object_state.record_io_access(access, kind);
+    }
+
     /// Like [`process_access`] but uses the thread's `io_vv` instead of
     /// `dpor_vv`.  Because `io_vv` does not include lock-based
     /// happens-before edges, I/O accesses from different threads always

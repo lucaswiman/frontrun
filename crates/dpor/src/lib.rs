@@ -86,6 +86,31 @@ impl PyDporEngine {
         Ok(())
     }
 
+    /// Report a first-access shared memory access.  Like `report_access`
+    /// but keeps the earliest access per thread rather than the latest.
+    /// Used for container-level keys where multiple writes to the same
+    /// container should preserve the first write's position for
+    /// fine-grained backtracking.
+    fn report_first_access(
+        &mut self,
+        execution: &mut PyExecution,
+        thread_id: usize,
+        object_id: u64,
+        kind: &str,
+    ) -> PyResult<()> {
+        let access_kind = match kind {
+            "read" => AccessKind::Read,
+            "write" => AccessKind::Write,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("kind must be 'read' or 'write', got '{kind}'"),
+                ))
+            }
+        };
+        self.inner.process_first_access(&mut execution.inner, thread_id, object_id, access_kind);
+        Ok(())
+    }
+
     /// Report an I/O access (file/socket).  Uses a separate vector clock
     /// that ignores lock-based happens-before, so I/O from different
     /// threads is always treated as potentially concurrent.
