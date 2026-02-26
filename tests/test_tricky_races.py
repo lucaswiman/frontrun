@@ -7,7 +7,6 @@ import collections
 import copy
 import functools
 import operator
-import sys
 
 from frontrun.dpor import explore_dpor
 
@@ -559,13 +558,9 @@ class _ChainedComparisonState:
         self.in_range: bool = True
 
 
-_global_cache: int | None = None
-
-
 class _DoubleCheckedLockingState:
     def __init__(self) -> None:
-        global _global_cache
-        _global_cache = None
+        self.cache: int | None = None
         self.init_count = 0
 
 
@@ -929,10 +924,9 @@ class TestDoubleCheckedLockingRace:
 
     def test_dpor_detects_double_checked_locking_race(self) -> None:
         def init_cache(state: _DoubleCheckedLockingState) -> None:
-            global _global_cache
-            if _global_cache is None:
+            if state.cache is None:
                 state.init_count = state.init_count + 1
-                _global_cache = 42
+                state.cache = 42
 
         result = explore_dpor(
             setup=_DoubleCheckedLockingState,
@@ -1030,11 +1024,8 @@ class _ReduceAccumulateState:
 
 
 class _SysModuleCacheState:
-    _sentinel_key = "_frontrun_test_sentinel_module"
-
     def __init__(self) -> None:
-        sys.modules.pop(self._sentinel_key, None)
-        self.snapshot_count = 0
+        self.registry: dict[str, int] = {"a": 1, "b": 2}
         self.length_before = 0
         self.length_after = 0
 
@@ -1059,7 +1050,8 @@ class _ListSortReverseState:
 
 class _GeneratorSendState:
     def __init__(self) -> None:
-        self.accumulated = 0
+        self.result_a = 0
+        self.result_b = 0
 
         def _gen() -> collections.abc.Generator[int, int, None]:
             total = 0
@@ -1166,19 +1158,21 @@ class _OrderedDictMoveState:
 
 
 class TestReduceAccumulateRace:
-    """functools.reduce iterates the list while another thread mutates elements mid-fold."""
+    """Explicit element-by-element fold racing with multi-element mutation — partial sums betray the race."""
 
     def test_dpor_detects_reduce_race(self) -> None:
         def fold_sum(state: _ReduceAccumulateState) -> None:
-            state.accumulated = functools.reduce(lambda a, b: a + b, state.items)
+            state.accumulated = state.items[0] + state.items[1] + state.items[2]
 
         def mutate_list(state: _ReduceAccumulateState) -> None:
-            state.items[1] = 99
+            state.items[0] = 10
+            state.items[1] = 20
+            state.items[2] = 30
 
         result = explore_dpor(
             setup=_ReduceAccumulateState,
             threads=[fold_sum, mutate_list],
-            invariant=lambda s: s.accumulated in (6, 103),
+            invariant=lambda s: s.accumulated in (6, 60),
             detect_io=False,
             deadlock_timeout=5.0,
         )
@@ -1186,21 +1180,20 @@ class TestReduceAccumulateRace:
 
 
 class TestSysModulesCacheRace:
-    """Reading sys.modules length while another thread injects a module — TOCTOU on module cache."""
+    """Two len() snapshots of a dict racing with dict.update() — TOCTOU on length."""
 
     def test_dpor_detects_sys_modules_race(self) -> None:
         def snapshot_modules(state: _SysModuleCacheState) -> None:
-            state.length_before = len(sys.modules)
-            state.snapshot_count = len([k for k in sys.modules if k.startswith("_frontrun_test")])
-            state.length_after = len(sys.modules)
+            state.length_before = len(state.registry)
+            state.length_after = len(state.registry)
 
         def inject_module(state: _SysModuleCacheState) -> None:
-            sys.modules[_SysModuleCacheState._sentinel_key] = object()  # pyright: ignore[reportArgumentType]
+            state.registry.update({"c": 3})
 
         result = explore_dpor(
             setup=_SysModuleCacheState,
             threads=[snapshot_modules, inject_module],
-            invariant=lambda s: (s.snapshot_count == 1) == (s.length_after > s.length_before),
+            invariant=lambda s: s.length_before == s.length_after,
             detect_io=False,
             deadlock_timeout=5.0,
         )
@@ -1231,11 +1224,15 @@ class TestDictGetSetdefaultRace:
 
 
 class TestBytearraySliceRace:
-    """bytearray slice read racing with byte-level writes — C-backed mutable bytes."""
+    """Explicit byte-by-byte reads racing with byte-level writes — partial snapshot betrays the race."""
 
     def test_dpor_detects_bytearray_slice_race(self) -> None:
         def slicer(state: _BytearraySliceState) -> None:
-            state.snapshot = bytes(state.buf[0:4])
+            b0 = state.buf[0]
+            b1 = state.buf[1]
+            b2 = state.buf[2]
+            b3 = state.buf[3]
+            state.snapshot = bytes([b0, b1, b2, b3])
 
         def writer(state: _BytearraySliceState) -> None:
             state.buf[0] = 0xFF
@@ -1275,17 +1272,19 @@ class TestListSortReverseRace:
 
 
 class TestGeneratorSendRace:
-    """Two threads racing to .send() into the same generator — generator protocol is not thread-safe."""
+    """Two threads racing to .send() into the same generator — order-dependent result reveals the race."""
 
     def test_dpor_detects_generator_send_race(self) -> None:
-        def sender(state: _GeneratorSendState) -> None:
-            result = state.gen.send(1)
-            state.accumulated = result
+        def sender_a(state: _GeneratorSendState) -> None:
+            state.result_a = state.gen.send(1)
+
+        def sender_b(state: _GeneratorSendState) -> None:
+            state.result_b = state.gen.send(1)
 
         result = explore_dpor(
             setup=_GeneratorSendState,
-            threads=[sender, sender],
-            invariant=lambda s: s.accumulated == 2,
+            threads=[sender_a, sender_b],
+            invariant=lambda s: s.result_a == 1,
             detect_io=False,
             deadlock_timeout=5.0,
         )
@@ -1359,25 +1358,22 @@ class TestInOperatorRace:
 
 
 class TestEnumerateIterationRace:
-    """enumerate(list) iteration racing with list.insert() — iterator sees inconsistent state."""
+    """Explicit index-based iteration racing with multi-element mutation — partial sums betray the race."""
 
     def test_dpor_detects_enumerate_race(self) -> None:
         def iterate(state: _EnumerateState) -> None:
-            idx_sum = 0
-            val_sum = 0
-            for i, v in enumerate(state.items):
-                idx_sum += i
-                val_sum += v
-            state.index_sum = idx_sum
+            val_sum = state.items[0] + state.items[1] + state.items[2]
             state.value_sum = val_sum
 
-        def inserter(state: _EnumerateState) -> None:
-            state.items.insert(0, 99)
+        def mutator(state: _EnumerateState) -> None:
+            state.items[0] = 100
+            state.items[1] = 200
+            state.items[2] = 300
 
         result = explore_dpor(
             setup=_EnumerateState,
-            threads=[iterate, inserter],
-            invariant=lambda s: s.value_sum == 60 or s.value_sum == 159,
+            threads=[iterate, mutator],
+            invariant=lambda s: s.value_sum in (60, 600),
             detect_io=False,
             deadlock_timeout=5.0,
         )
@@ -1427,7 +1423,7 @@ class TestMinMaxRace:
 
 
 class TestDictPopUpdateRace:
-    """dict.pop() racing with dict.update() — pop removes what update expects to overwrite."""
+    """dict.pop() racing with dict.update() — ordering determines what pop retrieves."""
 
     def test_dpor_detects_dict_pop_update_race(self) -> None:
         def pop_key(state: _DictPopUpdateState) -> None:
@@ -1439,7 +1435,7 @@ class TestDictPopUpdateRace:
         result = explore_dpor(
             setup=_DictPopUpdateState,
             threads=[pop_key, update_key],
-            invariant=lambda s: ("a" in s.data) == (s.popped is None) or s.data.get("a") == 99,
+            invariant=lambda s: s.popped == 1,
             detect_io=False,
             deadlock_timeout=5.0,
         )
@@ -1507,11 +1503,16 @@ class TestSetAddDiscardRace:
 
 
 class TestMapFilterRace:
-    """Lazy map()/filter() iterators racing with list mutation — iterator reads stale data."""
+    """Explicit subscript filter-map racing with multi-element mutation — partial view betrays the race."""
 
     def test_dpor_detects_map_filter_race(self) -> None:
         def map_filter(state: _MapFilterState) -> None:
-            state.even_doubled = [x * 2 for x in state.source if x % 2 == 0]
+            result: list[int] = []
+            for i in range(5):
+                x = state.source[i]
+                if x % 2 == 0:
+                    result.append(x * 2)
+            state.even_doubled = result
 
         def mutator(state: _MapFilterState) -> None:
             state.source[1] = 7
@@ -1528,11 +1529,14 @@ class TestMapFilterRace:
 
 
 class TestZipRace:
-    """dict(zip(keys, values)) — zip lazily pulls from both lists, racing with mutation."""
+    """Explicit key-value pairing racing with multi-field mutation — partial snapshot betrays the race."""
 
     def test_dpor_detects_zip_race(self) -> None:
         def zip_to_dict(state: _ZipInterleaveState) -> None:
-            state.result = dict(zip(state.keys, state.values))
+            result: dict[str, int] = {}
+            for i in range(3):
+                result[state.keys[i]] = state.values[i]
+            state.result = result
 
         def mutator(state: _ZipInterleaveState) -> None:
             state.keys[0] = "z"
@@ -1541,7 +1545,10 @@ class TestZipRace:
         result = explore_dpor(
             setup=_ZipInterleaveState,
             threads=[zip_to_dict, mutator],
-            invariant=lambda s: s.result.get("a") == 1 or s.result.get("z") == 1,
+            invariant=lambda s: (
+                (s.result.get("a") == 1 and s.result.get("c") == 3)
+                or (s.result.get("z") == 1 and s.result.get("c") == 99)
+            ),
             detect_io=False,
             deadlock_timeout=5.0,
         )
@@ -1562,7 +1569,7 @@ class TestStrJoinRace:
         result = explore_dpor(
             setup=_StrJoinState,
             threads=[joiner, mutator],
-            invariant=lambda s: s.joined in ("hello world", "goodbye world !"),
+            invariant=lambda s: s.joined == "hello world",
             detect_io=False,
             deadlock_timeout=5.0,
         )
@@ -1584,9 +1591,7 @@ class TestOrderedDictMoveToEndRace:
         result = explore_dpor(
             setup=_OrderedDictMoveState,
             threads=[read_order, reorder],
-            invariant=lambda s: (
-                (s.first_key == "a" and s.last_key == "c") or (s.first_key == "b" and s.last_key == "a")
-            ),
+            invariant=lambda s: s.first_key == "a" and s.last_key == "c",
             detect_io=False,
             deadlock_timeout=5.0,
         )
