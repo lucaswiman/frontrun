@@ -440,14 +440,24 @@ events via ``IOEventDispatcher`` → ``_PreloadBridge`` (see note above).
 The bytecode explorer does not consume them but may still find the race
 through random scheduling.
 
+**C-level iteration** (e.g. ``list(od.keys())`` while another thread
+calls ``od.move_to_end()``):  DPOR treats each C call as a single
+atomic operation.  Under PEP 703 (free-threaded Python), C functions
+that iterate via ``PyIter_Next`` acquire and release the per-object
+lock on each element, so another thread can mutate the collection
+between iterations.  When *both* sides of a race are single C opcodes,
+no bytecode-level tool can expose the interleaving.  This affects
+``itertools`` combinators, ``list()``/``tuple()`` on dict views,
+``OrderedDict.move_to_end()`` during iteration, and similar patterns.
+See ``PEP-703-REPORT.md`` for worked examples.
+
 **External server state** (e.g. a row in PostgreSQL):  The socket-level
 conflict (two threads talking to ``127.0.0.1:5432``) *is* visible to
-``LD_PRELOAD``.  But the ``LD_PRELOAD`` library can only see that two
-threads are using the same socket endpoint --- it can't distinguish a
-``SELECT`` on table A from an ``UPDATE`` on table B.  If the preload
-events were wired into DPOR, it would explore reorderings of all
-database I/O between the two threads, which is a coarse but potentially
-useful signal.  The underlying row-level conflict is invisible to any
-client-side instrumentation; only the database server knows which rows
-are being accessed.  For precise control over database-level races, use
-trace markers with manual scheduling.
+``LD_PRELOAD``, and DPOR explores reorderings of all database I/O
+between the two threads.  This is a coarse but useful signal --- DPOR
+can't distinguish a ``SELECT`` on table A from an ``UPDATE`` on table B,
+but it suffices to find lost-update races (see :doc:`orm_race`).  The
+underlying row-level conflict is invisible to any client-side
+instrumentation; only the database server knows which rows are being
+accessed.  For precise control over database-level races, use trace
+markers with manual scheduling.

@@ -53,6 +53,10 @@ libc ``send()``/``recv()`` directly) that previously went unnoticed.
 - Builtin function calls that mutate containers (e.g. ``sorted()``,
   ``list()``) treated as reads on their arguments.
 - Container iteration (``GET_ITER`` / ``FOR_ITER``) tracked as reads.
+- Known limitation: C-level iteration interleaving (e.g.
+  ``list(od.keys())`` vs ``OrderedDict.move_to_end()``, or ``itertools``
+  combinators racing with mutations) is undetectable at the opcode level.
+  See ``PEP-703-REPORT.md``.
 
 **Other changes**
 

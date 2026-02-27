@@ -54,10 +54,25 @@ engine, so even opaque database drivers (libpq, mysqlclient) and Redis
 clients (hiredis) are covered --- see :ref:`c-level-io-interception`
 below.
 
-DPOR cannot see shared state that is managed entirely inside a C
-extension without any I/O --- for example, in-process mutations of NumPy
-arrays or C-level caches. For those cases DPOR concludes (incorrectly)
-that the threads are independent.
+DPOR *does* detect many C-level operations: ``list.append``,
+``dict.__setitem__``, and similar mutating methods are seen via
+``sys.setprofile``; builtins like ``sorted()``, ``sum()``, ``min()``,
+``max()``, and ``str.join()`` are registered as passthrough reads on
+their arguments; and container constructors (``list()``, ``dict()``,
+``enumerate()``, ``zip()``, etc.) are tracked as reads on their inputs.
+
+The gap is **C-level iteration interleaving**.  DPOR treats each C call
+as a single atomic operation, but under PEP 703 (free-threaded Python),
+C functions that iterate via ``PyIter_Next`` — such as
+``list(od.keys())`` — acquire and release the per-object lock on each
+element, allowing another thread to mutate the collection between
+iterations.  When *both* sides of a race are single C opcodes (e.g.
+``list(od.keys())`` vs ``od.move_to_end("a")``), no bytecode-level tool
+can expose the interleaving.  See ``PEP-703-REPORT.md`` for details.
+
+DPOR also cannot see shared state managed entirely inside a C extension
+without any I/O or Python-visible operations --- for example, in-process
+mutations of NumPy arrays or C-level caches with no Python API calls.
 
 For a practical guide see :doc:`dpor_guide`. For the algorithm details and
 theory see :doc:`dpor`.
