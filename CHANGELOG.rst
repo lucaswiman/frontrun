@@ -35,6 +35,29 @@ When a race condition is found, ``result.explanation`` now contains a
 human-readable trace showing interleaved source lines, the conflict pattern
 (lost update, write–write, etc.), and reproduction statistics.
 
+**LD_PRELOAD events wired into DPOR**
+
+When run under the ``frontrun`` CLI with ``detect_io=True`` (the default),
+``explore_dpor()`` now consumes C-level I/O events from the ``LD_PRELOAD``
+library via ``IOEventDispatcher`` → ``_PreloadBridge``.  This means DPOR
+detects races involving opaque C extensions (e.g. psycopg2/libpq calling
+libc ``send()``/``recv()`` directly) that previously went unnoticed.
+
+**Improved DPOR race detection**
+
+- Global variable and module-level attribute accesses are now tracked as
+  shared-memory conflicts.
+- C-level container mutations (``list.append``, ``dict.__setitem__``, etc.)
+  detected via ``sys.setprofile``.
+- Closure variable (``LOAD_DEREF`` / ``STORE_DEREF``) accesses tracked.
+- Builtin function calls that mutate containers (e.g. ``sorted()``,
+  ``list()``) treated as reads on their arguments.
+- Container iteration (``GET_ITER`` / ``FOR_ITER``) tracked as reads.
+- Known limitation: C-level iteration interleaving (e.g.
+  ``list(od.keys())`` vs ``OrderedDict.move_to_end()``, or ``itertools``
+  combinators racing with mutations) is undetectable at the opcode level.
+  See ``PEP-703-REPORT.md``.
+
 **Other changes**
 
 - Cooperative threading primitives (``Lock``, ``RLock``, ``Semaphore``,
@@ -44,7 +67,8 @@ human-readable trace showing interleaved source lines, the conflict pattern
 - ``--frontrun-patch-locks`` pytest plugin for early cooperative patching;
   tests that need the frontrun environment are auto-skipped when it is absent.
 - Free-threaded Python (3.13t, 3.14t) support, including a fix for a PyO3
-  "Already borrowed" panic.
+  "Already borrowed" panic and intermittent hangs in cooperative lock
+  patching on 3.14t.
 - Multi-version test matrix: Python 3.10, 3.14, 3.14t.
 - ``DporResult`` merged into ``InterleavingResult``; all three ``explore_*``
   functions return the same type.

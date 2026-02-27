@@ -351,13 +351,18 @@ from the Rust interception library are available via
 
 .. note::
 
-   Currently, neither DPOR nor the bytecode explorer consumes
-   ``LD_PRELOAD`` events.  The ``IOEventDispatcher`` exists and works,
-   but ``explore_dpor()`` doesn't instantiate one --- it relies solely
-   on Python-level monkey-patching for I/O detection.  This means C
-   extensions that call libc ``send()``/``recv()`` directly (e.g.
-   psycopg2 via libpq) produce events that go unread.  See
-   :doc:`dpor_guide` for the proposed fix.
+   DPOR consumes ``LD_PRELOAD`` events when ``detect_io=True`` (the
+   default).  ``explore_dpor()`` starts an ``IOEventDispatcher`` that
+   reads the pipe, and a ``_PreloadBridge`` maps OS thread IDs to DPOR
+   logical thread IDs and buffers events for draining at each scheduling
+   point.  This means C extensions that call libc ``send()``/``recv()``
+   directly (e.g. psycopg2 via libpq) are covered --- DPOR treats the
+   shared socket endpoint as a conflict and explores alternative
+   orderings around the I/O.
+
+   The bytecode explorer does *not* consume ``LD_PRELOAD`` events.  It
+   relies on Python-level monkey-patching (and random scheduling) to
+   find races involving C-level I/O.
 
 .. list-table:: Mechanism usage by approach
    :header-rows: 1
@@ -430,17 +435,29 @@ to ``LD_PRELOAD`` (intercepts the underlying libc call).
 **C-extension internal calls** (e.g. libpq calling libc ``send()``
 inside ``PQexec()``):  Invisible to ``sys.settrace``, ``sys.setprofile``,
 and monkey-patching.  Visible *only* to ``LD_PRELOAD``, which intercepts
-at the libc level regardless of who called it.  Currently not consumed
-by DPOR or the bytecode explorer (see note above).
+at the libc level regardless of who called it.  DPOR consumes these
+events via ``IOEventDispatcher`` → ``_PreloadBridge`` (see note above).
+The bytecode explorer does not consume them but may still find the race
+through random scheduling.
+
+**C-level iteration** (e.g. ``list(od.keys())`` while another thread
+calls ``od.move_to_end()``):  DPOR treats each C call as a single
+atomic operation.  Under PEP 703 (free-threaded Python), C functions
+that iterate via ``PyIter_Next`` acquire and release the per-object
+lock on each element, so another thread can mutate the collection
+between iterations.  When *both* sides of a race are single C opcodes,
+no bytecode-level tool can expose the interleaving.  This affects
+``itertools`` combinators, ``list()``/``tuple()`` on dict views,
+``OrderedDict.move_to_end()`` during iteration, and similar patterns.
+See ``PEP-703-REPORT.md`` for worked examples.
 
 **External server state** (e.g. a row in PostgreSQL):  The socket-level
 conflict (two threads talking to ``127.0.0.1:5432``) *is* visible to
-``LD_PRELOAD``.  But the ``LD_PRELOAD`` library can only see that two
-threads are using the same socket endpoint --- it can't distinguish a
-``SELECT`` on table A from an ``UPDATE`` on table B.  If the preload
-events were wired into DPOR, it would explore reorderings of all
-database I/O between the two threads, which is a coarse but potentially
-useful signal.  The underlying row-level conflict is invisible to any
-client-side instrumentation; only the database server knows which rows
-are being accessed.  For precise control over database-level races, use
-trace markers with manual scheduling.
+``LD_PRELOAD``, and DPOR explores reorderings of all database I/O
+between the two threads.  This is a coarse but useful signal --- DPOR
+can't distinguish a ``SELECT`` on table A from an ``UPDATE`` on table B,
+but it suffices to find lost-update races (see :doc:`orm_race`).  The
+underlying row-level conflict is invisible to any client-side
+instrumentation; only the database server knows which rows are being
+accessed.  For precise control over database-level races, use trace
+markers with manual scheduling.
