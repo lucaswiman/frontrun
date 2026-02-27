@@ -200,7 +200,7 @@ to intercept C-level ``send()``/``recv()`` calls from psycopg2 (which
 bypasses Python's socket module).  The intercepted I/O events are routed
 through ``IOEventDispatcher`` → ``_PreloadBridge`` → the DPOR engine,
 which treats them as conflict points on the shared resource
-(``socket:127.0.0.1:5432``).
+(``socket:unix:/var/run/postgresql/.s.PGSQL.5432``).
 
 .. code-block:: python
 
@@ -234,14 +234,16 @@ Output:
 
        Write-write conflict: threads 0 and 1 both wrote to login_count.
 
-       Thread 0 | send socket:unix:/var/run/postgresql/.s.PGSQL.5432
-       Thread 0 | orm_race.py:323       user.login_count = user.login_count + 1
-                | [read+write User.login_count]
-       Thread 1 | send socket:unix:/var/run/postgresql/.s.PGSQL.5432
-       Thread 1 | orm_race.py:323       user.login_count = user.login_count + 1
-                | [read+write User.login_count]
        Thread 0 | send/recv socket:unix:/var/run/postgresql/.s.PGSQL.5432
        Thread 1 | send/recv socket:unix:/var/run/postgresql/.s.PGSQL.5432
+       Thread 1 | orm_race.py:323       user.login_count = user.login_count + 1
+                | [read+write User.login_count]
+       Thread 1 | send/recv socket:unix:/var/run/postgresql/.s.PGSQL.5432
+       Thread 0 | orm_race.py:323       user.login_count = user.login_count + 1
+                | [read+write User.login_count]
+       Thread 0 | send/recv socket:unix:/var/run/postgresql/.s.PGSQL.5432
+
+       Reproduced 10/10 times (100%)
 
 DPOR detected the lost update in just 2 interleavings.  The trace
 interleaves C-level socket I/O (libpq ``send``/``recv``) with
@@ -249,16 +251,16 @@ Python-level attribute accesses, telling the full story:
 
 1. Thread 0 sends a ``SELECT`` to Postgres and receives the result
    (``login_count = 0``).
-2. Thread 0 computes ``0 + 1 = 1`` in Python (``user.login_count =
-   user.login_count + 1``) but has not yet committed.
-3. Thread 1 sends its own ``SELECT`` and receives ``login_count = 0``
-   (Thread 0's update hasn't been committed).
-4. Thread 1 also computes ``0 + 1 = 1``.
-5. Thread 0 sends ``UPDATE … SET login_count = 1`` and ``COMMIT``.
-6. Thread 1 sends ``UPDATE … SET login_count = 1`` and ``COMMIT``,
-   silently overwriting Thread 0's increment.
+2. Thread 1 sends its own ``SELECT`` and receives ``login_count = 0``
+   (Thread 0 hasn't committed yet).
+3. Thread 1 computes ``0 + 1 = 1`` in Python (``user.login_count =
+   user.login_count + 1``).
+4. Thread 1 sends ``UPDATE … SET login_count = 1`` and ``COMMIT``.
+5. Thread 0 computes ``0 + 1 = 1`` in Python from its stale read.
+6. Thread 0 sends ``UPDATE … SET login_count = 1`` and ``COMMIT``,
+   silently overwriting Thread 1's increment.
 
-The I/O events (``send``/``recv socket:…``) come from the ``LD_PRELOAD``
+The I/O events (``send/recv socket:…``) come from the ``LD_PRELOAD``
 library intercepting libpq's C-level socket calls.  DPOR uses these as
 conflict points to explore alternative thread orderings around database
 operations --- even though psycopg2 never goes through Python's
@@ -288,10 +290,10 @@ CI:
      request arrival timing.  Counting how often the race manifests...
 
      Trials:   500
-     Failures: 76
-     Rate:     15.2%
+     Failures: 62
+     Rate:     12.4%
 
-     The race manifested in 76/500 trials (15.2%).
+     The race manifested in 62/500 trials (12.4%).
      frontrun makes it 100% reproducible.
 
 With ordinary threads the bug surfaces roughly 10--15% of the time
