@@ -245,6 +245,41 @@ class TestExploreDpor:
         assert len(result.failures) > 0
         assert result.counterexample is not None
 
+    def test_lost_update_via_getter_setter(self) -> None:
+        """Lost update through getter/setter methods.
+
+        Regression test: on Python 3.14, LOAD_FAST_BORROW_LOAD_FAST_BORROW
+        was not handled by the shadow stack, causing STORE_ATTR to pop None
+        instead of the actual object.  This made DPOR miss the write access
+        entirely, so it never explored the interleaving that reveals the race.
+        """
+
+        class AccountBalance:
+            def __init__(self) -> None:
+                self._balance = 0
+
+            def get_balance(self) -> int:
+                return self._balance
+
+            def set_balance(self, value: int) -> None:
+                self._balance = value
+
+            def deposit(self, amount: int) -> None:
+                current = self.get_balance()
+                self.set_balance(current + amount)
+
+        result = explore_dpor(
+            setup=AccountBalance,
+            threads=[lambda bal: bal.deposit(100), lambda bal: bal.deposit(100)],
+            invariant=lambda bal: bal.get_balance() == 200,
+            max_executions=500,
+            preemption_bound=2,
+        )
+
+        assert not result.property_holds
+        assert len(result.failures) > 0
+        assert result.counterexample is not None
+
     def test_atomic_increment_no_bug(self) -> None:
         """Each thread does a single atomic write. No race possible."""
 

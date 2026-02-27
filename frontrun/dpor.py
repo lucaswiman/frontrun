@@ -637,7 +637,9 @@ def _process_opcode(
 
     Handles opcodes across Python 3.10-3.14, including:
     - 3.13: LOAD_FAST_LOAD_FAST, STORE_FAST_STORE_FAST
-    - 3.14: LOAD_FAST_BORROW, LOAD_SMALL_INT, BINARY_SUBSCR removal
+    - 3.14: LOAD_FAST_BORROW, LOAD_FAST_BORROW_LOAD_FAST_BORROW,
+            STORE_FAST_LOAD_FAST, STORE_FAST_MAYBE_NULL, LOAD_FAST_AND_CLEAR,
+            LOAD_SMALL_INT, BINARY_SUBSCR removal
     """
     code = frame.f_code
     instrs = _get_instructions(code)
@@ -660,8 +662,10 @@ def _process_opcode(
         val = frame.f_locals.get(instr.argval)
         shadow.push(val)
 
-    elif op == "LOAD_FAST_LOAD_FAST":
+    elif op in ("LOAD_FAST_LOAD_FAST", "LOAD_FAST_BORROW_LOAD_FAST_BORROW"):
         # New in 3.13: pushes two locals in one instruction.
+        # LOAD_FAST_BORROW_LOAD_FAST_BORROW is the 3.14 variant using
+        # borrowed references internally (same observable semantics).
         # argval is a tuple of two variable names.
         argval = instr.argval
         if isinstance(argval, tuple) and len(argval) == 2:
@@ -943,6 +947,26 @@ def _process_opcode(
         # New in 3.13: pops two values.
         shadow.pop()
         shadow.pop()
+
+    elif op == "STORE_FAST_LOAD_FAST":
+        # New in 3.14: stores TOS into one local, then loads another local.
+        # Net stack effect is 0 (pop one, push one) but the fallback handler
+        # sees effect=0 and does nothing, losing the pushed value.
+        argval = instr.argval
+        shadow.pop()
+        if isinstance(argval, tuple) and len(argval) == 2:
+            shadow.push(frame.f_locals.get(argval[1]))
+        else:
+            shadow.push(None)
+
+    elif op == "STORE_FAST_MAYBE_NULL":
+        # New in 3.14: like STORE_FAST but tolerates NULL on TOS.
+        shadow.pop()
+
+    elif op == "LOAD_FAST_AND_CLEAR":
+        # Used in comprehensions: loads a local then clears it.
+        val = frame.f_locals.get(instr.argval)
+        shadow.push(val)
 
     # === Return/pop ===
 
