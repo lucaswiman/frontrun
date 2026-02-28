@@ -87,6 +87,7 @@ jobs:
               cp target/*/release/libfrontrun_io.so frontrun/libfrontrun_io.so
 
       - name: Build wheels (free-threaded)
+        if: runner.os != 'Linux'
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -100,4 +101,55 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
+  linux-freethread:
+    name: "Linux ${{ matrix.target }} (free-threaded ${{ matrix.python-version }})"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.13t', '3.14t']
+        target: [x86_64, aarch64]
+        include:
+          - { target: x86_64, runner: ubuntu-latest }
+          - { target: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inject release version
+        if: inputs.version != ''
+        run: python3 -c "
+          import re, pathlib;
+          p = pathlib.Path('Cargo.toml');
+          p.write_text(re.sub(r'^version = .*', 'version = \"${{ inputs.version }}\"', p.read_text(), count=1, flags=re.MULTILINE))
+          "
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build I/O interception library
+        run: |
+          cargo build --release -p frontrun-io
+          cp target/release/libfrontrun_io.so frontrun/libfrontrun_io.so
+
+      - name: Build free-threaded wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          # Build on the host (no Docker) because maturin inside the
+          # manylinux container treats free-threaded interpreters like
+          # python3.13t as cross-compilation and rejects the 't' suffix.
+          # manylinux_2_39 matches the Ubuntu 24.04 runner's glibc.
+          container: off
+          args: >-
+            --release --out dist
+            --compatibility manylinux_2_39
+            --interpreter python${{ matrix.python-version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.target }}-freethread-${{ matrix.python-version }}
           path: dist/*.whl
