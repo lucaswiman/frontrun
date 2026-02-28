@@ -3,7 +3,7 @@ Changelog
 
 All releases: https://github.com/lucaswiman/frontrun/releases
 
-0.1.0 (Unreleased)
+0.1.0 (2026-02-27)
 -------------------
 
 **DPOR (Dynamic Partial Order Reduction)**
