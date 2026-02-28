@@ -22,11 +22,10 @@ jobs:
 
       - name: Inject release version
         if: inputs.version != ''
-        run: python3 -c "
-          import re, pathlib;
-          p = pathlib.Path('Cargo.toml');
-          p.write_text(re.sub(r'^version = .*', 'version = \"${{ inputs.version }}\"', p.read_text(), count=1, flags=re.MULTILINE))
-          "
+        shell: bash
+        run: |
+          sed "s/^version = .*/version = \"${{ inputs.version }}\"/" Cargo.toml > Cargo.toml.tmp
+          mv Cargo.toml.tmp Cargo.toml
 
       - uses: PyO3/maturin-action@v1
         with:
@@ -53,11 +52,10 @@ jobs:
 
       - name: Inject release version
         if: inputs.version != ''
-        run: python3 -c "
-          import re, pathlib;
-          p = pathlib.Path('Cargo.toml');
-          p.write_text(re.sub(r'^version = .*', 'version = \"${{ inputs.version }}\"', p.read_text(), count=1, flags=re.MULTILINE))
-          "
+        shell: bash
+        run: |
+          sed "s/^version = .*/version = \"${{ inputs.version }}\"/" Cargo.toml > Cargo.toml.tmp
+          mv Cargo.toml.tmp Cargo.toml
 
       - name: Set up QEMU
         if: matrix.target == 'aarch64' && runner.os == 'Linux'
@@ -119,11 +117,10 @@ jobs:
 
       - name: Inject release version
         if: inputs.version != ''
-        run: python3 -c "
-          import re, pathlib;
-          p = pathlib.Path('Cargo.toml');
-          p.write_text(re.sub(r'^version = .*', 'version = \"${{ inputs.version }}\"', p.read_text(), count=1, flags=re.MULTILINE))
-          "
+        shell: bash
+        run: |
+          sed "s/^version = .*/version = \"${{ inputs.version }}\"/" Cargo.toml > Cargo.toml.tmp
+          mv Cargo.toml.tmp Cargo.toml
 
       - uses: dtolnay/rust-toolchain@stable
 
