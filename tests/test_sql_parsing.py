@@ -150,6 +150,24 @@ class TestSqlglotParseNonDml:
 
         assert r is not None and r.tx_op == SavepointOp("rollback_to", "sp1")
 
+    def test_savepoint_quoted_name_strips_quotes(self):
+        """SAVEPOINT with quoted name should strip quotes so lookups match ROLLBACK TO."""
+        from frontrun._sql_parsing import SavepointOp
+
+        r = _sqlglot_parse('SAVEPOINT "sp1"')
+        assert r is not None and r.tx_op == SavepointOp("savepoint", "sp1"), (
+            f"Quoted savepoint name should be stripped to 'sp1', got {r!r}"
+        )
+
+    def test_release_quoted_name_strips_quotes(self):
+        """RELEASE with quoted name should strip quotes for consistency."""
+        from frontrun._sql_parsing import SavepointOp
+
+        r = _sqlglot_parse('RELEASE SAVEPOINT "sp1"')
+        assert r is not None and r.tx_op == SavepointOp("release", "sp1"), (
+            f"Quoted release savepoint name should be stripped to 'sp1', got {r!r}"
+        )
+
     def test_set_autocommit_0(self):
         r = _sqlglot_parse("SET AUTOCOMMIT = 0")
         assert r is not None and r.tx_op is TxOp.BEGIN
