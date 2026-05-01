@@ -631,9 +631,7 @@ def test_assert_holds_with_prefix_and_none_explanation():
     with pytest.raises(AssertionError) as exc_info:
         result.assert_holds(msg_prefix="Test case 1: ")
     msg = str(exc_info.value)
-    assert "None" not in msg, (
-        f"assert_holds() produced misleading message containing literal 'None': {msg!r}"
-    )
+    assert "None" not in msg, f"assert_holds() produced misleading message containing literal 'None': {msg!r}"
 
 
 def test_assert_holds_with_prefix_and_explanation():
@@ -658,6 +656,7 @@ def test_explore_unknown_strategy_error_message_reflects_registry():
 
     class _FakeStrategy:
         allowed_keys: frozenset[str] = frozenset()
+
         def run(self, **kwargs): ...
 
     STRATEGIES["experimental"] = _FakeStrategy()
