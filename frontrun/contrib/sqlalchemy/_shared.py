@@ -131,8 +131,14 @@ def wrap_async_setup(engine: Any, setup: Callable[[], T]) -> Callable[[], T]:
     """Return a setup wrapper that disposes the async engine before setup runs."""
 
     def wrapped_setup() -> T:
-        engine.sync_engine.dispose()
-        return setup()
+        from frontrun._cooperative import suppress_sync_reporting, unsuppress_sync_reporting
+
+        suppress_sync_reporting()
+        try:
+            engine.sync_engine.dispose()
+            return setup()
+        finally:
+            unsuppress_sync_reporting()
 
     return wrapped_setup
 

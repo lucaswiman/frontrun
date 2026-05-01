@@ -154,7 +154,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
         if upper.startswith("SAVEPOINT "):
             parts = stripped[10:].strip().split()
             if parts:
-                return SqlAccessResult(set(), set(), None, SavepointOp("savepoint", parts[0]), None)
+                return SqlAccessResult(set(), set(), None, SavepointOp("savepoint", _strip_quotes(parts[0])), None)
 
         # RELEASE [SAVEPOINT] <name> — sqlglot ERROR
         if upper.startswith("RELEASE "):
@@ -163,7 +163,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                 rest = rest[10:].strip()
             parts = rest.split()
             if parts:
-                return SqlAccessResult(set(), set(), None, SavepointOp("release", parts[0]), None)
+                return SqlAccessResult(set(), set(), None, SavepointOp("release", _strip_quotes(parts[0])), None)
 
         # LOCK TABLE <table>[, <table>...] [IN <mode> MODE] — sqlglot ERROR for all dialects
         if upper.startswith("LOCK TABLE "):

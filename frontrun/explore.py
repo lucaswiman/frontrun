@@ -121,7 +121,8 @@ def explore(
     """
     worker_list = _resolve_workers(workers, count)
     if strategy not in STRATEGIES:
-        raise ValueError(f"explore(): unknown strategy={strategy!r}; must be 'dpor' or 'random'")
+        valid = ", ".join(repr(k) for k in sorted(STRATEGIES))
+        raise ValueError(f"explore(): unknown strategy={strategy!r}; must be one of {valid}")
 
     # Collect every keyword argument the user could have passed.  The chosen
     # adapter filters this dict against its own ``allowed_keys`` set.
