@@ -620,7 +620,7 @@ class TestPostgreSQLTraceCount:
         result = sqlalchemy_dpor(
             engine=pg_engine,
             setup=_State,
-            workers=[make_thread(0), make_thread(1)],
+            threads=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
             lock_timeout=2000,
             deadlock_timeout=10.0,
@@ -686,7 +686,7 @@ class TestPostgreSQLTraceCount:
         result = sqlalchemy_dpor(
             engine=pg_engine,
             setup=_State,
-            workers=[make_thread(i) for i in range(n)],
+            threads=[make_thread(i) for i in range(n)],
             invariant=lambda s: True,
             lock_timeout=5000,
             deadlock_timeout=15.0,
@@ -739,7 +739,7 @@ class TestPostgreSQLTraceCount:
         result = sqlalchemy_dpor(
             engine=pg_engine,
             setup=_State,
-            workers=[thread_a, thread_b],
+            threads=[thread_a, thread_b],
             invariant=lambda s: True,
             lock_timeout=2000,
             deadlock_timeout=10.0,
@@ -813,7 +813,7 @@ class TestPostgreSQLTraceCount:
         result = sqlalchemy_dpor(
             engine=pg_engine,
             setup=_State,
-            workers=[make_thread(0), make_thread(1)],
+            threads=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
             lock_timeout=2000,
             deadlock_timeout=10.0,
