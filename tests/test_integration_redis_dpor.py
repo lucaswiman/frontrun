@@ -33,7 +33,7 @@ try:
 except ImportError:
     pytest.skip("redis package not installed", allow_module_level=True)
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 pytestmark = pytest.mark.integration
 
@@ -68,9 +68,9 @@ class TestRedisCounterRaceKeyLevel:
             r.close()
             return result == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -105,9 +105,9 @@ class TestRedisCounterRaceKeyLevel:
             r.close()
             return result == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -150,9 +150,9 @@ class TestRedisCheckThenActKeyLevel:
             r.close()
             return result == 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[maybe_init, maybe_init],
+            workers=[maybe_init, maybe_init],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -188,9 +188,9 @@ class TestRedisCheckThenActKeyLevel:
             r.close()
             return result == 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[maybe_init, maybe_init],
+            workers=[maybe_init, maybe_init],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -235,9 +235,9 @@ class TestRedisInventoryRaceKeyLevel:
             r.close()
             return stock >= 0 and sold <= 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[buy, buy],
+            workers=[buy, buy],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -289,9 +289,9 @@ class TestRedisTransferRaceKeyLevel:
             r.close()
             return bal_a + bal_b == 200
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[transfer_a_to_b, transfer_a_to_b_also],
+            workers=[transfer_a_to_b, transfer_a_to_b_also],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -328,9 +328,9 @@ class TestRedisTransferRaceKeyLevel:
             r.close()
             return bal_a + bal_b == 200
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[
+            workers=[
                 lambda s: transfer(s, 10),
                 lambda s: transfer(s, 30),
             ],
@@ -374,9 +374,9 @@ class TestRedisHashRaceKeyLevel:
             # Two debits of 10 each: 100 - 10 - 10 = 80
             return balance == 80
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[debit, debit],
+            workers=[debit, debit],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -406,9 +406,9 @@ class TestRedisHashRaceKeyLevel:
             r.close()
             return balance == 80
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[debit, debit],
+            workers=[debit, debit],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -433,8 +433,6 @@ class TestAsyncRedisCounterRace:
         except ImportError:
             pytest.skip("redis.asyncio not available")
 
-        from frontrun.async_dpor import explore_async_dpor
-
         port = redis_port
 
         class State:
@@ -456,11 +454,11 @@ class TestAsyncRedisCounterRace:
             return result == 2
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[increment, increment],
+                workers=[increment, increment],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
@@ -474,8 +472,6 @@ class TestAsyncRedisCounterRace:
             import redis.asyncio as aioredis  # type: ignore[import-untyped]
         except ImportError:
             pytest.skip("redis.asyncio not available")
-
-        from frontrun.async_dpor import explore_async_dpor
 
         port = redis_port
 
@@ -500,11 +496,11 @@ class TestAsyncRedisCounterRace:
             return result == 2
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[increment, increment],
+                workers=[increment, increment],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
@@ -522,8 +518,6 @@ class TestAsyncRedisTransferRace:
             import redis.asyncio as aioredis  # type: ignore[import-untyped]
         except ImportError:
             pytest.skip("redis.asyncio not available")
-
-        from frontrun.async_dpor import explore_async_dpor
 
         port = redis_port
 
@@ -558,11 +552,11 @@ class TestAsyncRedisTransferRace:
             return bal_a + bal_b == 200
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[transfer_10, transfer_30],
+                workers=[transfer_10, transfer_30],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
@@ -580,8 +574,6 @@ class TestAsyncRedisCheckThenAct:
             import redis.asyncio as aioredis  # type: ignore[import-untyped]
         except ImportError:
             pytest.skip("redis.asyncio not available")
-
-        from frontrun.async_dpor import explore_async_dpor
 
         port = redis_port
 
@@ -607,11 +599,11 @@ class TestAsyncRedisCheckThenAct:
             return result == 1
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[maybe_init, maybe_init],
+                workers=[maybe_init, maybe_init],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
@@ -657,9 +649,9 @@ class TestRedisListRaceKeyLevel:
             # Only 1 task in queue — at most 1 should be processed
             return processed <= 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[worker, worker],
+            workers=[worker, worker],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -710,9 +702,9 @@ class TestRedisSetRaceKeyLevel:
             r.close()
             return count == 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[process_item, process_item],
+            workers=[process_item, process_item],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -725,7 +717,7 @@ class TestRedisSetRaceKeyLevel:
 # ---------------------------------------------------------------------------
 # 10. Async independent keys — no false conflicts
 # ---------------------------------------------------------------------------
-# In async mode, detect_redis=True uses key-level analysis WITHOUT the
+# In async mode, detect_io=True uses key-level analysis WITHOUT the
 # LD_PRELOAD socket-level bridge, so independent keys should NOT conflict.
 
 
@@ -738,8 +730,6 @@ class TestAsyncRedisIndependentKeys:
             import redis.asyncio as aioredis  # type: ignore[import-untyped]
         except ImportError:
             pytest.skip("redis.asyncio not available")
-
-        from frontrun.async_dpor import explore_async_dpor
 
         port = redis_port
 
@@ -768,11 +758,11 @@ class TestAsyncRedisIndependentKeys:
             return a == "1" and b == "1"
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[write_a, write_b],
+                workers=[write_a, write_b],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
@@ -796,8 +786,6 @@ class TestAsyncRedisHashRace:
         except ImportError:
             pytest.skip("redis.asyncio not available")
 
-        from frontrun.async_dpor import explore_async_dpor
-
         port = redis_port
 
         class State:
@@ -819,11 +807,11 @@ class TestAsyncRedisHashRace:
             return balance == 80
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[debit, debit],
+                workers=[debit, debit],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
@@ -899,9 +887,9 @@ class TestMultiResourceRace:
             # registration_count should be 1 if only one thread registered
             return state.registration_count == 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[
+            workers=[
                 lambda s: register_user(s, "alice@a.com"),
                 lambda s: register_user(s, "alice@b.com"),
             ],
@@ -961,9 +949,9 @@ class TestMultiResourceRace:
             conn.close()
             return db_count == 1 and state.registration_count == 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[
+            workers=[
                 lambda s: register_user(s, "alice@a.com"),
                 lambda s: register_user(s, "alice@b.com"),
             ],
@@ -1008,9 +996,9 @@ class TestRedisPipelineKeyLevel:
             r.close()
             return result == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment_via_pipeline, increment_via_pipeline],
+            workers=[increment_via_pipeline, increment_via_pipeline],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -1039,7 +1027,7 @@ class TestDporPathCountIndependent:
     def test_async_independent_keys_property_holds(self, redis_port: int) -> None:
         """Async tasks writing completely different keys → property holds on all paths.
 
-        Uses detect_redis=True (no LD_PRELOAD) so socket-level false conflicts
+        Uses detect_io=True (no LD_PRELOAD) so socket-level false conflicts
         are avoided and DPOR sees only key-level accesses.  With 2 tasks × 10
         operations each, the combinatorial maximum would be C(20,10) ≈ 184K
         interleavings.  DPOR should explore far fewer.
@@ -1048,8 +1036,6 @@ class TestDporPathCountIndependent:
             import redis.asyncio as aioredis  # type: ignore[import-untyped]
         except ImportError:
             pytest.skip("redis.asyncio not available")
-
-        from frontrun.async_dpor import explore_async_dpor
 
         port = redis_port
 
@@ -1086,11 +1072,11 @@ class TestDporPathCountIndependent:
             return True
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[worker_a, worker_b],
+                workers=[worker_a, worker_b],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
@@ -1104,8 +1090,6 @@ class TestDporPathCountIndependent:
             import redis.asyncio as aioredis  # type: ignore[import-untyped]
         except ImportError:
             pytest.skip("redis.asyncio not available")
-
-        from frontrun.async_dpor import explore_async_dpor
 
         port = redis_port
 
@@ -1136,11 +1120,11 @@ class TestDporPathCountIndependent:
             return True
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[worker_a, worker_b],
+                workers=[worker_a, worker_b],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
@@ -1192,9 +1176,9 @@ class TestDporPathCountSerialized:
             # Each worker does +1 (set) then +1 (incr) = +2 per worker, 2 workers = 4
             return counter == 4
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[worker, worker],
+            workers=[worker, worker],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -1217,8 +1201,6 @@ class TestDporPathCountSerialized:
             import redis.asyncio as aioredis  # type: ignore[import-untyped]
         except ImportError:
             pytest.skip("redis.asyncio not available")
-
-        from frontrun.async_dpor import explore_async_dpor
 
         port = redis_port
 
@@ -1245,11 +1227,11 @@ class TestDporPathCountSerialized:
             return counter == 2
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[worker, worker],
+                workers=[worker, worker],
                 invariant=invariant,
-                detect_redis=True,
+                detect_io=True,
                 max_executions=50,
                 deadlock_timeout=15.0,
                 reproduce_on_failure=0,
