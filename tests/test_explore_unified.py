@@ -614,3 +614,63 @@ def test_detect_redis_param_in_registry():
         "DEPRECATION_MESSAGES is missing 'detect_redis_param'. "
         "Add it so the removal-version enforcement test covers this deprecation."
     )
+
+
+# ---------------------------------------------------------------------------
+# (i) assert_holds() edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_assert_holds_with_prefix_and_none_explanation():
+    """assert_holds(msg_prefix=...) must not produce 'prefix: None' when explanation is None.
+
+    When property_holds=False and explanation is None, the f-string interpolation
+    of None produces the literal string "None", which is misleading.
+    """
+    result = InterleavingResult(property_holds=False, explanation=None)
+    with pytest.raises(AssertionError) as exc_info:
+        result.assert_holds(msg_prefix="Test case 1: ")
+    msg = str(exc_info.value)
+    assert "None" not in msg, f"assert_holds() produced misleading message containing literal 'None': {msg!r}"
+
+
+def test_assert_holds_with_prefix_and_explanation():
+    """assert_holds(msg_prefix=...) should prepend prefix to the explanation."""
+    result = InterleavingResult(property_holds=False, explanation="lost update on x")
+    with pytest.raises(AssertionError, match="Test: lost update on x"):
+        result.assert_holds(msg_prefix="Test: ")
+
+
+# ---------------------------------------------------------------------------
+# (j) explore() error message uses registry keys
+# ---------------------------------------------------------------------------
+
+
+def test_explore_unknown_strategy_error_message_reflects_registry():
+    """The error message for unknown strategy should derive from the registry, not be hardcoded.
+
+    If a new strategy is added to STRATEGIES, the error message must automatically
+    include it without updating the error string manually.
+    """
+    from frontrun._strategy import STRATEGIES
+
+    class _FakeStrategy:
+        allowed_keys: frozenset[str] = frozenset()
+
+        def run(self, **kwargs): ...
+
+    STRATEGIES["experimental"] = _FakeStrategy()
+    try:
+        with pytest.raises(ValueError) as exc_info:
+            explore(
+                setup=Counter,
+                workers=[Counter.increment],
+                invariant=counter_invariant,
+                strategy="bananas",
+            )
+        msg = str(exc_info.value)
+        assert "experimental" in msg, (
+            f"Error message should dynamically include new registry key 'experimental' but got: {msg!r}"
+        )
+    finally:
+        del STRATEGIES["experimental"]

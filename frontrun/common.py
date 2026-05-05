@@ -201,7 +201,8 @@ class InterleavingResult:
                 failed when multiple calls appear in one test.
         """
         if not self.property_holds:
-            raise AssertionError(f"{msg_prefix}{self.explanation}" if msg_prefix else self.explanation)
+            explanation = self.explanation or ""
+            raise AssertionError(f"{msg_prefix}{explanation}" if msg_prefix else explanation)
 
     def __repr__(self) -> str:
         ce = self.counterexample

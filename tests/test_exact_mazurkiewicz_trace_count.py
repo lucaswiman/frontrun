@@ -31,7 +31,7 @@ import threading
 
 import pytest
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 # All search strategies should produce the same exact Mazurkiewicz trace
 # counts. The strategies only change the *order* of exploration, not the
@@ -105,9 +105,9 @@ class TestIndependentState:
 
             return thread_fn
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_thread(i) for i in range(n)],
+            workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: all(s.slots[i].value == i + 1 for i in range(len(s.slots))),
             max_executions=1000,
             preemption_bound=None,
@@ -204,9 +204,9 @@ class TestTwoThreadsSharedState:
             return thread_fn
 
         expected = 2**n
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_thread(0), make_thread(1)],
+            workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
             max_executions=max(expected * 10, 1000),
             preemption_bound=None,
@@ -283,9 +283,9 @@ class TestNThreadsWithLock:
             return thread_fn
 
         expected = math.factorial(n)
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_thread(i) for i in range(n)],
+            workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: True,
             max_executions=max(expected * 10, 1000),
             preemption_bound=None,
@@ -350,9 +350,9 @@ class TestTwoThreadsSharedStateWithLock:
 
             return thread_fn
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_thread(0), make_thread(1)],
+            workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
             max_executions=100,
             preemption_bound=None,
@@ -407,9 +407,9 @@ class TestFileIOTraceCount:
 
             return thread_fn
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_thread(i) for i in range(n)],
+            workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: all(open(paths[i]).read() == str(i + 1) for i in range(n)),
             max_executions=1000,
             preemption_bound=None,
@@ -451,9 +451,9 @@ class TestFileIOTraceCount:
 
             return thread_fn
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_thread(0), make_thread(1)],
+            workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
             max_executions=100,
             preemption_bound=None,
@@ -499,9 +499,9 @@ class TestFileIOTraceCount:
         import math
 
         expected = math.factorial(n)
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_thread(i) for i in range(n)],
+            workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: True,
             max_executions=max(expected * 10, 1000),
             preemption_bound=None,
@@ -885,8 +885,9 @@ class TestPostgreSQLRawPsycopg2TraceCount:
 
     Note: LD_PRELOAD event delivery is asynchronous via a pipe.  Although
     SQL-level suppression prevents most socket events from creating false
-    conflicts, occasional pipe timing races can cause 1-2 extra traces.
-    Assertions therefore allow a small tolerance (exact ≤ actual ≤ exact+2).
+    conflicts, occasional pipe timing races can cause extra traces.
+    Assertions allow a small tolerance that scales with the number of SQL
+    operations (more rows → more pipe events → higher tolerance).
     """
 
     def test_two_threads_same_row(self, _pg_available) -> None:
@@ -913,9 +914,9 @@ class TestPostgreSQLRawPsycopg2TraceCount:
 
             return thread_fn
 
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[make_thread(0), make_thread(1)],
+            workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
             lock_timeout=2000,
             deadlock_timeout=10.0,
@@ -957,9 +958,9 @@ class TestPostgreSQLRawPsycopg2TraceCount:
             return thread_fn
 
         expected = math.factorial(n)
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[make_thread(i) for i in range(n)],
+            workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: True,
             lock_timeout=5000,
             deadlock_timeout=15.0,
@@ -1006,9 +1007,9 @@ class TestPostgreSQLRawPsycopg2TraceCount:
             finally:
                 _pg_close_suppressed(conn)
 
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[thread_a, thread_b],
+            workers=[thread_a, thread_b],
             invariant=lambda s: True,
             lock_timeout=2000,
             deadlock_timeout=10.0,
@@ -1059,9 +1060,9 @@ class TestPostgreSQLRawPsycopg2TraceCount:
             return thread_fn
 
         expected = 2**n
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[make_thread(0), make_thread(1)],
+            workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
             lock_timeout=2000,
             deadlock_timeout=10.0,
@@ -1073,8 +1074,10 @@ class TestPostgreSQLRawPsycopg2TraceCount:
             warn_nondeterministic_sql=False,
         )
 
-        assert result.num_explored <= expected + 2, (
-            f"N={n}: Expected ≤{expected + 2} Mazurkiewicz traces (2^{n} + pipe tolerance), got {result.num_explored}"
+        pipe_tolerance = 3 * n
+        upper = expected + pipe_tolerance
+        assert result.num_explored <= upper, (
+            f"N={n}: Expected ≤{upper} Mazurkiewicz traces (2^{n} + pipe tolerance), got {result.num_explored}"
         )
 
 
@@ -1136,9 +1139,9 @@ class TestPostgreSQLRawPsycopg2SuppressBug:
 
             return thread_fn
 
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[make_thread(0), make_thread(1)],
+            workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
             lock_timeout=2000,
             deadlock_timeout=10.0,

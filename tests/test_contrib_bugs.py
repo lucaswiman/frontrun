@@ -79,6 +79,27 @@ class TestSqlalchemyConnectionHelpers:
         assert "_lock_timeout_statement" in source, "Expected a shared SQLAlchemy lock_timeout helper"
 
 
+class TestSqlalchemyAsyncSetupSuppression:
+    """Async SQLAlchemy setup should suppress reporting during engine.dispose()."""
+
+    def test_async_setup_suppresses_reporting(self) -> None:
+        """wrap_async_setup should suppress cooperative reporting during dispose.
+
+        The sync version (wrap_sync_setup) correctly wraps engine.dispose() in
+        suppress_sync_reporting/unsuppress_sync_reporting, but wrap_async_setup
+        calls engine.sync_engine.dispose() without suppression. This can cause
+        internal SQLAlchemy/psycopg2 lock events to leak into DPOR reporting
+        during setup.
+        """
+        from frontrun.contrib.sqlalchemy._shared import wrap_async_setup
+
+        source = inspect.getsource(wrap_async_setup)
+        assert "suppress_sync_reporting" in source, (
+            "wrap_async_setup should suppress cooperative reporting during dispose(), "
+            "like wrap_sync_setup does. Internal engine locks are implementation details."
+        )
+
+
 class TestRedisAsyncReportedBranch:
     """Async Redis interceptors should share reported-command handling."""
 
