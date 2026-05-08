@@ -74,6 +74,9 @@ def _strip_quotes(name: str) -> str:
     elif "`.`" in name:
         parts = name.split("`.`")
         last = parts[-1]
+    elif "].[" in name:
+        parts = name.split("].[")
+        last = parts[-1]
     elif '".`' in name or '`."' in name:
         # Mixed quoting — unlikely but handle gracefully
         last = name.rsplit(".", 1)[-1]
@@ -87,9 +90,9 @@ def _strip_quotes(name: str) -> str:
         last = name.rsplit(".", 1)[-1]
 
     # Strip remaining quotes from the last component
-    if last.startswith(('"', "`")):
+    if last.startswith(('"', "`", "[")):
         last = last[1:]
-    if last.endswith(('"', "`")):
+    if last.endswith(('"', "`", "]")):
         last = last[:-1]
     return last
 

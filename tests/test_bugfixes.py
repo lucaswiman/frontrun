@@ -18,7 +18,6 @@ from frontrun.common import Schedule, Step
 from frontrun.dpor import DporBytecodeRunner, DporScheduler, explore_dpor
 from frontrun.trace_markers import TraceExecutor
 
-
 # ---------------------------------------------------------------------------
 # Bug: _patch_class_methods closure captures _is_executemany by reference
 # ---------------------------------------------------------------------------
@@ -33,8 +32,8 @@ class TestPatchClassMethodsClosureBug:
     """
 
     def test_execute_not_treated_as_executemany(self):
-        from frontrun._sql_cursor import _intercept_execute, _patch_class_methods
         from frontrun._patching import restore_patches
+        from frontrun._sql_cursor import _intercept_execute, _patch_class_methods
 
         captured: list[bool] = []
         original_intercept = _intercept_execute
@@ -62,7 +61,7 @@ class TestPatchClassMethodsClosureBug:
             FakeCursor().execute("SELECT 1")
             FakeCursor().executemany("INSERT INTO t VALUES (?)", [(1,)])
 
-        restore_patches(_PATCHES[len(old_patches):])
+        restore_patches(_PATCHES[len(old_patches) :])
         _PATCHES[:] = old_patches
         _ORIGINAL_METHODS.clear()
         _ORIGINAL_METHODS.update(old_originals)
@@ -70,6 +69,7 @@ class TestPatchClassMethodsClosureBug:
         assert len(captured) == 2
         assert captured[0] is False, "execute() should pass is_executemany=False"
         assert captured[1] is True, "executemany() should pass is_executemany=True"
+
 
 # ---------------------------------------------------------------------------
 # Bug: CooperativeCondition.wait() loses notifications

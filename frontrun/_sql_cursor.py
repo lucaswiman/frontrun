@@ -727,11 +727,11 @@ def _patch_class_methods(cls: type, paramstyle: str) -> None:
     for method_name in ("execute", "executemany"):
         _is_executemany = method_name == "executemany"
 
-        def _make_patched(orig: Any, mname: str = method_name, ps: str = paramstyle) -> Any:
+        def _make_patched(
+            orig: Any, mname: str = method_name, ps: str = paramstyle, _iem: bool = _is_executemany
+        ) -> Any:
             def _patched(self: Any, operation: Any, parameters: Any = None, *args: Any, **kwargs: Any) -> Any:
-                return _intercept_execute(
-                    orig, self, operation, parameters, is_executemany=_is_executemany, paramstyle=ps
-                )
+                return _intercept_execute(orig, self, operation, parameters, is_executemany=_iem, paramstyle=ps)
 
             return wrap_method_metadata(_patched, orig, name=mname)
 

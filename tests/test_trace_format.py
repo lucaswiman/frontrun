@@ -183,18 +183,17 @@ class TestCollapseRuns:
         counts rather than counting each as 1 line."""
         from frontrun._trace_format import CollapsedRun
 
-        events = []
-        for tid in range(5):
-            for i in range(10):
-                events.append(
-                    SourceLineEvent(
-                        thread_id=tid,
-                        filename="test.py",
-                        lineno=tid * 100 + i,
-                        function_name="f",
-                        source_line=f"line {tid}_{i}",
-                    )
-                )
+        events = [
+            SourceLineEvent(
+                thread_id=tid,
+                filename="test.py",
+                lineno=tid * 100 + i,
+                function_name="f",
+                source_line=f"line {tid}_{i}",
+            )
+            for tid in range(5)
+            for i in range(10)
+        ]
         result = _collapse_runs(events, max_lines=10)
         total = sum(r.count if isinstance(r, CollapsedRun) else 1 for r in result)
         assert total == 50, f"CollapsedRun counts should sum to total events (50), got {total}"

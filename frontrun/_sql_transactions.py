@@ -146,6 +146,9 @@ def _handle_tx_op(reporter: Any, tx: Any) -> None:
                 idx = savepoints[tx.name]
                 buffer = getattr(_io_tls, "_tx_buffer", [])
                 _io_tls._tx_buffer = buffer[:idx]
+                stale = [name for name, sp_idx in savepoints.items() if sp_idx > idx]
+                for name in stale:
+                    del savepoints[name]
         else:  # "release"
             savepoints.pop(tx.name, None)
 

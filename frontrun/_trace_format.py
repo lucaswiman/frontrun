@@ -510,7 +510,8 @@ def _collapse_runs(lines: list[SourceLineEvent], *, max_lines: int) -> list[Sour
     if len(result) > max_lines:
         first_half = max_lines // 2
         second_half = max_lines - first_half - 1  # -1 for the CollapsedRun
-        omitted = len(result) - first_half - second_half
+        dropped = result[first_half : len(result) - second_half] if second_half > 0 else result[first_half:]
+        omitted = sum(item.count if isinstance(item, CollapsedRun) else 1 for item in dropped)
         tail = result[-second_half:] if second_half > 0 else []
         result = result[:first_half] + [CollapsedRun(count=omitted, thread_id=-1)] + tail
 
@@ -535,7 +536,7 @@ def _merge_consecutive(events: list[SourceLineEvent]) -> list[SourceLineEvent]:
             elif ev.access_type in ("read", "read+write") and prev.access_type == "write":
                 prev.access_type = "read+write"
         else:
-            result.append(ev)
+            result.append(replace(ev))
     return result
 
 
@@ -650,7 +651,10 @@ def format_trace(
             continue
 
         line_ev = item
-        label = thread_names[line_ev.thread_id].ljust(max_thread_label)
+        tname = (
+            thread_names[line_ev.thread_id] if line_ev.thread_id < len(thread_names) else f"Thread {line_ev.thread_id}"
+        )
+        label = tname.ljust(max_thread_label)
 
         # I/O events from C extensions have no source location
         is_io = line_ev.obj_type_name == "IO"

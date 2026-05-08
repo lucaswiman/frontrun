@@ -68,7 +68,7 @@ class _PreloadBridge:
             return
         if is_socket and is_tid_suppressed(event.tid):
             return
-        if is_redis_tid_suppressed(event.tid):
+        if is_socket and is_redis_tid_suppressed(event.tid):
             return
         with self._lock:
             dpor_id = self._tid_to_dpor.get(event.tid)
