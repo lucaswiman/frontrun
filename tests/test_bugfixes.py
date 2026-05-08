@@ -7,6 +7,7 @@ the root cause.  The tests are written to fail *before* the fix and pass
 
 import threading
 import time
+from unittest.mock import patch as mock_patch
 
 import pytest
 from frontrun._dpor import PyDporEngine
@@ -16,6 +17,59 @@ from frontrun.bytecode import BytecodeShuffler, OpcodeScheduler
 from frontrun.common import Schedule, Step
 from frontrun.dpor import DporBytecodeRunner, DporScheduler, explore_dpor
 from frontrun.trace_markers import TraceExecutor
+
+
+# ---------------------------------------------------------------------------
+# Bug: _patch_class_methods closure captures _is_executemany by reference
+# ---------------------------------------------------------------------------
+
+
+class TestPatchClassMethodsClosureBug:
+    """_patch_class_methods loops over ("execute", "executemany") and defines
+    _is_executemany inside the loop body, but the inner _patched closure
+    captures it by reference. After the loop, _is_executemany is True (from
+    the "executemany" iteration), so cursor.execute() incorrectly passes
+    is_executemany=True to _intercept_execute.
+    """
+
+    def test_execute_not_treated_as_executemany(self):
+        from frontrun._sql_cursor import _intercept_execute, _patch_class_methods
+        from frontrun._patching import restore_patches
+
+        captured: list[bool] = []
+        original_intercept = _intercept_execute
+
+        def spy_intercept(orig, cursor, operation, parameters=None, **kwargs):
+            captured.append(kwargs.get("is_executemany", False))
+            return None
+
+        class FakeCursor:
+            def execute(self, op, params=None):
+                pass
+
+            def executemany(self, op, seq_of_params):
+                pass
+
+        patches: list = []
+        originals: dict = {}
+        from frontrun._sql_cursor import _ORIGINAL_METHODS, _PATCHES
+
+        old_originals = dict(_ORIGINAL_METHODS)
+        old_patches = list(_PATCHES)
+
+        with mock_patch("frontrun._sql_cursor._intercept_execute", side_effect=spy_intercept):
+            _patch_class_methods(FakeCursor, "qmark")
+            FakeCursor().execute("SELECT 1")
+            FakeCursor().executemany("INSERT INTO t VALUES (?)", [(1,)])
+
+        restore_patches(_PATCHES[len(old_patches):])
+        _PATCHES[:] = old_patches
+        _ORIGINAL_METHODS.clear()
+        _ORIGINAL_METHODS.update(old_originals)
+
+        assert len(captured) == 2
+        assert captured[0] is False, "execute() should pass is_executemany=False"
+        assert captured[1] is True, "executemany() should pass is_executemany=True"
 
 # ---------------------------------------------------------------------------
 # Bug: CooperativeCondition.wait() loses notifications

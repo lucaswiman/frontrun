@@ -89,6 +89,26 @@ class TestPreloadBridge:
         key_1 = bridge.drain(1)[0][0]
         assert key_0 == key_1, "Same resource_id should map to the same DPOR object key"
 
+    def test_redis_suppressed_thread_file_io_passes_through(self) -> None:
+        """File I/O from a Redis-suppressed thread must not be dropped.
+
+        SQL suppression is gated on ``is_socket`` so non-socket events
+        always pass through.  Redis suppression should follow the same
+        pattern — only suppress socket-level events, not file I/O.
+        """
+        from unittest.mock import patch as mock_patch
+
+        bridge = _PreloadBridge()
+        bridge.register_thread(os_tid=1000, dpor_id=0)
+
+        file_event = PreloadIOEvent(kind="write", resource_id="file:/tmp/log.txt", fd=7, pid=1, tid=1000)
+
+        with mock_patch("frontrun._dpor_runtime.preload_bridge.is_redis_tid_suppressed", return_value=True):
+            bridge.listener(file_event)
+
+        events = bridge.drain(0)
+        assert len(events) == 1, "File I/O from Redis-suppressed thread should NOT be dropped"
+
 
 # ---------------------------------------------------------------------------
 # Integration: DPOR detects C-level file I/O races via the preload bridge

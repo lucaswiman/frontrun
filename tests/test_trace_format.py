@@ -178,6 +178,27 @@ class TestCollapseRuns:
         assert len(_collapse_runs(self._make_events(20), max_lines=1)) <= 1
         assert len(_collapse_runs(self._make_events(20), max_lines=2)) <= 2
 
+    def test_final_cap_counts_real_lines_not_list_entries(self) -> None:
+        """When the final cap drops CollapsedRun entries, it must sum their
+        counts rather than counting each as 1 line."""
+        from frontrun._trace_format import CollapsedRun
+
+        events = []
+        for tid in range(5):
+            for i in range(10):
+                events.append(
+                    SourceLineEvent(
+                        thread_id=tid,
+                        filename="test.py",
+                        lineno=tid * 100 + i,
+                        function_name="f",
+                        source_line=f"line {tid}_{i}",
+                    )
+                )
+        result = _collapse_runs(events, max_lines=10)
+        total = sum(r.count if isinstance(r, CollapsedRun) else 1 for r in result)
+        assert total == 50, f"CollapsedRun counts should sum to total events (50), got {total}"
+
 
 # ---------------------------------------------------------------------------
 # Filtering
@@ -251,6 +272,19 @@ class TestDeduplication:
         _merge_consecutive(events)
         assert events[0].access_type == original_type, (
             f"_merge_consecutive mutated input: {original_type!r} -> {events[0].access_type!r}"
+        )
+
+    def test_merge_consecutive_does_not_mutate_nonfirst_input(self) -> None:
+        """_merge_consecutive must clone non-first events before mutating access_type."""
+        events = [
+            SourceLineEvent(0, "test.py", 10, "f", "r1", access_type="read", attr_name="v", obj_type_name="C"),
+            SourceLineEvent(0, "test.py", 20, "f", "r2", access_type="write", attr_name="v", obj_type_name="C"),
+            SourceLineEvent(0, "test.py", 20, "f", "r3", access_type="read", attr_name="v", obj_type_name="C"),
+        ]
+        assert events[1].access_type == "write"
+        _merge_consecutive(events)
+        assert events[1].access_type == "write", (
+            f"_merge_consecutive mutated non-first input event: 'write' -> {events[1].access_type!r}"
         )
 
 
@@ -338,6 +372,15 @@ class TestFormatting:
     def test_format_empty_events(self) -> None:
         output = format_trace([], num_threads=2)
         assert "no shared-state accesses" in output
+
+    def test_format_trace_out_of_bounds_thread_id(self) -> None:
+        """format_trace must not IndexError when thread_id >= len(thread_names)."""
+        events = [
+            TraceEvent(0, 0, "counter.py", 10, "f", "LOAD_ATTR", "read", "x", "C"),
+            TraceEvent(1, 5, "counter.py", 10, "f", "STORE_ATTR", "write", "x", "C"),
+        ]
+        output = format_trace(events, num_threads=2, thread_names=["Alice"])
+        assert "Thread 5" in output or "thread" in output.lower()
 
     def test_show_opcodes_flag(self) -> None:
         """When show_opcodes=True, opcode details are included."""
