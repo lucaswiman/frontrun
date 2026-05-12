@@ -1,7 +1,7 @@
 """Async SQLAlchemy helper for async DPOR integration testing.
 
-Wraps ``explore_async_dpor`` to handle per-task async connection management
-and optional lock_timeout injection automatically.
+Handles per-task async connection management and optional lock_timeout
+injection automatically.
 
 Prefer the unified ``sqlalchemy_dpor`` dispatcher (pass ``tasks=`` for async)::
 
@@ -54,7 +54,7 @@ async def async_sqlalchemy_dpor(
     detect_sql: bool = True,
     **kwargs: Any,
 ) -> InterleavingResult:
-    """Run ``explore_async_dpor`` with per-task async SQLAlchemy connection management.
+    """Run async DPOR exploration with per-task async SQLAlchemy connection management.
 
     Args:
         engine: An async SQLAlchemy ``AsyncEngine`` instance.
@@ -65,15 +65,15 @@ async def async_sqlalchemy_dpor(
         invariant: Predicate over shared state after all tasks complete.
         lock_timeout: If set, execute ``SET lock_timeout = <N>ms`` on each
             task's connection.
-        detect_sql: Passed through to ``explore_async_dpor`` (default True).
-        **kwargs: Forwarded verbatim to ``explore_async_dpor``.
+        detect_sql: Passed through to the async DPOR engine (default True).
+        **kwargs: Forwarded verbatim to :func:`frontrun.explore`.
     """
-    from frontrun.async_dpor import explore_async_dpor
+    from frontrun.async_dpor import _explore_async_dpor
 
     wrapped_setup = wrap_async_setup(engine, setup)
     wrapped_tasks = [wrap_async_task(engine, _current_connection, lock_timeout, fn) for fn in tasks]
 
-    return await explore_async_dpor(
+    return await _explore_async_dpor(
         setup=wrapped_setup,
         tasks=wrapped_tasks,
         invariant=invariant,

@@ -1,7 +1,7 @@
 """SQLAlchemy helper for DPOR integration testing.
 
-Wraps ``explore_dpor`` to handle per-thread connection management and
-optional lock_timeout injection automatically.
+Handles per-thread connection management and optional lock_timeout injection
+automatically.
 
 Example::
 
@@ -49,7 +49,7 @@ def sqlalchemy_dpor(
     detect_io: bool = True,
     **kwargs: Any,
 ) -> Any:
-    """Run ``explore_dpor`` with per-thread SQLAlchemy connection management.
+    """Run DPOR exploration with per-thread SQLAlchemy connection management.
 
     Args:
         engine: A SQLAlchemy ``Engine`` instance.
@@ -62,15 +62,15 @@ def sqlalchemy_dpor(
         lock_timeout: If set, execute ``SET lock_timeout = <N>ms`` on each
             thread's connection before running the thread.  Converts
             C-level row-lock blocking into a fast PostgreSQL error.
-        detect_io: Passed through to ``explore_dpor`` (default True).
-        **kwargs: Forwarded verbatim to ``explore_dpor``.
+        detect_io: Passed through to the DPOR engine (default True).
+        **kwargs: Forwarded verbatim to :func:`frontrun.explore`.
     """
-    from frontrun.dpor import explore_dpor
+    from frontrun._dpor_runtime.explore import _explore_dpor
 
     wrapped_setup = wrap_sync_setup(engine, setup)
     wrapped_threads = [wrap_sync_thread(engine, _current_connection, lock_timeout, fn) for fn in threads]
 
-    return explore_dpor(
+    return _explore_dpor(
         setup=wrapped_setup,
         threads=wrapped_threads,
         invariant=invariant,

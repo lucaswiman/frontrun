@@ -1,7 +1,7 @@
 """Django helper for DPOR integration testing.
 
-Wraps ``explore_dpor`` to handle per-thread Django database connection
-management and optional lock_timeout injection automatically.
+Handles per-thread Django database connection management and optional
+lock_timeout injection automatically.
 
 Example::
 
@@ -37,7 +37,7 @@ def django_dpor(
     trace_packages: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Run ``explore_dpor`` with per-thread Django connection management.
+    """Run DPOR exploration with per-thread Django connection management.
 
     Each thread closes the shared Django connection and opens a fresh one,
     ensuring DPOR sees independent connections per thread.
@@ -54,18 +54,18 @@ def django_dpor(
         db_alias: Django database alias to use (default ``"default"``).
         lock_timeout: If set, execute ``SET lock_timeout = <N>ms`` on each
             thread's connection before running the thread.
-        detect_io: Passed through to ``explore_dpor`` (default True).
+        detect_io: Passed through to the DPOR engine (default True).
         trace_packages: Package name patterns (fnmatch syntax) to trace.
             Defaults to :data:`DJANGO_TRACE_PACKAGES`.  Pass ``[]`` to
             disable extra tracing beyond user code.
-        **kwargs: Forwarded verbatim to ``explore_dpor``.
+        **kwargs: Forwarded verbatim to :func:`frontrun.explore`.
     """
-    from frontrun.dpor import explore_dpor
+    from frontrun._dpor_runtime.explore import _explore_dpor
 
     wrapped_setup, wrapped_threads, resolved_packages = prepare_django_dpor(
         setup, threads, wrap_sync_thread, db_alias=db_alias, lock_timeout=lock_timeout, trace_packages=trace_packages
     )
-    return explore_dpor(
+    return _explore_dpor(
         setup=wrapped_setup,
         threads=wrapped_threads,
         invariant=invariant,
