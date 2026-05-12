@@ -150,3 +150,39 @@ class TestSavepointDispatch:
 
         _intercept_execute(cursor.execute, cursor, "RELEASE SAVEPOINT sp1")
         assert "sp1" not in getattr(_io_tls, "_tx_savepoints", {})
+
+    def test_rollback_to_invalidates_nested_savepoints(self, reporter):
+        """ROLLBACK TO sp1 should destroy savepoints created after sp1."""
+        cursor = MockCursor()
+        _intercept_execute(cursor.execute, cursor, "BEGIN")
+        _intercept_execute(cursor.execute, cursor, "INSERT INTO t1 (id) VALUES (1)")
+        _intercept_execute(cursor.execute, cursor, "SAVEPOINT sp1")
+        _intercept_execute(cursor.execute, cursor, "INSERT INTO t2 (id) VALUES (2)")
+        _intercept_execute(cursor.execute, cursor, "SAVEPOINT sp2")
+        _intercept_execute(cursor.execute, cursor, "INSERT INTO t3 (id) VALUES (3)")
+
+        _intercept_execute(cursor.execute, cursor, "ROLLBACK TO SAVEPOINT sp1")
+
+        savepoints = getattr(_io_tls, "_tx_savepoints", {})
+        assert "sp1" in savepoints, "sp1 should still exist"
+        assert "sp2" not in savepoints, "sp2 should be destroyed by ROLLBACK TO sp1"
+
+    def test_rollback_to_stale_nested_savepoint_safe(self, reporter):
+        """After ROLLBACK TO sp1, ROLLBACK TO sp2 must not corrupt the buffer."""
+        cursor = MockCursor()
+        _intercept_execute(cursor.execute, cursor, "BEGIN")
+        _intercept_execute(cursor.execute, cursor, "SAVEPOINT sp1")
+        _intercept_execute(cursor.execute, cursor, "INSERT INTO t1 (id) VALUES (1)")
+        _intercept_execute(cursor.execute, cursor, "SAVEPOINT sp2")
+        _intercept_execute(cursor.execute, cursor, "INSERT INTO t2 (id) VALUES (2)")
+
+        _intercept_execute(cursor.execute, cursor, "ROLLBACK TO SAVEPOINT sp1")
+        _intercept_execute(cursor.execute, cursor, "INSERT INTO t3 (id) VALUES (3)")
+        _intercept_execute(cursor.execute, cursor, "INSERT INTO t4 (id) VALUES (4)")
+        _intercept_execute(cursor.execute, cursor, "INSERT INTO t5 (id) VALUES (5)")
+
+        buf_before = list(getattr(_io_tls, "_tx_buffer", []))
+
+        _intercept_execute(cursor.execute, cursor, "ROLLBACK TO SAVEPOINT sp2")
+        buf_after = list(getattr(_io_tls, "_tx_buffer", []))
+        assert buf_after == buf_before, "ROLLBACK TO destroyed sp2; buffer should be unchanged"

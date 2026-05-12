@@ -107,6 +107,28 @@ def test_explore_unknown_strategy_raises():
         )
 
 
+def test_explore_preemption_bound_none_passthrough(monkeypatch):
+    """explore(preemption_bound=None) should pass None through to _explore_dpor."""
+    from frontrun._dpor_runtime import explore as explore_mod
+
+    captured: dict = {}
+    original = explore_mod._explore_dpor
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(explore_mod, "_explore_dpor", spy)
+    explore(
+        setup=Counter,
+        workers=[Counter.increment, Counter.increment],
+        invariant=counter_invariant,
+        preemption_bound=None,
+    )
+    assert "preemption_bound" in captured, "preemption_bound=None should be forwarded, not stripped"
+    assert captured["preemption_bound"] is None
+
+
 # ---------------------------------------------------------------------------
 # (b) explore() dispatcher — async path
 # ---------------------------------------------------------------------------

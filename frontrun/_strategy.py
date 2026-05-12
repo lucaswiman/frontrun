@@ -83,6 +83,10 @@ _DPOR_SYNC_KEYS: frozenset[str] = frozenset(
     }
 )
 
+_NONE_MEANINGFUL_KEYS: frozenset[str] = frozenset(
+    {"preemption_bound", "max_executions", "total_timeout", "lock_timeout", "trace_packages", "search"}
+)
+
 _RANDOM_SYNC_KEYS: frozenset[str] = frozenset(
     {
         "max_attempts",
@@ -120,7 +124,11 @@ class _SyncDporStrategy:
             setup=setup,
             threads=workers,
             invariant=invariant,
-            **{k: v for k, v in kwargs.items() if k in _DPOR_SYNC_KEYS and v is not None},
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k in _DPOR_SYNC_KEYS and (v is not None or k in _NONE_MEANINGFUL_KEYS)
+            },  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -141,7 +149,11 @@ class _SyncRandomStrategy:
             setup=setup,
             threads=workers,
             invariant=invariant,
-            **{k: v for k, v in kwargs.items() if k in _RANDOM_SYNC_KEYS and v is not None},
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k in _RANDOM_SYNC_KEYS and (v is not None or k in _NONE_MEANINGFUL_KEYS)
+            },  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -204,7 +216,11 @@ class _AsyncDporStrategy:
             invariant=invariant,
             detect_sql=detect_sql,
             detect_redis=detect_io,
-            **{k: v for k, v in kwargs.items() if k in _DPOR_ASYNC_KEYS and v is not None},
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k in _DPOR_ASYNC_KEYS and (v is not None or k in _NONE_MEANINGFUL_KEYS)
+            },  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -227,7 +243,11 @@ class _AsyncRandomStrategy:
             tasks=workers,
             invariant=invariant,
             detect_sql=detect_sql,
-            **{k: v for k, v in kwargs.items() if k in _RANDOM_ASYNC_KEYS and v is not None},
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k in _RANDOM_ASYNC_KEYS and (v is not None or k in _NONE_MEANINGFUL_KEYS)
+            },  # pyright: ignore[reportArgumentType]
         )
 
 

@@ -69,6 +69,15 @@ class TestStripQuotes:
         """Backtick-quoted schema and backtick-quoted table."""
         assert _strip_quotes("`myschema`.`users`") == "users"
 
+    def test_bracket_quoted_simple(self):
+        assert _strip_quotes("[users]") == "users"
+
+    def test_bracket_quoted_schema_qualified(self):
+        assert _strip_quotes("[dbo].[users]") == "users"
+
+    def test_bracket_quoted_table_only(self):
+        assert _strip_quotes("dbo.[users]") == "users"
+
 
 # ---------------------------------------------------------------------------
 # _sqlglot_parse — non-DML constructs now handled inside _sqlglot_parse
