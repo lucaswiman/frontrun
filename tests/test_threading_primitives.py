@@ -513,6 +513,4 @@ def test_cooperative_condition_notify_negative_n_does_not_corrupt_state():
     served_after = cond._served
     lock.release()
 
-    assert served_after >= served_before, (
-        f"notify(-1) corrupted _served: was {served_before}, now {served_after}"
-    )
+    assert served_after >= served_before, f"notify(-1) corrupted _served: was {served_before}, now {served_after}"

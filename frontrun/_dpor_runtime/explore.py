@@ -216,18 +216,17 @@ def _explore_dpor(
         if not raw_races:
             return None
         rmap = get_object_key_reverse_map() or {}
+        non_dict_keys: set[tuple[int, int, int]] = set()
+        for r in raw_races:
+            obj_name = rmap.get(r[3], f"object {r[3]}") if r[3] is not None else None
+            if not (obj_name and obj_name.startswith("dict.")):
+                non_dict_keys.add((r[0], r[1], r[2]))
         result = []
-        # Track (prev_step, current_step, thread_id) to deduplicate dict.__dict__
-        # shadows of real attribute accesses
-        seen_steps: set[tuple[int, int, int]] = set()
         for r in raw_races:
             obj_name = rmap.get(r[3], f"object {r[3]}") if r[3] is not None else None
             key = (r[0], r[1], r[2])
-            # Skip dict.X entries when we already have a Type.X entry for the same steps
-            if obj_name and obj_name.startswith("dict."):
-                if key in seen_steps:
-                    continue
-            seen_steps.add(key)
+            if obj_name and obj_name.startswith("dict.") and key in non_dict_keys:
+                continue
             result.append(
                 {
                     "prev_step": r[0],
