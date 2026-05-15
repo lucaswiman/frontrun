@@ -696,3 +696,34 @@ def test_explore_unknown_strategy_error_message_reflects_registry():
         )
     finally:
         del STRATEGIES["experimental"]
+
+
+# ---------------------------------------------------------------------------
+# explore_async_random: total_timeout support
+# ---------------------------------------------------------------------------
+
+
+def test_explore_async_random_respects_total_timeout():
+    """explore_async_random must honor total_timeout to bound exploration time."""
+
+    @dataclass
+    class SlowCounter:
+        value: int = 0
+
+    async def slow_increment(c: SlowCounter) -> None:
+        v = c.value
+        await asyncio.sleep(0)
+        c.value = v + 1
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=SlowCounter,
+            tasks=[slow_increment, slow_increment],
+            invariant=lambda c: c.value == 2,
+            max_attempts=10_000,
+            total_timeout=0.01,
+        )
+    )
+    assert result.num_explored < 10_000, (
+        f"total_timeout=0.01 should have stopped exploration early, but ran {result.num_explored} attempts"
+    )
