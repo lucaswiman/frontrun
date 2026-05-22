@@ -646,6 +646,7 @@ def explore_random(
                 threads,
                 timeout=timeout_per_run,
                 detect_io=detect_io,
+                debug=debug,
                 deadlock_timeout=deadlock_timeout,
                 trace_recorder=recorder,
                 patch_sleep=patch_sleep,

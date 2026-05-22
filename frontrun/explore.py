@@ -120,8 +120,9 @@ def explore(
             ``count <= 0``, or ``strategy`` is unrecognised.
     """
     worker_list = _resolve_workers(workers, count)
-    if strategy not in STRATEGIES:
-        valid = ", ".join(repr(k) for k in sorted(STRATEGIES))
+    registry = ASYNC_STRATEGIES if any_async(worker_list) else STRATEGIES
+    if strategy not in registry:
+        valid = ", ".join(repr(k) for k in sorted(registry))
         raise ValueError(f"explore(): unknown strategy={strategy!r}; must be one of {valid}")
 
     # Collect every keyword argument the user could have passed.  The chosen
