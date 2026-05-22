@@ -15,10 +15,9 @@ from __future__ import annotations
 import threading
 
 import pytest
-
-from frontrun import explore
 from frontrun._dpor import PyDporEngine
 
+from frontrun import explore
 from frontrun._deadlock import SchedulerAbort
 from frontrun._dpor_runtime.runner import DporBytecodeRunner
 from frontrun.common import InterleavingResult
@@ -1542,16 +1541,13 @@ class TestLoadSpecialNameMapping:
             pytest.skip("LOAD_SPECIAL only exists on Python 3.14+")
 
         import inspect
+
         from frontrun._opcode_observer import _process_opcode
 
         src = inspect.getsource(_process_opcode)
         # Find the LOAD_SPECIAL handler and verify it maps args 2 and 3
-        assert "__aenter__" in src, (
-            "_process_opcode's LOAD_SPECIAL handler should map arg 2 to '__aenter__'"
-        )
-        assert "__aexit__" in src, (
-            "_process_opcode's LOAD_SPECIAL handler should map arg 3 to '__aexit__'"
-        )
+        assert "__aenter__" in src, "_process_opcode's LOAD_SPECIAL handler should map arg 2 to '__aenter__'"
+        assert "__aexit__" in src, "_process_opcode's LOAD_SPECIAL handler should map arg 3 to '__aexit__'"
 
     def test_async_context_manager_dpor_finds_race(self) -> None:
         """DPOR should find races in async context managers using __aenter__/__aexit__.
