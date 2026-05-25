@@ -7,14 +7,14 @@ Deterministic concurrency testing library. Four exploration approaches:
 - **Trace markers** — `# frontrun: name` comments + line-level `sys.settrace` (`frontrun/trace_markers.py`, async: `async_trace_markers.py`)
 - **Marker schedule exploration** — exhaustive interleaving at the marker level (also in `trace_markers.py`)
 - **Random bytecode exploration** — opcode-level fuzzing with Hypothesis (`frontrun/bytecode.py`, async: `async_shuffler.py`)
-- **Systematic DPOR** — Rust engine, vector clocks, wakeup tree (sync: `frontrun/_dpor_runtime/` subpackage; async: `frontrun/async_dpor.py`, still a single ~1.3 kLOC module). Pure helpers shared by both live in `frontrun/_dpor_core/` (`engine.py`, `invariants.py`) — first slice of an in-progress unification.
+- **Systematic DPOR** — Rust engine, vector clocks, wakeup tree (sync: `frontrun/_dpor_runtime/` subpackage; async: `frontrun/async_dpor.py`, still a single ~1.3 kLOC module). Pure helpers shared by both live in `frontrun/_dpor_core/` (`engine.py`, `invariants.py`, `concurrency.py`, `failures.py`, `row_locks.py`, `utils.py`) — in-progress unification layer.
 
 Unified entry point is `frontrun.explore(strategy=...)`, which dispatches through the `Strategy` / `AsyncStrategy` Protocol registries in `frontrun/_strategy.py`. Older names (`explore_dpor`, `explore_interleavings`, …) resolve via a `__getattr__` deprecation shim in `frontrun/__init__.py`; messages live in `frontrun/common.py::DEPRECATION_MESSAGES` and are pinned for removal in **0.6**. C-level I/O interception is handled by the `LD_PRELOAD` library in `crates/io/`.
 
 ## Project layout
 
 - `frontrun/` — Python package (pure Python + compiled `_dpor` extension)
-  - `_dpor_core/` — pure helpers shared by sync + async DPOR (`engine.py`, `invariants.py`)
+  - `_dpor_core/` — pure helpers shared by sync + async DPOR (`engine.py`, `invariants.py`, `concurrency.py`, `failures.py`, `row_locks.py`, `utils.py`)
   - `_dpor_runtime/` — sync DPOR internals (`explore.py`, `scheduler.py`, `runner.py`, `replay.py`, `preload_bridge.py`)
   - `_strategy.py` — `Strategy` / `AsyncStrategy` Protocols + adapter registries used by `explore()`
   - `contrib/django/`, `contrib/sqlalchemy/` — framework-specific helpers (`_sync.py`, `_async.py`, `_shared.py`)

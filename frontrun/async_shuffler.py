@@ -263,6 +263,7 @@ async def explore_async_random(
     patch_sleep: bool = True,
     serializable_invariant: Callable[[Any], Any] | bool = False,
     error_on_any_race: bool = False,
+    total_timeout: float | None = None,
 ) -> InterleavingResult:
     """Search for async interleavings that violate an invariant.
 
@@ -310,12 +311,17 @@ async def explore_async_random(
     )
 
     with _patch_async_runtime(detect_sql=detect_sql, patch_sleep=patch_sleep):
+        import time
+
         rng = random.Random(seed)
         num_tasks = len(tasks)
         result = InterleavingResult(property_holds=True, num_explored=0)
         seen_schedule_hashes: set[int] = set()
+        total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
         for _ in range(max_attempts):
+            if total_deadline is not None and time.monotonic() > total_deadline:
+                break
             schedule = random_round_robin_schedule(rng, num_tasks, max_ops)
 
             state = await run_with_schedule(
