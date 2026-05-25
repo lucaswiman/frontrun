@@ -699,6 +699,42 @@ def test_explore_unknown_strategy_error_message_reflects_registry():
 
 
 # ---------------------------------------------------------------------------
+# (k) explore() strategy validation uses correct registry for async workers
+# ---------------------------------------------------------------------------
+
+
+def test_explore_validates_strategy_against_async_registry():
+    """explore() with async workers should validate strategy against ASYNC_STRATEGIES.
+
+    Bug: explore() validates strategy against the sync STRATEGIES dict even when
+    async workers are detected. If a strategy exists only in ASYNC_STRATEGIES,
+    it would be wrongly rejected. The error message should also reflect the
+    async registry's keys.
+    """
+    from frontrun._strategy import ASYNC_STRATEGIES
+
+    class _FakeAsyncStrategy:
+        allowed_keys: frozenset[str] = frozenset()
+
+        async def run(self, **kwargs):
+            from frontrun.common import InterleavingResult
+
+            return InterleavingResult(property_holds=True)
+
+    ASYNC_STRATEGIES["async_only"] = _FakeAsyncStrategy()  # type: ignore[assignment]
+    try:
+        # This should NOT raise — "async_only" is a valid async strategy
+        coro = explore(
+            setup=AsyncCounter,
+            workers=AsyncCounter.increment,
+            count=2,
+            invariant=lambda c: c.value == 2,
+            strategy="async_only",
+        )
+        # Clean up the coroutine
+        coro.close()
+    finally:
+        del ASYNC_STRATEGIES["async_only"]
 # explore_async_random: total_timeout support
 # ---------------------------------------------------------------------------
 

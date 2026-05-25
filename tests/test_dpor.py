@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 from frontrun._dpor import PyDporEngine
 
+from frontrun import explore
 from frontrun._deadlock import SchedulerAbort
 from frontrun._dpor_runtime.runner import DporBytecodeRunner
 from frontrun.common import InterleavingResult
@@ -1506,3 +1508,88 @@ class TestStableObjectIds:
         key2 = _make_object_key(ids.get(obj2), "value")
 
         assert key1 == key2, f"Object keys should be stable across executions: {key1} != {key2}"
+
+
+# ---------------------------------------------------------------------------
+# LOAD_SPECIAL attribute name mapping
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSpecialNameMapping:
+    """Verify that the LOAD_SPECIAL opcode maps all context manager args correctly.
+
+    Bug: _opcode_observer._process_opcode only maps {0: "__enter__", 1: "__exit__"}
+    for LOAD_SPECIAL but Python 3.14 uses args 2 and 3 for __aenter__ and __aexit__
+    in async with statements.
+    """
+
+    def test_load_special_maps_aenter_aexit(self) -> None:
+        """LOAD_SPECIAL args 2 and 3 should resolve to __aenter__/__aexit__.
+
+        Bug: The _special_names dict in _process_opcode only maps
+        {0: "__enter__", 1: "__exit__"}, missing {2: "__aenter__", 3: "__aexit__"}.
+        This causes the fallback name "__special_2__" / "__special_3__" to be
+        used instead of the real dunder names, which degrades shadow stack
+        accuracy and makes access reports unrecognizable.
+
+        We test this by examining the _process_opcode source code for the
+        LOAD_SPECIAL handler's name mapping.
+        """
+        import sys
+
+        if sys.version_info < (3, 14):
+            pytest.skip("LOAD_SPECIAL only exists on Python 3.14+")
+
+        import inspect
+
+        from frontrun._opcode_observer import _process_opcode
+
+        src = inspect.getsource(_process_opcode)
+        # Find the LOAD_SPECIAL handler and verify it maps args 2 and 3
+        assert "__aenter__" in src, "_process_opcode's LOAD_SPECIAL handler should map arg 2 to '__aenter__'"
+        assert "__aexit__" in src, "_process_opcode's LOAD_SPECIAL handler should map arg 3 to '__aexit__'"
+
+    def test_async_context_manager_dpor_finds_race(self) -> None:
+        """DPOR should find races in async context managers using __aenter__/__aexit__.
+
+        This exercises LOAD_SPECIAL with args 2/3. If the opcode observer doesn't
+        map these correctly, the shadow stack will have incorrect entries and
+        DPOR may miss shared-access detection for the context manager object.
+        """
+        import asyncio
+        import sys
+
+        if sys.version_info < (3, 14):
+            pytest.skip("LOAD_SPECIAL only exists on Python 3.14+")
+
+        class SharedState:
+            def __init__(self) -> None:
+                self.value = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        class Container:
+            def __init__(self) -> None:
+                self.state = SharedState()
+
+        async def worker(c: Container) -> None:
+            async with c.state as s:
+                temp = s.value
+                await asyncio.sleep(0)
+                s.value = temp + 1
+
+        result = asyncio.run(
+            explore(
+                setup=Container,
+                workers=worker,
+                count=2,
+                invariant=lambda c: c.state.value == 2,
+                strategy="dpor",
+            )
+        )
+        # The race on s.value should still be found even with async context manager
+        assert not result.property_holds, "DPOR should find the lost-update race through async with"

@@ -343,6 +343,46 @@ def test_scheduler_had_error():
     assert scheduler._error is error
 
 
+def test_explore_random_forwards_debug_to_run_with_schedule(monkeypatch: pytest.MonkeyPatch):
+    """explore_random(debug=True) should forward debug to run_with_schedule.
+
+    Bug: explore_random accepts a debug parameter but doesn't pass it through
+    to run_with_schedule(), so timeout debug messages are never printed even
+    when debug=True.
+    """
+    from frontrun import bytecode
+
+    captured_kwargs: list[dict] = []
+    original = bytecode.run_with_schedule
+
+    def spy(*args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(bytecode, "run_with_schedule", spy)
+
+    class C:
+        def __init__(self):
+            self.value = 0
+
+        def inc(self):
+            self.value += 1
+
+    bytecode.explore_random(
+        setup=C,
+        threads=[C.inc, C.inc],
+        invariant=lambda c: c.value == 2,
+        debug=True,
+        max_attempts=1,
+        seed=42,
+    )
+
+    assert captured_kwargs, "run_with_schedule was never called"
+    assert captured_kwargs[0].get("debug") is True, (
+        f"debug=True was not forwarded to run_with_schedule; got kwargs: {captured_kwargs[0]}"
+    )
+
+
 def test_run_thread_clears_runtime_state_after_error(monkeypatch: pytest.MonkeyPatch):
     from frontrun import _opcode_observer
 

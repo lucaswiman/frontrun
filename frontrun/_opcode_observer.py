@@ -902,7 +902,7 @@ def _process_opcode(
         # New in 3.14: replaces LOAD_ATTR for ``__enter__`` / ``__exit__``
         # in ``with`` statements.  Pops owner, pushes (attr, self_or_null).
         # Stack effect = +1 (−1 pop + 2 push).
-        _special_names = {0: "__enter__", 1: "__exit__"}
+        _special_names = {0: "__enter__", 1: "__exit__", 2: "__aenter__", 3: "__aexit__"}
         _arg = instr.arg if instr.arg is not None else -1
         attr = _special_names.get(_arg, f"__special_{_arg}__")
         obj = shadow.pop()
