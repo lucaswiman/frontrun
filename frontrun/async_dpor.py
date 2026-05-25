@@ -872,6 +872,23 @@ class _ReplayAsyncScheduler(InterleavedLoop):
     def on_proceed(self, task_id: Any, marker: Any = None) -> None:
         self._advance()
 
+    def _setup_task_context(self, task_id: Any) -> None:
+        _scheduler_var.set(self)
+        _task_id_var.set(task_id)
+
+    def _cleanup_task_context(self, task_id: Any) -> None:
+        _scheduler_var.set(None)
+        _task_id_var.set(None)
+
+    async def pause(self, task_id: Any, marker: Any = None) -> None:
+        depth = _in_scheduler_pause.get()
+        _in_scheduler_pause.set(depth + 1)
+        try:
+            await asyncio.sleep(0)
+            await super().pause(task_id, marker)
+        finally:
+            _in_scheduler_pause.set(depth)
+
     def finish_task(self, task_id: int) -> None:
         self._tasks_done.add(task_id)
 

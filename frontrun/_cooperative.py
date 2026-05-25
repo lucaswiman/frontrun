@@ -874,7 +874,7 @@ class CooperativeCondition:
         # because _waiters includes already-notified waiters that haven't yet
         # re-acquired the lock to decrement _waiters.
         unserved = self._next_ticket - self._served
-        actual = min(n, unserved)
+        actual = min(max(0, n), unserved)
         self._served += actual
         self._notify_count += actual
         # Also wake the real condition for threads in the non-cooperative

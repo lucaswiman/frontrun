@@ -858,3 +858,16 @@ class TestResolveParameters:
         assert isinstance(resolve_parameters(sql_named, {"val": 1}, "named"), str)
         assert isinstance(resolve_parameters(sql_f, (1,), "format"), str)
         assert isinstance(resolve_parameters(sql_pf, {"val": 1}, "pyformat"), str)
+
+    def test_numeric_pg_cast_not_matched(self):
+        """PostgreSQL :: cast syntax must not be matched by :N numeric placeholders."""
+        sql = "SELECT val::123 FROM t WHERE id = :1"
+        resolved = resolve_parameters(sql, (42,), "numeric")
+        assert "::123" in resolved, f"PG cast ::123 was incorrectly resolved: {resolved}"
+        assert "42" in resolved
+
+    def test_numeric_pg_cast_double_colon_only(self):
+        """::N should be left alone; only :N should be resolved."""
+        sql = "SELECT col::2 FROM t"
+        resolved = resolve_parameters(sql, ("x",), "numeric")
+        assert "::2" in resolved

@@ -198,7 +198,7 @@ class DporScheduler:
                         if self._current_thread in self._threads_done:
                             next_thread = self._schedule_next()
                             self._current_thread = next_thread
-                            if next_thread is None:
+                            if next_thread is None and len(self._threads_done) >= self.num_threads:
                                 self._finished = True
                             self._condition.notify_all()
                             continue
@@ -416,7 +416,7 @@ class DporScheduler:
                         ):
                             self._capture_switch_point(_switch_frame, thread_id, next_thread)
                         self._current_thread = next_thread
-                        if next_thread is None:
+                        if next_thread is None and len(self._threads_done) >= self.num_threads:
                             self._finished = True
                         self._condition.notify_all()
                         return True
@@ -427,7 +427,7 @@ class DporScheduler:
                             # Current thread is done, try scheduling again
                             next_thread = self._schedule_next()
                             self._current_thread = next_thread
-                            if next_thread is None:
+                            if next_thread is None and len(self._threads_done) >= self.num_threads:
                                 self._finished = True
                             self._condition.notify_all()
                             continue
@@ -488,7 +488,7 @@ class DporScheduler:
                         if self._current_thread in self._threads_done:
                             next_thread = self._schedule_next()
                             self._current_thread = next_thread
-                            if next_thread is None:
+                            if next_thread is None and len(self._threads_done) >= self.num_threads:
                                 self._finished = True
                             self._condition.notify_all()
                             continue
@@ -977,6 +977,8 @@ class _IOAnchoredReplayScheduler(DporScheduler):
                             self._finished = True
                             self._condition.notify_all()
                             return
+                        self._condition.notify_all()
+                        continue
 
                     if self._active_io_thread is not None and self._active_io_thread != thread_id:
                         pass

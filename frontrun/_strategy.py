@@ -192,6 +192,7 @@ _RANDOM_ASYNC_KEYS: frozenset[str] = frozenset(
         "patch_sleep",
         "serializable_invariant",
         "error_on_any_race",
+        "total_timeout",
     }
 )
 

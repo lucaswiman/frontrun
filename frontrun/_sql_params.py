@@ -44,7 +44,7 @@ def _python_to_sql_literal(value: Any) -> str:
 # Negative lookbehinds prevent matching escaped sequences
 # (:: in PG casts, %% in psycopg2 literal-percent escapes).
 _RE_QMARK = re.compile(r"\?")
-_RE_NUMERIC = re.compile(r":(\d+)")
+_RE_NUMERIC = re.compile(r"(?<!:):(\d+)")
 _RE_NAMED = re.compile(r"(?<!:):([A-Za-z_]\w*)")
 _RE_FORMAT = re.compile(r"(?<!%)%s")
 _RE_PYFORMAT = re.compile(r"(?<!%)%\(([^)]+)\)s")

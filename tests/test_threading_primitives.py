@@ -489,3 +489,28 @@ def test_multiple_primitives_race_condition():
     )
 
     # Demonstrates need for all cooperative primitives working together
+
+
+# ---------------------------------------------------------------------------
+# Test: CooperativeCondition.notify(n) with negative n
+# ---------------------------------------------------------------------------
+
+
+def test_cooperative_condition_notify_negative_n_does_not_corrupt_state():
+    """notify(n) with n < 0 must not decrement _served counter.
+
+    Without a guard, min(n, unserved) returns the negative n and
+    _served += actual decrements it, corrupting the ticket system.
+    """
+    from frontrun._cooperative import CooperativeCondition, CooperativeLock
+
+    lock = CooperativeLock()
+    cond = CooperativeCondition(lock)
+
+    lock.acquire()
+    served_before = cond._served
+    cond.notify(-1)
+    served_after = cond._served
+    lock.release()
+
+    assert served_after >= served_before, f"notify(-1) corrupted _served: was {served_before}, now {served_after}"

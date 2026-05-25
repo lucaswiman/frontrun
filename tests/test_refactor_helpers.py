@@ -752,6 +752,39 @@ def test_dpor_exploration_iter_works_with_noop_lock() -> None:
     assert len(seen) == 2
 
 
+def test_replay_async_scheduler_sets_scheduler_and_task_context_vars() -> None:
+    """_ReplayAsyncScheduler must set _scheduler_var/_task_id_var like AsyncDporScheduler."""
+    from frontrun._async_autopause import _scheduler_var, _task_id_var
+    from frontrun.async_dpor import _ReplayAsyncScheduler
+
+    sched = _ReplayAsyncScheduler([0, 1, 0, 1], num_tasks=2)
+    assert hasattr(sched, "_setup_task_context"), (
+        "_ReplayAsyncScheduler must override _setup_task_context "
+        "to set _scheduler_var/_task_id_var for await_point() and cooperative locks"
+    )
+
+    sched._setup_task_context(42)
+    assert _scheduler_var.get() is sched
+    assert _task_id_var.get() == 42
+
+    sched._cleanup_task_context(42)
+    assert _scheduler_var.get() is None
+    assert _task_id_var.get() is None
+
+
+def test_replay_async_scheduler_sets_in_scheduler_pause() -> None:
+    """_ReplayAsyncScheduler.pause() must set _in_scheduler_pause like AsyncDporScheduler."""
+    import inspect
+
+    from frontrun.async_dpor import _ReplayAsyncScheduler
+
+    source = inspect.getsource(_ReplayAsyncScheduler.pause)
+    assert "_in_scheduler_pause" in source, (
+        "_ReplayAsyncScheduler.pause() must set _in_scheduler_pause "
+        "to prevent _AutoPauseIterator from nesting scheduling points"
+    )
+
+
 def test_dpor_exploration_step_carries_execution_and_index() -> None:
     """Each ExplorationStep exposes `.execution` and a 1-indexed `.index`."""
     from frontrun._dpor_core import dpor_exploration_iter
