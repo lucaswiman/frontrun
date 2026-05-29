@@ -575,8 +575,9 @@ def explore_marker_interleavings(
 
         num_explored += 1
 
-        invariant_failed, _assertion_msg = check_invariant(invariant, state)
+        invariant_failed, assertion_msg = check_invariant(invariant, state)
         if invariant_failed:
+            first_explanation = f"AssertionError: {assertion_msg}" if assertion_msg else None
             failures.append((i, schedule))
             if stop_on_first:
                 return InterleavingResult(
@@ -584,6 +585,7 @@ def explore_marker_interleavings(
                     counterexample=schedule,
                     num_explored=num_explored,
                     unique_interleavings=num_explored,
+                    explanation=first_explanation,
                 )
 
     if failures:

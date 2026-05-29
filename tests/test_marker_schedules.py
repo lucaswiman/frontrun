@@ -340,3 +340,5 @@ class TestExploreMarkerInterleavingsAssertionError:
             "explore_marker_interleavings should catch AssertionError from invariant "
             "and report property_holds=False, not let it propagate as a crash"
         )
+        assert result.explanation is not None, "assertion message should be preserved in explanation"
+        assert "Expected 2" in result.explanation
