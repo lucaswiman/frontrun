@@ -40,7 +40,7 @@ from frontrun._marker_coordination import (
     finalize_marker_executor_run,
 )
 from frontrun._trace_marker_runtime import build_trace_function, run_traced_callable
-from frontrun.common import DEPRECATION_MESSAGES, InterleavingResult, Schedule, Step, any_async
+from frontrun.common import DEPRECATION_MESSAGES, InterleavingResult, Schedule, Step, any_async, check_invariant
 
 __all__ = [
     "MARKER_PATTERN",
@@ -575,7 +575,8 @@ def explore_marker_interleavings(
 
         num_explored += 1
 
-        if not invariant(state):
+        invariant_failed, _assertion_msg = check_invariant(invariant, state)
+        if invariant_failed:
             failures.append((i, schedule))
             if stop_on_first:
                 return InterleavingResult(
