@@ -310,3 +310,35 @@ class TestExploreMarkerInterleavings:
         # The current buggy code swallows this and reports property_holds=True.
         # The fix should surface it as a failure.
         assert not result.property_holds, "Thread crashes should be reported as failures, not silently swallowed"
+
+
+class TestExploreMarkerInterleavingsAssertionError:
+    """explore_marker_interleavings should treat AssertionError from invariant as failure."""
+
+    def test_assertion_error_in_invariant_is_failure(self):
+        class Counter:
+            def __init__(self):
+                self.value = 0
+
+            def increment(self):
+                current = self.value  # frontrun: read
+                self.value = current + 1  # frontrun: write
+
+        def invariant(state):
+            assert state.value == 2, f"Expected 2, got {state.value}"
+            return True
+
+        result = explore_marker_interleavings(
+            setup=Counter,
+            threads={
+                "t1": (lambda s: s.increment(), ["read", "write"]),
+                "t2": (lambda s: s.increment(), ["read", "write"]),
+            },
+            invariant=invariant,
+        )
+        assert not result.property_holds, (
+            "explore_marker_interleavings should catch AssertionError from invariant "
+            "and report property_holds=False, not let it propagate as a crash"
+        )
+        assert result.explanation is not None, "assertion message should be preserved in explanation"
+        assert "Expected 2" in result.explanation

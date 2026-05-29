@@ -357,10 +357,10 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
 
     # Track per-attribute access sequences across threads
     # Group by (obj_type, attr_name), look for cross-thread read-before-write patterns
-    attr_accesses: dict[str, list[tuple[int, str]]] = {}  # attr -> [(thread_id, access_type), ...]
-    io_attrs: set[str] = set()  # attributes that come from I/O events
+    attr_accesses: dict[tuple[str | None, str], list[tuple[int, str]]] = {}
+    io_attrs: set[tuple[str | None, str]] = set()
     for ev in events:
-        key = ev.attr_name or "(unknown)"
+        key = (ev.obj_type_name, ev.attr_name or "(unknown)")
         attr_accesses.setdefault(key, []).append((ev.thread_id, ev.access_type or "unknown"))
         if ev.obj_type_name == "IO":
             io_attrs.add(key)
@@ -368,12 +368,14 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
     # Process non-I/O attributes first so Python-level conflicts take
     # priority over raw socket-level ones in the summary line.
     io_fallback: ConflictInfo | None = None
-    for attr, accesses in attr_accesses.items():
+    for attr_key, accesses in attr_accesses.items():
+        obj_type, attr_name = attr_key
+        attr_display = f"{obj_type}.{attr_name}" if obj_type and obj_type != "IO" else attr_name
         threads_involved = sorted({tid for tid, _ in accesses})
         if len(threads_involved) < 2:
             continue
 
-        is_io = attr in io_attrs
+        is_io = attr_key in io_attrs
 
         # Check for lost-update pattern: two threads both read before either writes
         # Pattern: R_a ... R_b ... W_a ... W_b (or W_b before W_a)
@@ -399,24 +401,23 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
                     # Both read before both write?
                     writes_start = min(w_a, w_b)
                     if r_a < writes_start and r_b < writes_start:
-                        obj_desc = attr
                         if is_io:
                             io_fallback = io_fallback or ConflictInfo(
                                 pattern="lost_update",
                                 summary=(
                                     f"Lost update via database I/O: threads {t_a} and {t_b} "
-                                    f"both queried {obj_desc} before either committed."
+                                    f"both queried {attr_display} before either committed."
                                 ),
-                                attr_name=attr,
+                                attr_name=attr_name,
                             )
                         else:
                             return ConflictInfo(
                                 pattern="lost_update",
                                 summary=(
                                     f"Lost update: threads {t_a} and {t_b} both read "
-                                    f"{obj_desc} before either wrote it back."
+                                    f"{attr_display} before either wrote it back."
                                 ),
-                                attr_name=attr,
+                                attr_name=attr_name,
                             )
 
         # Check for write-write without reads (simple overwrite)
@@ -430,14 +431,16 @@ def classify_conflict(events: list[SourceLineEvent]) -> ConflictInfo:
                     if is_io:
                         io_fallback = io_fallback or ConflictInfo(
                             pattern="write_write",
-                            summary=(f"Concurrent database I/O: threads {t_a} and {t_b} both sent queries to {attr}."),
-                            attr_name=attr,
+                            summary=(
+                                f"Concurrent database I/O: threads {t_a} and {t_b} both sent queries to {attr_display}."
+                            ),
+                            attr_name=attr_name,
                         )
                     else:
                         return ConflictInfo(
                             pattern="write_write",
-                            summary=f"Write-write conflict: threads {t_a} and {t_b} both wrote to {attr}.",
-                            attr_name=attr,
+                            summary=f"Write-write conflict: threads {t_a} and {t_b} both wrote to {attr_display}.",
+                            attr_name=attr_name,
                         )
 
     if io_fallback is not None:

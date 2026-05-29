@@ -640,17 +640,28 @@ def explore_random(
             if debug:
                 print(f"Running with {schedule=} {threads=}", flush=True)
             recorder = TraceRecorder()
-            state = run_with_schedule(
-                schedule,
-                setup,
-                threads,
-                timeout=timeout_per_run,
-                detect_io=detect_io,
-                debug=debug,
-                deadlock_timeout=deadlock_timeout,
-                trace_recorder=recorder,
-                patch_sleep=patch_sleep,
-            )
+            try:
+                state = run_with_schedule(
+                    schedule,
+                    setup,
+                    threads,
+                    timeout=timeout_per_run,
+                    detect_io=detect_io,
+                    debug=debug,
+                    deadlock_timeout=deadlock_timeout,
+                    trace_recorder=recorder,
+                    patch_sleep=patch_sleep,
+                )
+            except DeadlockError as dl_err:
+                result.num_explored += 1
+                seen_schedule_hashes.add(hash(tuple(schedule)))
+                result.property_holds = False
+                result.counterexample = schedule
+                result.unique_interleavings = len(seen_schedule_hashes)
+                result.explanation = (
+                    f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{dl_err.cycle_description}"
+                )
+                return result
             result.num_explored += 1
             seen_schedule_hashes.add(hash(tuple(schedule)))
 

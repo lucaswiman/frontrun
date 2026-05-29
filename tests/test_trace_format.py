@@ -969,3 +969,57 @@ class TestCollapsedRunThreadNames:
         # The collapsed run should say "Alice" not "Thread 0"
         assert "Thread 0" not in output, f"CollapsedRun used 'Thread 0' instead of 'Alice':\n{output}"
         assert "Alice" in output
+
+
+class TestClassifyConflictObjTypeGrouping:
+    """classify_conflict should group by (obj_type_name, attr_name), not attr_name alone."""
+
+    def test_different_obj_types_same_attr_not_conflated(self):
+        events = [
+            SourceLineEvent(
+                thread_id=0,
+                filename="a.py",
+                lineno=1,
+                function_name="f",
+                source_line="x = counter.value",
+                access_type="read",
+                attr_name="value",
+                obj_type_name="Counter",
+            ),
+            SourceLineEvent(
+                thread_id=1,
+                filename="a.py",
+                lineno=2,
+                function_name="g",
+                source_line="x = account.value",
+                access_type="read",
+                attr_name="value",
+                obj_type_name="BankAccount",
+            ),
+            SourceLineEvent(
+                thread_id=0,
+                filename="a.py",
+                lineno=3,
+                function_name="f",
+                source_line="counter.value = x + 1",
+                access_type="write",
+                attr_name="value",
+                obj_type_name="Counter",
+            ),
+            SourceLineEvent(
+                thread_id=1,
+                filename="a.py",
+                lineno=4,
+                function_name="g",
+                source_line="account.value = x + 1",
+                access_type="write",
+                attr_name="value",
+                obj_type_name="BankAccount",
+            ),
+        ]
+        result = classify_conflict(events)
+        assert result.pattern != "lost_update", (
+            "classify_conflict should NOT report a lost update when two different "
+            "object types (Counter vs BankAccount) share the same attr_name 'value'. "
+            f"Got pattern={result.pattern!r}, summary={result.summary!r}"
+        )

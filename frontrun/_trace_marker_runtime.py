@@ -29,6 +29,7 @@ def build_trace_function(
 ) -> Callable[[Any, str, Any], Any]:
     """Build a trace function that blocks execution when markers are reached."""
     _last_current_line_marker: list[tuple[str, int] | None] = [None]
+    _last_prev_line_fired: list[tuple[str, int] | None] = [None]
 
     def trace_function(frame: Any, event: str, arg: Any) -> Any:
         try:
@@ -43,13 +44,18 @@ def build_trace_function(
             marker_name = marker_registry.get_marker(filename, lineno)
             if marker_name:
                 _last_current_line_marker[0] = (filename, lineno)
+                _last_prev_line_fired[0] = None
                 _wait_for_marker(coordinator, execution_name, marker_name)
                 return trace_function
 
             if include_previous_line and lineno > 1 and _last_current_line_marker[0] != (filename, lineno - 1):
                 prev_marker = marker_registry.get_marker(filename, lineno - 1)
-                if prev_marker:
+                if prev_marker and _last_prev_line_fired[0] != (filename, lineno):
+                    _last_prev_line_fired[0] = (filename, lineno)
                     _wait_for_marker(coordinator, execution_name, prev_marker)
+
+            if _last_prev_line_fired[0] is not None and _last_prev_line_fired[0] != (filename, lineno):
+                _last_prev_line_fired[0] = None
 
             return trace_function
         except Exception as error:
