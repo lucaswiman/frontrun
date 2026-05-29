@@ -735,6 +735,8 @@ def test_explore_validates_strategy_against_async_registry():
         coro.close()
     finally:
         del ASYNC_STRATEGIES["async_only"]
+
+
 # explore_async_random: total_timeout support
 # ---------------------------------------------------------------------------
 

@@ -621,7 +621,9 @@ class TestPreviousLineMarkerNoDoubleFire:
         coordinator = FakeCoordinator()
 
         trace_fn = build_trace_function(
-            coordinator, registry, "thread1",
+            coordinator,
+            registry,
+            "thread1",
             include_previous_line=True,
         )
 
