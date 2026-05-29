@@ -16,6 +16,7 @@ from frontrun.bytecode import (
     OpcodeScheduler,
     controlled_interleaving,
     explore_interleavings,
+    explore_random,
     run_with_schedule,
 )
 
@@ -434,3 +435,35 @@ def test_run_thread_clears_runtime_state_after_error(monkeypatch: pytest.MonkeyP
         "thread_id:None",
         "clear_context",
     ]
+
+
+class TestExploreRandomDeadlockHandling:
+    """explore_random should catch DeadlockError and return it as a counterexample."""
+
+    def test_deadlock_returns_result_not_exception(self):
+        lock_a = threading.Lock()
+        lock_b = threading.Lock()
+
+        def worker1(state):
+            lock_a.acquire()
+            lock_b.acquire()
+            lock_b.release()
+            lock_a.release()
+
+        def worker2(state):
+            lock_b.acquire()
+            lock_a.acquire()
+            lock_a.release()
+            lock_b.release()
+
+        result = explore_random(
+            setup=lambda: None,
+            threads=[worker1, worker2],
+            invariant=lambda s: True,
+            max_attempts=50,
+            seed=42,
+        )
+        assert not result.property_holds, (
+            "explore_random should catch DeadlockError from run_with_schedule "
+            "and return InterleavingResult with property_holds=False"
+        )

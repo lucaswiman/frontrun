@@ -595,3 +595,49 @@ def test_old_form_still_works_after_warning():
     executor.wait(timeout=5.0)
 
     assert account.balance == 150
+
+
+class TestPreviousLineMarkerNoDoubleFire:
+    """Previous-line markers should not fire repeatedly on the same line."""
+
+    def test_previous_line_marker_updates_tracker(self):
+        from frontrun._marker_coordination import MarkerRegistry
+        from frontrun._trace_marker_runtime import build_trace_function
+
+        class FakeCoordinator:
+            def __init__(self):
+                self._execution_lock = __import__("threading").Lock()
+                self.error = None
+                self.marker_fires = []
+
+            def wait_for_turn(self, execution_name, marker_name, *, _reacquire_execution_lock=False):
+                self.marker_fires.append(marker_name)
+                if _reacquire_execution_lock:
+                    self._execution_lock.acquire()
+
+        registry = MarkerRegistry()
+        registry._markers[("test.py", 5)] = "my_marker"
+
+        coordinator = FakeCoordinator()
+
+        trace_fn = build_trace_function(
+            coordinator, registry, "thread1",
+            include_previous_line=True,
+        )
+
+        class FakeCode:
+            co_filename = "test.py"
+
+        class FakeFrame:
+            f_code = FakeCode()
+            f_lineno = 6
+            f_locals = {}
+
+        coordinator._execution_lock.acquire()
+        trace_fn(FakeFrame(), "line", None)
+        trace_fn(FakeFrame(), "line", None)
+
+        assert len(coordinator.marker_fires) == 1, (
+            f"Previous-line marker should fire only once but fired "
+            f"{len(coordinator.marker_fires)} times: {coordinator.marker_fires}"
+        )
