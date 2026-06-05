@@ -135,9 +135,7 @@ def test_row_lock_registry_record_acquire_overwrites_previous_holder() -> None:
 
     # Task 0's pop_all should NOT corrupt task 1's ownership
     reg.pop_all(owner_id=0, graph=None)
-    assert reg._active_row_locks.get("row:1") == 1, (
-        "pop_all of old holder must not remove new holder's ownership"
-    )
+    assert reg._active_row_locks.get("row:1") == 1, "pop_all of old holder must not remove new holder's ownership"
 
 
 def test_async_dpor_scheduler_uses_num_engine_tasks_in_mark_done() -> None:
