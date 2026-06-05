@@ -575,7 +575,7 @@ class AsyncDporScheduler(InterleavedLoop):
             if self._current_task == task_id:
                 next_task = self._schedule_next()
                 self._current_task = next_task
-                if next_task is None and len(self._tasks_done) >= self._num_tasks:
+                if next_task is None and len(self._tasks_done) >= self._num_engine_tasks:
                     self._finished = True
             self._condition.notify_all()
 

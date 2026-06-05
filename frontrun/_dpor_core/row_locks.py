@@ -74,6 +74,13 @@ class RowLockRegistry:
         is not ``None``.
         """
         lid = self._row_lock_int_id(res_id)
+        prev_owner = self._active_row_locks.get(res_id)
+        if prev_owner is not None and prev_owner != owner_id:
+            prev_set = self._task_row_locks.get(prev_owner)
+            if prev_set is not None:
+                prev_set.discard(res_id)
+            if graph is not None:
+                graph.remove_holding(prev_owner, lid, kind="row_lock")
         self._active_row_locks[res_id] = owner_id
         self._task_row_locks.setdefault(owner_id, set()).add(res_id)
         if graph is not None:
