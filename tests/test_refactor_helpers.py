@@ -106,6 +106,69 @@ def test_row_lock_registry_pop_all_empty() -> None:
     assert result == []
 
 
+def test_row_lock_registry_record_acquire_overwrites_previous_holder() -> None:
+    """record_acquire on a resource held by another owner must clean up the old holder.
+
+    Bug: When task B calls record_acquire on a resource held by task A,
+    the old holder A retains the resource in _task_row_locks.  When A's
+    pop_all runs later, it removes the resource from _active_row_locks,
+    corrupting B's ownership tracking.
+    """
+    from frontrun._dpor_core import RowLockRegistry
+
+    reg = RowLockRegistry()
+
+    # Task 0 acquires row:1
+    reg.record_acquire(owner_id=0, res_id="row:1", graph=None)
+    assert reg._active_row_locks["row:1"] == 0
+    assert "row:1" in reg._task_row_locks[0]
+
+    # Task 1 "optimistically" acquires row:1 (overwriting task 0)
+    reg.record_acquire(owner_id=1, res_id="row:1", graph=None)
+    assert reg._active_row_locks["row:1"] == 1
+    assert "row:1" in reg._task_row_locks[1]
+
+    # After the overwrite, task 0 should NOT still track row:1
+    assert "row:1" not in reg._task_row_locks.get(0, set()), (
+        "Old holder's _task_row_locks should be cleaned up when ownership is transferred"
+    )
+
+    # Task 0's pop_all should NOT corrupt task 1's ownership
+    reg.pop_all(owner_id=0, graph=None)
+    assert reg._active_row_locks.get("row:1") == 1, (
+        "pop_all of old holder must not remove new holder's ownership"
+    )
+
+
+def test_async_dpor_scheduler_uses_num_engine_tasks_in_mark_done() -> None:
+    """AsyncDporScheduler._mark_done should use _num_engine_tasks, not _num_tasks.
+
+    Bug: _mark_done at line 578 checks self._num_tasks (parent class attribute
+    set by run_all) instead of self._num_engine_tasks (set in __init__).
+    Both evaluate to the same value in practice, but the code should
+    consistently use _num_engine_tasks which is the canonical field.
+    """
+    import ast as _ast
+    import inspect
+    import textwrap
+
+    from frontrun.async_dpor import AsyncDporScheduler
+
+    source = textwrap.dedent(inspect.getsource(AsyncDporScheduler._mark_done))
+    tree = _ast.parse(source)
+
+    has_num_engine_tasks = False
+    has_num_tasks = False
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Attribute) and node.attr == "_num_engine_tasks":
+            has_num_engine_tasks = True
+        if isinstance(node, _ast.Attribute) and node.attr == "_num_tasks":
+            has_num_tasks = True
+
+    assert has_num_engine_tasks, "_mark_done should reference self._num_engine_tasks"
+    assert not has_num_tasks, "_mark_done should NOT reference self._num_tasks (use _num_engine_tasks)"
+
+
 class _PauseRecorder:
     def __init__(self) -> None:
         self.calls: list[int] = []
