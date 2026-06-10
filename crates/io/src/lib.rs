@@ -422,12 +422,23 @@ static PIPE_READ_FD: AtomicI32 = AtomicI32::new(-1);
 
 fn get_pipe_fd() -> Option<c_int> {
     if !PIPE_FD_CHECKED.load(Ordering::Acquire) {
-        if let Ok(fd_str) = std::env::var("FRONTRUN_IO_FD") {
-            if let Ok(fd) = fd_str.parse::<c_int>() {
+        // Parse the env value, then only commit it if we are the thread that
+        // flips PIPE_FD_CHECKED from false → true. This makes an explicit
+        // frontrun_io_set_pipe_fd() call (which also sets PIPE_FD_CHECKED) win
+        // the race: if set_pipe_fd ran concurrently and already flipped the
+        // flag, our compare_exchange fails and we do NOT clobber its value
+        // with the stale env-derived fd.
+        let env_fd = std::env::var("FRONTRUN_IO_FD")
+            .ok()
+            .and_then(|s| s.parse::<c_int>().ok());
+        if PIPE_FD_CHECKED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            if let Some(fd) = env_fd {
                 PIPE_FD.store(fd, Ordering::Release);
             }
         }
-        PIPE_FD_CHECKED.store(true, Ordering::Release);
     }
     let fd = PIPE_FD.load(Ordering::Acquire);
     if fd >= 0 {
