@@ -344,6 +344,13 @@ def _explore_dpor(
 
             with runner.patch_scope(patch_sleep=patch_sleep):
                 state = setup()
+                # Assign stable object IDs in deterministic, schedule-independent
+                # order *before* any worker runs.  Without this, IDs are assigned
+                # in first-touch order, which DPOR backtracks permute across
+                # executions — corrupting the Rust sleep-set / trace-cache
+                # comparison that carries object-ID-keyed state across executions
+                # (silently pruning genuinely distinct interleavings).
+                stable_ids.pre_register(state)
 
                 def make_thread_func(thread_func: Callable[[T], None], s: T) -> Callable[[], None]:
                     def wrapper() -> None:

@@ -385,18 +385,41 @@ def set_object_key_reverse_map(rmap: dict[int, str] | None) -> None:
 
 
 class StableObjectIds:
-    """Assign monotonically increasing stable IDs to Python objects.
+    """Assign stable per-instance IDs to Python objects, consistent across executions.
 
     Replaces ``id(obj)`` in object key generation.  Since ``explore_dpor``
     creates fresh ``state = setup()`` each execution, ``id(obj)`` changes
-    between executions for the same logical object.  This class assigns a
-    counter-based ID on first access, producing the same ID across executions
-    as long as objects are accessed in the same deterministic order during
-    replay.
+    between executions for the same logical object, so a raw counter assigned
+    in *first-touch order* is unsound: DPOR's whole purpose is to change the
+    schedule after a backtrack, which permutes touch order, so the same
+    logical object would get a different ID than last execution.  The Rust
+    ``Path`` carries object-ID-keyed state (sleep sets, trace caches) across
+    executions; permuted IDs make its independence check compare the wrong
+    objects and silently prune genuinely distinct interleavings.
+
+    The fix is :meth:`pre_register`: immediately after ``setup()`` (and before
+    any worker runs), the per-execution object graph reachable from the fresh
+    ``state`` is walked in a **deterministic, schedule-independent order** and
+    each object is assigned its counter ID then.  Because ``setup()``
+    deterministically rebuilds the same logical graph every execution, this
+    produces the **same ID for the same logical object** regardless of the
+    runtime schedule.  Objects created *during* worker execution (not
+    reachable from ``state`` at setup time) fall back to first-touch order; if
+    their touch order diverges that is the inherent residual limitation, but
+    the common case (state objects, locks, attributes) is now stable.
+
+    Collisions are conservative-safe: if two distinct objects ever shared an
+    ID, that only adds spurious dependencies (over-exploration), never missed
+    interleavings.  The dangerous direction — same object, different IDs — is
+    what pre-registration eliminates.
 
     The mapping is maintained per ``explore_dpor`` call and reset at the start
-    of each execution via ``reset_for_execution()``.
+    of each execution via :meth:`reset_for_execution`.
     """
+
+    # Bound the pre-registration walk so a pathological state graph can't
+    # stall exploration.  These are generous; typical state graphs are tiny.
+    _MAX_PREREGISTER_OBJECTS = 100_000
 
     __slots__ = ("_map", "_next_id")
 
@@ -414,13 +437,70 @@ class StableObjectIds:
             self._next_id += 1
         return stable_id
 
+    def pre_register(self, root: object) -> None:
+        """Assign stable IDs to *root*'s object graph in deterministic order.
+
+        Called once per execution, right after ``setup()`` and before any
+        worker runs.  Performs a deterministic breadth-first traversal of the
+        graph reachable from *root* and calls :meth:`get` on each object so
+        the counter IDs are assigned in a **schedule-independent** order that
+        is identical across executions (since ``setup()`` rebuilds the same
+        logical graph each time).
+
+        Traversal order is fully determined by structure, never by runtime
+        scheduling:
+
+        * ``__dict__`` attributes — sorted by attribute name.
+        * ``list`` / ``tuple`` — index order.
+        * ``dict`` — values ordered by ``repr`` of their keys.
+        * ``set`` / ``frozenset`` — **skipped** (iteration order is not
+          deterministic across processes), so their elements register lazily.
+
+        Cycles are handled via a visited set; primitive leaf values (``str``,
+        ``int``, ``float``, ``bool``, ``bytes``, ``None``) are not registered
+        because they are never used as DPOR access objects.
+        """
+        seen: set[int] = set()
+        queue: list[object] = [root]
+        count = 0
+        while queue and count < self._MAX_PREREGISTER_OBJECTS:
+            obj = queue.pop(0)
+            oid = id(obj)
+            if oid in seen:
+                continue
+            seen.add(oid)
+            # Skip primitive/immutable leaves: never DPOR access objects and
+            # potentially interned/shared (registering them is harmless but
+            # pointless and could explode the walk).
+            if obj is None or isinstance(obj, (str, bytes, int, float, bool, complex)):
+                continue
+            # Assign this object's stable ID now, in deterministic order.
+            self.get(obj)
+            count += 1
+            self._enqueue_children(obj, queue)
+
+    @staticmethod
+    def _enqueue_children(obj: object, queue: list[object]) -> None:
+        """Append *obj*'s children to *queue* in a deterministic order."""
+        # Instance attributes, sorted by name.
+        obj_dict = getattr(obj, "__dict__", None)
+        if isinstance(obj_dict, dict):
+            queue.extend(obj_dict[key] for key in sorted(obj_dict.keys(), key=repr))
+        if isinstance(obj, (list, tuple)):
+            queue.extend(obj)
+        elif isinstance(obj, dict):
+            queue.extend(obj[key] for key in sorted(obj.keys(), key=repr))
+        # set/frozenset deliberately omitted: iteration order is not stable
+        # across processes, so registering their elements here would itself
+        # be schedule-independent but process-dependent; leave them lazy.
+
     def reset_for_execution(self) -> None:
         """Clear the mapping at the start of each execution.
 
         Since ``explore_dpor`` creates fresh state objects each execution,
-        old ``id(obj)`` values are stale.  The mapping is rebuilt during
-        replay, where the same objects are accessed in the same
-        deterministic order, producing the same stable IDs.
+        old ``id(obj)`` values are stale.  The mapping is rebuilt by
+        :meth:`pre_register` (and, for objects created mid-run, lazily during
+        replay).
         """
         self._map.clear()
         self._next_id = 0
