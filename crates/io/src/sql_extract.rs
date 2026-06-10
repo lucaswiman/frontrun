@@ -231,4 +231,39 @@ mod tests {
         assert_eq!(extract_pg_query(&[b'P']), None);
         assert_eq!(extract_pg_query(&[b'X']), None);
     }
+
+    #[test]
+    fn test_simple_query_negative_length_all_ff() {
+        // 'Q' with length = 0xffffffff (i32 = -1). With the old `as usize`
+        // sign-extension, len becomes a huge value; `1 + len` wraps in release
+        // and the bounds check `buf.len() < 1 + len` passes, leading to a
+        // slice panic on `buf[5..1 + len - 1]`. Must return None instead.
+        let mut buf = vec![b'Q', 0xff, 0xff, 0xff, 0xff];
+        buf.extend_from_slice(&[b'A'; 16]); // arbitrary trailing bytes
+        assert_eq!(extract_pg_query(&buf), None);
+    }
+
+    #[test]
+    fn test_parse_negative_length_high_bit() {
+        // 'P' with length = 0x80000000 (i32 = -2147483648, most negative).
+        let mut buf = vec![b'P', 0x80, 0, 0, 0];
+        buf.extend_from_slice(&[0u8; 16]);
+        assert_eq!(extract_pg_query(&buf), None);
+    }
+
+    #[test]
+    fn test_simple_query_negative_length_minus_two() {
+        // 'Q' with len = -2 (0xfffffffe). Crafted so that without checked
+        // arithmetic the wrapped index math could pass bounds and slice-panic.
+        let mut buf = vec![b'Q', 0xff, 0xff, 0xff, 0xfe];
+        buf.extend_from_slice(&[b'B'; 16]);
+        assert_eq!(extract_pg_query(&buf), None);
+    }
+
+    #[test]
+    fn test_parse_negative_length_minus_one() {
+        let mut buf = vec![b'P', 0xff, 0xff, 0xff, 0xff];
+        buf.extend_from_slice(&[0u8; 16]);
+        assert_eq!(extract_pg_query(&buf), None);
+    }
 }
