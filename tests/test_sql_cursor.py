@@ -1333,6 +1333,47 @@ def test_release_dpor_row_locks_no_scheduler() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_for_update_primary_colset_emits_read_bridge() -> None:
+    """SELECT ... FOR UPDATE on the primary colset must emit a READ bridge.
+
+    A primary-colset FOR UPDATE must conflict with a non-primary-colset access
+    to the same physical row.  Before the fix, lock elevation flipped the kind
+    to "write" before the bridge logic, so the FOR UPDATE emitted neither a
+    READ nor WRITE bridge and could not conflict (finding 6).  This mirrors the
+    plain-UPDATE read-phase behaviour: primary colset → READ bridge.
+    """
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()  # fresh primary-colset registry
+    set_dpor_scheduler(object())  # any non-None scheduler enables the bridge
+    set_dpor_thread_id(0)
+    _io_tls._in_transaction = False
+    try:
+        # First access establishes "id" as the primary colset for users.
+        _report_sql_access("SELECT * FROM users WHERE id = 1 FOR UPDATE")
+        bridge_kinds = {k for r, k in log.events if r == "sql:users"}
+        assert "read" in bridge_kinds, (
+            "FOR UPDATE on the primary colset must emit a READ bridge resource "
+            f"(got events: {log.events})"
+        )
+
+        # A non-primary-colset access emits a WRITE bridge; READ vs WRITE on
+        # the same sql:users resource is a conflict, as required.
+        log.clear()
+        _report_sql_access("SELECT * FROM users WHERE username = 'alice'")
+        assert ("sql:users", "write") in log.events, (
+            "non-primary colset must emit a WRITE bridge so it conflicts with "
+            f"the FOR UPDATE READ bridge (got: {log.events})"
+        )
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        clear_sql_metadata()
+
+
 def test_connection_commit_flushes_buffer() -> None:
     """conn.commit() must drive the tx state machine: flush buffer, end tx.
 

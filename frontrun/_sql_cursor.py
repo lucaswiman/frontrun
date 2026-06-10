@@ -309,9 +309,22 @@ def _report_sql_access(
             # Track which tables already reported their bridge resource in this op.
             reported_bridges: set[str] = set()
 
-            def report_or_buffer(table: str, kind: str, rows: list[list[Any]]) -> None:
+            def report_or_buffer(
+                table: str, kind: str, rows: list[list[Any]], *, bridge_as_read: bool | None = None
+            ) -> None:
                 temporal = access.temporal_clauses.get(table) if access.temporal_clauses else None
                 has_row_level_predicates = bool(rows and rows[0])
+
+                # Whether this access participates in the primary-colset bridge
+                # as a READ.  Normally this tracks ``kind == "read"`` (pure
+                # INSERT writes stay fully row-granular and emit no bridge).
+                # SELECT ... FOR UPDATE elevates the row-level kind to "write"
+                # for conflict creation, but the *underlying* access is a read:
+                # it must still emit the primary READ bridge so it conflicts
+                # with non-primary-colset accesses to the same physical row,
+                # exactly like a plain UPDATE's read phase (finding 6).
+                if bridge_as_read is None:
+                    bridge_as_read = kind == "read"
 
                 # Conservative Column-Set Partitioning (Defect #1):
                 # When using row-level predicates, we must ensure that accesses using
@@ -338,7 +351,7 @@ def _report_sql_access(
                         # they still conflict conservatively with non-primary
                         # accesses, while primary row-level writes stay fully
                         # row-granular.
-                        if kind == "read":
+                        if bridge_as_read:
                             _report_or_buffer(
                                 reporter,
                                 _sql_resource_id(table, [], db_scope=db_scope),
@@ -374,7 +387,11 @@ def _report_sql_access(
                 # SELECT FOR UPDATE is both read and write to create conflicts.
                 # SHARE locks are treated as reads (they don't block other shares).
                 kind = "write" if lock_update else "read"
-                report_or_buffer(table, kind, pred_rows)
+                # The row-level kind is elevated to "write" for FOR UPDATE, but
+                # the access is still a read for bridge purposes — emit the
+                # primary READ bridge so it conflicts with non-primary-colset
+                # accesses to the same physical row (finding 6).
+                report_or_buffer(table, kind, pred_rows, bridge_as_read=True)
 
             # Report implicit reads from Foreign Key dependencies
             schema = get_schema()
