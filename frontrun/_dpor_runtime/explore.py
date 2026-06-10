@@ -19,6 +19,40 @@ from .runner import DporBytecodeRunner
 from .scheduler import DporScheduler
 
 
+class _SchedulerOutcome:
+    """Classification of how a single DPOR execution terminated.
+
+    Distinguishes three cases that must be handled differently (finding 5):
+
+    * ``is_deadlock`` — the scheduler detected a real (cycle-based) deadlock.
+    * ``scheduler_timed_out`` — the scheduler hit its fallback deadlock-timeout
+      and set a plain ``TimeoutError``.  Surviving threads then free-run
+      *unscheduled*, so the resulting program state does not correspond to any
+      DPOR-controlled schedule; the invariant must NOT be evaluated against it.
+    * neither — a normal completion whose invariant may be evaluated.
+    """
+
+    __slots__ = ("is_deadlock", "scheduler_timed_out")
+
+    def __init__(self, *, is_deadlock: bool, scheduler_timed_out: bool) -> None:
+        self.is_deadlock = is_deadlock
+        self.scheduler_timed_out = scheduler_timed_out
+
+    @property
+    def evaluate_invariant(self) -> bool:
+        """Whether the invariant/race/serializability checks are meaningful."""
+        return not self.is_deadlock and not self.scheduler_timed_out
+
+
+def _classify_scheduler_outcome(error: BaseException | None) -> _SchedulerOutcome:
+    """Classify ``scheduler._error`` into a :class:`_SchedulerOutcome`."""
+    if isinstance(error, DeadlockError):
+        return _SchedulerOutcome(is_deadlock=True, scheduler_timed_out=False)
+    if isinstance(error, TimeoutError):
+        return _SchedulerOutcome(is_deadlock=False, scheduler_timed_out=True)
+    return _SchedulerOutcome(is_deadlock=False, scheduler_timed_out=False)
+
+
 def _explore_dpor(
     setup: Callable[[], T],
     threads: list[Callable[[T], None]],
@@ -328,8 +362,14 @@ def _explore_dpor(
             # Check for deadlock before running the invariant — a deadlock
             # means the program never completed, so the invariant can never be
             # satisfied.  Report it as a property violation with a clear message.
-            _deadlock_err = scheduler._error if isinstance(scheduler._error, DeadlockError) else None
-            is_deadlock = _deadlock_err is not None
+            _outcome = _classify_scheduler_outcome(scheduler._error)
+            _deadlock_err = scheduler._error if _outcome.is_deadlock else None
+            is_deadlock = _outcome.is_deadlock
+            # A scheduler-internal TimeoutError means the run free-ran
+            # unscheduled (finding 5): the program state does not describe any
+            # DPOR schedule, so invariant/race/serializability checks below
+            # must be skipped rather than scored as a normal completion.
+            scheduler_timed_out = _outcome.scheduler_timed_out
             if _deadlock_err is not None:
                 with engine_lock:
                     schedule = execution.schedule_trace
@@ -372,7 +412,7 @@ def _explore_dpor(
                 check_uncaptured_inserts()
 
             # --- error_on_any_race: treat unsynchronized races as failures ---
-            if error_on_any_race and not is_deadlock:
+            if error_on_any_race and _outcome.evaluate_invariant:
                 with engine_lock:
                     raw_races_check = engine.attribute_races()
                 if raw_races_check:
@@ -394,7 +434,7 @@ def _explore_dpor(
                         return result
 
             # --- serializable_invariant: check against sequential baselines ---
-            if serial_valid_states is not None and not is_deadlock:
+            if serial_valid_states is not None and _outcome.evaluate_invariant:
                 ser_explanation = check_serializability_violation(
                     state, serial_valid_states, serial_hash_fn, result.num_explored
                 )
@@ -407,7 +447,7 @@ def _explore_dpor(
                         _record_and_emit_report()
                         return result
 
-            if is_deadlock:
+            if not _outcome.evaluate_invariant:
                 invariant_failed, assertion_msg = False, None
             else:
                 invariant_failed, assertion_msg = check_invariant(invariant, state)
@@ -474,7 +514,9 @@ def _explore_dpor(
                 # Check if this specific execution failed: it was appended to failures
                 # with the current num_explored as its execution number
                 this_exec_failed = any(n == result.num_explored for n, _ in result.failures)
-                invariant_held = not was_deadlock and not this_exec_failed
+                # A scheduler timeout means the run never completed under DPOR
+                # control, so its invariant did not meaningfully "hold" (finding 5).
+                invariant_held = not was_deadlock and not scheduler_timed_out and not this_exec_failed
                 report.executions.append(
                     ExecutionRecord(
                         index=len(report.executions),
