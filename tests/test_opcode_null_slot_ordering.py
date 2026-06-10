@@ -96,13 +96,11 @@ def test_load_global_null_slot_ordering_matches_dis():
     top, below = sched._shadow.stack[-1], sched._shadow.stack[-2]
     if null_on_top:
         assert top is None and below is not None, (
-            f"LOAD_GLOBAL: dis says NULL on top ({instr.argrepr!r}) but shadow "
-            f"stack top={top!r} below={below!r}"
+            f"LOAD_GLOBAL: dis says NULL on top ({instr.argrepr!r}) but shadow stack top={top!r} below={below!r}"
         )
     else:
         assert below is None and top is not None, (
-            f"LOAD_GLOBAL: dis says NULL below ({instr.argrepr!r}) but shadow "
-            f"stack top={top!r} below={below!r}"
+            f"LOAD_GLOBAL: dis says NULL below ({instr.argrepr!r}) but shadow stack top={top!r} below={below!r}"
         )
 
 
@@ -125,13 +123,11 @@ def test_load_attr_method_null_slot_ordering_matches_dis():
     # The bound-method value is the non-None slot; the synthetic slot is None.
     if null_on_top:
         assert top is None and below is not None, (
-            f"LOAD_ATTR: dis says NULL/self on top ({instr.argrepr!r}) but shadow "
-            f"stack top={top!r} below={below!r}"
+            f"LOAD_ATTR: dis says NULL/self on top ({instr.argrepr!r}) but shadow stack top={top!r} below={below!r}"
         )
     else:
         assert below is None and top is not None, (
-            f"LOAD_ATTR: dis says NULL/self below ({instr.argrepr!r}) but shadow "
-            f"stack top={top!r} below={below!r}"
+            f"LOAD_ATTR: dis says NULL/self below ({instr.argrepr!r}) but shadow stack top={top!r} below={below!r}"
         )
 
 
@@ -165,9 +161,7 @@ def test_load_global_gate_3_13_is_value_then_null(monkeypatch: Any) -> None:
     def target() -> int:
         return len([1])
 
-    if not any(
-        i.opname == "LOAD_GLOBAL" and i.arg is not None and i.arg & 1 for i in dis.get_instructions(target)
-    ):
+    if not any(i.opname == "LOAD_GLOBAL" and i.arg is not None and i.arg & 1 for i in dis.get_instructions(target)):
         pytest.skip("no flagged LOAD_GLOBAL on this interpreter")
 
     monkeypatch.setattr(obs, "_PY_VERSION", (3, 13))

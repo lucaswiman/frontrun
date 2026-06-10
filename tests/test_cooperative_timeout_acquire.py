@@ -58,6 +58,5 @@ def test_timeout_acquire_does_not_falsely_deadlock():
     )
 
     assert result.property_holds, (
-        "Timeout-based deadlock-avoidance code was falsely reported as a "
-        f"deadlock: {result.explanation}"
+        f"Timeout-based deadlock-avoidance code was falsely reported as a deadlock: {result.explanation}"
     )

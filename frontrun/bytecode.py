@@ -577,9 +577,7 @@ def run_with_schedule(
         # half-finished racing state is meaningless (finding 9d).  Callers in
         # exploration loops catch this and skip the schedule as inconclusive.
         if timed_out or isinstance(scheduler._error, TimeoutError):
-            raise TimeoutError(
-                f"run_with_schedule timed out after {timeout}s; worker threads did not complete"
-            )
+            raise TimeoutError(f"run_with_schedule timed out after {timeout}s; worker threads did not complete")
     return state
 
 

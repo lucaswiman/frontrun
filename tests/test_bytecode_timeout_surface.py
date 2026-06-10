@@ -57,6 +57,4 @@ def test_explore_random_skips_invariant_on_timeout():
     )
     # The run timed out, so the invariant was inconclusive — it must NOT be
     # reported as a violation discovered from a half-finished state.
-    assert result.property_holds, (
-        f"timed-out run was scored as a property violation: {result.explanation}"
-    )
+    assert result.property_holds, f"timed-out run was scored as a property violation: {result.explanation}"

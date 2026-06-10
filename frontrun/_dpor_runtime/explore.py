@@ -370,8 +370,7 @@ def _explore_dpor(
             # means the program never completed, so the invariant can never be
             # satisfied.  Report it as a property violation with a clear message.
             _outcome = _classify_scheduler_outcome(scheduler._error)
-            _deadlock_err = scheduler._error if _outcome.is_deadlock else None
-            is_deadlock = _outcome.is_deadlock
+            _deadlock_err = scheduler._error if isinstance(scheduler._error, DeadlockError) else None
             # A scheduler-internal TimeoutError means the run free-ran
             # unscheduled (finding 5): the program state does not describe any
             # DPOR schedule, so invariant/race/serializability checks below

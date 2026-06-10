@@ -77,9 +77,7 @@ class AwaitScheduler(InterleavedLoop):
     scheduling as its policy.
     """
 
-    def __init__(
-        self, schedule: list[int], num_tasks: int, *, deadlock_timeout: float = 5.0, detect_sql: bool = False
-    ):
+    def __init__(self, schedule: list[int], num_tasks: int, *, deadlock_timeout: float = 5.0, detect_sql: bool = False):
         super().__init__(deadlock_timeout=deadlock_timeout)
         self.schedule = schedule
         self.num_tasks = num_tasks
@@ -410,7 +408,12 @@ async def explore_async_random(
             schedule = random_round_robin_schedule(rng, num_tasks, max_ops)
 
             state, runner = await _run_with_schedule_status(
-                schedule, setup, tasks, timeout=timeout_per_run, deadlock_timeout=deadlock_timeout, detect_sql=detect_sql
+                schedule,
+                setup,
+                tasks,
+                timeout=timeout_per_run,
+                deadlock_timeout=deadlock_timeout,
+                detect_sql=detect_sql,
             )
             result.num_explored += 1
             seen_schedule_hashes.add(hash(tuple(schedule)))
@@ -426,9 +429,7 @@ async def explore_async_random(
                 result.unique_interleavings = len(seen_schedule_hashes)
                 sched_err = runner.scheduler._error
                 detail = str(sched_err) if sched_err is not None else "tasks did not complete within the timeout"
-                result.explanation = (
-                    f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
-                )
+                result.explanation = f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
                 return result
 
             # --- serializable_invariant check ---
