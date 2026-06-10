@@ -31,7 +31,14 @@ from frontrun._io_detection import _io_tls
 from frontrun._sql_parsing import TxOp
 from frontrun._sql_row_locks import _release_dpor_row_locks
 
-__all__ = ["_detect_autobegin", "_handle_tx_op", "_report_or_buffer", "reset_connection_state"]
+__all__ = [
+    "_detect_autobegin",
+    "_handle_tx_op",
+    "_report_or_buffer",
+    "handle_connection_commit",
+    "handle_connection_rollback",
+    "reset_connection_state",
+]
 
 
 def _report_or_buffer(reporter: Any, res_id: str, kind: str, *, force_immediate: bool = False) -> None:
@@ -73,6 +80,35 @@ def _report_or_buffer(reporter: Any, res_id: str, kind: str, *, force_immediate:
         pending.append(res_id)
 
 
+def _connection_autocommit(conn: Any) -> bool | None:
+    """Return the connection's autocommit flag, or None if undetectable.
+
+    Different drivers expose this differently:
+
+    * psycopg2 / psycopg / sqlite3 → ``conn.autocommit`` is a bool attribute.
+    * pymysql → ``conn.autocommit`` is a *method* (always truthy); the real
+      flag is ``conn.get_autocommit()`` / ``conn.autocommit_mode`` (finding 4).
+
+    Reading the bound method as a truthy value would always look like
+    autocommit-on, so callable attributes are resolved via the accessor.
+    """
+    autocommit = getattr(conn, "autocommit", None)
+    if callable(autocommit):
+        getter = getattr(conn, "get_autocommit", None)
+        if callable(getter):
+            try:
+                return bool(getter())
+            except Exception:
+                return None
+        mode = getattr(conn, "autocommit_mode", None)
+        if mode is not None:
+            return bool(mode)
+        return None  # callable but no usable accessor — can't detect
+    if autocommit is None:
+        return None
+    return bool(autocommit)
+
+
 def _detect_autobegin(cursor: Any) -> None:
     """Set ``_in_transaction`` if the connection is in autobegin mode.
 
@@ -93,7 +129,7 @@ def _detect_autobegin(cursor: Any) -> None:
     conn = getattr(cursor, "connection", None)
     if conn is None:
         return
-    autocommit = getattr(conn, "autocommit", None)
+    autocommit = _connection_autocommit(conn)
     if autocommit is None:
         return  # driver doesn't expose autocommit — can't detect
     if not autocommit:
@@ -151,6 +187,32 @@ def _handle_tx_op(reporter: Any, tx: Any) -> None:
                     del savepoints[name]
         else:  # "release"
             savepoints.pop(tx.name, None)
+
+
+def handle_connection_commit() -> None:
+    """Drive the COMMIT state machine for a Python-level ``conn.commit()``.
+
+    DB-API drivers expose ``commit()`` / ``rollback()`` as connection methods;
+    many call sites use those instead of issuing a textual ``COMMIT`` through
+    ``cursor.execute()``.  Without intercepting them, the transaction buffer is
+    never flushed, ``_in_transaction`` stays True forever, and DPOR row locks
+    are held until thread exit (finding 3).  This flushes the buffer and clears
+    the transaction state exactly like a textual COMMIT.
+    """
+    if not getattr(_io_tls, "_in_transaction", False):
+        return
+    from frontrun._io_detection import get_io_reporter
+
+    _handle_tx_op(get_io_reporter(), TxOp.COMMIT)
+
+
+def handle_connection_rollback() -> None:
+    """Drive the ROLLBACK state machine for a Python-level ``conn.rollback()``."""
+    if not getattr(_io_tls, "_in_transaction", False):
+        return
+    from frontrun._io_detection import get_io_reporter
+
+    _handle_tx_op(get_io_reporter(), TxOp.ROLLBACK)
 
 
 def reset_connection_state() -> None:

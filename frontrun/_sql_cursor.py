@@ -60,6 +60,8 @@ from frontrun._sql_transactions import (
     _detect_autobegin,
     _handle_tx_op,
     _report_or_buffer,
+    handle_connection_commit,
+    handle_connection_rollback,
     reset_connection_state,
 )
 
@@ -468,6 +470,39 @@ def _report_sql_access(
     return reported
 
 
+def _wrap_connection_tx_methods(conn: Any) -> None:
+    """Wrap a connection's ``commit`` / ``rollback`` to drive the tx state machine.
+
+    DB-API call sites often end a transaction with ``conn.commit()`` /
+    ``conn.rollback()`` rather than a textual ``COMMIT`` / ``ROLLBACK``.  Those
+    method calls bypass ``cursor.execute()`` interception entirely, so the tx
+    buffer is never flushed and row locks are held until thread exit (finding
+    3).  Wrap the bound methods so they drive the same state machine.
+
+    Best-effort: C-extension connection types (e.g. psycopg2) may reject
+    instance attribute assignment; in that case we leave the connection
+    unwrapped (autobegin/textual-COMMIT paths still apply).
+    """
+    for name, handler in (("commit", handle_connection_commit), ("rollback", handle_connection_rollback)):
+        orig = getattr(conn, name, None)
+        if orig is None or getattr(orig, "_frontrun_tx_wrapped", False):
+            continue
+
+        def _make(orig_method: Any = orig, _handler: Any = handler) -> Any:
+            def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                _handler()
+                return orig_method(*args, **kwargs)
+
+            _wrapped._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
+            return _wrapped
+
+        try:
+            setattr(conn, name, _make())
+        except (AttributeError, TypeError):
+            # C-level connection that forbids attribute assignment — skip.
+            pass
+
+
 def _capture_insert_id(cursor: Any, table: str) -> None:
     """Capture lastrowid after INSERT and report indexical alias.
 
@@ -656,6 +691,17 @@ def _make_traced_sqlite3_connection_class() -> type:
             cur.executemany(sql, parameters)
             return cur
 
+        def commit(self) -> None:  # type: ignore[override]
+            # Drive the tx state machine before the driver call so the buffered
+            # accesses are flushed even when COMMIT is issued via the connection
+            # method rather than as SQL text (finding 3).
+            handle_connection_commit()
+            super().commit()
+
+        def rollback(self) -> None:  # type: ignore[override]
+            handle_connection_rollback()
+            super().rollback()
+
     TracedConnection.__name__ = "TracedConnection"
     TracedConnection.__qualname__ = "TracedConnection"
     return TracedConnection
@@ -810,6 +856,7 @@ def patch_sql() -> None:
             # endpoint was registered.  The listener only uses tid
             # suppression for *socket* events, so file I/O passes through.
             suppress_sql_endpoint(conn)
+            _wrap_connection_tx_methods(conn)
             identity = _normalize_db_identity("connection", conn)
             if identity is None and args and isinstance(args[0], str):
                 identity = f"{driver}-dsn:{args[0]}"
