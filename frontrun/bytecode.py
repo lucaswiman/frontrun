@@ -560,15 +560,26 @@ def run_with_schedule(
             return thread_wrapper
 
         funcs: list[Callable[[], None]] = [make_thread_func(t, state) for t in threads]
+        timed_out = False
         try:
             runner.run(funcs, timeout=timeout)
         except TimeoutError:
             if debug:
                 print(f"Timed out with {timeout=} on {schedule=}", flush=True)
+            timed_out = True
         # Re-raise DeadlockError so callers (e.g. reproduction logic) can
         # detect that a deadlock occurred during replay.
         if isinstance(scheduler._error, DeadlockError):
             raise scheduler._error
+        # Surface a timeout (from runner.run or a scheduler-recorded
+        # TimeoutError) instead of returning a state that timed-out daemon
+        # threads may still be mutating.  Evaluating an invariant on such a
+        # half-finished racing state is meaningless (finding 9d).  Callers in
+        # exploration loops catch this and skip the schedule as inconclusive.
+        if timed_out or isinstance(scheduler._error, TimeoutError):
+            raise TimeoutError(
+                f"run_with_schedule timed out after {timeout}s; worker threads did not complete"
+            )
     return state
 
 
@@ -690,6 +701,15 @@ def explore_random(
                     f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{dl_err.cycle_description}"
                 )
                 return result
+            except TimeoutError:
+                # The run did not complete within timeout_per_run; worker
+                # threads may still be mutating the state.  Skip this schedule
+                # as inconclusive rather than evaluating the invariant on a
+                # half-finished racing state (finding 9d).
+                if debug:
+                    print(f"Skipping timed-out schedule: {schedule}", flush=True)
+                seen_schedule_hashes.add(hash(tuple(schedule)))
+                continue
             result.num_explored += 1
             seen_schedule_hashes.add(hash(tuple(schedule)))
 
