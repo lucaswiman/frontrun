@@ -145,6 +145,8 @@ class TestRowLockRegistry:
             release_row_locks = DporScheduler.release_row_locks
             _release_row_locks_unlocked = DporScheduler._release_row_locks_unlocked
             _row_lock_int_id = DporScheduler._row_lock_int_id
+            _engine_block_thread = DporScheduler._engine_block_thread
+            _engine_unblock_thread = DporScheduler._engine_unblock_thread
 
         return RowLockHost()
 
@@ -239,6 +241,8 @@ class TestRowLockRegistry:
             release_row_locks = DporScheduler.release_row_locks
             _release_row_locks_unlocked = DporScheduler._release_row_locks_unlocked
             _row_lock_int_id = DporScheduler._row_lock_int_id
+            _engine_block_thread = DporScheduler._engine_block_thread
+            _engine_unblock_thread = DporScheduler._engine_unblock_thread
 
         return RowLockHost()
 
