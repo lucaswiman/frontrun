@@ -9,8 +9,13 @@ schedules, generate random interleavings and check that invariants hold (or
 that bugs can be found).
 
 The core insight: CPython context switches happen between bytecode instructions.
-By controlling which thread gets to execute each instruction, we can explore
-the full space of possible interleavings.
+By controlling which thread gets to execute each instruction, we can explore a
+broad range of possible interleavings.  Schedules use variable-length per-thread
+bursts (see :mod:`frontrun._random_schedules`) so that two threads can drift
+more than one opcode apart — this reaches races that require one thread to run
+several opcodes inside a narrow window of another.  Random exploration is a
+*sampler*, not an exhaustive enumeration (use the DPOR strategy for systematic
+coverage).
 
 Example — find a race condition with random schedule exploration:
 
@@ -64,7 +69,11 @@ from frontrun._opcode_observer import (
     stop_opcode_trace,
     uninstall_thread_opcode_trace,
 )
-from frontrun._random_schedules import fair_schedule_strategy, random_round_robin_schedule
+from frontrun._random_schedules import (
+    _DEFAULT_MAX_BURST,
+    fair_schedule_strategy,
+    random_round_robin_schedule,
+)
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 from frontrun._sql_insert_tracker import check_uncaptured_inserts, clear_insert_tracker
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout, run_thread_group
@@ -117,6 +126,10 @@ class OpcodeScheduler:
         self.num_threads = num_threads
         self.deadlock_timeout = deadlock_timeout
         self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10000
+        # Deterministic RNG for dynamic schedule extension.  Seeded from the
+        # initial schedule so the extension is reproducible for a given run
+        # (and replay re-uses the already-recorded self.schedule list anyway).
+        self._extend_rng = random.Random(hash(tuple(schedule)) & 0xFFFFFFFF)
         self._index = 0
         self._lock = real_lock()
         self._condition = real_condition(self._lock)
@@ -126,10 +139,13 @@ class OpcodeScheduler:
         self.trace_recorder = trace_recorder
 
     def _extend_schedule(self) -> bool:
-        """Append a round-robin round of all active threads.
+        """Append a round of all active threads with variable-length bursts.
 
-        Returns True if the schedule was extended, False if all threads
-        are done or the max_ops cap was reached.
+        Each active thread gets a burst of consecutive slots (rather than a
+        single slot) so that, like the initial random schedule, dynamically
+        extended schedules can express relative opcode drift > 1 between
+        threads.  Returns True if the schedule was extended, False if all
+        threads are done or the max_ops cap was reached.
         """
         if self._index >= self._max_ops:
             return False
@@ -140,7 +156,12 @@ class OpcodeScheduler:
         remaining = self._max_ops - len(self.schedule)
         if remaining <= 0:
             return False
-        self.schedule.extend(active[:remaining])
+        self._extend_rng.shuffle(active)
+        appended: list[int] = []
+        for actor in active:
+            burst = self._extend_rng.randint(1, _DEFAULT_MAX_BURST)
+            appended.extend([actor] * burst)
+        self.schedule.extend(appended[:remaining])
         return True
 
     def wait_for_turn(self, thread_id: int) -> bool:
