@@ -1493,6 +1493,89 @@ mod tests {
         );
     }
 
+    /// Test compute_notdep excludes events that happen-after e transitively
+    /// through program order (finding 2).
+    ///
+    /// JACM'17 Def 3.2 / Alg.2 line 4: notdep(e, E) excludes EVERY event that
+    /// happens-after e, transitively. The closure must follow program order:
+    /// if T1's first event (pos1) conflicts with e and is excluded, then T1's
+    /// later event (pos2) also happens-after e (program order through pos1)
+    /// and must be excluded too — even though pos2's accesses do not directly
+    /// conflict with e.
+    ///
+    /// Setup:
+    ///   pos0: e  = T0 W(X)        — the first racing event
+    ///   pos1:      T1 W(X)        — conflicts with e, excluded
+    ///   pos2:      T1 W(Y)        — happens-after e via T1 program order, must
+    ///                               be excluded (does NOT conflict with e)
+    ///   pos3: e' = T2 W(X)        — the reversing event
+    ///
+    /// Correct notdep: [2]  (both T1 events follow e; only e' remains).
+    /// Buggy notdep:   [1, 2]  (pos2 wrongly included as independent).
+    #[test]
+    fn test_compute_notdep_transitive_happens_after() {
+        use crate::access::AccessKind;
+        let mut path = Path::new(None, SearchStrategy::Dfs);
+
+        path.schedule(&[0, 1, 2], 0, 3); // pos 0: T0 W(X)
+        path.record_access(0, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+        path.schedule(&[1, 2], 1, 3); // pos 1: T1 W(X) — conflicts with e
+        path.record_access(1, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+        path.schedule(&[1, 2], 1, 3); // pos 2: T1 W(Y) — program-order after pos1
+        path.record_access(2, 2, AccessKind::Write, AccessOrigin::PythonMemory);
+        path.schedule(&[2], 2, 3); // pos 3: T2 W(X)
+        path.record_access(3, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+
+        let notdep = path.compute_notdep(0, 3, 2);
+        assert_eq!(
+            notdep,
+            vec![2],
+            "pos2 (T1 W(Y)) happens-after e transitively via T1 program order and must be excluded"
+        );
+    }
+
+    /// Test compute_notdep excludes events that happen-after e transitively
+    /// through a conflict chain (finding 2).
+    ///
+    /// Setup:
+    ///   pos0: e  = T0 W(X)        — racing event
+    ///   pos1:      T1 W(X)        — conflicts with e, excluded
+    ///   pos2:      T2 W(Y)        — independent of e directly, but conflicts
+    ///                               with pos1 (also W(Y))... see below
+    ///
+    /// To exercise the conflict-chain closure: pos1 = T1 writes Y (conflicts
+    /// with e? no). Use: pos1 = T1 W(X) excluded; pos2 = T2 W(Z) conflicts with
+    /// pos1's *other* access. We keep it simple: an event conflicting with an
+    /// already-excluded event is itself excluded.
+    #[test]
+    fn test_compute_notdep_conflict_chain_closure() {
+        use crate::access::AccessKind;
+        let mut path = Path::new(None, SearchStrategy::Dfs);
+
+        // pos0: e = T0 W(X=1)
+        path.schedule(&[0, 1, 2, 3], 0, 4);
+        path.record_access(0, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+        // pos1: T1 W(X=1) conflicts with e -> excluded
+        path.schedule(&[1, 2, 3], 1, 4);
+        path.record_access(1, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+        // pos2: T1 W(Y=2) program-order after pos1 -> excluded, also touches Y
+        path.schedule(&[1, 2, 3], 1, 4);
+        path.record_access(2, 2, AccessKind::Write, AccessOrigin::PythonMemory);
+        // pos3: T2 W(Y=2) conflicts with the excluded pos2 -> must be excluded
+        path.schedule(&[2, 3], 2, 4);
+        path.record_access(3, 2, AccessKind::Write, AccessOrigin::PythonMemory);
+        // pos4: e' = T3 W(X=1)
+        path.schedule(&[3], 3, 4);
+        path.record_access(4, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+
+        let notdep = path.compute_notdep(0, 4, 3);
+        assert_eq!(
+            notdep,
+            vec![3],
+            "pos3 (T2 W(Y)) conflicts with already-excluded pos2 and must be excluded"
+        );
+    }
+
     /// Test process_one_deferred_race inserts notdep into wakeup tree.
     #[test]
     fn test_process_deferred_race_inserts_notdep() {
