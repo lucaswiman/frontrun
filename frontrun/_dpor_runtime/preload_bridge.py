@@ -83,7 +83,11 @@ class _PreloadBridge:
             # overwritten by later ones (e.g. a COMMIT recv).  With
             # read/write distinction, DPOR iteratively explores wakeup tree
             # branches through the send/recv pairs to reach the critical interleaving.
-            kind = "write" if event.kind == "write" else "read"
+            # sql_write is a SQL *send* and must conflict as a write; connect
+            # and the recv/read paths remain reads.  Treating sql_write as a
+            # read would put two threads' SQL sends in the read bucket so they
+            # never conflict through this path.
+            kind = "write" if event.kind in ("write", "sql_write") else "read"
             obj_key = _make_object_key(hash(event.resource_id), event.resource_id)
             detail, call_chain = get_active_sql_io_context(event.tid)
             self._pending.setdefault(dpor_id, []).append((obj_key, kind, event.resource_id, detail, call_chain))
