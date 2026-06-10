@@ -1196,6 +1196,56 @@ mod linux_intercept {
 
         real(fd)
     }
+
+    /// Intercept `dup2()` — the target fd is implicitly closed and may be
+    /// reused for a different resource, so drop its stale FD_MAP entry on
+    /// success. (No event is logged; this is purely map maintenance to stop
+    /// `ensure_fd_mapped` trusting a reused fd's old mapping.)
+    #[no_mangle]
+    pub unsafe extern "C" fn dup2(oldfd: c_int, newfd: c_int) -> c_int {
+        type Dup2Fn = unsafe extern "C" fn(c_int, c_int) -> c_int;
+        let real = match resolve!(dup2, Dup2Fn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        let result = real(oldfd, newfd);
+        if result >= 0 && newfd > 2 && !is_pipe_fd(newfd) {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Ok(mut map) = FD_MAP.lock() {
+                    map.remove(newfd);
+                }
+            }
+        }
+        result
+    }
+
+    /// Intercept `dup3()` — like `dup2` but takes flags; same stale-entry
+    /// cleanup for the target fd.
+    #[no_mangle]
+    pub unsafe extern "C" fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int {
+        type Dup3Fn = unsafe extern "C" fn(c_int, c_int, c_int) -> c_int;
+        let real = match resolve!(dup3, Dup3Fn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        let result = real(oldfd, newfd, flags);
+        if result >= 0 && newfd > 2 && !is_pipe_fd(newfd) {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Ok(mut map) = FD_MAP.lock() {
+                    map.remove(newfd);
+                }
+            }
+        }
+        result
+    }
 }
 
 // ===========================================================================
