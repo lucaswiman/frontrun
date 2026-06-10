@@ -1333,6 +1333,66 @@ def test_release_dpor_row_locks_no_scheduler() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_wrap_connection_cursor_traces_explicit_factory() -> None:
+    """conn.cursor(cursor_factory=...) must be wrapped into a traced subclass.
+
+    Before the fix, an explicit per-cursor cursor_factory (e.g. psycopg2's
+    RealDictCursor) bypassed tracing entirely — those queries were invisible at
+    every level (finding 5).  The wrapped conn.cursor must dynamically subclass
+    the requested factory with the traced mixin, preserving the row format.
+    """
+    from frontrun._sql_cursor import _wrap_connection_cursor
+
+    class RealDictCursor:
+        """Stand-in for a user-supplied cursor_factory (preserves row format)."""
+
+        def __init__(self, factory: type) -> None:
+            self.factory = factory
+
+    captured: dict[str, Any] = {}
+
+    class FakeConn:
+        def cursor(self, cursor_factory: type | None = None) -> Any:
+            captured["factory"] = cursor_factory
+            # Mimic the driver building a cursor instance from the factory.
+            return cursor_factory(cursor_factory) if cursor_factory else None
+
+    conn = FakeConn()
+    _wrap_connection_cursor(conn, paramstyle="pyformat")
+    conn.cursor(cursor_factory=RealDictCursor)
+
+    traced_factory = captured["factory"]
+    assert traced_factory is not RealDictCursor, "explicit cursor_factory was not wrapped"
+    assert issubclass(traced_factory, RealDictCursor), "traced factory must subclass the user's factory"
+    assert getattr(traced_factory, "_frontrun_traced_cursor", False), "wrapped factory must be marked traced"
+    # The traced subclass intercepts execute (the whole point of tracing).
+    assert "execute" in traced_factory.__dict__
+
+
+def test_wrap_connection_cursor_idempotent() -> None:
+    """Double-wrapping conn.cursor must not double-wrap the factory."""
+    from frontrun._sql_cursor import _wrap_connection_cursor
+
+    class BaseFactory:
+        def __init__(self, *a: Any) -> None: ...
+
+    captured: dict[str, Any] = {}
+
+    class FakeConn:
+        def cursor(self, cursor_factory: type | None = None) -> Any:
+            captured["factory"] = cursor_factory
+            return None
+
+    conn = FakeConn()
+    _wrap_connection_cursor(conn, paramstyle="pyformat")
+    _wrap_connection_cursor(conn, paramstyle="pyformat")  # second call is a no-op
+    conn.cursor(cursor_factory=BaseFactory)
+    traced = captured["factory"]
+    # Wrapping a factory twice should not subclass a traced subclass again.
+    assert issubclass(traced, BaseFactory)
+    assert sum(1 for c in traced.__mro__ if getattr(c, "_frontrun_traced_cursor", False)) == 1
+
+
 def test_for_update_primary_colset_emits_read_bridge() -> None:
     """SELECT ... FOR UPDATE on the primary colset must emit a READ bridge.
 

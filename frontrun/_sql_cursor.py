@@ -685,6 +685,59 @@ def _make_traced_cursor_class(base_cursor_cls: type, paramstyle: str = "format")
     return TracedCursor
 
 
+# Shared cache of traced cursor subclasses, keyed by (base factory, paramstyle).
+# Used both by the patched connect() (connection-level cursor_factory) and by
+# the wrapped conn.cursor() (per-cursor cursor_factory) so an explicit factory
+# is wrapped exactly once and the user's row format is preserved (finding 5).
+_TRACED_CURSOR_CLASSES: dict[tuple[type, str], type] = {}
+
+
+def _get_traced_cursor_class(base_cursor_cls: type, paramstyle: str) -> type:
+    """Return (and cache) a traced subclass of *base_cursor_cls*.
+
+    Already-traced classes (subclasses of one we built) are returned as-is to
+    avoid double-wrapping.
+    """
+    if getattr(base_cursor_cls, "_frontrun_traced_cursor", False):
+        return base_cursor_cls
+    key = (base_cursor_cls, paramstyle)
+    cached = _TRACED_CURSOR_CLASSES.get(key)
+    if cached is None:
+        cached = _make_traced_cursor_class(base_cursor_cls, paramstyle=paramstyle)
+        cached._frontrun_traced_cursor = True  # type: ignore[attr-defined]
+        _TRACED_CURSOR_CLASSES[key] = cached
+    return cached
+
+
+def _wrap_connection_cursor(conn: Any, paramstyle: str) -> None:
+    """Wrap ``conn.cursor`` so an explicit ``cursor_factory`` is traced too.
+
+    The patched ``connect()`` injects a traced class via the connection-level
+    ``cursor_factory``, but ``conn.cursor(cursor_factory=RealDictCursor)``
+    overrides it with an *untraced* class, making those queries invisible at
+    every level (finding 5).  We wrap ``conn.cursor`` so an explicit factory is
+    dynamically subclassed with the traced mixin, preserving the user's row
+    format.  Best-effort: skipped when the connection forbids attribute
+    assignment (the connection-level traced factory still covers default
+    cursors).
+    """
+    orig_cursor = getattr(conn, "cursor", None)
+    if orig_cursor is None or getattr(orig_cursor, "_frontrun_cursor_wrapped", False):
+        return
+
+    def _wrapped_cursor(*args: Any, **kwargs: Any) -> Any:
+        factory = kwargs.get("cursor_factory")
+        if factory is not None:
+            kwargs["cursor_factory"] = _get_traced_cursor_class(factory, paramstyle)
+        return orig_cursor(*args, **kwargs)
+
+    _wrapped_cursor._frontrun_cursor_wrapped = True  # type: ignore[attr-defined]
+    try:
+        conn.cursor = _wrapped_cursor
+    except (AttributeError, TypeError):
+        pass
+
+
 def _make_traced_sqlite3_connection_class() -> type:
     """Return a sqlite3.Connection subclass whose cursor() uses TracedCursor.
 
@@ -840,17 +893,11 @@ def patch_sql() -> None:
             pass  # driver not installed — skip silently
 
     def _make_patched_connect(orig: Any, default_cursor_cls: type, paramstyle: str, driver: str) -> Any:
-        # Cache traced subclasses by (caller-provided cursor_factory class) to avoid
-        # creating a new class on every connect() call.
-        _cache: dict[type, type] = {}
-
         def patched_connect(*args: Any, **kwargs: Any) -> Any:
             # Wrap whatever cursor_factory the caller already set (e.g. Django's Cursor),
             # rather than using setdefault, which is a no-op when the caller set it first.
             user_factory = kwargs.get("cursor_factory", default_cursor_cls)
-            if user_factory not in _cache:
-                _cache[user_factory] = _make_traced_cursor_class(user_factory, paramstyle=paramstyle)
-            kwargs["cursor_factory"] = _cache[user_factory]
+            kwargs["cursor_factory"] = _get_traced_cursor_class(user_factory, paramstyle)
             from frontrun._cooperative import suppress_sync_reporting as _ssr
             from frontrun._cooperative import unsuppress_sync_reporting as _usr
 
@@ -874,6 +921,7 @@ def patch_sql() -> None:
             # suppression for *socket* events, so file I/O passes through.
             suppress_sql_endpoint(conn)
             _wrap_connection_tx_methods(conn)
+            _wrap_connection_cursor(conn, paramstyle)
             identity = _normalize_db_identity("connection", conn)
             if identity is None and args and isinstance(args[0], str):
                 identity = f"{driver}-dsn:{args[0]}"
@@ -946,4 +994,5 @@ def unpatch_sql() -> None:
     restore_patches(_PATCHES)
     _PATCHES.clear()
     _ORIGINAL_METHODS.clear()
+    _TRACED_CURSOR_CLASSES.clear()
     _sql_patched = False
