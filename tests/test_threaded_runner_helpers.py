@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
 from frontrun._real_threading import condition as _real_condition
 from frontrun._real_threading import lock as _real_lock
+from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
 
 
 def test_patch_scope_runs_all_cleanups_even_if_one_raises():
@@ -53,6 +53,4 @@ def test_notify_scheduler_timeout_preserves_first_error():
 
     notify_scheduler_timeout(sched, [])
 
-    assert sched._error is original, (
-        f"notify_scheduler_timeout overwrote the first error with {sched._error!r}"
-    )
+    assert sched._error is original, f"notify_scheduler_timeout overwrote the first error with {sched._error!r}"

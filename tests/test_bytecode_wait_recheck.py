@@ -8,8 +8,8 @@ IndexError instead of cleanly returning / looping.
 
 from __future__ import annotations
 
-from frontrun.bytecode import OpcodeScheduler
 from frontrun._marker_coordination import ThreadCoordinator
+from frontrun.bytecode import OpcodeScheduler
 from frontrun.common import Schedule, Step
 
 

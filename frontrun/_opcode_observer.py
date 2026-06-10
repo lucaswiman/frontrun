@@ -1394,7 +1394,9 @@ class _ToolOwnership:
 
 _TOOL_OWNERS: dict[int, _ToolOwnership] = {}
 _TOOL_OWNERS_LOCK = threading.Lock()
-_TOOL_NONCE = 0
+# Monotonic nonce counter (mutable single-element list so it can be bumped
+# without a module-level ``global`` / constant-redefinition).
+_tool_nonce = [0]
 
 
 def _owner_thread_alive(owner_ident: int) -> bool:
@@ -1427,7 +1429,6 @@ def setup_opcode_monitoring(
     When *monitor_returns* is False, PY_RETURN/PY_UNWIND are not registered
     (used by callers that don't need shadow-stack cleanup).
     """
-    global _TOOL_NONCE  # noqa: PLW0603
     mon = sys.monitoring
     tool_id: int = _resolve_tool_id(tool_kind)
 
@@ -1457,8 +1458,8 @@ def setup_opcode_monitoring(
             _force_free_tool_id(tool_id, monitor_returns=True)
             mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
 
-        _TOOL_NONCE += 1
-        _TOOL_OWNERS[tool_id] = _ToolOwnership(_TOOL_NONCE, threading.get_ident(), tool_name)
+        _tool_nonce[0] += 1
+        _TOOL_OWNERS[tool_id] = _ToolOwnership(_tool_nonce[0], threading.get_ident(), tool_name)
 
     events = mon.events.PY_START | mon.events.INSTRUCTION  # type: ignore[attr-defined]
     if monitor_returns:
@@ -1649,7 +1650,7 @@ def make_monitoring_callbacks(
     remove_shadow_stack: Any,
     detect_io: bool = False,
     is_active: Any = None,
-) -> tuple[Any, Any, Any]:
+) -> tuple[Any, Any, Any, Any]:
     """Create ``sys.monitoring`` callbacks for opcode tracing.
 
     Returns ``(handle_py_start, handle_py_return, handle_py_unwind,

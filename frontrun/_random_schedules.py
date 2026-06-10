@@ -11,7 +11,6 @@ from __future__ import annotations
 import random
 from typing import Any
 
-
 # Default maximum per-actor burst length.  A *burst* is a run of consecutive
 # slots given to one actor before yielding, which lets two runnable threads
 # drift more than one opcode apart.  Without bursts (burst == 1 always) the
