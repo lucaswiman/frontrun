@@ -60,18 +60,32 @@ class _AutoPauseIterator:
             self._pause_iter = None
             return self._inner.send(self._buffered_value)
 
-    def throw(self, typ: Any, val: Any = None, tb: Any = None) -> Any:
+    def _close_pause_iter(self) -> None:
+        """Close the suspended pause coroutine, tolerating cancellation noise.
+
+        When the pause coroutine is suspended inside
+        ``asyncio.wait_for(condition.wait())``, ``GeneratorExit`` cannot always
+        unwind cleanly (the inner ``wait_for`` task may still be pending),
+        which CPython surfaces as ``RuntimeError("coroutine ignored
+        GeneratorExit")``.  That is benign here — the surrounding task is being
+        thrown into / closed anyway — so swallow it instead of leaking it out
+        of ``throw``/``close`` (finding F9).
+        """
         if self._pause_iter is not None:
-            self._pause_iter.close()
+            try:
+                self._pause_iter.close()
+            except RuntimeError:
+                pass
             self._pause_iter = None
+
+    def throw(self, typ: Any, val: Any = None, tb: Any = None) -> Any:
+        self._close_pause_iter()
         if val is None and tb is None:
             return self._inner.throw(typ)
         return self._inner.throw(typ, val, tb)
 
     def close(self) -> None:
-        if self._pause_iter is not None:
-            self._pause_iter.close()
-            self._pause_iter = None
+        self._close_pause_iter()
         self._inner.close()
 
 
