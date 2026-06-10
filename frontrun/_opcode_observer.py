@@ -1358,12 +1358,46 @@ def _resolve_tool_id(tool_kind: ToolKind) -> int:
     raise ValueError(f"Unknown tool_kind: {tool_kind!r}")
 
 
+# ---------------------------------------------------------------------------
+# sys.monitoring tool-ID ownership registry (finding 3)
+# ---------------------------------------------------------------------------
+#
+# sys.monitoring tool IDs are a global, process-wide resource.  When
+# ``use_tool_id`` raises ValueError the slot is already held.  We must only
+# force-steal a slot we KNOW belongs to a previous frontrun run that has since
+# finished or died — never an external profiler/optimizer or a concurrent
+# frontrun run in another (still-alive) thread.  This registry records, per
+# tool_id, the frontrun run that claimed it (a monotonically increasing nonce
+# and the owning thread), so the recovery path can tell "stale frontrun run"
+# apart from "live holder".
+
+
+class _ToolOwnership:
+    __slots__ = ("nonce", "owner_ident", "tool_name")
+
+    def __init__(self, nonce: int, owner_ident: int, tool_name: str) -> None:
+        self.nonce = nonce
+        self.owner_ident = owner_ident
+        self.tool_name = tool_name
+
+
+_TOOL_OWNERS: dict[int, _ToolOwnership] = {}
+_TOOL_OWNERS_LOCK = threading.Lock()
+_TOOL_NONCE = 0
+
+
+def _owner_thread_alive(owner_ident: int) -> bool:
+    """Whether the thread that claimed a tool_id is still running."""
+    return any(t.ident == owner_ident and t.is_alive() for t in threading.enumerate())
+
+
 def setup_opcode_monitoring(
     *,
     tool_name: str,
     handle_py_start: Any,
     handle_py_return: Any,
     handle_instruction: Any,
+    handle_py_unwind: Any = None,
     tool_kind: ToolKind = "profiler",
     monitor_returns: bool = True,
 ) -> int:
@@ -1371,48 +1405,90 @@ def setup_opcode_monitoring(
 
     Handles the full tool ID lifecycle including defensive cleanup of
     stale tool IDs from interrupted runs (e.g. pytest-timeout kills a
-    test before teardown).
+    test before teardown).  Such recovery is ONLY performed when the
+    ownership registry shows the slot belongs to a frontrun run that has
+    since finished or whose owning thread has died — a live external tool
+    (or a concurrent frontrun run) is never destroyed; instead a clear
+    error is raised (finding 3).
 
     *tool_kind* selects the sys.monitoring tool ID slot
     (``"profiler"`` for DPOR, ``"optimizer"`` for the BytecodeShuffler).
-    When *monitor_returns* is False, PY_RETURN is not registered (used by
-    callers that don't need shadow-stack cleanup).
+    When *monitor_returns* is False, PY_RETURN/PY_UNWIND are not registered
+    (used by callers that don't need shadow-stack cleanup).
     """
+    global _TOOL_NONCE  # noqa: PLW0603
     mon = sys.monitoring
     tool_id: int = _resolve_tool_id(tool_kind)
 
-    try:
-        mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
-    except ValueError:
-        # Tool ID still held from a previous interrupted run — force cleanup.
-        mon.set_events(tool_id, 0)  # type: ignore[attr-defined]
-        mon.register_callback(tool_id, mon.events.PY_START, None)  # type: ignore[attr-defined]
-        mon.register_callback(tool_id, mon.events.PY_RETURN, None)  # type: ignore[attr-defined]
-        mon.register_callback(tool_id, mon.events.INSTRUCTION, None)  # type: ignore[attr-defined]
-        mon.free_tool_id(tool_id)  # type: ignore[attr-defined]
-        mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
+    with _TOOL_OWNERS_LOCK:
+        try:
+            mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
+        except ValueError:
+            prior = _TOOL_OWNERS.get(tool_id)
+            if prior is None:
+                # Not a frontrun-owned slot: held by an external profiler or
+                # another tool.  Do NOT steal it.
+                held_by = mon.get_tool(tool_id)  # type: ignore[attr-defined]
+                raise RuntimeError(
+                    f"sys.monitoring tool id {tool_id} ({tool_kind}) is already in use "
+                    f"by {held_by!r} and is not owned by frontrun; refusing to steal it. "
+                    "Stop the other monitoring tool before running frontrun."
+                ) from None
+            if _owner_thread_alive(prior.owner_ident):
+                # A concurrent frontrun run in another live thread owns it.
+                raise RuntimeError(
+                    f"sys.monitoring tool id {tool_id} ({tool_kind}) is in use by a "
+                    f"concurrent frontrun run (thread {prior.owner_ident}); "
+                    "frontrun runs that share a tool-id slot cannot overlap."
+                ) from None
+            # Genuinely stale: a previous frontrun run that finished/died
+            # without tearing down (e.g. pytest-timeout kill).  Force-free.
+            _force_free_tool_id(tool_id, monitor_returns=True)
+            mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
+
+        _TOOL_NONCE += 1
+        _TOOL_OWNERS[tool_id] = _ToolOwnership(_TOOL_NONCE, threading.get_ident(), tool_name)
 
     events = mon.events.PY_START | mon.events.INSTRUCTION  # type: ignore[attr-defined]
     if monitor_returns:
         events |= mon.events.PY_RETURN  # type: ignore[attr-defined]
+        events |= mon.events.PY_UNWIND  # type: ignore[attr-defined]
     mon.set_events(tool_id, events)  # type: ignore[attr-defined]
     mon.register_callback(tool_id, mon.events.PY_START, handle_py_start)  # type: ignore[attr-defined]
     if monitor_returns:
         mon.register_callback(tool_id, mon.events.PY_RETURN, handle_py_return)  # type: ignore[attr-defined]
+        # PY_UNWIND mirrors PY_RETURN cleanup for exception-exiting frames
+        # (finding 4).  Fall back to handle_py_return when an explicit unwind
+        # handler is not provided (it performs the same shadow-stack removal).
+        mon.register_callback(  # type: ignore[attr-defined]
+            tool_id, mon.events.PY_UNWIND, handle_py_unwind if handle_py_unwind is not None else handle_py_return
+        )
     mon.register_callback(tool_id, mon.events.INSTRUCTION, handle_instruction)  # type: ignore[attr-defined]
     return tool_id
+
+
+def _force_free_tool_id(tool_id: int, *, monitor_returns: bool) -> None:
+    """Unregister all callbacks and free *tool_id* (caller verified staleness)."""
+    mon = sys.monitoring
+    mon.set_events(tool_id, 0)  # type: ignore[attr-defined]
+    mon.register_callback(tool_id, mon.events.PY_START, None)  # type: ignore[attr-defined]
+    mon.register_callback(tool_id, mon.events.PY_RETURN, None)  # type: ignore[attr-defined]
+    mon.register_callback(tool_id, mon.events.PY_UNWIND, None)  # type: ignore[attr-defined]
+    mon.register_callback(tool_id, mon.events.INSTRUCTION, None)  # type: ignore[attr-defined]
+    mon.free_tool_id(tool_id)  # type: ignore[attr-defined]
 
 
 def teardown_opcode_monitoring(tool_id: int | None) -> None:
     """Tear down sys.monitoring for opcode tracing."""
     if tool_id is None:
         return
-    mon = sys.monitoring
-    mon.set_events(tool_id, 0)  # type: ignore[attr-defined]
-    mon.register_callback(tool_id, mon.events.PY_START, None)  # type: ignore[attr-defined]
-    mon.register_callback(tool_id, mon.events.PY_RETURN, None)  # type: ignore[attr-defined]
-    mon.register_callback(tool_id, mon.events.INSTRUCTION, None)  # type: ignore[attr-defined]
-    mon.free_tool_id(tool_id)  # type: ignore[attr-defined]
+    with _TOOL_OWNERS_LOCK:
+        # Only free a slot we still own; another run may have reclaimed it after
+        # we died, in which case we must not stomp on it.
+        owner = _TOOL_OWNERS.get(tool_id)
+        if owner is not None and owner.owner_ident == threading.get_ident():
+            del _TOOL_OWNERS[tool_id]
+        _force_free_tool_id(tool_id, monitor_returns=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1565,8 +1641,9 @@ def make_monitoring_callbacks(
 ) -> tuple[Any, Any, Any]:
     """Create ``sys.monitoring`` callbacks for opcode tracing.
 
-    Returns ``(handle_py_start, handle_py_return, handle_instruction)``
-    suitable for passing to :func:`setup_opcode_monitoring`.
+    Returns ``(handle_py_start, handle_py_return, handle_py_unwind,
+    handle_instruction)`` suitable for passing to
+    :func:`setup_opcode_monitoring`.
 
     Parameters are the same as :func:`make_settrace_callback`.
     """
@@ -1586,6 +1663,19 @@ def make_monitoring_callbacks(
         return None
 
     def handle_py_return(code: Any, instruction_offset: int, retval: Any) -> Any:
+        if not _should_trace_file(code.co_filename):
+            return None
+        thread_id = get_thread_id()
+        if thread_id is not None:
+            frame = sys._getframe(1)
+            remove_shadow_stack(id(frame))
+        return None
+
+    def handle_py_unwind(code: Any, instruction_offset: int, exception: Any) -> Any:
+        # A frame exiting via exception fires PY_UNWIND, not PY_RETURN.  Mirror
+        # handle_py_return's cleanup so the shadow stack keyed by id(frame) is
+        # removed; otherwise a reused frame id inherits a dead operand stack
+        # (finding 4).
         if not _should_trace_file(code.co_filename):
             return None
         thread_id = get_thread_id()
@@ -1622,7 +1712,7 @@ def make_monitoring_callbacks(
         on_opcode(code, instruction_offset, frame, thread_id)
         return None
 
-    return handle_py_start, handle_py_return, handle_instruction
+    return handle_py_start, handle_py_return, handle_py_unwind, handle_instruction
 
 
 # ---------------------------------------------------------------------------
@@ -1720,7 +1810,7 @@ def start_opcode_trace(
     _remove_shadow_stack = remove_shadow_stack if remove_shadow_stack is not None else _noop_remove_shadow_stack
 
     if _USE_SYS_MONITORING:
-        handle_py_start, handle_py_return, handle_instruction = make_monitoring_callbacks(
+        handle_py_start, handle_py_return, handle_py_unwind, handle_instruction = make_monitoring_callbacks(
             get_thread_id=get_thread_id,
             on_opcode=on_opcode,
             remove_shadow_stack=_remove_shadow_stack,
@@ -1731,6 +1821,7 @@ def start_opcode_trace(
             tool_name=tool_name,
             handle_py_start=handle_py_start,
             handle_py_return=handle_py_return,
+            handle_py_unwind=handle_py_unwind,
             handle_instruction=handle_instruction,
             tool_kind=tool_kind,
             monitor_returns=monitor_returns,
