@@ -257,6 +257,15 @@ class InterleavedLoop:
         if errors:
             raise next(iter(errors.values()))
 
+        # A scheduler-detected deadlock/timeout sets ``self._error`` and makes
+        # every subsequent ``pause()`` short-circuit, so the tasks free-run to
+        # completion and the gather above returns normally.  Surface that error
+        # here instead of silently scoring the free-run as a valid exploration
+        # (finding F1).  The exploration loop classifies it (deadlock vs
+        # scheduler-timeout) just like the sync driver does.
+        if self._error is not None:
+            raise self._error
+
     @property
     def had_error(self) -> bool:
         """True if an error was reported during execution."""

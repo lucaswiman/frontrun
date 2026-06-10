@@ -144,6 +144,10 @@ class AsyncShuffler:
     def __init__(self, scheduler: AwaitScheduler):
         self.scheduler = scheduler
         self.errors: dict[int, Exception] = {}
+        # Whether the most recent run was cut short by a timeout/deadlock.
+        # When True the resulting state is partial/cancelled and must NOT be
+        # evaluated as a normal completion (finding F6).
+        self.timed_out = False
 
     async def run(
         self,
@@ -170,10 +174,15 @@ class AsyncShuffler:
             for i, (func, a, kw) in enumerate(zip(funcs, args, kwargs))
         }
 
+        self.timed_out = False
         try:
             await self.scheduler.run_all(wrap_auto_paused_tasks(task_funcs, self.scheduler), timeout=timeout)
         except TimeoutError:
-            pass  # match original behavior: swallow timeout in runner
+            # A timeout (overall wall-clock or the scheduler's own
+            # deadlock-timeout, which run_all now re-raises — finding F1)
+            # means tasks were cancelled mid-flight, so the state is partial.
+            # Record it instead of silently swallowing it (finding F6).
+            self.timed_out = True
 
 
 @contextmanager
@@ -238,15 +247,36 @@ async def run_with_schedule(
         The state object after execution.
     """
     with _patch_async_runtime(detect_sql=detect_sql):
-        scheduler = AwaitScheduler(schedule, len(tasks), deadlock_timeout=deadlock_timeout)
-        runner = AsyncShuffler(scheduler)
-
-        state = setup()
-        funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [lambda s=state, t=t: t(s) for t in tasks]  # type: ignore[assignment]
-
-        await runner.run(funcs, timeout=timeout)
-
+        state, _runner = await _run_with_schedule_status(
+            schedule, setup, tasks, timeout=timeout, deadlock_timeout=deadlock_timeout
+        )
         return state
+
+
+async def _run_with_schedule_status(
+    schedule: list[int],
+    setup: Callable[[], Any],
+    tasks: list[Callable[[Any], Coroutine[Any, Any, None]]],
+    timeout: float = 5.0,
+    deadlock_timeout: float = 5.0,
+) -> tuple[Any, AsyncShuffler]:
+    """Run one interleaving and return ``(state, runner)``.
+
+    The runner exposes ``timed_out`` / ``scheduler.had_error`` so callers can
+    tell whether the run completed normally or was cut short by a
+    timeout/deadlock (in which case ``state`` is partial and must not be
+    evaluated as a normal completion — finding F6).  Assumes the async runtime
+    is already patched by the caller.
+    """
+    scheduler = AwaitScheduler(schedule, len(tasks), deadlock_timeout=deadlock_timeout)
+    runner = AsyncShuffler(scheduler)
+
+    state = setup()
+    funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [lambda s=state, t=t: t(s) for t in tasks]  # type: ignore[assignment]
+
+    await runner.run(funcs, timeout=timeout)
+
+    return state, runner
 
 
 async def explore_async_random(
@@ -324,11 +354,27 @@ async def explore_async_random(
                 break
             schedule = random_round_robin_schedule(rng, num_tasks, max_ops)
 
-            state = await run_with_schedule(
+            state, runner = await _run_with_schedule_status(
                 schedule, setup, tasks, timeout=timeout_per_run, deadlock_timeout=deadlock_timeout
             )
             result.num_explored += 1
             seen_schedule_hashes.add(hash(tuple(schedule)))
+
+            # A timeout/deadlock means tasks were cancelled mid-flight: the
+            # state is partial and does not describe any completed interleaving,
+            # so the invariant must NOT be evaluated against it (finding F6).
+            # Surface the deadlock as the counterexample instead of either
+            # silently dropping it or reporting a spurious invariant violation.
+            if runner.timed_out or runner.scheduler.had_error:
+                result.property_holds = False
+                result.counterexample = schedule
+                result.unique_interleavings = len(seen_schedule_hashes)
+                sched_err = runner.scheduler._error
+                detail = str(sched_err) if sched_err is not None else "tasks did not complete within the timeout"
+                result.explanation = (
+                    f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
+                )
+                return result
 
             # --- serializable_invariant check ---
             if serial_valid_states is not None:
