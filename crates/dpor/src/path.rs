@@ -830,19 +830,44 @@ impl Path {
             return vec![e_prime_thread];
         };
 
+        // Compute the transitive happens-after closure of e (finding 2,
+        // JACM'17 Def 3.2 / Alg.2 line 4). An event is excluded from notdep
+        // (i.e. it happens-after e) if it:
+        //   1. is by the same thread as e (program order from e), OR
+        //   2. conflicts with e (direct dependency), OR
+        //   3. is by a thread that already has an excluded event before it
+        //      (program order from that excluded event), OR
+        //   4. conflicts with any already-excluded event (conflict chain).
+        // A single forward pass suffices because happens-after only flows
+        // forward in trace order: once an event is excluded we accumulate its
+        // thread (for program-order propagation) and its accesses (for
+        // conflict-chain propagation).
+        let mut excluded_threads: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        excluded_threads.insert(e_thread);
+        let mut excluded_accesses: HashMap<u64, (AccessKind, AccessOrigin)> = e_accesses.clone();
+
         let mut sequence = Vec::new();
         for pos in (e_pos + 1)..e_prime_pos {
             if pos < self.branches.len() {
                 let step_thread = self.branches[pos].active_thread;
-                // Condition 1: same-thread events are always dependent
-                // (JACM'17 Def 3.3 p.13: events by the same process are
-                // ALWAYS dependent regardless of object access patterns)
-                if step_thread == e_thread {
-                    continue;
-                }
-                // Condition 2: check for data dependency via access conflicts
                 let step_accesses = &self.branches[pos].active_accesses;
-                if accesses_are_independent(e_accesses, step_accesses) {
+                let happens_after = excluded_threads.contains(&step_thread)
+                    || !accesses_are_independent(&excluded_accesses, step_accesses);
+                if happens_after {
+                    // This event happens-after e: exclude it and extend the
+                    // closure with its thread (program order) and accesses
+                    // (conflict chain).
+                    excluded_threads.insert(step_thread);
+                    for (obj, (kind, origin)) in step_accesses {
+                        excluded_accesses
+                            .entry(*obj)
+                            .and_modify(|(k, o)| {
+                                *k = k.merge(*kind);
+                                *o = o.merge(*origin);
+                            })
+                            .or_insert((*kind, *origin));
+                    }
+                } else {
                     sequence.push(step_thread);
                 }
             }
