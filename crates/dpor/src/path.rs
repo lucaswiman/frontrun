@@ -1127,6 +1127,58 @@ mod tests {
         assert_eq!(bit_reversal_index(5, 42, 1), 0);
     }
 
+    /// step() replacing a branch's active thread must recompute that branch's
+    /// preemption count (finding 3).
+    ///
+    /// Build: pos0 = T0 (no preemption), pos1 = T0 again (no preemption,
+    /// preemptions=0). Insert a wakeup for T1 at pos1, then step(): step picks
+    /// T1 at pos1, switching away from the still-runnable T0 — that IS a
+    /// preemption, so the branch's preemption count must become 1. Before the
+    /// fix it stayed at 0 (the count computed in Branch::new for the original
+    /// thread T0).
+    #[test]
+    fn test_step_recomputes_preemptions_on_active_thread_replacement() {
+        let mut path = Path::new(Some(8), SearchStrategy::Dfs);
+
+        // pos 0: runnable [0,1], current 0 -> T0
+        assert_eq!(path.schedule(&[0, 1], 0, 2), Some(0));
+        // pos 1: runnable [0,1], current 0 -> T0 (no preemption)
+        assert_eq!(path.schedule(&[0, 1], 0, 2), Some(0));
+        assert_eq!(path.branches[1].preemptions, 0);
+
+        // Insert a wakeup for T1 at pos 1 and step into it.
+        path.insert_wakeup(1, 1, None);
+        assert!(path.step());
+
+        // pos 1's active thread is now T1, switching away from runnable T0:
+        // that is a preemption, so the count must be 1, not the stale 0.
+        assert_eq!(path.branches[1].active_thread, 1);
+        assert_eq!(
+            path.branches[1].preemptions, 1,
+            "switching to T1 away from still-runnable T0 is a preemption"
+        );
+    }
+
+    /// step() replacing the root branch's active thread keeps preemptions at 0
+    /// (there is no previous thread to preempt) — guards against off-by-one in
+    /// the recomputation (finding 3).
+    #[test]
+    fn test_step_recomputes_preemptions_at_root() {
+        let mut path = Path::new(Some(8), SearchStrategy::Dfs);
+
+        // pos 0: runnable [0,1], current 0 -> T0
+        assert_eq!(path.schedule(&[0, 1], 0, 2), Some(0));
+        assert_eq!(path.branches[0].preemptions, 0);
+
+        path.insert_wakeup(0, 1, None);
+        assert!(path.step());
+
+        // Root branch now starts with T1; with no preceding thread there is
+        // nothing to preempt, so the count stays 0.
+        assert_eq!(path.branches[0].active_thread, 1);
+        assert_eq!(path.branches[0].preemptions, 0, "root branch has no thread to preempt");
+    }
+
     #[test]
     fn test_new_path() {
         let path = Path::new(None, SearchStrategy::Dfs);
