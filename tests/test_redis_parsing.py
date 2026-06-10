@@ -523,6 +523,119 @@ class TestServerCommands:
         assert result.write_keys == []
 
 
+class TestKeyspaceIntentLock:
+    """FLUSHDB/FLUSHALL write the whole keyspace; per-key commands read it.
+
+    This models the database-wide keyspace as a shared resource so DPOR
+    explores the racing order between FLUSH* and ordinary key traffic.
+    Ordinary key-key traffic stays read-read on the keyspace (no new
+    conflicts); FLUSH* takes a keyspace write that conflicts with every
+    key access.
+    """
+
+    def test_flushdb_writes_keyspace(self) -> None:
+        result = parse_redis_access("FLUSHDB", ())
+        assert result.keyspace == "write"
+        assert result.read_keys == []
+        assert result.write_keys == []
+
+    def test_flushall_writes_keyspace(self) -> None:
+        result = parse_redis_access("FLUSHALL", ())
+        assert result.keyspace == "write"
+
+    def test_get_reads_keyspace(self) -> None:
+        result = parse_redis_access("GET", ("k",))
+        assert result.read_keys == ["k"]
+        assert result.keyspace == "read"
+
+    def test_set_reads_keyspace(self) -> None:
+        result = parse_redis_access("SET", ("k", "v"))
+        assert "k" in result.write_keys
+        assert result.keyspace == "read"
+
+    def test_del_reads_keyspace(self) -> None:
+        result = parse_redis_access("DEL", ("k1", "k2"))
+        assert result.write_keys == ["k1", "k2"]
+        assert result.keyspace == "read"
+
+    def test_keys_reads_keyspace(self) -> None:
+        result = parse_redis_access("KEYS", ("*",))
+        assert result.read_keys == []
+        assert result.write_keys == []
+        assert result.keyspace == "read"
+
+    def test_scan_reads_keyspace(self) -> None:
+        result = parse_redis_access("SCAN", ("0",))
+        assert result.keyspace == "read"
+
+    def test_randomkey_reads_keyspace(self) -> None:
+        result = parse_redis_access("RANDOMKEY", ())
+        assert result.keyspace == "read"
+
+    def test_dbsize_reads_keyspace(self) -> None:
+        result = parse_redis_access("DBSIZE", ())
+        assert result.keyspace == "read"
+
+    def test_plain_server_command_no_keyspace(self) -> None:
+        # PING/INFO etc. do not touch the keyspace.
+        assert parse_redis_access("PING", ()).keyspace is None
+        assert parse_redis_access("INFO", ()).keyspace is None
+
+    def test_transaction_control_no_keyspace(self) -> None:
+        assert parse_redis_access("MULTI", ()).keyspace is None
+        assert parse_redis_access("EXEC", ()).keyspace is None
+
+    def test_eval_no_keyspace(self) -> None:
+        # EVAL is atomic (tx control); it must not add a keyspace access.
+        assert parse_redis_access("EVAL", ("script", "1", "k")).keyspace is None
+
+    def test_publish_no_keyspace(self) -> None:
+        # Pub/sub channels are not keyspace operations.
+        assert parse_redis_access("PUBLISH", ("ch", "msg")).keyspace is None
+
+
+class TestKeyspaceReporting:
+    """The report path must emit a keyspace access alongside per-key accesses."""
+
+    def _capture(self, cmd: str, args: tuple[object, ...]) -> list[tuple[str, str]]:
+        from frontrun import _redis_client
+        from frontrun._io_detection import set_io_reporter
+
+        captured: list[tuple[str, str]] = []
+        set_io_reporter(lambda res_id, kind: captured.append((res_id, kind)))
+        try:
+            _redis_client._report_redis_access(cmd, args)
+        finally:
+            set_io_reporter(None)
+        return captured
+
+    def test_flushdb_emits_keyspace_write(self) -> None:
+        captured = self._capture("FLUSHDB", ())
+        keyspace = [c for c in captured if "keyspace" in c[0].lower()]
+        assert keyspace, f"FLUSHDB should report a keyspace access, got {captured}"
+        assert all(kind == "write" for _, kind in keyspace), captured
+
+    def test_get_emits_keyspace_read_and_key_read(self) -> None:
+        captured = self._capture("GET", ("k",))
+        keyspace = [c for c in captured if "keyspace" in c[0].lower()]
+        keys = [c for c in captured if "keyspace" not in c[0].lower()]
+        assert keyspace and all(kind == "read" for _, kind in keyspace), captured
+        assert any(kind == "read" and "k" in res for res, kind in keys), captured
+
+    def test_flushdb_vs_get_conflict_on_keyspace(self) -> None:
+        flush = self._capture("FLUSHDB", ())
+        get = self._capture("GET", ("k",))
+
+        def keyspace_res(events: list[tuple[str, str]]) -> set[str]:
+            return {res for res, _ in events if "keyspace" in res.lower()}
+
+        flush_res = keyspace_res(flush)
+        get_res = keyspace_res(get)
+        # They must share a keyspace resource id and disagree on kind (write vs read)
+        # so DPOR sees a conflict.
+        assert flush_res & get_res, f"FLUSHDB and GET must share a keyspace resource: {flush_res} vs {get_res}"
+
+
 class TestPubSubCommands:
     """Test Pub/Sub channel handling."""
 
