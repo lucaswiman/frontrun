@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from frontrun.async_shuffler import explore_async_random
 
 
@@ -62,3 +64,49 @@ def test_deadlock_is_surfaced_not_false_invariant() -> None:
     assert not result.property_holds, "deadlock should be surfaced, not scored as a pass"
     assert result.explanation is not None
     assert "deadlock" in result.explanation.lower(), result.explanation
+
+
+def test_detect_sql_reports_table_accesses() -> None:
+    """F8: detect_sql=True in the random async shuffler must actually report.
+
+    Previously AwaitScheduler._setup_task_context installed no IO reporter or
+    DPOR context, so _report_sql_access always returned False and the
+    documented table-conflict reporting never happened — a silent no-op.
+    """
+    aiosqlite = pytest.importorskip("aiosqlite")
+
+    reported: list[tuple[str, str]] = []
+
+    class State:
+        def __init__(self) -> None:
+            self.reported = reported
+
+    async def worker(state: State) -> None:
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+            await conn.execute("INSERT INTO t VALUES (1, 0)")
+            from frontrun._io_detection import get_io_reporter
+
+            # The shuffler must have installed a reporter for this task.
+            reporter = get_io_reporter()
+            if reporter is not None:
+                state.reported.append(("reporter-present", "ok"))
+            await conn.execute("SELECT * FROM t WHERE id = 1")
+
+    import asyncio
+
+    asyncio.run(
+        explore_async_random(
+            setup=State,
+            tasks=[worker, worker],
+            invariant=lambda s: True,
+            max_attempts=2,
+            timeout_per_run=3.0,
+            detect_sql=True,
+            seed=7,
+        )
+    )
+
+    assert ("reporter-present", "ok") in reported, (
+        "detect_sql=True must install an IO reporter so SQL accesses are reported"
+    )
