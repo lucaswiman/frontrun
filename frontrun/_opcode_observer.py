@@ -710,11 +710,12 @@ def _process_opcode(
             if isinstance(_fb, dict):
                 val = _fb.get(instr.argval)
         # On 3.11+, LOAD_GLOBAL with NULL flag (bit 0 of arg) pushes an
-        # extra NULL slot.  The order differs by version:
-        #   3.11-3.13: [NULL, value]  (NULL below, value on TOS)
-        #   3.14+:     [value, NULL]  (value below, NULL on TOS)
+        # extra NULL slot.  The value/NULL order flipped in 3.13:
+        #   3.11-3.12: [NULL, value]  (NULL below, value on TOS)
+        #   3.13+:     [value, NULL]  (value below, NULL on TOS)
+        # (see CPython dis argrepr: "NULL + name" pre-3.13 vs "name + NULL" 3.13+)
         if _PY_VERSION >= (3, 11) and instr.arg is not None and instr.arg & 1:
-            if _PY_VERSION >= (3, 14):
+            if _PY_VERSION >= (3, 13):
                 shadow.push(val)
                 shadow.push(None)
             else:
@@ -848,12 +849,22 @@ def _process_opcode(
                 shadow.push(None)
         else:
             shadow.push(None)
-        # On 3.12+, LOAD_ATTR with method flag (bit 0 of arg) pushes an
-        # extra self/NULL slot after the callable, matching LOAD_METHOD's
-        # stack layout.  On 3.11, LOAD_ATTR with the method flag has
-        # stack_effect=0 (no extra push), so we skip it there.
+        # On 3.12+, LOAD_ATTR with method flag (bit 0 of arg) pushes an extra
+        # self/NULL slot, matching LOAD_METHOD's stack layout.  On 3.11,
+        # LOAD_ATTR with the method flag has stack_effect=0 (no extra push), so
+        # we skip it there.  The value/NULL order flipped in 3.13 (same flip as
+        # LOAD_GLOBAL):
+        #   3.12:  [NULL, value]  (NULL/self below, value on TOS)
+        #   3.13+: [value, NULL]  (value below, NULL/self on TOS)
+        # The value was already pushed above, so for 3.13+ we push NULL on top,
+        # and for 3.12 we insert NULL *below* the value.
         if _PY_VERSION >= (3, 12) and instr.arg is not None and instr.arg & 1:
-            shadow.push(None)
+            if _PY_VERSION >= (3, 13):
+                shadow.push(None)
+            elif shadow.stack:
+                shadow.stack.insert(-1, None)
+            else:
+                shadow.push(None)
 
     elif op == "STORE_ATTR":
         obj = shadow.pop()  # TOS = object
