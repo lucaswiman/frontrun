@@ -208,13 +208,24 @@ class CooperativeLock:
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
 
-        # Register waiting edge in the wait-for graph; raises SchedulerAbort on cycle
-        graph = get_wait_for_graph()
+        # A timed acquire (timeout >= 0) cannot participate in a deadlock: it
+        # gives up after its deadline, which releases whatever locks the caller
+        # holds (the classic timeout-based avoidance pattern).  So we must NOT
+        # register its wait edge in the graph (it would create a spurious cycle)
+        # and we must honor the deadline by returning False (finding 7).
+        timed = timeout >= 0
+        deadline = time.monotonic() + timeout if timed else None
+
+        # Register waiting edge in the wait-for graph; raises SchedulerAbort on
+        # cycle.  Skipped for timed acquires (see above).
+        graph = None if timed else get_wait_for_graph()
         if graph is not None:
             _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
 
         try:
             while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return False
                 if before_sync_retry is not None:
                     assert after_sync_retry is not None
                     if not before_sync_retry(thread_id):
@@ -249,7 +260,11 @@ class CooperativeLock:
         # Acquired — update graph: remove waiting edge, add holding edge
         if graph is not None:
             graph.remove_waiting(thread_id, self._object_id)
-            graph.add_holding(thread_id, self._object_id)
+        # Record that we now hold the lock (even for timed acquires, so other
+        # threads waiting on us are tracked correctly).
+        holding_graph = get_wait_for_graph()
+        if holding_graph is not None:
+            holding_graph.add_holding(thread_id, self._object_id)
 
         self._owner_thread_id = thread_id
         self._report("lock_acquire")
@@ -387,13 +402,22 @@ class CooperativeRLock:
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
 
-        # Register waiting edge in the wait-for graph; raises SchedulerAbort on cycle
-        graph = get_wait_for_graph()
+        # A timed acquire cannot deadlock (it gives up after its deadline), so
+        # skip cycle detection / wait-edge registration and honor the deadline
+        # by returning False (finding 7).
+        timed = timeout >= 0
+        deadline = time.monotonic() + timeout if timed else None
+
+        # Register waiting edge in the wait-for graph; raises SchedulerAbort on
+        # cycle.  Skipped for timed acquires (see above).
+        graph = None if timed else get_wait_for_graph()
         if graph is not None:
             _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
 
         try:
             while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return False
                 if before_sync_retry is not None:
                     assert after_sync_retry is not None
                     if not before_sync_retry(thread_id):
@@ -432,7 +456,9 @@ class CooperativeRLock:
         # Acquired — update graph
         if graph is not None:
             graph.remove_waiting(thread_id, self._object_id)
-            graph.add_holding(thread_id, self._object_id)
+        holding_graph = get_wait_for_graph()
+        if holding_graph is not None:
+            holding_graph.add_holding(thread_id, self._object_id)
 
         self._owner = me
         self._owner_thread_id = thread_id
