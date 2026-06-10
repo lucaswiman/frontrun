@@ -746,6 +746,14 @@ impl Path {
 
                 branch.threads[next] = ThreadStatus::Active;
                 branch.active_thread = next;
+                // Replacing the active thread changes whether this branch's
+                // decision is a preemption, so the count cached in Branch::new
+                // (for the original thread) is now stale. Recompute it against
+                // the previous branch's active thread (finding 3). Deeper
+                // branches built afterward inherit from this corrected value
+                // via schedule().
+                let idx = self.branches.len() - 1;
+                self.recompute_preemptions(idx);
                 self.pos = 0;
                 return true;
             }
@@ -753,6 +761,35 @@ impl Path {
             self.branches.pop();
         }
         false
+    }
+
+    /// Recompute `self.branches[idx].preemptions` after its active thread has
+    /// been replaced (finding 3).
+    ///
+    /// Mirrors the formula in `schedule()`: the decision at `idx` is a
+    /// preemption iff the new active thread differs from the previous branch's
+    /// active thread AND that previous thread was still schedulable at this
+    /// branch (i.e. not Disabled/Blocked here — Visited counts because it was
+    /// runnable when scheduled). The base is the previous branch's (already
+    /// corrected) preemption count, or 0 at the root.
+    fn recompute_preemptions(&mut self, idx: usize) {
+        let active = self.branches[idx].active_thread;
+        let (prev_preemptions, prev_active) = if idx == 0 {
+            (0, None)
+        } else {
+            (self.branches[idx - 1].preemptions, Some(self.branches[idx - 1].active_thread))
+        };
+        let is_preemption = match prev_active {
+            Some(prev) => {
+                prev != active
+                    && self.branches[idx]
+                        .threads
+                        .get(prev)
+                        .is_some_and(|s| !matches!(s, ThreadStatus::Disabled | ThreadStatus::Blocked))
+            }
+            None => false,
+        };
+        self.branches[idx].preemptions = prev_preemptions + u32::from(is_preemption);
     }
 
     /// Check if there are intermediate scheduling steps between `e_pos` and

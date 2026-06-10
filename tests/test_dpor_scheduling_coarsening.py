@@ -200,9 +200,15 @@ class TestSchedulingCoarsening:
 
         assert not result.property_holds, "Deadlock should be found"
         # The exploration should complete well under the 2000 cap.
-        # Without initial thread diversity, this produces ~21 interleavings.
-        assert result.num_explored <= 40, (
-            f"Expected <=40 interleavings for 3-philosopher pure lock example, "
+        # After fixing the stale preemption count (finding 3), step() recomputes
+        # a branch's preemption count when it replaces the active thread.  The
+        # previous code over-counted preemptions for replaced threads, which
+        # wrongly suppressed legal wakeup insertions *within* the preemption
+        # bound; correcting it recovers those interleavings, so the count rose
+        # from ~21 to ~75 here.  The deadlock is still found and the search
+        # stays far below the 2000 cap.
+        assert result.num_explored <= 120, (
+            f"Expected <=120 interleavings for 3-philosopher pure lock example, "
             f"got {result.num_explored}. Likely a scheduling regression "
             f"(e.g. unhandled opcode inflating the DPOR search tree)."
         )
@@ -242,9 +248,12 @@ class TestSchedulingCoarsening:
 
         assert not result.property_holds, "Deadlock should be found"
         # The exploration should complete well under the 5000 cap.
-        # N=4 pure locks produces ~121 interleavings exhaustively.
-        assert result.num_explored <= 200, (
-            f"Expected <=200 interleavings for 4-philosopher pure lock example, "
+        # After the finding-3 preemption-count fix (see the N=3 test), the
+        # previously over-counted preemptions no longer suppress legal
+        # within-bound interleavings, so N=4 rose from ~121 to ~649.  Still
+        # bounded and far below the 5000 cap; the deadlock is still found.
+        assert result.num_explored <= 1000, (
+            f"Expected <=1000 interleavings for 4-philosopher pure lock example, "
             f"got {result.num_explored}. Likely a scheduling regression "
             f"(e.g. unhandled opcode inflating the DPOR search tree)."
         )
