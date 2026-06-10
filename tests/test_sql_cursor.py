@@ -1333,6 +1333,57 @@ def test_release_dpor_row_locks_no_scheduler() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_traced_cursor_execute_recovers_keyword_params() -> None:
+    """TracedCursor must not silently drop keyword params (finding 10c).
+
+    psycopg2 accepts ``execute(sql, vars=params)`` and pymysql
+    ``execute(sql, args=params)``.  Those land in **kwargs; if dropped, the
+    placeholders are never substituted for predicate extraction and the real
+    driver call loses its parameters.
+    """
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("INSERT INTO users VALUES (1, 'Alice')")
+    cur = conn.cursor()
+    log.clear()
+    # sqlite3's TracedCursor.execute accepts parameters as a keyword via kwargs.
+    cur.execute("SELECT * FROM users WHERE id = ?", parameters=(1,))
+    rows = cur.fetchall()
+    assert rows == [(1, "Alice")], "keyword params must reach the driver"
+    conn.close()
+
+
+def test_executemany_insert_records_uncaptured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """executemany INSERT must engage the uncaptured-insert determinism guard.
+
+    executemany assigns one ID per row but lastrowid exposes only the final
+    one, so per-row aliases can't be captured.  Previously this path skipped
+    record_insert entirely, silently disabling the determinism guard (finding
+    10e).  The table must now be recorded as uncaptured.
+    """
+    from frontrun import _sql_insert_tracker
+
+    _sql_insert_tracker.clear_insert_tracker()
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+    try:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+        cur = conn.cursor()
+        cur.executemany("INSERT INTO users (name) VALUES (?)", [("a",), ("b",), ("c",)])
+        assert "users" in _sql_insert_tracker.get_uncaptured_tables(), (
+            "executemany INSERT must record the table as uncaptured"
+        )
+        conn.close()
+    finally:
+        _sql_insert_tracker.clear_insert_tracker()
+
+
 def test_wrap_connection_cursor_traces_explicit_factory() -> None:
     """conn.cursor(cursor_factory=...) must be wrapped into a traced subclass.
 

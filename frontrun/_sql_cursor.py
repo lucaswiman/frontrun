@@ -542,6 +542,20 @@ def _capture_insert_id(cursor: Any, table: str) -> None:
     _report_or_buffer(reporter, alias, "write")
 
 
+def _record_uncaptured_insert(cursor: Any, table: str) -> None:
+    """Record an executemany INSERT as having an uncaptured row ID (finding 10e).
+
+    ``executemany`` inserts multiple rows but ``lastrowid`` exposes only the
+    last one, so per-row indexical aliases cannot be built.  Recording the
+    INSERT with ``concrete_id=None`` adds the table to the uncaptured set,
+    keeping the determinism guard active for this path.
+    """
+    if get_io_reporter() is None:
+        return
+    db_scope = _get_connection_db_scope(cursor)
+    record_insert(table, None, db_scope=db_scope)
+
+
 def _execute_with_retry(original_method: Any, cursor: Any, operation: Any, parameters: Any = None) -> Any:
     """Execute a DB-API method, retrying transient SQLite lock errors."""
     for i in range(50):
@@ -636,8 +650,15 @@ def _intercept_execute(
             _release_dpor_row_locks()
 
     # Post-INSERT: capture lastrowid and record indexical alias
-    if insert_match is not None and not is_executemany and reported:
-        _capture_insert_id(self, insert_match.group(1))
+    if insert_match is not None and reported:
+        if not is_executemany:
+            _capture_insert_id(self, insert_match.group(1))
+        else:
+            # executemany INSERT assigns one ID per row, but ``lastrowid`` only
+            # exposes the final row's ID — the per-row IDs cannot be captured.
+            # Record the table as uncaptured so the nondeterminism guard still
+            # fires for this path instead of silently passing (finding 10e).
+            _record_uncaptured_insert(self, insert_match.group(1))
 
     return result
 
@@ -645,6 +666,26 @@ def _intercept_execute(
 # ---------------------------------------------------------------------------
 # Traced cursor/connection subclasses (created dynamically per driver)
 # ---------------------------------------------------------------------------
+
+
+# DB-API drivers spell the bind-parameter keyword differently:
+# psycopg2 → ``vars``, pymysql → ``args``, sqlite3 / generic → ``parameters``.
+_PARAM_KWARG_NAMES = ("parameters", "vars", "args", "params")
+
+
+def _recover_param_kwarg(parameters: Any, kwargs: dict[str, Any]) -> Any:
+    """Recover a bind-parameter value passed as a keyword (finding 10c).
+
+    ``cur.execute(sql, vars=params)`` (psycopg2) / ``args=params`` (pymysql)
+    lands the params in ``**kwargs``; without recovering them the placeholders
+    are never substituted and the real driver call loses its parameters.
+    """
+    if parameters is not None or not kwargs:
+        return parameters
+    for name in _PARAM_KWARG_NAMES:
+        if name in kwargs:
+            return kwargs[name]
+    return parameters
 
 
 def _make_traced_cursor_class(base_cursor_cls: type, paramstyle: str = "format") -> type:
@@ -670,12 +711,14 @@ def _make_traced_cursor_class(base_cursor_cls: type, paramstyle: str = "format")
 
         def execute(self, operation: Any, parameters: Any = None, /, **kwargs: Any) -> Any:  # type: ignore[override]
             original = _ORIGINAL_METHODS.get(_execute_key, base_cursor_cls.execute)
+            parameters = _recover_param_kwarg(parameters, kwargs)
             return _intercept_execute(
                 original, self, operation, parameters, is_executemany=False, paramstyle=self._cursor_paramstyle
             )
 
         def executemany(self, operation: Any, parameters: Any = None, /, **kwargs: Any) -> Any:  # type: ignore[override]
             original = _ORIGINAL_METHODS.get(_executemany_key, base_cursor_cls.executemany)
+            parameters = _recover_param_kwarg(parameters, kwargs)
             return _intercept_execute(
                 original, self, operation, parameters, is_executemany=True, paramstyle=self._cursor_paramstyle
             )
@@ -847,6 +890,11 @@ def _patch_class_methods(cls: type, paramstyle: str) -> None:
             orig: Any, mname: str = method_name, ps: str = paramstyle, _iem: bool = _is_executemany
         ) -> Any:
             def _patched(self: Any, operation: Any, parameters: Any = None, *args: Any, **kwargs: Any) -> Any:
+                # Recover params passed as a keyword (pymysql ``args=``) — see
+                # finding 10c.  ``*args`` already captures a positional extra.
+                if parameters is None and args:
+                    parameters = args[0]
+                parameters = _recover_param_kwarg(parameters, kwargs)
                 return _intercept_execute(orig, self, operation, parameters, is_executemany=_iem, paramstyle=ps)
 
             return wrap_method_metadata(_patched, orig, name=mname)
