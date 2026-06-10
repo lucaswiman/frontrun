@@ -108,6 +108,48 @@ def _merge_lock_intent(a: LockIntent | None, b: LockIntent | None) -> LockIntent
     return None
 
 
+def _cte_alias_names(ast: Any) -> set[str]:
+    """Return the set of CTE alias names declared by *ast*'s WITH clause(s).
+
+    These aliases are query-local names (e.g. ``WITH u AS (...) SELECT * FROM u``)
+    and must be excluded from the reported read/write table sets — they are not
+    real tables (finding 1).
+    """
+    from sqlglot import exp  # type: ignore[import-untyped]
+
+    aliases: set[str] = set()
+    for cte in ast.find_all(exp.CTE):
+        if cte.alias:
+            aliases.add(cte.alias)
+    return aliases
+
+
+def _update_write_tables(node: Any) -> set[str]:
+    """Tables written by an UPDATE, including MySQL multi-table updates.
+
+    ``node.this`` is only the first table; a ``UPDATE t1 JOIN t2 ... SET
+    t1.a=1, t2.b=2`` writes every table named on the left-hand side of a SET
+    assignment.  We union those qualifying tables with ``node.this`` so multi-
+    table writes are not demoted to reads (finding 8).
+    """
+    from sqlglot import exp  # type: ignore[import-untyped]
+
+    tables: set[str] = set()
+    if isinstance(node.this, exp.Table):
+        tables.add(node.this.name)
+    # Resolve SET-target column tables (aliases) back to physical table names.
+    alias_to_table: dict[str, str] = {}
+    for t in node.find_all(exp.Table):
+        if t.alias:
+            alias_to_table[t.alias] = t.name
+        alias_to_table.setdefault(t.name, t.name)
+    for assignment in node.args.get("expressions", []) or []:
+        col = assignment.this if isinstance(assignment, exp.EQ) else None
+        if isinstance(col, exp.Column) and col.table:
+            tables.add(alias_to_table.get(col.table, col.table))
+    return tables
+
+
 def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
     """Parse a SQL statement and return table access information.
 
@@ -168,6 +210,32 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
             if parts:
                 return SqlAccessResult(set(), set(), None, SavepointOp("release", _strip_quotes(parts[0])), None)
 
+        # MySQL: LOCK TABLES <tbl> [AS alias] <READ|WRITE> [, ...] — sqlglot ERROR.
+        # Distinct grammar from the PostgreSQL "LOCK TABLE ... IN ... MODE" form
+        # handled below: here each table carries its own trailing lock type.
+        if upper.startswith("LOCK TABLES "):
+            rest = stripped[12:].strip()
+            tables: set[str] = set()
+            mysql_lock_intent: LockIntent = LockIntent.SHARE
+            for entry in rest.split(","):
+                tokens = entry.strip().split()
+                if not tokens:
+                    continue
+                # Drop a trailing READ / WRITE / "LOW_PRIORITY WRITE" / "READ LOCAL".
+                lock_words = {"READ", "WRITE", "LOCAL", "LOW_PRIORITY"}
+                name_tokens = [t for t in tokens if t.upper() not in lock_words]
+                # Strip an optional "AS alias": keep only the table name (first token).
+                if name_tokens:
+                    if len(name_tokens) >= 3 and name_tokens[1].upper() == "AS":
+                        tbl_name = name_tokens[0]
+                    else:
+                        tbl_name = name_tokens[0]
+                    tables.add(_strip_quotes(tbl_name))
+                if any(t.upper() == "WRITE" for t in tokens):
+                    mysql_lock_intent = LockIntent.UPDATE
+            if tables:
+                return SqlAccessResult(set(), tables, mysql_lock_intent, None, None)
+
         # LOCK TABLE <table>[, <table>...] [IN <mode> MODE] — sqlglot ERROR for all dialects
         if upper.startswith("LOCK TABLE "):
             rest = stripped[11:].strip()
@@ -203,11 +271,19 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
             return SqlAccessResult(set(), set(), None, None, None)
 
     # Pre-process pyformat parameter placeholders (%s, %(name)s) which
-    # sqlglot default dialect chokes on (misinterprets % as modulo).
+    # sqlglot default dialect chokes on (misinterprets % as modulo).  Skip
+    # single-quoted string literals so a literal like ``'a%sb'`` is left
+    # untouched and yields the same resource ID via the parameterized and
+    # literal paths (finding 7).
     if "%" in sql:
-        sql = sql.replace("%%", "\x00")
-        sql = re.sub(r"%(?:\(\w+\))?s", "?", sql)
-        sql = sql.replace("\x00", "%")
+        from frontrun._sql_params import _split_literal_segments
+
+        def _rewrite(segment: str) -> str:
+            segment = segment.replace("%%", "\x00")
+            segment = re.sub(r"%(?:\(\w+\))?s", "?", segment)
+            return segment.replace("\x00", "%")
+
+        sql = "".join(text if is_lit else _rewrite(text) for text, is_lit in _split_literal_segments(sql))
 
     try:
         expressions = sqlglot.parse(sql)
@@ -356,43 +432,72 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                         all_temporal = {}
                     all_temporal[t.name] = clause
 
-            if isinstance(ast, exp.Insert):
-                tbl = ast.find(exp.Table)
-                if tbl:
-                    write.add(tbl.name)
-                # Source tables (everything after the target)
-                if ast.expression:  # the SELECT source
-                    for t in ast.expression.find_all(exp.Table):
+            # CTE alias names are query-local and must never be reported as
+            # tables (finding 1).  Data-modifying CTEs (UPDATE/DELETE/INSERT
+            # nested in a WITH clause) are classified into the write set with
+            # their own sources as reads, so their writes are not lost.
+            cte_aliases = _cte_alias_names(ast)
+
+            def _classify_node(node: exp.Expression, *, top_level: bool) -> None:
+                """Add reads/writes for a single DML node into the shared sets."""
+                if isinstance(node, exp.Insert):
+                    tbl = node.this
+                    if isinstance(tbl, exp.Schema):
+                        tbl = tbl.this  # INSERT INTO t(cols) → Schema wraps Table
+                    target_node = tbl if isinstance(tbl, exp.Table) else None
+                    if target_node is not None:
+                        write.add(target_node.name)
+                    # Source tables: read every table except the INSERT target
+                    # node itself.  Identity comparison (not name) preserves
+                    # self-table INSERT...SELECT (read AND write of the same
+                    # name), while still picking up sources referenced via a CTE
+                    # (WITH src AS ... INSERT ... SELECT * FROM src).
+                    for t in node.find_all(exp.Table):
+                        if t is not target_node:
+                            read.add(t.name)
+                elif isinstance(node, (exp.Update, exp.Delete)):
+                    if isinstance(node, exp.Update):
+                        targets = _update_write_tables(node)
+                    elif isinstance(node.this, exp.Table):
+                        targets = {node.this.name}
+                    else:
+                        targets = set()
+                    for name in targets:
+                        write.add(name)
+                        read.add(name)
+                    if isinstance(node, exp.Delete):
+                        all_delete.update(targets)
+                    for t in node.find_all(exp.Table):
+                        if t.name not in write:
+                            read.add(t.name)
+                elif isinstance(node, exp.Merge):
+                    target = node.this
+                    if isinstance(target, exp.Table):
+                        write.add(target.name)
+                        read.add(target.name)
+                    for t in node.find_all(exp.Table):
+                        if t.name not in write:
+                            read.add(t.name)
+                elif isinstance(node, (exp.Select, exp.Union, exp.Intersect, exp.Except)):
+                    for t in node.find_all(exp.Table):
                         read.add(t.name)
-            elif isinstance(ast, (exp.Update, exp.Delete)):
-                tbl = ast.this
-                if isinstance(tbl, exp.Table):
-                    write.add(tbl.name)
-                    read.add(tbl.name)
-                    if isinstance(ast, exp.Delete):
-                        all_delete.add(tbl.name)
-                for t in ast.find_all(exp.Table):
-                    if t.name not in write:
-                        read.add(t.name)
-            elif isinstance(ast, exp.Select):
-                for t in ast.find_all(exp.Table):
-                    read.add(t.name)
-            elif isinstance(ast, (exp.Union, exp.Intersect, exp.Except)):
-                for t in ast.find_all(exp.Table):
-                    read.add(t.name)
-            elif isinstance(ast, exp.Merge):
-                target = ast.this
-                if isinstance(target, exp.Table):
-                    write.add(target.name)
-                    read.add(target.name)
-                # All non-target tables are read sources
-                for t in ast.find_all(exp.Table):
-                    if t.name not in write:
-                        read.add(t.name)
-            else:
-                # DDL, GRANT, etc. — conservatively treat as write
-                for t in ast.find_all(exp.Table):
-                    write.add(t.name)
+                elif top_level:
+                    # DDL, GRANT, etc. — conservatively treat as write.
+                    for t in node.find_all(exp.Table):
+                        write.add(t.name)
+
+            # Classify data-modifying CTEs first so their write targets are in
+            # the write set before the top-level node's source-read pass runs.
+            for cte_node in ast.find_all(exp.CTE):
+                inner = cte_node.this
+                if isinstance(inner, (exp.Update, exp.Delete, exp.Insert)):
+                    _classify_node(inner, top_level=False)
+
+            _classify_node(ast, top_level=True)
+
+            # Drop CTE alias names — they are query-local, not real tables.
+            write -= cte_aliases
+            read -= cte_aliases
 
         all_read.update(read)
         all_write.update(write)

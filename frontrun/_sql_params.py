@@ -52,6 +52,71 @@ _RE_DOLLAR = re.compile(r"\$(\d+)")
 
 
 # ---------------------------------------------------------------------------
+# Literal-aware substitution
+# ---------------------------------------------------------------------------
+
+
+def _split_literal_segments(sql: str) -> list[tuple[str, bool]]:
+    """Split *sql* into ``(text, is_literal)`` segments.
+
+    Single-quoted string literals (with ``''`` escape) are tagged
+    ``is_literal=True`` so that placeholder substitution can skip them: a
+    ``?`` or ``%s`` inside a string literal is data, not a placeholder
+    (finding 7).  Everything outside a literal is tagged ``is_literal=False``.
+    """
+    segments: list[tuple[str, bool]] = []
+    i = 0
+    n = len(sql)
+    start = 0
+    in_literal = False
+    while i < n:
+        ch = sql[i]
+        if not in_literal:
+            if ch == "'":
+                # Flush the non-literal run, then start a literal at the quote.
+                if i > start:
+                    segments.append((sql[start:i], False))
+                start = i
+                in_literal = True
+            i += 1
+        else:
+            if ch == "'":
+                # ``''`` is an escaped quote inside the literal, not a close.
+                if i + 1 < n and sql[i + 1] == "'":
+                    i += 2
+                    continue
+                # Closing quote: emit the literal (including both quotes).
+                i += 1
+                segments.append((sql[start:i], True))
+                start = i
+                in_literal = False
+            else:
+                i += 1
+    if start < n:
+        # Trailing run; an unterminated literal is still treated as a literal
+        # so we never substitute inside a half-open string.
+        segments.append((sql[start:n], in_literal))
+    return segments
+
+
+def _sub_outside_literals(pattern: re.Pattern[str], replacer: Any, sql: str) -> str:
+    """Apply ``pattern.sub(replacer, ...)`` only outside single-quoted literals.
+
+    *replacer* is invoked in left-to-right order across the non-literal
+    segments, so stateful positional replacers (which advance an index per
+    match) see placeholders in source order while ignoring those embedded in
+    string literals.
+    """
+    out: list[str] = []
+    for text, is_literal in _split_literal_segments(sql):
+        if is_literal:
+            out.append(text)
+        else:
+            out.append(pattern.sub(replacer, text))
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Resolution functions
 # ---------------------------------------------------------------------------
 
@@ -97,7 +162,7 @@ def _resolve_positional(sql: str, parameters: Any, pattern: re.Pattern[str]) -> 
         idx += 1
         return val
 
-    return pattern.sub(replacer, sql)
+    return _sub_outside_literals(pattern, replacer, sql)
 
 
 def _resolve_numeric(sql: str, parameters: Any, pattern: re.Pattern[str]) -> str:
@@ -110,7 +175,7 @@ def _resolve_numeric(sql: str, parameters: Any, pattern: re.Pattern[str]) -> str
             raise IndexError("placeholder index must be >= 1")
         return _python_to_sql_literal(params[idx])
 
-    return pattern.sub(replacer, sql)
+    return _sub_outside_literals(pattern, replacer, sql)
 
 
 def _resolve_named(sql: str, parameters: Any) -> str:
@@ -120,7 +185,7 @@ def _resolve_named(sql: str, parameters: Any) -> str:
     def replacer(m: re.Match[str]) -> str:
         return _python_to_sql_literal(params[m.group(1)])
 
-    return _RE_NAMED.sub(replacer, sql)
+    return _sub_outside_literals(_RE_NAMED, replacer, sql)
 
 
 def _resolve_pyformat(sql: str, parameters: Any) -> str:
@@ -130,4 +195,4 @@ def _resolve_pyformat(sql: str, parameters: Any) -> str:
     def replacer(m: re.Match[str]) -> str:
         return _python_to_sql_literal(params[m.group(1)])
 
-    return _RE_PYFORMAT.sub(replacer, sql)
+    return _sub_outside_literals(_RE_PYFORMAT, replacer, sql)

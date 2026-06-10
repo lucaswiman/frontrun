@@ -92,8 +92,15 @@ def _extract_from_ast(ast: object) -> list[Predicate]:
 
     if not hasattr(ast, "find"):
         return []
-    where = ast.find(exp.Where)  # type: ignore[union-attr]
-    if where is None:
+    # Only consider a WHERE clause attached directly to the top-level
+    # statement.  Using ``ast.find(exp.Where)`` (a whole-tree DFS) would pick
+    # up WHERE clauses nested inside subqueries — e.g.
+    # ``UPDATE counters SET value = (SELECT value FROM counters WHERE id = 1)``
+    # is a full-table write, but the subquery's ``id = 1`` would wrongly be
+    # reported as the outer statement's row identity (finding 2).  Reading the
+    # statement node's own ``where`` arg keeps subquery predicates from leaking.
+    where = ast.args.get("where") if hasattr(ast, "args") else None  # type: ignore[union-attr]
+    if not isinstance(where, exp.Where):
         return []
 
     predicates: list[Predicate] = []
