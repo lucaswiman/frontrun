@@ -1467,8 +1467,7 @@ def test_for_update_primary_colset_emits_read_bridge() -> None:
         _report_sql_access("SELECT * FROM users WHERE id = 1 FOR UPDATE")
         bridge_kinds = {k for r, k in log.events if r == "sql:users"}
         assert "read" in bridge_kinds, (
-            "FOR UPDATE on the primary colset must emit a READ bridge resource "
-            f"(got events: {log.events})"
+            f"FOR UPDATE on the primary colset must emit a READ bridge resource (got events: {log.events})"
         )
 
         # A non-primary-colset access emits a WRITE bridge; READ vs WRITE on
