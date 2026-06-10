@@ -10,13 +10,27 @@ pub fn extract_pg_query(buf: &[u8]) -> Option<&str> {
             if buf.len() < 6 {
                 return None;
             }
-            let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-            // len includes the 4-byte length field itself + SQL + null terminator,
-            // so minimum valid len is 5 (4 + 1 null byte for empty SQL).
-            if len < 5 || buf.len() < 1 + len {
+            // The wire length is a signed i32. Reject negative values
+            // explicitly before widening — `as usize` would sign-extend a
+            // negative into a huge value, after which the index math below
+            // wraps and slice-indexing panics (process abort across the hook).
+            let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+            if len < 0 {
                 return None;
             }
-            let sql_bytes = &buf[5..1 + len - 1]; // exclude null terminator
+            let len = len as usize;
+            // len includes the 4-byte length field itself + SQL + null terminator,
+            // so minimum valid len is 5 (4 + 1 null byte for empty SQL).
+            // All index arithmetic is checked so a crafted length can never
+            // produce an out-of-bounds slice expression.
+            let end = match 1usize.checked_add(len) {
+                Some(e) => e,
+                None => return None,
+            };
+            if len < 5 || buf.len() < end {
+                return None;
+            }
+            let sql_bytes = &buf[5..end - 1]; // exclude null terminator
             std::str::from_utf8(sql_bytes).ok()
         }
         b'P' => {
@@ -24,11 +38,21 @@ pub fn extract_pg_query(buf: &[u8]) -> Option<&str> {
             if buf.len() < 6 {
                 return None;
             }
-            let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-            if buf.len() < 1 + len {
+            // Reject negative signed lengths before widening (see 'Q' above).
+            let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+            if len < 0 {
                 return None;
             }
-            let payload = &buf[5..1 + len];
+            let len = len as usize;
+            let end = match 1usize.checked_add(len) {
+                Some(e) => e,
+                None => return None,
+            };
+            // Need at least the 4-byte length field plus one byte of payload.
+            if len < 5 || buf.len() < end {
+                return None;
+            }
+            let payload = &buf[5..end];
             // Skip statement name (null-terminated)
             let name_end = payload.iter().position(|&b| b == 0)?;
             let query_start = name_end + 1;
