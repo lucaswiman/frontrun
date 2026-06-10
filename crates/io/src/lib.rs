@@ -468,20 +468,52 @@ fn is_pipe_fd(fd: c_int) -> bool {
 // Low-level write helper (uses real write, not our interceptor)
 // ---------------------------------------------------------------------------
 
+// A single event line stays within one write() call as long as it is at most
+// PIPE_BUF bytes, which POSIX guarantees to be atomic on a pipe even with
+// concurrent writers. With the resource-escaping fix, an event is exactly one
+// line, so lines up to PIPE_BUF interleave cleanly. Lines longer than PIPE_BUF
+// (very large SQL statements) may still interleave with other threads' writes
+// mid-line — full atomicity beyond PIPE_BUF is not cheaply achievable here.
+//
+// `write_one` performs a single raw write of `buf`, returning the byte count
+// (>=0) or -1 with errno set. `write_to_fd` loops over EINTR and short writes
+// so a signal-interrupted or partial write never silently truncates a line.
+
 #[cfg(target_os = "macos")]
-fn write_to_fd(fd: c_int, buf: &[u8]) {
-    unsafe {
-        raw_syscall::write(fd, buf.as_ptr() as *const c_void, buf.len());
-    }
+unsafe fn write_one(fd: c_int, buf: &[u8]) -> ssize_t {
+    raw_syscall::write(fd, buf.as_ptr() as *const c_void, buf.len())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn write_to_fd(fd: c_int, buf: &[u8]) {
+unsafe fn write_one(fd: c_int, buf: &[u8]) -> ssize_t {
     type WriteFn = unsafe extern "C" fn(c_int, *const c_void, size_t) -> ssize_t;
-    if let Some(real_write) = resolve!(write, WriteFn) {
-        unsafe {
-            real_write(fd, buf.as_ptr() as *const c_void, buf.len());
+    match resolve!(write, WriteFn) {
+        Some(real_write) => real_write(fd, buf.as_ptr() as *const c_void, buf.len()),
+        None => -1,
+    }
+}
+
+fn write_to_fd(fd: c_int, buf: &[u8]) {
+    let mut written: usize = 0;
+    while written < buf.len() {
+        let n = unsafe { write_one(fd, &buf[written..]) };
+        if n > 0 {
+            written += n as usize;
+            continue;
         }
+        if n == 0 {
+            // No progress and no error reported — avoid spinning forever.
+            break;
+        }
+        // n < 0: inspect errno for retryable conditions.
+        let err = unsafe { get_errno() };
+        if err == libc::EINTR {
+            continue; // interrupted by a signal before any byte was written
+        }
+        // EAGAIN/EWOULDBLOCK on a non-blocking fd, or any hard error: give up.
+        // (The event pipe is created blocking on the write end, so EAGAIN is
+        // not expected there; bailing avoids a busy-spin if it ever occurs.)
+        break;
     }
 }
 
@@ -516,6 +548,13 @@ fn report_io(fd: c_int, kind: &str) {
 /// # Safety
 /// `buf` must point to at least `len` valid bytes.
 unsafe fn report_send_buf(fd: c_int, buf: *const c_void, len: size_t) {
+    // `slice::from_raw_parts(NULL, 0)` is UB regardless of len, and a zero
+    // length can never contain a query anyway — fall straight through to the
+    // generic write report in either case.
+    if buf.is_null() || len == 0 {
+        report_io(fd, "write");
+        return;
+    }
     let buf_slice = std::slice::from_raw_parts(buf as *const u8, len);
     if let Some(sql) = sql_extract::extract_pg_query(buf_slice) {
         log_event("sql_write", sql, fd);
@@ -814,8 +853,13 @@ mod linux_intercept {
         };
 
         let result = real(fd, addr, addrlen);
+        // Save errno immediately: non-blocking connect returns -1/EINPROGRESS
+        // and callers ALWAYS read errno. The logging below (map insertion,
+        // dlsym resolution, pipe/file writes) can clobber errno, so we restore
+        // the real call's errno just before returning.
+        let saved_errno = get_errno();
 
-        if result == 0 || get_errno() == libc::EINPROGRESS {
+        if result == 0 || saved_errno == libc::EINPROGRESS {
             if let Some(_guard) = ReentrancyGuard::enter() {
                 if let Some(resource) = sockaddr_to_resource(addr, addrlen) {
                     if let Ok(mut map) = FD_MAP.lock() {
@@ -826,6 +870,7 @@ mod linux_intercept {
             }
         }
 
+        set_errno(saved_errno);
         result
     }
 
@@ -1123,12 +1168,15 @@ mod macos_intercept {
         addrlen: socklen_t,
     ) -> c_int {
         let result = raw_syscall::connect(fd, addr, addrlen);
+        // Save errno immediately (see Linux connect): callers of non-blocking
+        // connect always read errno, and the logging below can clobber it.
+        let saved_errno = get_errno();
 
         if !READY.load(Ordering::Acquire) {
             return result;
         }
 
-        if result == 0 || get_errno() == libc::EINPROGRESS {
+        if result == 0 || saved_errno == libc::EINPROGRESS {
             if let Some(_guard) = ReentrancyGuard::enter() {
                 if let Some(resource) = sockaddr_to_resource(addr, addrlen) {
                     if let Ok(mut map) = FD_MAP.lock() {
@@ -1139,6 +1187,7 @@ mod macos_intercept {
             }
         }
 
+        set_errno(saved_errno);
         result
     }
 
