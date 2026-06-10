@@ -665,6 +665,54 @@ fn log_event(kind: &str, resource: &str, fd: c_int) {
 // sockaddr → resource string
 // ---------------------------------------------------------------------------
 
+/// Render the path portion of an `AF_UNIX` address into a resource string.
+///
+/// `path_bytes` is the `sun_path` content bounded by `addrlen` (so it never
+/// over-reads). Three cases:
+///   * empty → unnamed socket (`socket:unix:`)
+///   * leading NUL → Linux abstract socket; the name is the *remaining* bytes
+///     (NOT null-terminated, may contain arbitrary bytes). We include the
+///     name so distinct abstract sockets don't all collapse to one resource
+///     and create false conflicts.
+///   * otherwise → filesystem path, null-terminated within `sun_path`.
+///
+/// Non-printable / non-UTF-8 bytes in either name form are hex-escaped
+/// (`\xNN`) so the result is a stable, framing-safe ASCII string. Pure
+/// function — unit-tested below.
+fn unix_socket_resource(path_bytes: &[u8]) -> String {
+    if path_bytes.is_empty() {
+        return "socket:unix:".to_string();
+    }
+    if path_bytes[0] == 0 {
+        // Abstract namespace: name is everything after the leading NUL,
+        // bounded by addrlen (the caller already truncated to addrlen).
+        let name = &path_bytes[1..];
+        format!("socket:unix:abstract:{}", hex_escape_bytes(name))
+    } else {
+        let len = path_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_bytes.len());
+        format!("socket:unix:{}", hex_escape_bytes(&path_bytes[..len]))
+    }
+}
+
+/// Render bytes as an ASCII string, hex-escaping any byte that is not a
+/// printable, non-control ASCII character (and escaping `\` itself).
+fn hex_escape_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b == b'\\' {
+            out.push_str("\\\\");
+        } else if b.is_ascii_graphic() || b == b' ' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("\\x{:02x}", b));
+        }
+    }
+    out
+}
+
 fn sockaddr_to_resource(addr: *const sockaddr, addrlen: socklen_t) -> Option<String> {
     if addr.is_null() || addrlen == 0 {
         return None;
@@ -708,17 +756,7 @@ fn sockaddr_to_resource(addr: *const sockaddr, addrlen: socklen_t) -> Option<Str
                 sun.sun_path.as_ptr() as *const u8,
                 max_path_len.min(sun.sun_path.len()),
             );
-            let len = path_bytes
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(path_bytes.len());
-            if len == 0 {
-                Some("socket:unix:abstract".to_string())
-            } else {
-                let path =
-                    std::str::from_utf8(&path_bytes[..len]).unwrap_or("unix:???");
-                Some(format!("socket:unix:{}", path))
-            }
+            Some(unix_socket_resource(path_bytes))
         } else {
             None
         }
@@ -1504,5 +1542,44 @@ mod tests {
         // Multi-byte UTF-8 must survive intact (continuation bytes >= 0x80
         // never collide with the escaped ASCII characters).
         assert_eq!(escape_resource("café\tμ"), "café\\tμ");
+    }
+
+    #[test]
+    fn test_unix_socket_resource_path() {
+        let path = b"/var/run/postgres/.s.PGSQL.5432\0extra";
+        assert_eq!(
+            unix_socket_resource(path),
+            "socket:unix:/var/run/postgres/.s.PGSQL.5432"
+        );
+    }
+
+    #[test]
+    fn test_unix_socket_resource_empty() {
+        assert_eq!(unix_socket_resource(b""), "socket:unix:");
+    }
+
+    #[test]
+    fn test_unix_socket_resource_abstract_distinct_names() {
+        // Two different abstract sockets must produce different resources,
+        // not both collapse to a single "socket:unix:abstract".
+        let a = unix_socket_resource(b"\0my-service-a");
+        let b = unix_socket_resource(b"\0my-service-b");
+        assert_eq!(a, "socket:unix:abstract:my-service-a");
+        assert_eq!(b, "socket:unix:abstract:my-service-b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_unix_socket_resource_abstract_empty_name() {
+        // Leading NUL with no following bytes — abstract with empty name.
+        assert_eq!(unix_socket_resource(b"\0"), "socket:unix:abstract:");
+    }
+
+    #[test]
+    fn test_unix_socket_resource_abstract_binary_name() {
+        // Abstract names may contain arbitrary bytes (incl. embedded NUL);
+        // non-printable bytes are hex-escaped, keeping distinct names distinct.
+        let r = unix_socket_resource(b"\0a\x00\xffb");
+        assert_eq!(r, "socket:unix:abstract:a\\x00\\xffb");
     }
 }
