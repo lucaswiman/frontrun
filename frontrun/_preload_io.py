@@ -58,6 +58,41 @@ class PreloadIOEvent:
 IOEventListener = Callable[[PreloadIOEvent], None]
 
 
+def _unescape_resource(resource: str) -> str:
+    r"""Reverse the Rust side's resource escaping.
+
+    The preload library escapes ``\``, ``\t``, and ``\n`` in the resource
+    field (see ``crates/io/src/lib.rs::escape_resource``) so that raw SQL or
+    odd file paths cannot corrupt the tab/newline TSV framing.  We unescape
+    exactly once, left-to-right, so an escaped literal backslash (``\\``) is
+    never re-interpreted as part of a following ``\t``/``\n`` sequence.
+    """
+    if "\\" not in resource:
+        return resource
+    out: list[str] = []
+    i = 0
+    n = len(resource)
+    while i < n:
+        ch = resource[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = resource[i + 1]
+            if nxt == "\\":
+                out.append("\\")
+                i += 2
+                continue
+            if nxt == "t":
+                out.append("\t")
+                i += 2
+                continue
+            if nxt == "n":
+                out.append("\n")
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _parse_event_line(line: str) -> PreloadIOEvent | None:
     """Parse a single tab-separated event line, or return None if malformed."""
     line = line.rstrip("\n")
@@ -69,7 +104,7 @@ def _parse_event_line(line: str) -> PreloadIOEvent | None:
     try:
         return PreloadIOEvent(
             kind=parts[0],
-            resource_id=parts[1],
+            resource_id=_unescape_resource(parts[1]),
             fd=int(parts[2]),
             pid=int(parts[3]),
             tid=int(parts[4]),

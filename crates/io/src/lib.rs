@@ -524,6 +524,33 @@ unsafe fn report_send_buf(fd: c_int, buf: *const c_void, len: size_t) {
     }
 }
 
+/// Escape a resource string so it can be embedded in a single tab-separated,
+/// newline-terminated event line without breaking the framing.
+///
+/// Resources can contain arbitrary bytes — raw SQL (for `sql_write` events)
+/// routinely contains tabs and newlines, and file paths can contain odd
+/// bytes too. We escape backslash, tab, and newline byte-wise so the Python
+/// parser can split on raw `\t` / `\n` and then unescape exactly once.
+///
+/// Pure function (no I/O, no allocation beyond the returned String) so it can
+/// be unit-tested directly under `cargo test`.
+fn escape_resource(resource: &str) -> String {
+    let mut out = String::with_capacity(resource.len());
+    // `resource` is valid UTF-8 (it's a &str). None of the escaped bytes
+    // (\\, \t, \n — all < 0x80) ever appear inside a multi-byte UTF-8
+    // sequence, so iterating by char preserves any non-ASCII content while
+    // still escaping the framing-relevant characters.
+    for ch in resource.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn log_event(kind: &str, resource: &str, fd: c_int) {
     #[cfg(target_os = "macos")]
     let pid = unsafe { raw_syscall::getpid() };
@@ -531,7 +558,12 @@ fn log_event(kind: &str, resource: &str, fd: c_int) {
     let pid = unsafe { libc::getpid() };
 
     let tid = get_tid();
-    let line = format!("{}\t{}\t{}\t{}\t{}\n", kind, resource, fd, pid, tid);
+    // Escape the resource field so tabs/newlines/backslashes (common in raw
+    // SQL, possible in file paths) cannot corrupt the TSV line framing. The
+    // Python parser unescapes exactly once. `kind` is a fixed internal string
+    // with no special characters, so it needs no escaping.
+    let escaped = escape_resource(resource);
+    let line = format!("{}\t{}\t{}\t{}\t{}\n", kind, escaped, fd, pid, tid);
     let buf = line.as_bytes();
 
     // Prefer pipe fd (FRONTRUN_IO_FD) — no open/close overhead.
@@ -1375,4 +1407,53 @@ mod interpose {
             original: libc::close as *const (),
         },
     ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_resource_plain() {
+        // Strings with no special bytes pass through unchanged.
+        assert_eq!(escape_resource("file:/tmp/data.db"), "file:/tmp/data.db");
+        assert_eq!(escape_resource("socket:127.0.0.1:5432"), "socket:127.0.0.1:5432");
+        assert_eq!(escape_resource(""), "");
+    }
+
+    #[test]
+    fn test_escape_resource_tab() {
+        // Tabs in SQL would split into extra TSV fields without escaping.
+        assert_eq!(escape_resource("SELECT\t1"), "SELECT\\t1");
+    }
+
+    #[test]
+    fn test_escape_resource_newline() {
+        // Newlines in multi-line SQL would split into extra event lines.
+        assert_eq!(
+            escape_resource("UPDATE t\nSET x = 1"),
+            "UPDATE t\\nSET x = 1"
+        );
+    }
+
+    #[test]
+    fn test_escape_resource_backslash() {
+        // Backslashes must be doubled so unescaping is unambiguous.
+        assert_eq!(escape_resource("a\\b"), "a\\\\b");
+        // A literal backslash followed by 't' must NOT be confused with a tab.
+        assert_eq!(escape_resource("a\\tb"), "a\\\\tb");
+    }
+
+    #[test]
+    fn test_escape_resource_combined() {
+        let sql = "INSERT INTO t\nVALUES (\t'a\\b')";
+        assert_eq!(escape_resource(sql), "INSERT INTO t\\nVALUES (\\t'a\\\\b')");
+    }
+
+    #[test]
+    fn test_escape_resource_preserves_utf8() {
+        // Multi-byte UTF-8 must survive intact (continuation bytes >= 0x80
+        // never collide with the escaped ASCII characters).
+        assert_eq!(escape_resource("café\tμ"), "café\\tμ");
+    }
 }
