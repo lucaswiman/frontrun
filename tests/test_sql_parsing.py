@@ -556,6 +556,78 @@ class TestMultiStatementSql:
         assert lock is LockIntent.SHARE
         assert r == {"users", "accounts"}
 
+
+# ---------------------------------------------------------------------------
+# Data-modifying CTEs (finding 1)
+# ---------------------------------------------------------------------------
+
+
+class TestDataModifyingCte:
+    @pytest.fixture(autouse=True)
+    def _require_sqlglot(self):
+        pytest.importorskip("sqlglot")
+
+    def test_update_inside_cte_is_a_write(self):
+        sql = "WITH u AS (UPDATE jobs SET state='running' WHERE id=1 RETURNING id) SELECT * FROM u"
+        r, w, *_ = parse_sql_access(sql)
+        assert "jobs" in w, "data-modifying CTE UPDATE must be in the write set"
+        assert "jobs" in r, "UPDATE reads its own table (WHERE clause)"
+        # The phantom CTE alias must not appear as a table.
+        assert "u" not in r and "u" not in w
+
+    def test_delete_inside_cte_with_insert(self):
+        sql = "WITH moved AS (DELETE FROM queue WHERE id=1 RETURNING *) INSERT INTO archive SELECT * FROM moved"
+        r, w, *_ = parse_sql_access(sql)
+        assert "queue" in w, "data-modifying CTE DELETE must be in the write set"
+        assert "archive" in w
+        assert "moved" not in r and "moved" not in w
+
+    def test_insert_reads_cte_source(self):
+        sql = "WITH src AS (SELECT * FROM b) INSERT INTO a SELECT * FROM src"
+        r, w, *_ = parse_sql_access(sql)
+        assert "a" in w
+        assert "b" in r, "source table referenced via CTE must be read"
+        assert "src" not in r and "src" not in w
+
+    def test_plain_cte_alias_excluded_from_reads(self):
+        sql = "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent"
+        r, w, *_ = parse_sql_access(sql)
+        assert "orders" in r
+        assert "recent" not in r
+
+
+# ---------------------------------------------------------------------------
+# Multi-table UPDATE (finding 8)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiTableUpdate:
+    @pytest.fixture(autouse=True)
+    def _require_sqlglot(self):
+        pytest.importorskip("sqlglot")
+
+    def test_mysql_multi_table_update_writes_all_set_tables(self):
+        sql = "UPDATE t1 JOIN t2 ON t1.id = t2.id SET t1.a = 1, t2.b = 2"
+        r, w, *_ = parse_sql_access(sql)
+        assert "t1" in w and "t2" in w, "both SET targets must be writes"
+
+
+# ---------------------------------------------------------------------------
+# LOCK TABLES (MySQL spelling, finding 10a)
+# ---------------------------------------------------------------------------
+
+
+class TestLockTablesMysql:
+    def test_lock_tables_write(self):
+        r, w, lock, *_ = parse_sql_access("LOCK TABLES t WRITE")
+        assert "t" in w
+        assert lock is LockIntent.UPDATE
+
+    def test_lock_tables_read(self):
+        r, w, lock, *_ = parse_sql_access("LOCK TABLES t READ")
+        assert "t" in w
+        assert lock is LockIntent.SHARE
+
     def test_tx_ops(self):
         sql = "BEGIN; UPDATE accounts SET x=1"
         r, w, lock, tx, *_ = parse_sql_access(sql)
