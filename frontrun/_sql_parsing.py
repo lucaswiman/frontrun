@@ -438,7 +438,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
             # their own sources as reads, so their writes are not lost.
             cte_aliases = _cte_alias_names(ast)
 
-            def _classify_node(node: exp.Expression, *, top_level: bool) -> None:
+            def _classify_node(node: Any, *, top_level: bool) -> None:
                 """Add reads/writes for a single DML node into the shared sets."""
                 if isinstance(node, exp.Insert):
                     tbl = node.this
