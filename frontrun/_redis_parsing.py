@@ -18,6 +18,8 @@ from typing import NamedTuple
 from frontrun._redis_command_data import (
     _COMMAND_KEY_SPECS,
     _EVAL_CMDS,
+    _KEYSPACE_READ_CMDS,
+    _KEYSPACE_WRITE_CMDS,
     _NO_KEY_CMDS,
     _SUBCOMMAND_PARENTS,
     _TX_CONTROL_CMDS,
@@ -35,6 +37,13 @@ class RedisAccessResult(NamedTuple):
     read_keys: list[str]
     write_keys: list[str]
     is_transaction_control: bool  # MULTI, EXEC, DISCARD, WATCH, UNWATCH
+    # Database-wide keyspace intent-lock kind (``"read"``, ``"write"`` or
+    # ``None``).  FLUSHDB/FLUSHALL write the whole keyspace; per-key commands
+    # and keyspace scans (KEYS/SCAN/RANDOMKEY/DBSIZE) read it.  This lets DPOR
+    # detect FLUSH*-vs-key races without over-serializing ordinary key traffic
+    # (which stays read-read on the keyspace resource).  See
+    # ``_keyspace_kind`` and the report path in ``_redis_client.py``.
+    keyspace: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +191,35 @@ def _parse_sort(cmd_args: tuple[object, ...]) -> RedisAccessResult:
 # ---------------------------------------------------------------------------
 
 
+def _keyspace_kind(upper: str, result: RedisAccessResult) -> str | None:
+    """Decide the database-wide keyspace intent-lock kind for a command.
+
+    ``"write"`` for whole-keyspace mutations (FLUSHDB/FLUSHALL), ``"read"``
+    for keyspace scans (KEYS/SCAN/RANDOMKEY/DBSIZE) and for any command that
+    touches specific keys, and ``None`` otherwise (transaction control, Lua
+    scripts, pub/sub, and plain server/connection commands).
+
+    Key-touching commands take a *read* on the keyspace so ordinary key-key
+    traffic stays read-read (no new conflicts); only FLUSH* takes a write,
+    so it conflicts with every concurrent key access.
+    """
+    if result.is_transaction_control:
+        # MULTI/EXEC/DISCARD/UNWATCH/WATCH and Lua scripts (atomic) — the
+        # keyspace lock would only add spurious serialization here.
+        return None
+    if upper in _KEYSPACE_WRITE_CMDS:
+        return "write"
+    if upper in _KEYSPACE_READ_CMDS:
+        return "read"
+    # Pub/sub channels are not keyspace operations; ``channel:`` keys are a
+    # disjoint namespace, so only real key accesses imply a keyspace read.
+    if any(not k.startswith("channel:") for k in result.read_keys):
+        return "read"
+    if any(not k.startswith("channel:") for k in result.write_keys):
+        return "read"
+    return None
+
+
 def parse_redis_access(cmd_name: str, cmd_args: tuple[object, ...]) -> RedisAccessResult:
     """Classify a Redis command and extract the key(s) it accesses.
 
@@ -190,8 +228,23 @@ def parse_redis_access(cmd_name: str, cmd_args: tuple[object, ...]) -> RedisAcce
         cmd_args: The command arguments (after the command name).
 
     Returns:
-        A ``RedisAccessResult`` with the read/write key sets.
+        A ``RedisAccessResult`` with the read/write key sets and the
+        database-wide keyspace intent-lock kind (see ``_keyspace_kind``).
     """
+    upper_orig = cmd_name.upper()
+    result = _parse_redis_access_keys(cmd_name, cmd_args)
+    # Use the *normalized* command for keyspace classification (compound names
+    # like "XGROUP CREATE" are split inside the helper, but our keyspace sets
+    # only contain single-word commands, so the first word is what matters).
+    upper = upper_orig.split(" ", 1)[0] if " " in upper_orig else upper_orig
+    keyspace = _keyspace_kind(upper, result)
+    if keyspace is None:
+        return result
+    return result._replace(keyspace=keyspace)
+
+
+def _parse_redis_access_keys(cmd_name: str, cmd_args: tuple[object, ...]) -> RedisAccessResult:
+    """Extract read/write key sets for a command (without keyspace tagging)."""
     upper = cmd_name.upper()
 
     # Normalize compound command names from redis-py 4.2+ (e.g.

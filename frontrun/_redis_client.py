@@ -75,6 +75,19 @@ def _redis_resource_id(key: str, *, db_scope: str | None = None) -> str:
     return resource
 
 
+def _redis_keyspace_resource_id(db_scope: str | None = None) -> str:
+    """Build the resource ID for the database-wide keyspace intent-lock.
+
+    FLUSHDB/FLUSHALL take a write here and per-key commands take a read, so
+    DPOR detects FLUSH*-vs-key races.  Scoped per database (matching key
+    resources) so a flush only conflicts with traffic in the same db.
+    """
+    resource = "redis:keyspace"
+    if db_scope is not None:
+        resource = f"{resource}:db={db_scope}"
+    return resource
+
+
 def _get_redis_db_scope(client: Any) -> str | None:
     """Extract a stable database scope from a Redis client object."""
     # redis-py exposes connection_pool.connection_kwargs
@@ -142,7 +155,7 @@ def _report_redis_access(
     if access.is_transaction_control and not access.read_keys and not access.write_keys:
         return True  # Still suppress endpoint I/O for protocol overhead.
 
-    if not access.read_keys and not access.write_keys:
+    if not access.read_keys and not access.write_keys and access.keyspace is None:
         return False
 
     db_scope = _get_redis_db_scope(client) if client is not None else None
@@ -154,6 +167,12 @@ def _report_redis_access(
     for key in access.write_keys:
         res_id = _redis_resource_id(key, db_scope=db_scope)
         reporter(res_id, "write")
+
+    # Database-wide keyspace intent-lock: FLUSHDB/FLUSHALL write the whole
+    # keyspace, while per-key commands and keyspace scans read it.  This lets
+    # DPOR explore FLUSH*-vs-key races without over-serializing key traffic.
+    if access.keyspace is not None:
+        reporter(_redis_keyspace_resource_id(db_scope=db_scope), access.keyspace)
 
     return True
 

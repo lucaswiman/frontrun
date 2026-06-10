@@ -242,8 +242,26 @@ _TX_CONTROL_CMDS: frozenset[str] = frozenset({"MULTI", "EXEC", "DISCARD", "UNWAT
 # Treat as transaction control with no key-level accesses.  See defect #8.
 _EVAL_CMDS: frozenset[str] = frozenset({"EVAL", "EVALSHA", "EVAL_RO", "EVALSHA_RO", "FCALL", "FCALL_RO"})
 
+# Commands that write the *entire* keyspace of a database.  They take no
+# specific key, so the key-spec machinery yields nothing, but they conflict
+# with every key access.  Modeled as a write on the database-wide keyspace
+# resource (intent-lock pattern) so DPOR explores the racing order against
+# concurrent key traffic.  See the keyspace intent-lock note in
+# ``_redis_parsing.parse_redis_access``.
+_KEYSPACE_WRITE_CMDS: frozenset[str] = frozenset({"FLUSHDB", "FLUSHALL"})
+
+# Commands that read the *entire* keyspace (enumeration / existence over all
+# keys) without naming a specific key.  Modeled as a read on the database-wide
+# keyspace resource: this conflicts with FLUSH* (and nothing else new, since
+# the keyspace read is read-read against ordinary key traffic).
+_KEYSPACE_READ_CMDS: frozenset[str] = frozenset({"KEYS", "SCAN", "RANDOMKEY", "DBSIZE"})
+
 # Server/connection/cluster commands that never operate on specific keys.
 # These must not hit the conservative fallback (which treats arg[0] as a key).
+#
+# NOTE: FLUSHDB/FLUSHALL and KEYS/SCAN/RANDOMKEY/DBSIZE remain listed here
+# because they still take no *specific* key; their database-wide keyspace
+# access is layered on separately via the _KEYSPACE_* sets above.
 _NO_KEY_CMDS: frozenset[str] = frozenset(
     {
         "ACL",
