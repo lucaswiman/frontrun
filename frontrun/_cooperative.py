@@ -753,6 +753,13 @@ class CooperativeCondition:
         self._next_ticket = 0
         self._served = 0
         self._waiters = 0
+        # Tickets abandoned by waiters that left wait() without being served
+        # (timeout or SchedulerAbort) while still un-served.  These must NOT
+        # absorb a future notify(): a real threading.Condition removes timed-out
+        # waiters from the wait queue.  Only ever holds un-served ticket ids
+        # (ticket >= _served); once _served advances past a cancelled ticket it
+        # is discarded.  All mutations happen while holding self._lock.
+        self._cancelled: set[int] = set()
         # Legacy counter kept for notify_all() and backward compat with
         # any code that reads _notify_count.
         self._notify_count = 0
@@ -772,6 +779,73 @@ class CooperativeCondition:
     def __exit__(self, *args: Any) -> None:
         self._lock.release()
 
+    def _ticket_served(self, ticket: int) -> bool:
+        """Whether *ticket* has been served (woken) by a notify call.
+
+        A ticket is served when ``_served`` has advanced past it.  Cancelled
+        tickets are never "served" (no live waiter owns them).
+        """
+        return ticket < self._served and ticket not in self._cancelled
+
+    def _cancel_ticket(self, ticket: int) -> None:
+        """Mark an un-served ticket as abandoned (caller holds self._lock).
+
+        Recorded so that ``notify``/``notify_all`` skip it instead of letting
+        it absorb a notification meant for a live waiter.  If the ticket has
+        already been served, this is a no-op (handled by the caller).
+        """
+        if ticket >= self._served:
+            self._cancelled.add(ticket)
+            self._discard_consumed_cancellations()
+
+    def _discard_consumed_cancellations(self) -> None:
+        """Drop cancelled tickets that ``_served`` has already passed."""
+        if self._cancelled:
+            self._cancelled = {t for t in self._cancelled if t >= self._served}
+
+    def _advance_served(self, n: int) -> int:
+        """Advance ``_served`` to wake up to *n* live (non-cancelled) tickets.
+
+        Cancelled tickets in the path are skipped for free (they do not
+        consume the notify budget).  Returns the number of live tickets woken.
+        Caller must hold self._lock.
+        """
+        woken = 0
+        while woken < n and self._served < self._next_ticket:
+            ticket = self._served
+            self._served += 1
+            if ticket in self._cancelled:
+                self._cancelled.discard(ticket)
+                continue
+            woken += 1
+        self._notify_count += woken
+        return woken
+
+    def _release_save(self) -> int:
+        """Fully release the underlying lock, returning saved recursion depth.
+
+        Mirrors ``threading.Condition._release_save`` so a reentrant lock held
+        multiple times is fully released while waiting (otherwise a notifier on
+        another thread could never acquire it).
+        """
+        lock = self._lock
+        if isinstance(lock, CooperativeRLock):
+            count = lock._count
+            for _ in range(count):
+                lock.release()
+            return count
+        lock.release()
+        return 1
+
+    def _acquire_restore(self, saved: int) -> None:
+        """Re-acquire the lock to the recursion depth saved by _release_save."""
+        lock = self._lock
+        lock.acquire()
+        if isinstance(lock, CooperativeRLock):
+            # acquire() set count to 1; restore the remaining recursion levels.
+            for _ in range(saved - 1):
+                lock.acquire()
+
     def wait(self, timeout: float | None = None) -> bool:
 
         # _waiters and ticket assignment are written while we hold
@@ -782,13 +856,18 @@ class CooperativeCondition:
         # have been made to reach this ticket).
         my_ticket = self._next_ticket
         self._next_ticket += 1
-        self._lock.release()
+        # Fully release a reentrant lock (all recursion levels) so a notifier
+        # on another thread can acquire it.  Releasing only one level would
+        # leave count >= 1 and guarantee a stall (finding 9c).
+        saved = self._release_save()
+        served = False
         try:
             ctx = get_context()
             if ctx is None:
                 # Not in a managed thread — fall back to real condition
                 with self._real_cond:
-                    return self._real_cond.wait(timeout=timeout)
+                    served = self._real_cond.wait(timeout=timeout)
+                    return served
 
             scheduler, thread_id = ctx
 
@@ -811,16 +890,30 @@ class CooperativeCondition:
                     end = time.monotonic() + min(1.0, max(0.0, deadline - time.monotonic()))
                     while my_ticket >= self._served and time.monotonic() < end:
                         time.sleep(0.001)
-                    return my_ticket < self._served
+                    served = my_ticket < self._served
+                    return served
                 if time.monotonic() >= deadline:
+                    served = False
                     return False
                 scheduler.wait_for_turn(thread_id)
+            served = True
             return True
         finally:
-            self._lock.acquire()
-            # Decrement AFTER re-acquiring the lock so that the write is
-            # serialised with notify_all()'s read of _waiters.
+            # Re-acquire fully (serialises with notify/_waiters bookkeeping).
+            self._acquire_restore(saved)
             self._waiters -= 1
+            # Reconcile the ticket: if we are leaving WITHOUT having observed a
+            # wakeup, either the ticket is still un-served (cancel it so it does
+            # not absorb a future notify), or it was served between our timeout
+            # decision and re-acquiring the lock (the notification is wasted —
+            # pass it on to another live waiter).
+            if not served:
+                if my_ticket >= self._served:
+                    self._cancel_ticket(my_ticket)
+                else:
+                    # Already served but we are abandoning the wakeup; hand it
+                    # to the next live waiter so no notification is lost.
+                    self._advance_served(1)
 
     def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> bool:
         result = predicate()
@@ -868,15 +961,12 @@ class CooperativeCondition:
         # with other notify/notify_all calls and with the _waiters/ticket
         # bookkeeping in wait().
         #
-        # Advance _served by exactly n (or fewer if there aren't enough
-        # un-served tickets).  Only waiters whose ticket < _served will wake.
-        # Use _next_ticket - _served (un-served tickets) instead of _waiters,
-        # because _waiters includes already-notified waiters that haven't yet
-        # re-acquired the lock to decrement _waiters.
-        unserved = self._next_ticket - self._served
-        actual = min(max(0, n), unserved)
-        self._served += actual
-        self._notify_count += actual
+        # Advance _served to wake up to n LIVE (non-cancelled) waiters.
+        # Cancelled tickets (abandoned by timed-out/aborted waiters) are
+        # skipped for free so they do not absorb a notification — matching a
+        # real threading.Condition which removes timed-out waiters from the
+        # wait queue.  _advance_served returns the number actually woken.
+        actual = self._advance_served(max(0, n))
         # Also wake the real condition for threads in the non-cooperative
         # path (no scheduler context — they block in _real_cond.wait()).
         with self._real_cond:
@@ -885,10 +975,8 @@ class CooperativeCondition:
     def notify_all(self) -> None:
         # Enforce the Condition invariant: caller must hold self._lock.
         self._check_owned()
-        unserved = self._next_ticket - self._served
-        if unserved > 0:
-            self._served += unserved
-            self._notify_count += unserved
+        # Wake every live waiter; cancelled tickets are skipped for free.
+        self._advance_served(self._next_ticket - self._served)
         with self._real_cond:
             self._real_cond.notify_all()
 
