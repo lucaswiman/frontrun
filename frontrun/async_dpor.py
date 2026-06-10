@@ -841,6 +841,30 @@ def _format_async_trace(schedule: list[int], num_tasks: int) -> str:
     return "\n".join(lines)
 
 
+class _NoOpExecution:
+    """No-op stand-in for ``PyExecution`` during counterexample replay.
+
+    The cooperative ``asyncio.Lock`` replacement calls ``block_thread`` /
+    ``unblock_thread`` on ``scheduler.execution`` to keep the DPOR engine from
+    scheduling a lock-blocked task.  Replay drives a *fixed* schedule and has
+    no engine, so these are no-ops — but they must exist so lock acquire/release
+    doesn't raise AttributeError (finding F3).
+    """
+
+    def block_thread(self, _task_id: int) -> None:
+        pass
+
+    def unblock_thread(self, _task_id: int) -> None:
+        pass
+
+
+class _NoOpEngine:
+    """No-op stand-in for ``PyDporEngine`` during counterexample replay."""
+
+    def report_sync(self, _execution: Any, _task_id: int, _kind: str, _lock_id: int) -> None:
+        pass
+
+
 class _ReplayAsyncScheduler(InterleavedLoop):
     """Replay a fixed schedule for async counterexample reproduction."""
 
@@ -852,6 +876,13 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         self._replay_max_ops = len(self._replay_schedule) * 10 + 10_000
         self._current_task: int | None = schedule[0] if schedule else None
         self._num_replay_tasks = num_tasks
+        # Stubs so the patched cooperative asyncio.Lock can call
+        # engine.report_sync / execution.block_thread without crashing during
+        # replay (finding F3).  _lock_blocked mirrors the DPOR scheduler's
+        # attribute so the same lock-acquire code path works unmodified.
+        self.engine: Any = _NoOpEngine()
+        self.execution: Any = _NoOpExecution()
+        self._lock_blocked: dict[int, int] = {}
 
     def _extend_schedule(self) -> bool:
         return extend_replay_schedule(
@@ -888,6 +919,11 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         _task_id_var.set(task_id)
 
     def _cleanup_task_context(self, task_id: Any) -> None:
+        # Release any asyncio.Lock objects still held by this task (e.g. the
+        # task crashed or was cancelled without release()).  Without this,
+        # stale holding edges / lock owners leak into later replay attempts
+        # and cause spurious DeadlockError or phantom ownership (finding F5).
+        _release_task_async_locks(task_id)
         _scheduler_var.set(None)
         _task_id_var.set(None)
 
@@ -926,6 +962,15 @@ async def _reproduce_async_counterexample(
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
     for _ in range(reproduce_on_failure):
+        # Clear cooperative-lock global state before EACH replay attempt.
+        # Without this, stale wait-for edges / lock owners / held-locks from a
+        # prior attempt (compounded by id() reuse) leak into the next replay
+        # and cause spurious DeadlockError or phantom ownership (finding F5).
+        if _async_wait_graph is not None:
+            _async_wait_graph.clear()
+        _async_lock_owners.clear()
+        _async_task_held_locks.clear()
+
         scheduler = _ReplayAsyncScheduler(schedule_list, num_tasks, deadlock_timeout=deadlock_timeout)
         state = setup()
         task_funcs: dict[int, Callable[..., Awaitable[None]]] = {}
@@ -946,7 +991,17 @@ async def _reproduce_async_counterexample(
             await scheduler.run_all(task_funcs, timeout=timeout_per_run)
         except DeadlockError:
             deadlocked = True
-        except (TimeoutError, Exception):
+        except TimeoutError:
+            # Run didn't complete within the budget — a failed reproduction.
+            continue
+        except (AttributeError, TypeError, NameError):
+            # Programming errors in our own replay plumbing (e.g. a missing
+            # scheduler attribute) must NOT be silently scored as a failed
+            # reproduction — surface them instead of hiding the bug (F3).
+            raise
+        except Exception:
+            # The user's task body raised: the run produced no usable state,
+            # so this attempt did not reproduce the counterexample.
             continue
         inv_failed, _ = (
             check_invariant(invariant, state) if (invariant is not None and not deadlocked) else (False, None)
