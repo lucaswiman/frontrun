@@ -1326,3 +1326,113 @@ def test_release_dpor_row_locks_no_scheduler() -> None:
 
     # Should not raise
     _release_dpor_row_locks()
+
+
+# ---------------------------------------------------------------------------
+# Finding 3: connection.commit() / rollback() interception
+# ---------------------------------------------------------------------------
+
+
+def test_connection_commit_flushes_buffer() -> None:
+    """conn.commit() must drive the tx state machine: flush buffer, end tx.
+
+    With ``cur.execute("BEGIN"); ...; conn.commit()`` the textual COMMIT never
+    reaches _handle_tx_op, so without intercepting conn.commit() the buffered
+    accesses are silently discarded and _in_transaction stays True (finding 3).
+    """
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    log.clear()
+    cur.execute("INSERT INTO users VALUES (5, 'Eve')")
+    # Inside the transaction, accesses are buffered (not yet reported).
+    assert ("sql:users", "write") not in log.events
+    conn.commit()
+
+    # After commit, the buffered write must be flushed and tx state cleared.
+    assert _io_tls._in_transaction is False
+    assert any(k == "write" for r, k in log.events if r.startswith("sql:users"))
+    conn.close()
+
+
+def test_connection_rollback_clears_state() -> None:
+    """conn.rollback() must end the transaction and discard the buffer."""
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    log.clear()
+    cur.execute("INSERT INTO users VALUES (6, 'Frank')")
+    conn.rollback()
+
+    assert _io_tls._in_transaction is False
+    # Rolled-back writes must NOT be flushed.
+    assert not any(k == "write" for r, k in log.events if r.startswith("sql:users"))
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Finding 4: pymysql autobegin detection (callable autocommit)
+# ---------------------------------------------------------------------------
+
+
+def test_detect_autobegin_callable_autocommit_method() -> None:
+    """pymysql exposes autocommit as a *method*; the flag is get_autocommit().
+
+    A truthy bound method must not be read as 'autocommit on'.  With autocommit
+    OFF, _detect_autobegin must set _in_transaction (finding 4).
+    """
+    from frontrun._sql_cursor import _detect_autobegin
+
+    class FakePyMySQLConn:
+        def autocommit(self, value: bool | None = None) -> None:  # method, like pymysql
+            pass
+
+        def get_autocommit(self) -> bool:
+            return False  # autocommit OFF → implicit transaction active
+
+    class FakeCursor:
+        connection = FakePyMySQLConn()
+
+    _io_tls._in_transaction = False
+    _io_tls._is_autobegin = False
+    try:
+        _detect_autobegin(FakeCursor())
+        assert _io_tls._in_transaction is True
+        assert _io_tls._is_autobegin is True
+    finally:
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+
+
+def test_detect_autobegin_callable_autocommit_on() -> None:
+    """When pymysql autocommit is ON (get_autocommit()=True), no autobegin."""
+    from frontrun._sql_cursor import _detect_autobegin
+
+    class FakePyMySQLConn:
+        def autocommit(self, value: bool | None = None) -> None:
+            pass
+
+        def get_autocommit(self) -> bool:
+            return True
+
+    class FakeCursor:
+        connection = FakePyMySQLConn()
+
+    _io_tls._in_transaction = False
+    _io_tls._is_autobegin = False
+    try:
+        _detect_autobegin(FakeCursor())
+        assert _io_tls._in_transaction is False
+    finally:
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
