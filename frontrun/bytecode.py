@@ -190,6 +190,13 @@ class OpcodeScheduler:
                     return True
 
                 if not self._condition.wait(timeout=self.deadlock_timeout):
+                    # Re-check terminal conditions before indexing: another
+                    # thread may have finished the run or advanced past the end
+                    # of the schedule while we were blocked in wait() (9a).
+                    if self._finished or self._error:
+                        return False
+                    if self._index >= len(self.schedule):
+                        continue
                     needed = self.schedule[self._index]
                     if needed in self._threads_done:
                         continue
