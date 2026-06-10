@@ -23,6 +23,7 @@ file are reported as conflicting; different endpoints are independent.
 from __future__ import annotations
 
 import builtins
+import contextvars
 import os
 import socket
 import sys
@@ -35,6 +36,25 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _io_tls = threading.local()
+
+# ---------------------------------------------------------------------------
+# Task-aware DPOR context (contextvars) — takes precedence over _io_tls.
+#
+# Async DPOR runs every task on the SAME event-loop thread, so per-thread
+# storage (``_io_tls``) cannot distinguish tasks: after all tasks start,
+# the threading.local DPOR thread-id is permanently the last task's id.
+# Contextvars ARE per-task (asyncio copies the context for each Task), so
+# the async scheduler sets these per task and they resolve correctly.
+#
+# Sync paths never set these (each worker thread is a real OS thread with
+# its own ``_io_tls``), so the ``_UNSET`` default makes ``get_*`` fall back
+# to ``_io_tls`` — keeping sync behaviour bit-identical and zero-risk.
+# ---------------------------------------------------------------------------
+
+_UNSET: Any = object()
+
+_dpor_scheduler_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor_scheduler_var", default=_UNSET)
+_dpor_thread_id_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor_thread_id_var", default=_UNSET)
 
 # Callback signature: (resource_id: str, kind: str) -> None
 #   resource_id: e.g. "socket:127.0.0.1:5432" or "file:/tmp/data.db"
@@ -53,7 +73,14 @@ def set_io_reporter(reporter: IOReporter | None) -> None:
 
 
 def get_dpor_scheduler() -> Any:
-    """Return the per-thread DPOR scheduler reference, or ``None``."""
+    """Return the active DPOR scheduler reference, or ``None``.
+
+    Prefers the task-aware contextvar when it has been set (async DPOR);
+    otherwise falls back to the per-thread ``_io_tls`` value (sync DPOR).
+    """
+    scheduler = _dpor_scheduler_var.get()
+    if scheduler is not _UNSET:
+        return scheduler
     return getattr(_io_tls, "_dpor_scheduler", None)
 
 
@@ -62,14 +89,74 @@ def set_dpor_scheduler(scheduler: Any) -> None:
     _io_tls._dpor_scheduler = scheduler
 
 
+def set_dpor_scheduler_task(scheduler: Any) -> None:
+    """Install the DPOR scheduler in the task-aware contextvar (async DPOR)."""
+    _dpor_scheduler_var.set(scheduler)
+
+
 def get_dpor_thread_id() -> int | None:
-    """Return the per-thread DPOR thread ID, or ``None``."""
+    """Return the active DPOR thread/task ID, or ``None``.
+
+    Prefers the task-aware contextvar when it has been set (async DPOR, where
+    every task shares one OS thread); otherwise falls back to the per-thread
+    ``_io_tls`` value (sync DPOR).
+    """
+    thread_id = _dpor_thread_id_var.get()
+    if thread_id is not _UNSET:
+        return thread_id
     return getattr(_io_tls, "_dpor_thread_id", None)
 
 
 def set_dpor_thread_id(thread_id: int | None) -> None:
     """Install a per-thread DPOR thread ID (or clear with ``None``)."""
     _io_tls._dpor_thread_id = thread_id
+
+
+def set_dpor_thread_id_task(thread_id: int | None) -> None:
+    """Install the DPOR thread/task ID in the task-aware contextvar (async DPOR)."""
+    _dpor_thread_id_var.set(thread_id)
+
+
+# ---------------------------------------------------------------------------
+# Task-aware SQL transaction state
+# ---------------------------------------------------------------------------
+#
+# SQL transaction state (``_in_transaction``, ``_tx_buffer``, ``_tx_savepoints``,
+# ``_pending_row_locks``, …) lives on ``_io_tls`` for sync DPOR.  Async DPOR
+# shares one event-loop thread across all tasks, so that state must instead be
+# isolated per task.  ``set_tx_store_task`` installs a fresh per-task object in
+# a contextvar; ``tx_store`` returns it when set, else falls back to ``_io_tls``.
+
+
+class _TxStore:
+    """Per-task attribute bag for SQL transaction state (async DPOR).
+
+    Mirrors the attribute-access surface of ``_io_tls`` used by
+    ``_sql_transactions`` / ``_sql_row_locks`` so those modules can target
+    either store transparently via :func:`tx_store`.
+    """
+
+
+_tx_store_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_tx_store_var", default=_UNSET)
+
+
+def tx_store() -> Any:
+    """Return the active SQL transaction-state store.
+
+    The task-aware contextvar store (async DPOR) when set, else ``_io_tls``
+    (sync DPOR and the unpatched default).
+    """
+    store = _tx_store_var.get()
+    if store is not _UNSET:
+        return store
+    return _io_tls
+
+
+def set_tx_store_task() -> Any:
+    """Install a fresh per-task transaction-state store and return it."""
+    store = _TxStore()
+    _tx_store_var.set(store)
+    return store
 
 
 def get_dpor_context() -> tuple[Any, int] | None:

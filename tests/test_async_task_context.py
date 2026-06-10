@@ -29,9 +29,10 @@ def test_dpor_thread_id_is_task_aware() -> None:
 
     async def task(task_id: int) -> None:
         _task_id_var.set(task_id)
-        _io_detection.set_dpor_thread_id(task_id)
-        # Yield so the other task runs and (under the old bug) clobbers the
-        # shared threading.local thread id.
+        _io_detection.set_dpor_thread_id_task(task_id)
+        # Yield so the other task runs.  Under the old (threading.local) bug
+        # this clobbered the shared thread id; the task-aware contextvar
+        # setter keeps each task's id isolated.
         await asyncio.sleep(0)
         observed[f"task{task_id}"] = _io_detection.get_dpor_thread_id()
 
@@ -51,8 +52,8 @@ def test_dpor_context_is_task_aware() -> None:
 
     async def task(task_id: int) -> None:
         _task_id_var.set(task_id)
-        _io_detection.set_dpor_scheduler(sentinel_scheduler)
-        _io_detection.set_dpor_thread_id(task_id)
+        _io_detection.set_dpor_scheduler_task(sentinel_scheduler)
+        _io_detection.set_dpor_thread_id_task(task_id)
         await asyncio.sleep(0)
         observed[f"task{task_id}"] = _io_detection.get_dpor_context()
 
@@ -78,9 +79,11 @@ def test_transaction_state_is_task_aware() -> None:
 
     async def task(task_id: int) -> None:
         _task_id_var.set(task_id)
+        # Install a per-task transaction store (as AsyncDporScheduler does).
+        _io_detection.set_tx_store_task()
         # Isolate from any leaked DPOR scheduler context — this test only
         # exercises transaction buffering, not row-lock release.
-        _io_detection.set_dpor_scheduler(None)
+        _io_detection.set_dpor_scheduler_task(None)
 
         def reporter(res_id: str, kind: str) -> None:
             reported.append((task_id, res_id, kind))

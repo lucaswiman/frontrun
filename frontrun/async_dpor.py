@@ -496,11 +496,19 @@ class AsyncDporScheduler(InterleavedLoop):
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)
         _task_id_var.set(task_id)
-        # Set up IO reporter context so SQL interception can report to us
-        from frontrun._io_detection import _io_tls, set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
+        # Set up IO reporter context so SQL interception can report to us.
+        # Async DPOR runs all tasks on one event-loop thread, so the DPOR
+        # scheduler/thread-id and transaction state must be task-aware
+        # (contextvar-backed) rather than per-thread (findings F2, F4).
+        from frontrun._io_detection import (
+            set_dpor_scheduler_task,
+            set_dpor_thread_id_task,
+            set_io_reporter,
+            set_tx_store_task,
+        )
 
-        set_dpor_scheduler(self)
-        set_dpor_thread_id(task_id)
+        set_dpor_scheduler_task(self)
+        set_dpor_thread_id_task(task_id)
 
         if self._detect_sql or self._detect_redis:
 
@@ -517,11 +525,12 @@ class AsyncDporScheduler(InterleavedLoop):
 
             set_io_reporter(_io_reporter)
 
-        # Reset transaction state for this task
-        _io_tls._in_transaction = False
-        _io_tls._is_autobegin = False
-        _io_tls._tx_buffer = []
-        _io_tls._tx_savepoints = {}
+        # Reset transaction state for this task in a fresh per-task store.
+        store = set_tx_store_task()
+        store._in_transaction = False
+        store._is_autobegin = False
+        store._tx_buffer = []
+        store._tx_savepoints = {}
 
     async def run_all(
         self,
@@ -591,19 +600,21 @@ class AsyncDporScheduler(InterleavedLoop):
 
         _scheduler_var.set(None)
         _task_id_var.set(None)
-        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
+        from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter
 
-        # Only clear thread-local DPOR/IO state when ALL tasks are done.
-        # In async mode, all tasks share the same thread-local storage.
-        # Clearing the reporter when one task finishes would break I/O
-        # detection for remaining tasks on the same thread.
-        # Note: _cleanup_task_context runs BEFORE _mark_done, so the
-        # current task_id is not yet in _tasks_done; +1 accounts for it.
-        if len(self._tasks_done) + 1 >= self._num_engine_tasks:
-            set_dpor_scheduler(None)
-            set_dpor_thread_id(None)
-            if self._detect_sql or self._detect_redis:
-                set_io_reporter(None)
+        # Clear this task's task-aware DPOR context.  These contextvars are
+        # per-task (they die with the task), but clearing keeps any further
+        # interception in this context from resolving a stale scheduler.
+        set_dpor_scheduler_task(None)
+        set_dpor_thread_id_task(None)
+
+        # The IO reporter is per-OS-thread (shared by all tasks on the event
+        # loop), so only clear it when ALL tasks are done — clearing it when
+        # one task finishes would break I/O detection for the rest.
+        # Note: _cleanup_task_context runs BEFORE _mark_done, so the current
+        # task_id is not yet in _tasks_done; +1 accounts for it.
+        if len(self._tasks_done) + 1 >= self._num_engine_tasks and (self._detect_sql or self._detect_redis):
+            set_io_reporter(None)
 
     def get_shadow_stack(self, frame_id: int) -> ShadowStack:
         stack = self._shadow_stacks.get(frame_id)

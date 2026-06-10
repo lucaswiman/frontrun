@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from frontrun._io_detection import _io_tls
+from frontrun._io_detection import tx_store
 from frontrun._sql_parsing import TxOp
 from frontrun._sql_row_locks import _release_dpor_row_locks
 
@@ -56,12 +56,13 @@ def _report_or_buffer(reporter: Any, res_id: str, kind: str, *, force_immediate:
     explore interleavings.  Row-lock tracking still works because
     ``_in_transaction`` is True.
     """
-    in_tx = getattr(_io_tls, "_in_transaction", False)
-    is_autobegin = getattr(_io_tls, "_is_autobegin", False)
+    store = tx_store()
+    in_tx = getattr(store, "_in_transaction", False)
+    is_autobegin = getattr(store, "_is_autobegin", False)
     if in_tx and not force_immediate and not is_autobegin:
-        if not hasattr(_io_tls, "_tx_buffer"):
-            _io_tls._tx_buffer = []
-        _io_tls._tx_buffer.append((res_id, kind))
+        if not hasattr(store, "_tx_buffer"):
+            store._tx_buffer = []
+        store._tx_buffer.append((res_id, kind))
     else:
         reporter(res_id, kind)
 
@@ -73,10 +74,10 @@ def _report_or_buffer(reporter: Any, res_id: str, kind: str, *, force_immediate:
     # when one thread blocks in the kernel waiting for another's lock
     # (defect #6).
     if in_tx and (force_immediate or kind == "write"):
-        pending = getattr(_io_tls, "_pending_row_locks", None)
+        pending = getattr(store, "_pending_row_locks", None)
         if pending is None:
             pending = []
-            _io_tls._pending_row_locks = pending
+            store._pending_row_locks = pending
         pending.append(res_id)
 
 
@@ -124,7 +125,8 @@ def _detect_autobegin(cursor: Any) -> None:
     (e.g. sqlite3), we leave ``_in_transaction`` unchanged and fall back
     to statement-level tracking.
     """
-    if getattr(_io_tls, "_in_transaction", False):
+    store = tx_store()
+    if getattr(store, "_in_transaction", False):
         return  # already in a transaction
     conn = getattr(cursor, "connection", None)
     if conn is None:
@@ -137,10 +139,10 @@ def _detect_autobegin(cursor: Any) -> None:
         # Set _is_autobegin so _report_or_buffer reports accesses
         # immediately (READ COMMITTED doesn't buffer) while still
         # tracking row locks via the _in_transaction flag.
-        _io_tls._in_transaction = True
-        _io_tls._is_autobegin = True
-        _io_tls._tx_buffer = []
-        _io_tls._tx_savepoints = {}
+        store._in_transaction = True
+        store._is_autobegin = True
+        store._tx_buffer = []
+        store._tx_savepoints = {}
 
 
 def _handle_tx_op(reporter: Any, tx: Any) -> None:
@@ -151,37 +153,38 @@ def _handle_tx_op(reporter: Any, tx: Any) -> None:
     locks held by the current thread on COMMIT/ROLLBACK.  Savepoints are
     implemented as buffer-index bookmarks.
     """
+    store = tx_store()
     if tx is TxOp.BEGIN:
-        _io_tls._in_transaction = True
-        _io_tls._is_autobegin = False
-        _io_tls._tx_buffer = []
-        _io_tls._tx_savepoints = {}
+        store._in_transaction = True
+        store._is_autobegin = False
+        store._tx_buffer = []
+        store._tx_savepoints = {}
     elif tx is TxOp.COMMIT:
-        _io_tls._in_transaction = False
-        _io_tls._is_autobegin = False
-        buffer = getattr(_io_tls, "_tx_buffer", [])
+        store._in_transaction = False
+        store._is_autobegin = False
+        buffer = getattr(store, "_tx_buffer", [])
         for res_id, kind in buffer:
             reporter(res_id, kind)
-        _io_tls._tx_buffer = []
-        _io_tls._tx_savepoints = {}
+        store._tx_buffer = []
+        store._tx_savepoints = {}
         _release_dpor_row_locks()
     elif tx is TxOp.ROLLBACK:
-        _io_tls._in_transaction = False
-        _io_tls._is_autobegin = False
-        _io_tls._tx_buffer = []
-        _io_tls._tx_savepoints = {}
+        store._in_transaction = False
+        store._is_autobegin = False
+        store._tx_buffer = []
+        store._tx_savepoints = {}
         _release_dpor_row_locks()
     else:  # SavepointOp
-        savepoints = getattr(_io_tls, "_tx_savepoints", {})
+        savepoints = getattr(store, "_tx_savepoints", {})
         if tx.op == "savepoint":
-            buffer = getattr(_io_tls, "_tx_buffer", [])
+            buffer = getattr(store, "_tx_buffer", [])
             savepoints[tx.name] = len(buffer)
-            _io_tls._tx_savepoints = savepoints
+            store._tx_savepoints = savepoints
         elif tx.op == "rollback_to":
             if tx.name in savepoints:
                 idx = savepoints[tx.name]
-                buffer = getattr(_io_tls, "_tx_buffer", [])
-                _io_tls._tx_buffer = buffer[:idx]
+                buffer = getattr(store, "_tx_buffer", [])
+                store._tx_buffer = buffer[:idx]
                 stale = [name for name, sp_idx in savepoints.items() if sp_idx > idx]
                 for name in stale:
                     del savepoints[name]
@@ -199,7 +202,7 @@ def handle_connection_commit() -> None:
     are held until thread exit (finding 3).  This flushes the buffer and clears
     the transaction state exactly like a textual COMMIT.
     """
-    if not getattr(_io_tls, "_in_transaction", False):
+    if not getattr(tx_store(), "_in_transaction", False):
         return
     from frontrun._io_detection import get_io_reporter
 
@@ -208,7 +211,7 @@ def handle_connection_commit() -> None:
 
 def handle_connection_rollback() -> None:
     """Drive the ROLLBACK state machine for a Python-level ``conn.rollback()``."""
-    if not getattr(_io_tls, "_in_transaction", False):
+    if not getattr(tx_store(), "_in_transaction", False):
         return
     from frontrun._io_detection import get_io_reporter
 
@@ -223,6 +226,7 @@ def reset_connection_state() -> None:
     from leaking across logical sessions.  Safe to call even when no
     transaction is active (it's a no-op in that case).
     """
+    store = tx_store()
     for attr in ("_in_transaction", "_is_autobegin", "_tx_buffer", "_tx_savepoints", "_pending_row_locks"):
-        if hasattr(_io_tls, attr):
-            delattr(_io_tls, attr)
+        if hasattr(store, attr):
+            delattr(store, attr)
