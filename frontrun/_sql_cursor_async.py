@@ -179,7 +179,10 @@ def _patch_aiosqlite() -> None:
     for target_cls in (aiosqlite.Cursor, aiosqlite.Connection):
 
         def _make_patched(orig: Any, method_name: str) -> Any:
-            async def _patched(self: Any, sql: Any, parameters: Any = None, /) -> Any:
+            # ``parameters`` matches the unpatched aiosqlite signature
+            # (execute(self, sql, parameters=None)) and is NOT positional-only,
+            # so callers may pass it by keyword (F7).
+            async def _patched(self: Any, sql: Any, parameters: Any = None) -> Any:
                 return await _intercept_execute_async(
                     orig, self, sql, parameters, is_executemany=method_name == "executemany", paramstyle="qmark"
                 )
@@ -206,7 +209,11 @@ def _patch_psycopg_async() -> None:
         return
 
     def _make_patched(orig: Any, method_name: str) -> Any:
-        async def _patched(self: Any, query: Any, params: Any = None, /, **kwargs: Any) -> Any:
+        # ``params`` matches the unpatched psycopg AsyncCursor signature and is
+        # NOT positional-only, so ``execute(query, params=[...])`` resolves it
+        # here (rather than swallowing it into **kwargs and losing row-level
+        # resolution) — F7.
+        async def _patched(self: Any, query: Any, params: Any = None, **kwargs: Any) -> Any:
             reported = _report_sql_access(
                 query, params, db_obj=self, is_executemany=method_name == "executemany", paramstyle="format"
             )
