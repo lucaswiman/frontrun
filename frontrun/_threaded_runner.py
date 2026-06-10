@@ -25,8 +25,17 @@ class PatchScope:
         self._cleanup.append(unpatch)
 
     def close(self) -> None:
+        # Run ALL cleanups in LIFO order even if some raise; otherwise a single
+        # failing unpatch would leave the remaining threading primitives patched
+        # process-wide.  Collect errors and re-raise the first afterwards.
+        errors: list[BaseException] = []
         while self._cleanup:
-            self._cleanup.pop()()
+            try:
+                self._cleanup.pop()()
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
     def __enter__(self) -> PatchScope:
         return self
@@ -51,8 +60,15 @@ def join_threads_with_deadline(
 
 
 def notify_scheduler_timeout(scheduler: Any, alive: list[threading.Thread]) -> None:
-    """Report a thread-group timeout to a scheduler and wake waiters."""
-    scheduler._error = TimeoutError(f"Timed out waiting for {len(alive)} thread(s) to complete")
+    """Report a thread-group timeout to a scheduler and wake waiters.
+
+    Preserves any pre-existing ``scheduler._error`` (e.g. a DeadlockError that
+    explains *why* the threads hung); only sets the generic TimeoutError when no
+    error has been recorded yet, mirroring ``report_error``'s first-error-wins
+    semantics (finding 9b).
+    """
+    if scheduler._error is None:
+        scheduler._error = TimeoutError(f"Timed out waiting for {len(alive)} thread(s) to complete")
     with scheduler._condition:
         scheduler._condition.notify_all()
     for thread in alive:
