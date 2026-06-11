@@ -337,10 +337,15 @@ class BytecodeShuffler:
             if recorder is not None:
                 recorder.record_from_opcode(tid, frame)
             scheduler.wait_for_turn(tid)
-            # Returning False suppresses the PEP 667 LocalsToFast workaround
-            # in make_settrace_callback; BytecodeShuffler historically did
-            # not apply it.
-            return False
+            # Signal "yielded" so make_settrace_callback applies the CPython
+            # 3.10-3.11 LocalsToFast workaround (re-reads frame.f_locals to
+            # refresh the snapshot).  wait_for_turn can block this thread while
+            # another runs, and if that other thread mutates a shared closure
+            # cell, the stale f_locals snapshot would otherwise be written back
+            # over the new value when this frame resumes — a lost update that
+            # shows up as a false positive on lock-protected closures (only on
+            # the settrace path; 3.12+ monitoring ignores this return value).
+            return True
 
         self._opcode_handle = start_opcode_trace(
             get_thread_id=_get_tid,
