@@ -746,6 +746,14 @@ impl Path {
 
                 branch.threads[next] = ThreadStatus::Active;
                 branch.active_thread = next;
+                // Replacing the active thread changes whether this branch's
+                // decision is a preemption, so the count cached in Branch::new
+                // (for the original thread) is now stale. Recompute it against
+                // the previous branch's active thread (finding 3). Deeper
+                // branches built afterward inherit from this corrected value
+                // via schedule().
+                let idx = self.branches.len() - 1;
+                self.recompute_preemptions(idx);
                 self.pos = 0;
                 return true;
             }
@@ -753,6 +761,35 @@ impl Path {
             self.branches.pop();
         }
         false
+    }
+
+    /// Recompute `self.branches[idx].preemptions` after its active thread has
+    /// been replaced (finding 3).
+    ///
+    /// Mirrors the formula in `schedule()`: the decision at `idx` is a
+    /// preemption iff the new active thread differs from the previous branch's
+    /// active thread AND that previous thread was still schedulable at this
+    /// branch (i.e. not Disabled/Blocked here — Visited counts because it was
+    /// runnable when scheduled). The base is the previous branch's (already
+    /// corrected) preemption count, or 0 at the root.
+    fn recompute_preemptions(&mut self, idx: usize) {
+        let active = self.branches[idx].active_thread;
+        let (prev_preemptions, prev_active) = if idx == 0 {
+            (0, None)
+        } else {
+            (self.branches[idx - 1].preemptions, Some(self.branches[idx - 1].active_thread))
+        };
+        let is_preemption = match prev_active {
+            Some(prev) => {
+                prev != active
+                    && self.branches[idx]
+                        .threads
+                        .get(prev)
+                        .is_some_and(|s| !matches!(s, ThreadStatus::Disabled | ThreadStatus::Blocked))
+            }
+            None => false,
+        };
+        self.branches[idx].preemptions = prev_preemptions + u32::from(is_preemption);
     }
 
     /// Check if there are intermediate scheduling steps between `e_pos` and
@@ -830,19 +867,44 @@ impl Path {
             return vec![e_prime_thread];
         };
 
+        // Compute the transitive happens-after closure of e (finding 2,
+        // JACM'17 Def 3.2 / Alg.2 line 4). An event is excluded from notdep
+        // (i.e. it happens-after e) if it:
+        //   1. is by the same thread as e (program order from e), OR
+        //   2. conflicts with e (direct dependency), OR
+        //   3. is by a thread that already has an excluded event before it
+        //      (program order from that excluded event), OR
+        //   4. conflicts with any already-excluded event (conflict chain).
+        // A single forward pass suffices because happens-after only flows
+        // forward in trace order: once an event is excluded we accumulate its
+        // thread (for program-order propagation) and its accesses (for
+        // conflict-chain propagation).
+        let mut excluded_threads: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        excluded_threads.insert(e_thread);
+        let mut excluded_accesses: HashMap<u64, (AccessKind, AccessOrigin)> = e_accesses.clone();
+
         let mut sequence = Vec::new();
         for pos in (e_pos + 1)..e_prime_pos {
             if pos < self.branches.len() {
                 let step_thread = self.branches[pos].active_thread;
-                // Condition 1: same-thread events are always dependent
-                // (JACM'17 Def 3.3 p.13: events by the same process are
-                // ALWAYS dependent regardless of object access patterns)
-                if step_thread == e_thread {
-                    continue;
-                }
-                // Condition 2: check for data dependency via access conflicts
                 let step_accesses = &self.branches[pos].active_accesses;
-                if accesses_are_independent(e_accesses, step_accesses) {
+                let happens_after = excluded_threads.contains(&step_thread)
+                    || !accesses_are_independent(&excluded_accesses, step_accesses);
+                if happens_after {
+                    // This event happens-after e: exclude it and extend the
+                    // closure with its thread (program order) and accesses
+                    // (conflict chain).
+                    excluded_threads.insert(step_thread);
+                    for (obj, (kind, origin)) in step_accesses {
+                        excluded_accesses
+                            .entry(*obj)
+                            .and_modify(|(k, o)| {
+                                *k = k.merge(*kind);
+                                *o = o.merge(*origin);
+                            })
+                            .or_insert((*kind, *origin));
+                    }
+                } else {
                     sequence.push(step_thread);
                 }
             }
@@ -1100,6 +1162,58 @@ mod tests {
     fn test_bit_reversal_n1() {
         assert_eq!(bit_reversal_index(0, 0, 1), 0);
         assert_eq!(bit_reversal_index(5, 42, 1), 0);
+    }
+
+    /// step() replacing a branch's active thread must recompute that branch's
+    /// preemption count (finding 3).
+    ///
+    /// Build: pos0 = T0 (no preemption), pos1 = T0 again (no preemption,
+    /// preemptions=0). Insert a wakeup for T1 at pos1, then step(): step picks
+    /// T1 at pos1, switching away from the still-runnable T0 — that IS a
+    /// preemption, so the branch's preemption count must become 1. Before the
+    /// fix it stayed at 0 (the count computed in Branch::new for the original
+    /// thread T0).
+    #[test]
+    fn test_step_recomputes_preemptions_on_active_thread_replacement() {
+        let mut path = Path::new(Some(8), SearchStrategy::Dfs);
+
+        // pos 0: runnable [0,1], current 0 -> T0
+        assert_eq!(path.schedule(&[0, 1], 0, 2), Some(0));
+        // pos 1: runnable [0,1], current 0 -> T0 (no preemption)
+        assert_eq!(path.schedule(&[0, 1], 0, 2), Some(0));
+        assert_eq!(path.branches[1].preemptions, 0);
+
+        // Insert a wakeup for T1 at pos 1 and step into it.
+        path.insert_wakeup(1, 1, None);
+        assert!(path.step());
+
+        // pos 1's active thread is now T1, switching away from runnable T0:
+        // that is a preemption, so the count must be 1, not the stale 0.
+        assert_eq!(path.branches[1].active_thread, 1);
+        assert_eq!(
+            path.branches[1].preemptions, 1,
+            "switching to T1 away from still-runnable T0 is a preemption"
+        );
+    }
+
+    /// step() replacing the root branch's active thread keeps preemptions at 0
+    /// (there is no previous thread to preempt) — guards against off-by-one in
+    /// the recomputation (finding 3).
+    #[test]
+    fn test_step_recomputes_preemptions_at_root() {
+        let mut path = Path::new(Some(8), SearchStrategy::Dfs);
+
+        // pos 0: runnable [0,1], current 0 -> T0
+        assert_eq!(path.schedule(&[0, 1], 0, 2), Some(0));
+        assert_eq!(path.branches[0].preemptions, 0);
+
+        path.insert_wakeup(0, 1, None);
+        assert!(path.step());
+
+        // Root branch now starts with T1; with no preceding thread there is
+        // nothing to preempt, so the count stays 0.
+        assert_eq!(path.branches[0].active_thread, 1);
+        assert_eq!(path.branches[0].preemptions, 0, "root branch has no thread to preempt");
     }
 
     #[test]
@@ -1490,6 +1604,89 @@ mod tests {
             notdep,
             vec![1],
             "Same-thread event at pos 1 excluded even though objects differ"
+        );
+    }
+
+    /// Test compute_notdep excludes events that happen-after e transitively
+    /// through program order (finding 2).
+    ///
+    /// JACM'17 Def 3.2 / Alg.2 line 4: notdep(e, E) excludes EVERY event that
+    /// happens-after e, transitively. The closure must follow program order:
+    /// if T1's first event (pos1) conflicts with e and is excluded, then T1's
+    /// later event (pos2) also happens-after e (program order through pos1)
+    /// and must be excluded too — even though pos2's accesses do not directly
+    /// conflict with e.
+    ///
+    /// Setup:
+    ///   pos0: e  = T0 W(X)        — the first racing event
+    ///   pos1:      T1 W(X)        — conflicts with e, excluded
+    ///   pos2:      T1 W(Y)        — happens-after e via T1 program order, must
+    ///                               be excluded (does NOT conflict with e)
+    ///   pos3: e' = T2 W(X)        — the reversing event
+    ///
+    /// Correct notdep: [2]  (both T1 events follow e; only e' remains).
+    /// Buggy notdep:   [1, 2]  (pos2 wrongly included as independent).
+    #[test]
+    fn test_compute_notdep_transitive_happens_after() {
+        use crate::access::AccessKind;
+        let mut path = Path::new(None, SearchStrategy::Dfs);
+
+        path.schedule(&[0, 1, 2], 0, 3); // pos 0: T0 W(X)
+        path.record_access(0, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+        path.schedule(&[1, 2], 1, 3); // pos 1: T1 W(X) — conflicts with e
+        path.record_access(1, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+        path.schedule(&[1, 2], 1, 3); // pos 2: T1 W(Y) — program-order after pos1
+        path.record_access(2, 2, AccessKind::Write, AccessOrigin::PythonMemory);
+        path.schedule(&[2], 2, 3); // pos 3: T2 W(X)
+        path.record_access(3, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+
+        let notdep = path.compute_notdep(0, 3, 2);
+        assert_eq!(
+            notdep,
+            vec![2],
+            "pos2 (T1 W(Y)) happens-after e transitively via T1 program order and must be excluded"
+        );
+    }
+
+    /// Test compute_notdep excludes events that happen-after e transitively
+    /// through a conflict chain (finding 2).
+    ///
+    /// Setup:
+    ///   pos0: e  = T0 W(X)        — racing event
+    ///   pos1:      T1 W(X)        — conflicts with e, excluded
+    ///   pos2:      T2 W(Y)        — independent of e directly, but conflicts
+    ///                               with pos1 (also W(Y))... see below
+    ///
+    /// To exercise the conflict-chain closure: pos1 = T1 writes Y (conflicts
+    /// with e? no). Use: pos1 = T1 W(X) excluded; pos2 = T2 W(Z) conflicts with
+    /// pos1's *other* access. We keep it simple: an event conflicting with an
+    /// already-excluded event is itself excluded.
+    #[test]
+    fn test_compute_notdep_conflict_chain_closure() {
+        use crate::access::AccessKind;
+        let mut path = Path::new(None, SearchStrategy::Dfs);
+
+        // pos0: e = T0 W(X=1)
+        path.schedule(&[0, 1, 2, 3], 0, 4);
+        path.record_access(0, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+        // pos1: T1 W(X=1) conflicts with e -> excluded
+        path.schedule(&[1, 2, 3], 1, 4);
+        path.record_access(1, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+        // pos2: T1 W(Y=2) program-order after pos1 -> excluded, also touches Y
+        path.schedule(&[1, 2, 3], 1, 4);
+        path.record_access(2, 2, AccessKind::Write, AccessOrigin::PythonMemory);
+        // pos3: T2 W(Y=2) conflicts with the excluded pos2 -> must be excluded
+        path.schedule(&[2, 3], 2, 4);
+        path.record_access(3, 2, AccessKind::Write, AccessOrigin::PythonMemory);
+        // pos4: e' = T3 W(X=1)
+        path.schedule(&[3], 3, 4);
+        path.record_access(4, 1, AccessKind::Write, AccessOrigin::PythonMemory);
+
+        let notdep = path.compute_notdep(0, 4, 3);
+        assert_eq!(
+            notdep,
+            vec![3],
+            "pos3 (T2 W(Y)) conflicts with already-excluded pos2 and must be excluded"
         );
     }
 

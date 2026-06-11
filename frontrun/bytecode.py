@@ -9,8 +9,13 @@ schedules, generate random interleavings and check that invariants hold (or
 that bugs can be found).
 
 The core insight: CPython context switches happen between bytecode instructions.
-By controlling which thread gets to execute each instruction, we can explore
-the full space of possible interleavings.
+By controlling which thread gets to execute each instruction, we can explore a
+broad range of possible interleavings.  Schedules use variable-length per-thread
+bursts (see :mod:`frontrun._random_schedules`) so that two threads can drift
+more than one opcode apart — this reaches races that require one thread to run
+several opcodes inside a narrow window of another.  Random exploration is a
+*sampler*, not an exhaustive enumeration (use the DPOR strategy for systematic
+coverage).
 
 Example — find a race condition with random schedule exploration:
 
@@ -64,7 +69,11 @@ from frontrun._opcode_observer import (
     stop_opcode_trace,
     uninstall_thread_opcode_trace,
 )
-from frontrun._random_schedules import fair_schedule_strategy, random_round_robin_schedule
+from frontrun._random_schedules import (
+    burst_round,
+    fair_schedule_strategy,
+    random_round_robin_schedule,
+)
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 from frontrun._sql_insert_tracker import check_uncaptured_inserts, clear_insert_tracker
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout, run_thread_group
@@ -117,6 +126,10 @@ class OpcodeScheduler:
         self.num_threads = num_threads
         self.deadlock_timeout = deadlock_timeout
         self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10000
+        # Deterministic RNG for dynamic schedule extension.  Seeded from the
+        # initial schedule so the extension is reproducible for a given run
+        # (and replay re-uses the already-recorded self.schedule list anyway).
+        self._extend_rng = random.Random(hash(tuple(schedule)) & 0xFFFFFFFF)
         self._index = 0
         self._lock = real_lock()
         self._condition = real_condition(self._lock)
@@ -126,10 +139,13 @@ class OpcodeScheduler:
         self.trace_recorder = trace_recorder
 
     def _extend_schedule(self) -> bool:
-        """Append a round-robin round of all active threads.
+        """Append a round of all active threads with variable-length bursts.
 
-        Returns True if the schedule was extended, False if all threads
-        are done or the max_ops cap was reached.
+        Each active thread gets a burst of consecutive slots (rather than a
+        single slot) so that, like the initial random schedule, dynamically
+        extended schedules can express relative opcode drift > 1 between
+        threads.  Returns True if the schedule was extended, False if all
+        threads are done or the max_ops cap was reached.
         """
         if self._index >= self._max_ops:
             return False
@@ -140,7 +156,8 @@ class OpcodeScheduler:
         remaining = self._max_ops - len(self.schedule)
         if remaining <= 0:
             return False
-        self.schedule.extend(active[:remaining])
+        appended = burst_round(self._extend_rng, active)
+        self.schedule.extend(appended[:remaining])
         return True
 
     def wait_for_turn(self, thread_id: int) -> bool:
@@ -169,6 +186,13 @@ class OpcodeScheduler:
                     return True
 
                 if not self._condition.wait(timeout=self.deadlock_timeout):
+                    # Re-check terminal conditions before indexing: another
+                    # thread may have finished the run or advanced past the end
+                    # of the schedule while we were blocked in wait() (9a).
+                    if self._finished or self._error:
+                        return False
+                    if self._index >= len(self.schedule):
+                        continue
                     needed = self.schedule[self._index]
                     if needed in self._threads_done:
                         continue
@@ -309,10 +333,15 @@ class BytecodeShuffler:
             if recorder is not None:
                 recorder.record_from_opcode(tid, frame)
             scheduler.wait_for_turn(tid)
-            # Returning False suppresses the PEP 667 LocalsToFast workaround
-            # in make_settrace_callback; BytecodeShuffler historically did
-            # not apply it.
-            return False
+            # Signal "yielded" so make_settrace_callback applies the CPython
+            # 3.10-3.11 LocalsToFast workaround (re-reads frame.f_locals to
+            # refresh the snapshot).  wait_for_turn can block this thread while
+            # another runs, and if that other thread mutates a shared closure
+            # cell, the stale f_locals snapshot would otherwise be written back
+            # over the new value when this frame resumes — a lost update that
+            # shows up as a false positive on lock-protected closures (only on
+            # the settrace path; 3.12+ monitoring ignores this return value).
+            return True
 
         self._opcode_handle = start_opcode_trace(
             get_thread_id=_get_tid,
@@ -532,15 +561,24 @@ def run_with_schedule(
             return thread_wrapper
 
         funcs: list[Callable[[], None]] = [make_thread_func(t, state) for t in threads]
+        timed_out = False
         try:
             runner.run(funcs, timeout=timeout)
         except TimeoutError:
             if debug:
                 print(f"Timed out with {timeout=} on {schedule=}", flush=True)
+            timed_out = True
         # Re-raise DeadlockError so callers (e.g. reproduction logic) can
         # detect that a deadlock occurred during replay.
         if isinstance(scheduler._error, DeadlockError):
             raise scheduler._error
+        # Surface a timeout (from runner.run or a scheduler-recorded
+        # TimeoutError) instead of returning a state that timed-out daemon
+        # threads may still be mutating.  Evaluating an invariant on such a
+        # half-finished racing state is meaningless (finding 9d).  Callers in
+        # exploration loops catch this and skip the schedule as inconclusive.
+        if timed_out or isinstance(scheduler._error, TimeoutError):
+            raise TimeoutError(f"run_with_schedule timed out after {timeout}s; worker threads did not complete")
     return state
 
 
@@ -662,6 +700,15 @@ def explore_random(
                     f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{dl_err.cycle_description}"
                 )
                 return result
+            except TimeoutError:
+                # The run did not complete within timeout_per_run; worker
+                # threads may still be mutating the state.  Skip this schedule
+                # as inconclusive rather than evaluating the invariant on a
+                # half-finished racing state (finding 9d).
+                if debug:
+                    print(f"Skipping timed-out schedule: {schedule}", flush=True)
+                seen_schedule_hashes.add(hash(tuple(schedule)))
+                continue
             result.num_explored += 1
             seen_schedule_hashes.add(hash(tuple(schedule)))
 

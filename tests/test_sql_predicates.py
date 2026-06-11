@@ -192,6 +192,25 @@ class TestExtractEqualityPredicates:
         preds = extract_equality_predicates("SELECT * FROM t WHERE t.id = 42")
         assert preds == [EqualityPredicate("id", "42")]
 
+    def test_subquery_where_does_not_leak_to_outer(self):
+        """A WHERE inside a subquery must not define the outer statement's row identity.
+
+        ``UPDATE counters SET value = (SELECT value FROM counters WHERE id = 1)``
+        is a full-table write — every row of counters is updated. The subquery's
+        ``id = 1`` must NOT be reported as the UPDATE's predicate (finding 2),
+        otherwise a full-table write is mistaken for a single-row write.
+        """
+        sql = "UPDATE counters SET value = (SELECT value FROM counters WHERE id = 1)"
+        preds = extract_equality_predicates(sql)
+        assert preds == [], "subquery WHERE must not leak to the outer statement"
+
+    def test_subquery_where_leak_select(self):
+        """SELECT with no top-level WHERE but a subquery WHERE → no predicates."""
+        sql = "SELECT * FROM t WHERE x IN (SELECT y FROM u WHERE id = 5)"
+        preds = extract_equality_predicates(sql)
+        # IN (subquery) is not a literal list, and the subquery's id=5 must not leak.
+        assert EqualityPredicate("id", "5") not in preds
+
 
 # ---------------------------------------------------------------------------
 # expand_predicate_rows

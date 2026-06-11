@@ -871,3 +871,38 @@ class TestResolveParameters:
         sql = "SELECT col::2 FROM t"
         resolved = resolve_parameters(sql, ("x",), "numeric")
         assert "::2" in resolved
+
+
+# ---------------------------------------------------------------------------
+# Literal-aware substitution (finding 7)
+# ---------------------------------------------------------------------------
+
+
+class TestLiteralAwareSubstitution:
+    def test_qmark_placeholder_inside_literal_not_substituted(self):
+        """A literal '?' must not consume a positional parameter."""
+        sql = "SELECT * FROM t WHERE a = '?' AND id = ?"
+        resolved = resolve_parameters(sql, (7,), "qmark")
+        assert resolved == "SELECT * FROM t WHERE a = '?' AND id = 7"
+
+    def test_format_placeholder_inside_literal_not_substituted(self):
+        """A literal '%s' must not consume a positional parameter."""
+        sql = "SELECT * FROM t WHERE a = '%s' AND id = %s"
+        resolved = resolve_parameters(sql, (7,), "format")
+        assert resolved == "SELECT * FROM t WHERE a = '%s' AND id = 7"
+
+    def test_named_placeholder_inside_literal_not_substituted(self):
+        sql = "SELECT * FROM t WHERE note = ':x marks' AND id = :id"
+        resolved = resolve_parameters(sql, {"id": 9}, "named")
+        assert resolved == "SELECT * FROM t WHERE note = ':x marks' AND id = 9"
+
+    def test_numeric_placeholder_inside_literal_not_substituted(self):
+        sql = "SELECT * FROM t WHERE note = ':1 here' AND id = :1"
+        resolved = resolve_parameters(sql, (5,), "numeric")
+        assert resolved == "SELECT * FROM t WHERE note = ':1 here' AND id = 5"
+
+    def test_qmark_escaped_quote_inside_literal(self):
+        """'' escapes inside a literal are handled; the placeholder inside stays literal."""
+        sql = "SELECT * FROM t WHERE a = 'it''s ?' AND id = ?"
+        resolved = resolve_parameters(sql, (3,), "qmark")
+        assert resolved == "SELECT * FROM t WHERE a = 'it''s ?' AND id = 3"

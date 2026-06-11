@@ -422,12 +422,23 @@ static PIPE_READ_FD: AtomicI32 = AtomicI32::new(-1);
 
 fn get_pipe_fd() -> Option<c_int> {
     if !PIPE_FD_CHECKED.load(Ordering::Acquire) {
-        if let Ok(fd_str) = std::env::var("FRONTRUN_IO_FD") {
-            if let Ok(fd) = fd_str.parse::<c_int>() {
+        // Parse the env value, then only commit it if we are the thread that
+        // flips PIPE_FD_CHECKED from false → true. This makes an explicit
+        // frontrun_io_set_pipe_fd() call (which also sets PIPE_FD_CHECKED) win
+        // the race: if set_pipe_fd ran concurrently and already flipped the
+        // flag, our compare_exchange fails and we do NOT clobber its value
+        // with the stale env-derived fd.
+        let env_fd = std::env::var("FRONTRUN_IO_FD")
+            .ok()
+            .and_then(|s| s.parse::<c_int>().ok());
+        if PIPE_FD_CHECKED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            if let Some(fd) = env_fd {
                 PIPE_FD.store(fd, Ordering::Release);
             }
         }
-        PIPE_FD_CHECKED.store(true, Ordering::Release);
     }
     let fd = PIPE_FD.load(Ordering::Acquire);
     if fd >= 0 {
@@ -468,20 +479,52 @@ fn is_pipe_fd(fd: c_int) -> bool {
 // Low-level write helper (uses real write, not our interceptor)
 // ---------------------------------------------------------------------------
 
+// A single event line stays within one write() call as long as it is at most
+// PIPE_BUF bytes, which POSIX guarantees to be atomic on a pipe even with
+// concurrent writers. With the resource-escaping fix, an event is exactly one
+// line, so lines up to PIPE_BUF interleave cleanly. Lines longer than PIPE_BUF
+// (very large SQL statements) may still interleave with other threads' writes
+// mid-line — full atomicity beyond PIPE_BUF is not cheaply achievable here.
+//
+// `write_one` performs a single raw write of `buf`, returning the byte count
+// (>=0) or -1 with errno set. `write_to_fd` loops over EINTR and short writes
+// so a signal-interrupted or partial write never silently truncates a line.
+
 #[cfg(target_os = "macos")]
-fn write_to_fd(fd: c_int, buf: &[u8]) {
-    unsafe {
-        raw_syscall::write(fd, buf.as_ptr() as *const c_void, buf.len());
-    }
+unsafe fn write_one(fd: c_int, buf: &[u8]) -> ssize_t {
+    raw_syscall::write(fd, buf.as_ptr() as *const c_void, buf.len())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn write_to_fd(fd: c_int, buf: &[u8]) {
+unsafe fn write_one(fd: c_int, buf: &[u8]) -> ssize_t {
     type WriteFn = unsafe extern "C" fn(c_int, *const c_void, size_t) -> ssize_t;
-    if let Some(real_write) = resolve!(write, WriteFn) {
-        unsafe {
-            real_write(fd, buf.as_ptr() as *const c_void, buf.len());
+    match resolve!(write, WriteFn) {
+        Some(real_write) => real_write(fd, buf.as_ptr() as *const c_void, buf.len()),
+        None => -1,
+    }
+}
+
+fn write_to_fd(fd: c_int, buf: &[u8]) {
+    let mut written: usize = 0;
+    while written < buf.len() {
+        let n = unsafe { write_one(fd, &buf[written..]) };
+        if n > 0 {
+            written += n as usize;
+            continue;
         }
+        if n == 0 {
+            // No progress and no error reported — avoid spinning forever.
+            break;
+        }
+        // n < 0: inspect errno for retryable conditions.
+        let err = unsafe { get_errno() };
+        if err == libc::EINTR {
+            continue; // interrupted by a signal before any byte was written
+        }
+        // EAGAIN/EWOULDBLOCK on a non-blocking fd, or any hard error: give up.
+        // (The event pipe is created blocking on the write end, so EAGAIN is
+        // not expected there; bailing avoids a busy-spin if it ever occurs.)
+        break;
     }
 }
 
@@ -516,12 +559,55 @@ fn report_io(fd: c_int, kind: &str) {
 /// # Safety
 /// `buf` must point to at least `len` valid bytes.
 unsafe fn report_send_buf(fd: c_int, buf: *const c_void, len: size_t) {
+    // `slice::from_raw_parts(NULL, 0)` is UB regardless of len, and a zero
+    // length can never contain a query anyway — fall straight through to the
+    // generic write report in either case.
+    if buf.is_null() || len == 0 {
+        report_io(fd, "write");
+        return;
+    }
     let buf_slice = std::slice::from_raw_parts(buf as *const u8, len);
     if let Some(sql) = sql_extract::extract_pg_query(buf_slice) {
         log_event("sql_write", sql, fd);
     } else {
         report_io(fd, "write");
     }
+}
+
+/// Escape a resource string so it can be embedded in a single tab-separated,
+/// newline-terminated event line without breaking the framing.
+///
+/// Resources can contain arbitrary bytes — raw SQL (for `sql_write` events)
+/// routinely contains tabs and newlines, and file paths can contain odd
+/// bytes too. We escape backslash, tab, and newline byte-wise so the Python
+/// parser can split on raw `\t` / `\n` and then unescape exactly once.
+///
+/// Pure function (no I/O; allocates only when escaping is needed) so it can
+/// be unit-tested directly under `cargo test`.
+fn escape_resource(resource: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: the common resources (socket endpoints, file paths, fd
+    // labels) contain none of the framing-relevant bytes — borrow as-is
+    // instead of rebuilding the string on every logged event.
+    if !resource
+        .bytes()
+        .any(|b| matches!(b, b'\\' | b'\t' | b'\n'))
+    {
+        return std::borrow::Cow::Borrowed(resource);
+    }
+    let mut out = String::with_capacity(resource.len() + 8);
+    // `resource` is valid UTF-8 (it's a &str). None of the escaped bytes
+    // (\\, \t, \n — all < 0x80) ever appear inside a multi-byte UTF-8
+    // sequence, so iterating by char preserves any non-ASCII content while
+    // still escaping the framing-relevant characters.
+    for ch in resource.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 fn log_event(kind: &str, resource: &str, fd: c_int) {
@@ -531,7 +617,12 @@ fn log_event(kind: &str, resource: &str, fd: c_int) {
     let pid = unsafe { libc::getpid() };
 
     let tid = get_tid();
-    let line = format!("{}\t{}\t{}\t{}\t{}\n", kind, resource, fd, pid, tid);
+    // Escape the resource field so tabs/newlines/backslashes (common in raw
+    // SQL, possible in file paths) cannot corrupt the TSV line framing. The
+    // Python parser unescapes exactly once. `kind` is a fixed internal string
+    // with no special characters, so it needs no escaping.
+    let escaped = escape_resource(resource);
+    let line = format!("{}\t{}\t{}\t{}\t{}\n", kind, escaped, fd, pid, tid);
     let buf = line.as_bytes();
 
     // Prefer pipe fd (FRONTRUN_IO_FD) — no open/close overhead.
@@ -594,6 +685,54 @@ fn log_event(kind: &str, resource: &str, fd: c_int) {
 // sockaddr → resource string
 // ---------------------------------------------------------------------------
 
+/// Render the path portion of an `AF_UNIX` address into a resource string.
+///
+/// `path_bytes` is the `sun_path` content bounded by `addrlen` (so it never
+/// over-reads). Three cases:
+///   * empty → unnamed socket (`socket:unix:`)
+///   * leading NUL → Linux abstract socket; the name is the *remaining* bytes
+///     (NOT null-terminated, may contain arbitrary bytes). We include the
+///     name so distinct abstract sockets don't all collapse to one resource
+///     and create false conflicts.
+///   * otherwise → filesystem path, null-terminated within `sun_path`.
+///
+/// Non-printable / non-UTF-8 bytes in either name form are hex-escaped
+/// (`\xNN`) so the result is a stable, framing-safe ASCII string. Pure
+/// function — unit-tested below.
+fn unix_socket_resource(path_bytes: &[u8]) -> String {
+    if path_bytes.is_empty() {
+        return "socket:unix:".to_string();
+    }
+    if path_bytes[0] == 0 {
+        // Abstract namespace: name is everything after the leading NUL,
+        // bounded by addrlen (the caller already truncated to addrlen).
+        let name = &path_bytes[1..];
+        format!("socket:unix:abstract:{}", hex_escape_bytes(name))
+    } else {
+        let len = path_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_bytes.len());
+        format!("socket:unix:{}", hex_escape_bytes(&path_bytes[..len]))
+    }
+}
+
+/// Render bytes as an ASCII string, hex-escaping any byte that is not a
+/// printable, non-control ASCII character (and escaping `\` itself).
+fn hex_escape_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b == b'\\' {
+            out.push_str("\\\\");
+        } else if b.is_ascii_graphic() || b == b' ' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("\\x{:02x}", b));
+        }
+    }
+    out
+}
+
 fn sockaddr_to_resource(addr: *const sockaddr, addrlen: socklen_t) -> Option<String> {
     if addr.is_null() || addrlen == 0 {
         return None;
@@ -637,17 +776,7 @@ fn sockaddr_to_resource(addr: *const sockaddr, addrlen: socklen_t) -> Option<Str
                 sun.sun_path.as_ptr() as *const u8,
                 max_path_len.min(sun.sun_path.len()),
             );
-            let len = path_bytes
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(path_bytes.len());
-            if len == 0 {
-                Some("socket:unix:abstract".to_string())
-            } else {
-                let path =
-                    std::str::from_utf8(&path_bytes[..len]).unwrap_or("unix:???");
-                Some(format!("socket:unix:{}", path))
-            }
+            Some(unix_socket_resource(path_bytes))
         } else {
             None
         }
@@ -782,8 +911,13 @@ mod linux_intercept {
         };
 
         let result = real(fd, addr, addrlen);
+        // Save errno immediately: non-blocking connect returns -1/EINPROGRESS
+        // and callers ALWAYS read errno. The logging below (map insertion,
+        // dlsym resolution, pipe/file writes) can clobber errno, so we restore
+        // the real call's errno just before returning.
+        let saved_errno = get_errno();
 
-        if result == 0 || get_errno() == libc::EINPROGRESS {
+        if result == 0 || saved_errno == libc::EINPROGRESS {
             if let Some(_guard) = ReentrancyGuard::enter() {
                 if let Some(resource) = sockaddr_to_resource(addr, addrlen) {
                     if let Ok(mut map) = FD_MAP.lock() {
@@ -794,6 +928,7 @@ mod linux_intercept {
             }
         }
 
+        set_errno(saved_errno);
         result
     }
 
@@ -1070,6 +1205,54 @@ mod linux_intercept {
 
         real(fd)
     }
+
+    /// Drop the stale FD_MAP entry for a successful `dup2`/`dup3` target fd:
+    /// the target is implicitly closed and may be reused for a different
+    /// resource. (No event is logged; this is purely map maintenance to stop
+    /// `ensure_fd_mapped` trusting a reused fd's old mapping.)
+    fn forget_duped_fd(result: c_int, newfd: c_int) {
+        if result >= 0 && newfd > 2 && !is_pipe_fd(newfd) {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Ok(mut map) = FD_MAP.lock() {
+                    map.remove(newfd);
+                }
+            }
+        }
+    }
+
+    /// Intercept `dup2()` — see `forget_duped_fd`.
+    #[no_mangle]
+    pub unsafe extern "C" fn dup2(oldfd: c_int, newfd: c_int) -> c_int {
+        type Dup2Fn = unsafe extern "C" fn(c_int, c_int) -> c_int;
+        let real = match resolve!(dup2, Dup2Fn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        let result = real(oldfd, newfd);
+        forget_duped_fd(result, newfd);
+        result
+    }
+
+    /// Intercept `dup3()` — like `dup2` but takes flags; see `forget_duped_fd`.
+    #[no_mangle]
+    pub unsafe extern "C" fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int {
+        type Dup3Fn = unsafe extern "C" fn(c_int, c_int, c_int) -> c_int;
+        let real = match resolve!(dup3, Dup3Fn) {
+            Some(f) => f,
+            None => {
+                set_errno(libc::ENOSYS);
+                return -1;
+            }
+        };
+
+        let result = real(oldfd, newfd, flags);
+        forget_duped_fd(result, newfd);
+        result
+    }
 }
 
 // ===========================================================================
@@ -1091,12 +1274,15 @@ mod macos_intercept {
         addrlen: socklen_t,
     ) -> c_int {
         let result = raw_syscall::connect(fd, addr, addrlen);
+        // Save errno immediately (see Linux connect): callers of non-blocking
+        // connect always read errno, and the logging below can clobber it.
+        let saved_errno = get_errno();
 
         if !READY.load(Ordering::Acquire) {
             return result;
         }
 
-        if result == 0 || get_errno() == libc::EINPROGRESS {
+        if result == 0 || saved_errno == libc::EINPROGRESS {
             if let Some(_guard) = ReentrancyGuard::enter() {
                 if let Some(resource) = sockaddr_to_resource(addr, addrlen) {
                     if let Ok(mut map) = FD_MAP.lock() {
@@ -1107,6 +1293,7 @@ mod macos_intercept {
             }
         }
 
+        set_errno(saved_errno);
         result
     }
 
@@ -1375,4 +1562,92 @@ mod interpose {
             original: libc::close as *const (),
         },
     ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_resource_plain() {
+        // Strings with no special bytes pass through unchanged.
+        assert_eq!(escape_resource("file:/tmp/data.db"), "file:/tmp/data.db");
+        assert_eq!(escape_resource("socket:127.0.0.1:5432"), "socket:127.0.0.1:5432");
+        assert_eq!(escape_resource(""), "");
+    }
+
+    #[test]
+    fn test_escape_resource_tab() {
+        // Tabs in SQL would split into extra TSV fields without escaping.
+        assert_eq!(escape_resource("SELECT\t1"), "SELECT\\t1");
+    }
+
+    #[test]
+    fn test_escape_resource_newline() {
+        // Newlines in multi-line SQL would split into extra event lines.
+        assert_eq!(
+            escape_resource("UPDATE t\nSET x = 1"),
+            "UPDATE t\\nSET x = 1"
+        );
+    }
+
+    #[test]
+    fn test_escape_resource_backslash() {
+        // Backslashes must be doubled so unescaping is unambiguous.
+        assert_eq!(escape_resource("a\\b"), "a\\\\b");
+        // A literal backslash followed by 't' must NOT be confused with a tab.
+        assert_eq!(escape_resource("a\\tb"), "a\\\\tb");
+    }
+
+    #[test]
+    fn test_escape_resource_combined() {
+        let sql = "INSERT INTO t\nVALUES (\t'a\\b')";
+        assert_eq!(escape_resource(sql), "INSERT INTO t\\nVALUES (\\t'a\\\\b')");
+    }
+
+    #[test]
+    fn test_escape_resource_preserves_utf8() {
+        // Multi-byte UTF-8 must survive intact (continuation bytes >= 0x80
+        // never collide with the escaped ASCII characters).
+        assert_eq!(escape_resource("café\tμ"), "café\\tμ");
+    }
+
+    #[test]
+    fn test_unix_socket_resource_path() {
+        let path = b"/var/run/postgres/.s.PGSQL.5432\0extra";
+        assert_eq!(
+            unix_socket_resource(path),
+            "socket:unix:/var/run/postgres/.s.PGSQL.5432"
+        );
+    }
+
+    #[test]
+    fn test_unix_socket_resource_empty() {
+        assert_eq!(unix_socket_resource(b""), "socket:unix:");
+    }
+
+    #[test]
+    fn test_unix_socket_resource_abstract_distinct_names() {
+        // Two different abstract sockets must produce different resources,
+        // not both collapse to a single "socket:unix:abstract".
+        let a = unix_socket_resource(b"\0my-service-a");
+        let b = unix_socket_resource(b"\0my-service-b");
+        assert_eq!(a, "socket:unix:abstract:my-service-a");
+        assert_eq!(b, "socket:unix:abstract:my-service-b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_unix_socket_resource_abstract_empty_name() {
+        // Leading NUL with no following bytes — abstract with empty name.
+        assert_eq!(unix_socket_resource(b"\0"), "socket:unix:abstract:");
+    }
+
+    #[test]
+    fn test_unix_socket_resource_abstract_binary_name() {
+        // Abstract names may contain arbitrary bytes (incl. embedded NUL);
+        // non-printable bytes are hex-escaped, keeping distinct names distinct.
+        let r = unix_socket_resource(b"\0a\x00\xffb");
+        assert_eq!(r, "socket:unix:abstract:a\\x00\\xffb");
+    }
 }

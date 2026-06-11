@@ -77,11 +77,15 @@ class AwaitScheduler(InterleavedLoop):
     scheduling as its policy.
     """
 
-    def __init__(self, schedule: list[int], num_tasks: int, *, deadlock_timeout: float = 5.0):
+    def __init__(self, schedule: list[int], num_tasks: int, *, deadlock_timeout: float = 5.0, detect_sql: bool = False):
         super().__init__(deadlock_timeout=deadlock_timeout)
         self.schedule = schedule
         self.num_tasks = num_tasks
         self._index = 0
+        self._detect_sql = detect_sql
+        # Table/row accesses observed via SQL interception, in arrival order.
+        # Exposed so callers can inspect cross-task table conflicts.
+        self.sql_accesses: list[tuple[int, str, str]] = []
 
     # -- InterleavedLoop policy -----------------------------------------
 
@@ -113,10 +117,58 @@ class AwaitScheduler(InterleavedLoop):
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)
         _task_id_var.set(task_id)
+        if not self._detect_sql:
+            return
+        # Install a task-aware DPOR context + IO reporter so the patched async
+        # SQL cursors actually report table/row accesses (finding F8).  The
+        # random shuffler has no DPOR engine, so report_and_wait / row-lock
+        # methods are no-ops — scheduling already happens at await points; the
+        # reporter exists so _report_sql_access records cross-task conflicts.
+        from frontrun._io_detection import (
+            set_dpor_scheduler_task,
+            set_dpor_thread_id_task,
+            set_io_reporter,
+            set_tx_store_task,
+        )
+
+        set_dpor_scheduler_task(self)
+        set_dpor_thread_id_task(task_id)
+        set_tx_store_task()
+
+        def _io_reporter(resource_id: str, kind: str) -> None:
+            current = _task_id_var.get()
+            self.sql_accesses.append((current if current is not None else task_id, resource_id, kind))
+
+        set_io_reporter(_io_reporter)
 
     def _cleanup_task_context(self, task_id: Any) -> None:
+        if self._detect_sql:
+            from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter
+
+            set_dpor_scheduler_task(None)
+            set_dpor_thread_id_task(None)
+            # Reporter is per-OS-thread (shared by all tasks); only clear when
+            # all tasks are done so remaining tasks keep reporting.
+            if len(self._tasks_done) + 1 >= self.num_tasks:
+                set_io_reporter(None)
         _scheduler_var.set(None)
         _task_id_var.set(None)
+
+    # -- DPOR-compat no-ops (the random shuffler has no DPOR engine) ------
+
+    def report_and_wait(self, _frame: Any, _thread_id: int) -> bool:
+        """No-op scheduling hook called by async SQL interception.
+
+        Scheduling already happens at the patched cursor's own await points,
+        so this just lets the SQL call proceed.
+        """
+        return True
+
+    def acquire_row_locks(self, _thread_id: int, _resource_ids: list[str]) -> None:
+        """No-op: random exploration does not arbitrate SQL row locks."""
+
+    def release_row_locks(self, _thread_id: int) -> None:
+        """No-op: random exploration does not arbitrate SQL row locks."""
 
     async def pause(self, task_id: Any, marker: Any = None) -> None:
         depth = _in_scheduler_pause.get()
@@ -144,6 +196,10 @@ class AsyncShuffler:
     def __init__(self, scheduler: AwaitScheduler):
         self.scheduler = scheduler
         self.errors: dict[int, Exception] = {}
+        # Whether the most recent run was cut short by a timeout/deadlock.
+        # When True the resulting state is partial/cancelled and must NOT be
+        # evaluated as a normal completion (finding F6).
+        self.timed_out = False
 
     async def run(
         self,
@@ -170,10 +226,15 @@ class AsyncShuffler:
             for i, (func, a, kw) in enumerate(zip(funcs, args, kwargs))
         }
 
+        self.timed_out = False
         try:
             await self.scheduler.run_all(wrap_auto_paused_tasks(task_funcs, self.scheduler), timeout=timeout)
         except TimeoutError:
-            pass  # match original behavior: swallow timeout in runner
+            # A timeout (overall wall-clock or the scheduler's own
+            # deadlock-timeout, which run_all now re-raises — finding F1)
+            # means tasks were cancelled mid-flight, so the state is partial.
+            # Record it instead of silently swallowing it (finding F6).
+            self.timed_out = True
 
 
 @contextmanager
@@ -238,15 +299,37 @@ async def run_with_schedule(
         The state object after execution.
     """
     with _patch_async_runtime(detect_sql=detect_sql):
-        scheduler = AwaitScheduler(schedule, len(tasks), deadlock_timeout=deadlock_timeout)
-        runner = AsyncShuffler(scheduler)
-
-        state = setup()
-        funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [lambda s=state, t=t: t(s) for t in tasks]  # type: ignore[assignment]
-
-        await runner.run(funcs, timeout=timeout)
-
+        state, _runner = await _run_with_schedule_status(
+            schedule, setup, tasks, timeout=timeout, deadlock_timeout=deadlock_timeout, detect_sql=detect_sql
+        )
         return state
+
+
+async def _run_with_schedule_status(
+    schedule: list[int],
+    setup: Callable[[], Any],
+    tasks: list[Callable[[Any], Coroutine[Any, Any, None]]],
+    timeout: float = 5.0,
+    deadlock_timeout: float = 5.0,
+    detect_sql: bool = False,
+) -> tuple[Any, AsyncShuffler]:
+    """Run one interleaving and return ``(state, runner)``.
+
+    The runner exposes ``timed_out`` / ``scheduler.had_error`` so callers can
+    tell whether the run completed normally or was cut short by a
+    timeout/deadlock (in which case ``state`` is partial and must not be
+    evaluated as a normal completion — finding F6).  Assumes the async runtime
+    is already patched by the caller.
+    """
+    scheduler = AwaitScheduler(schedule, len(tasks), deadlock_timeout=deadlock_timeout, detect_sql=detect_sql)
+    runner = AsyncShuffler(scheduler)
+
+    state = setup()
+    funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [lambda s=state, t=t: t(s) for t in tasks]  # type: ignore[assignment]
+
+    await runner.run(funcs, timeout=timeout)
+
+    return state, runner
 
 
 async def explore_async_random(
@@ -324,11 +407,30 @@ async def explore_async_random(
                 break
             schedule = random_round_robin_schedule(rng, num_tasks, max_ops)
 
-            state = await run_with_schedule(
-                schedule, setup, tasks, timeout=timeout_per_run, deadlock_timeout=deadlock_timeout
+            state, runner = await _run_with_schedule_status(
+                schedule,
+                setup,
+                tasks,
+                timeout=timeout_per_run,
+                deadlock_timeout=deadlock_timeout,
+                detect_sql=detect_sql,
             )
             result.num_explored += 1
             seen_schedule_hashes.add(hash(tuple(schedule)))
+
+            # A timeout/deadlock means tasks were cancelled mid-flight: the
+            # state is partial and does not describe any completed interleaving,
+            # so the invariant must NOT be evaluated against it (finding F6).
+            # Surface the deadlock as the counterexample instead of either
+            # silently dropping it or reporting a spurious invariant violation.
+            if runner.timed_out or runner.scheduler.had_error:
+                result.property_holds = False
+                result.counterexample = schedule
+                result.unique_interleavings = len(seen_schedule_hashes)
+                sched_err = runner.scheduler._error
+                detail = str(sched_err) if sched_err is not None else "tasks did not complete within the timeout"
+                result.explanation = f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
+                return result
 
             # --- serializable_invariant check ---
             if serial_valid_states is not None:

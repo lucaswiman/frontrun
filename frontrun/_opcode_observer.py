@@ -22,6 +22,7 @@ import operator as _operator_mod
 import sys
 import threading
 import types
+from collections import deque
 from typing import Any, Literal
 
 from frontrun._cooperative import CooperativeLock as _CooperativeLock
@@ -385,18 +386,41 @@ def set_object_key_reverse_map(rmap: dict[int, str] | None) -> None:
 
 
 class StableObjectIds:
-    """Assign monotonically increasing stable IDs to Python objects.
+    """Assign stable per-instance IDs to Python objects, consistent across executions.
 
     Replaces ``id(obj)`` in object key generation.  Since ``explore_dpor``
     creates fresh ``state = setup()`` each execution, ``id(obj)`` changes
-    between executions for the same logical object.  This class assigns a
-    counter-based ID on first access, producing the same ID across executions
-    as long as objects are accessed in the same deterministic order during
-    replay.
+    between executions for the same logical object, so a raw counter assigned
+    in *first-touch order* is unsound: DPOR's whole purpose is to change the
+    schedule after a backtrack, which permutes touch order, so the same
+    logical object would get a different ID than last execution.  The Rust
+    ``Path`` carries object-ID-keyed state (sleep sets, trace caches) across
+    executions; permuted IDs make its independence check compare the wrong
+    objects and silently prune genuinely distinct interleavings.
+
+    The fix is :meth:`pre_register`: immediately after ``setup()`` (and before
+    any worker runs), the per-execution object graph reachable from the fresh
+    ``state`` is walked in a **deterministic, schedule-independent order** and
+    each object is assigned its counter ID then.  Because ``setup()``
+    deterministically rebuilds the same logical graph every execution, this
+    produces the **same ID for the same logical object** regardless of the
+    runtime schedule.  Objects created *during* worker execution (not
+    reachable from ``state`` at setup time) fall back to first-touch order; if
+    their touch order diverges that is the inherent residual limitation, but
+    the common case (state objects, locks, attributes) is now stable.
+
+    Collisions are conservative-safe: if two distinct objects ever shared an
+    ID, that only adds spurious dependencies (over-exploration), never missed
+    interleavings.  The dangerous direction — same object, different IDs — is
+    what pre-registration eliminates.
 
     The mapping is maintained per ``explore_dpor`` call and reset at the start
-    of each execution via ``reset_for_execution()``.
+    of each execution via :meth:`reset_for_execution`.
     """
+
+    # Bound the pre-registration walk so a pathological state graph can't
+    # stall exploration.  These are generous; typical state graphs are tiny.
+    _MAX_PREREGISTER_OBJECTS = 100_000
 
     __slots__ = ("_map", "_next_id")
 
@@ -414,13 +438,70 @@ class StableObjectIds:
             self._next_id += 1
         return stable_id
 
+    def pre_register(self, root: object) -> None:
+        """Assign stable IDs to *root*'s object graph in deterministic order.
+
+        Called once per execution, right after ``setup()`` and before any
+        worker runs.  Performs a deterministic breadth-first traversal of the
+        graph reachable from *root* and calls :meth:`get` on each object so
+        the counter IDs are assigned in a **schedule-independent** order that
+        is identical across executions (since ``setup()`` rebuilds the same
+        logical graph each time).
+
+        Traversal order is fully determined by structure, never by runtime
+        scheduling:
+
+        * ``__dict__`` attributes — sorted by attribute name.
+        * ``list`` / ``tuple`` — index order.
+        * ``dict`` — values ordered by ``repr`` of their keys.
+        * ``set`` / ``frozenset`` — **skipped** (iteration order is not
+          deterministic across processes), so their elements register lazily.
+
+        Cycles are handled via a visited set; primitive leaf values (``str``,
+        ``int``, ``float``, ``bool``, ``bytes``, ``None``) are not registered
+        because they are never used as DPOR access objects.
+        """
+        seen: set[int] = set()
+        queue: deque[object] = deque([root])
+        count = 0
+        while queue and count < self._MAX_PREREGISTER_OBJECTS:
+            obj = queue.popleft()
+            oid = id(obj)
+            if oid in seen:
+                continue
+            seen.add(oid)
+            # Skip primitive/immutable leaves: never DPOR access objects and
+            # potentially interned/shared (registering them is harmless but
+            # pointless and could explode the walk).
+            if obj is None or isinstance(obj, (str, bytes, int, float, bool, complex)):
+                continue
+            # Assign this object's stable ID now, in deterministic order.
+            self.get(obj)
+            count += 1
+            self._enqueue_children(obj, queue)
+
+    @staticmethod
+    def _enqueue_children(obj: object, queue: deque[object]) -> None:
+        """Append *obj*'s children to *queue* in a deterministic order."""
+        # Instance attributes, sorted by name (always str — no repr needed).
+        obj_dict = getattr(obj, "__dict__", None)
+        if isinstance(obj_dict, dict):
+            queue.extend(obj_dict[key] for key in sorted(obj_dict))
+        if isinstance(obj, (list, tuple)):
+            queue.extend(obj)
+        elif isinstance(obj, dict):
+            queue.extend(obj[key] for key in sorted(obj.keys(), key=repr))
+        # set/frozenset deliberately omitted: iteration order is not stable
+        # across processes, so registering their elements here would itself
+        # be schedule-independent but process-dependent; leave them lazy.
+
     def reset_for_execution(self) -> None:
         """Clear the mapping at the start of each execution.
 
         Since ``explore_dpor`` creates fresh state objects each execution,
-        old ``id(obj)`` values are stale.  The mapping is rebuilt during
-        replay, where the same objects are accessed in the same
-        deterministic order, producing the same stable IDs.
+        old ``id(obj)`` values are stale.  The mapping is rebuilt by
+        :meth:`pre_register` (and, for objects created mid-run, lazily during
+        replay).
         """
         self._map.clear()
         self._next_id = 0
@@ -710,11 +791,12 @@ def _process_opcode(
             if isinstance(_fb, dict):
                 val = _fb.get(instr.argval)
         # On 3.11+, LOAD_GLOBAL with NULL flag (bit 0 of arg) pushes an
-        # extra NULL slot.  The order differs by version:
-        #   3.11-3.13: [NULL, value]  (NULL below, value on TOS)
-        #   3.14+:     [value, NULL]  (value below, NULL on TOS)
+        # extra NULL slot.  The value/NULL order flipped in 3.13:
+        #   3.11-3.12: [NULL, value]  (NULL below, value on TOS)
+        #   3.13+:     [value, NULL]  (value below, NULL on TOS)
+        # (see CPython dis argrepr: "NULL + name" pre-3.13 vs "name + NULL" 3.13+)
         if _PY_VERSION >= (3, 11) and instr.arg is not None and instr.arg & 1:
-            if _PY_VERSION >= (3, 14):
+            if _PY_VERSION >= (3, 13):
                 shadow.push(val)
                 shadow.push(None)
             else:
@@ -848,12 +930,22 @@ def _process_opcode(
                 shadow.push(None)
         else:
             shadow.push(None)
-        # On 3.12+, LOAD_ATTR with method flag (bit 0 of arg) pushes an
-        # extra self/NULL slot after the callable, matching LOAD_METHOD's
-        # stack layout.  On 3.11, LOAD_ATTR with the method flag has
-        # stack_effect=0 (no extra push), so we skip it there.
+        # On 3.12+, LOAD_ATTR with method flag (bit 0 of arg) pushes an extra
+        # self/NULL slot, matching LOAD_METHOD's stack layout.  On 3.11,
+        # LOAD_ATTR with the method flag has stack_effect=0 (no extra push), so
+        # we skip it there.  The value/NULL order flipped in 3.13 (same flip as
+        # LOAD_GLOBAL):
+        #   3.12:  [NULL, value]  (NULL/self below, value on TOS)
+        #   3.13+: [value, NULL]  (value below, NULL/self on TOS)
+        # The value was already pushed above, so for 3.13+ we push NULL on top,
+        # and for 3.12 we insert NULL *below* the value.
         if _PY_VERSION >= (3, 12) and instr.arg is not None and instr.arg & 1:
-            shadow.push(None)
+            if _PY_VERSION >= (3, 13):
+                shadow.push(None)
+            elif shadow.stack:
+                shadow.stack.insert(-1, None)
+            else:
+                shadow.push(None)
 
     elif op == "STORE_ATTR":
         obj = shadow.pop()  # TOS = object
@@ -1358,12 +1450,34 @@ def _resolve_tool_id(tool_kind: ToolKind) -> int:
     raise ValueError(f"Unknown tool_kind: {tool_kind!r}")
 
 
+# ---------------------------------------------------------------------------
+# sys.monitoring tool-ID ownership registry (finding 3)
+# ---------------------------------------------------------------------------
+#
+# sys.monitoring tool IDs are a global, process-wide resource.  When
+# ``use_tool_id`` raises ValueError the slot is already held.  We must only
+# force-steal a slot we KNOW belongs to a previous frontrun run that has since
+# finished or died — never an external profiler/optimizer or a concurrent
+# frontrun run in another (still-alive) thread.  This registry maps each
+# claimed tool_id to the ident of the frontrun thread that claimed it, so the
+# recovery path can tell "stale frontrun run" apart from "live holder".
+
+_TOOL_OWNERS: dict[int, int] = {}
+_TOOL_OWNERS_LOCK = threading.Lock()
+
+
+def _owner_thread_alive(owner_ident: int) -> bool:
+    """Whether the thread that claimed a tool_id is still running."""
+    return any(t.ident == owner_ident and t.is_alive() for t in threading.enumerate())
+
+
 def setup_opcode_monitoring(
     *,
     tool_name: str,
     handle_py_start: Any,
     handle_py_return: Any,
     handle_instruction: Any,
+    handle_py_unwind: Any = None,
     tool_kind: ToolKind = "profiler",
     monitor_returns: bool = True,
 ) -> int:
@@ -1371,48 +1485,88 @@ def setup_opcode_monitoring(
 
     Handles the full tool ID lifecycle including defensive cleanup of
     stale tool IDs from interrupted runs (e.g. pytest-timeout kills a
-    test before teardown).
+    test before teardown).  Such recovery is ONLY performed when the
+    ownership registry shows the slot belongs to a frontrun run that has
+    since finished or whose owning thread has died — a live external tool
+    (or a concurrent frontrun run) is never destroyed; instead a clear
+    error is raised (finding 3).
 
     *tool_kind* selects the sys.monitoring tool ID slot
     (``"profiler"`` for DPOR, ``"optimizer"`` for the BytecodeShuffler).
-    When *monitor_returns* is False, PY_RETURN is not registered (used by
-    callers that don't need shadow-stack cleanup).
+    When *monitor_returns* is False, PY_RETURN/PY_UNWIND are not registered
+    (used by callers that don't need shadow-stack cleanup).
     """
     mon = sys.monitoring
     tool_id: int = _resolve_tool_id(tool_kind)
 
-    try:
-        mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
-    except ValueError:
-        # Tool ID still held from a previous interrupted run — force cleanup.
-        mon.set_events(tool_id, 0)  # type: ignore[attr-defined]
-        mon.register_callback(tool_id, mon.events.PY_START, None)  # type: ignore[attr-defined]
-        mon.register_callback(tool_id, mon.events.PY_RETURN, None)  # type: ignore[attr-defined]
-        mon.register_callback(tool_id, mon.events.INSTRUCTION, None)  # type: ignore[attr-defined]
-        mon.free_tool_id(tool_id)  # type: ignore[attr-defined]
-        mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
+    with _TOOL_OWNERS_LOCK:
+        try:
+            mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
+        except ValueError:
+            prior = _TOOL_OWNERS.get(tool_id)
+            if prior is None:
+                # Not a frontrun-owned slot: held by an external profiler or
+                # another tool.  Do NOT steal it.
+                held_by = mon.get_tool(tool_id)  # type: ignore[attr-defined]
+                raise RuntimeError(
+                    f"sys.monitoring tool id {tool_id} ({tool_kind}) is already in use "
+                    f"by {held_by!r} and is not owned by frontrun; refusing to steal it. "
+                    "Stop the other monitoring tool before running frontrun."
+                ) from None
+            if _owner_thread_alive(prior):
+                # A concurrent frontrun run in another live thread owns it.
+                raise RuntimeError(
+                    f"sys.monitoring tool id {tool_id} ({tool_kind}) is in use by a "
+                    f"concurrent frontrun run (thread {prior}); "
+                    "frontrun runs that share a tool-id slot cannot overlap."
+                ) from None
+            # Genuinely stale: a previous frontrun run that finished/died
+            # without tearing down (e.g. pytest-timeout kill).  Force-free.
+            _force_free_tool_id(tool_id)
+            mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
+
+        _TOOL_OWNERS[tool_id] = threading.get_ident()
 
     events = mon.events.PY_START | mon.events.INSTRUCTION  # type: ignore[attr-defined]
     if monitor_returns:
         events |= mon.events.PY_RETURN  # type: ignore[attr-defined]
+        events |= mon.events.PY_UNWIND  # type: ignore[attr-defined]
     mon.set_events(tool_id, events)  # type: ignore[attr-defined]
     mon.register_callback(tool_id, mon.events.PY_START, handle_py_start)  # type: ignore[attr-defined]
     if monitor_returns:
         mon.register_callback(tool_id, mon.events.PY_RETURN, handle_py_return)  # type: ignore[attr-defined]
+        # PY_UNWIND mirrors PY_RETURN cleanup for exception-exiting frames
+        # (finding 4).  Fall back to handle_py_return when an explicit unwind
+        # handler is not provided (it performs the same shadow-stack removal).
+        mon.register_callback(  # type: ignore[attr-defined]
+            tool_id, mon.events.PY_UNWIND, handle_py_unwind if handle_py_unwind is not None else handle_py_return
+        )
     mon.register_callback(tool_id, mon.events.INSTRUCTION, handle_instruction)  # type: ignore[attr-defined]
     return tool_id
+
+
+def _force_free_tool_id(tool_id: int) -> None:
+    """Unregister all callbacks and free *tool_id* (caller verified staleness)."""
+    mon = sys.monitoring
+    mon.set_events(tool_id, 0)  # type: ignore[attr-defined]
+    mon.register_callback(tool_id, mon.events.PY_START, None)  # type: ignore[attr-defined]
+    mon.register_callback(tool_id, mon.events.PY_RETURN, None)  # type: ignore[attr-defined]
+    mon.register_callback(tool_id, mon.events.PY_UNWIND, None)  # type: ignore[attr-defined]
+    mon.register_callback(tool_id, mon.events.INSTRUCTION, None)  # type: ignore[attr-defined]
+    mon.free_tool_id(tool_id)  # type: ignore[attr-defined]
 
 
 def teardown_opcode_monitoring(tool_id: int | None) -> None:
     """Tear down sys.monitoring for opcode tracing."""
     if tool_id is None:
         return
-    mon = sys.monitoring
-    mon.set_events(tool_id, 0)  # type: ignore[attr-defined]
-    mon.register_callback(tool_id, mon.events.PY_START, None)  # type: ignore[attr-defined]
-    mon.register_callback(tool_id, mon.events.PY_RETURN, None)  # type: ignore[attr-defined]
-    mon.register_callback(tool_id, mon.events.INSTRUCTION, None)  # type: ignore[attr-defined]
-    mon.free_tool_id(tool_id)  # type: ignore[attr-defined]
+    with _TOOL_OWNERS_LOCK:
+        # Only free a slot we still own; another run may have reclaimed it after
+        # we died, in which case we must not stomp on it.
+        owner = _TOOL_OWNERS.get(tool_id)
+        if owner is not None and owner == threading.get_ident():
+            del _TOOL_OWNERS[tool_id]
+        _force_free_tool_id(tool_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1562,11 +1716,12 @@ def make_monitoring_callbacks(
     remove_shadow_stack: Any,
     detect_io: bool = False,
     is_active: Any = None,
-) -> tuple[Any, Any, Any]:
+) -> tuple[Any, Any, Any, Any]:
     """Create ``sys.monitoring`` callbacks for opcode tracing.
 
-    Returns ``(handle_py_start, handle_py_return, handle_instruction)``
-    suitable for passing to :func:`setup_opcode_monitoring`.
+    Returns ``(handle_py_start, handle_py_return, handle_py_unwind,
+    handle_instruction)`` suitable for passing to
+    :func:`setup_opcode_monitoring`.
 
     Parameters are the same as :func:`make_settrace_callback`.
     """
@@ -1593,6 +1748,12 @@ def make_monitoring_callbacks(
             frame = sys._getframe(1)
             remove_shadow_stack(id(frame))
         return None
+
+    # A frame exiting via exception fires PY_UNWIND, not PY_RETURN.  The
+    # cleanup is identical (remove the shadow stack keyed by id(frame), else a
+    # reused frame id inherits a dead operand stack — finding 4), and neither
+    # callback looks at its third argument (retval vs. exception).
+    handle_py_unwind = handle_py_return
 
     def handle_instruction(code: Any, instruction_offset: int) -> Any:
         if is_active is not None and not is_active():
@@ -1622,7 +1783,7 @@ def make_monitoring_callbacks(
         on_opcode(code, instruction_offset, frame, thread_id)
         return None
 
-    return handle_py_start, handle_py_return, handle_instruction
+    return handle_py_start, handle_py_return, handle_py_unwind, handle_instruction
 
 
 # ---------------------------------------------------------------------------
@@ -1720,7 +1881,7 @@ def start_opcode_trace(
     _remove_shadow_stack = remove_shadow_stack if remove_shadow_stack is not None else _noop_remove_shadow_stack
 
     if _USE_SYS_MONITORING:
-        handle_py_start, handle_py_return, handle_instruction = make_monitoring_callbacks(
+        handle_py_start, handle_py_return, handle_py_unwind, handle_instruction = make_monitoring_callbacks(
             get_thread_id=get_thread_id,
             on_opcode=on_opcode,
             remove_shadow_stack=_remove_shadow_stack,
@@ -1731,6 +1892,7 @@ def start_opcode_trace(
             tool_name=tool_name,
             handle_py_start=handle_py_start,
             handle_py_return=handle_py_return,
+            handle_py_unwind=handle_py_unwind,
             handle_instruction=handle_instruction,
             tool_kind=tool_kind,
             monitor_returns=monitor_returns,

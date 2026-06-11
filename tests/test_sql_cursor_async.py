@@ -249,6 +249,32 @@ async def test_parameterized_query() -> None:
 
 
 @pytest.mark.asyncio
+async def test_parameters_passed_as_keyword() -> None:
+    """F7: ``conn.execute(sql, parameters=[...])`` must work under patching.
+
+    The unpatched aiosqlite signature is ``execute(self, sql, parameters=None)``
+    — ``parameters`` is an ordinary keyword.  The patched wrapper previously
+    made it positional-only (``/``), so passing it by keyword raised a
+    TypeError under exploration even though it is legal unpatched.
+    """
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql_async()
+
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+        await conn.execute("INSERT INTO users VALUES (1, 'Alice')")
+        log.clear()
+        # Keyword 'parameters' is legal on the unpatched method.
+        cursor = await conn.execute("SELECT * FROM users WHERE id = ?", parameters=(1,))
+        rows = await cursor.fetchall()
+
+    assert rows == [(1, "Alice")]
+    # Row-level resolution should still see the parameter value.
+    assert any("1" in r for r in log.resource_ids), log.resource_ids
+
+
+@pytest.mark.asyncio
 async def test_executemany() -> None:
     log = IOLog()
     set_io_reporter(log)

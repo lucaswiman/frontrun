@@ -49,6 +49,14 @@ def finalize_marker_executor_run(
     if task_errors:
         raise next(iter(task_errors.values()))
 
+    # Surface a coordinator-level error (e.g. a schedule stall detected inside
+    # wait_for_turn).  The trace function swallows this exception so the worker
+    # thread does not crash mid-trace, but the run is NOT valid: the threads ran
+    # under an uncontrolled interleaving.  This must be raised — including the
+    # step-0 stall case, which the heuristic below (current_step > 0) misses.
+    if coordinator.error is not None:
+        raise coordinator.error
+
     # If at least one step was processed (so the schedule was in use) but
     # the full schedule wasn't completed, it means the schedule references
     # markers that no worker reached. If zero steps were consumed, the
@@ -198,6 +206,12 @@ class ThreadCoordinator:
                 # ever reaches) get diagnosed promptly instead of blocking
                 # until the outer thread.join(timeout) fires.
                 if not self.condition.wait(timeout=self.deadlock_timeout):
+                    # Re-check terminal conditions before indexing: another
+                    # thread may have completed the schedule (advancing
+                    # current_step to len(steps)) or reported an error while we
+                    # were blocked in wait() (9a).
+                    if self.completed or self.error or self.current_step >= len(self.schedule.steps):
+                        continue
                     expected = self.schedule.steps[self.current_step]
                     self.error = TimeoutError(
                         f"Schedule stall: waiting for Step({expected.execution_name!r}, "

@@ -58,6 +58,8 @@ from frontrun._async_autopause import (
 from frontrun._deadlock import DeadlockError, WaitForGraph, format_cycle
 from frontrun._dpor_core import (
     NoOpLock,
+    ReplayEngine,
+    ReplayExecution,
     RowLockRegistry,
     advance_replay_index,
     compute_serializable_baseline_async,
@@ -166,6 +168,20 @@ _async_lock_owners: dict[int, int] = {}
 # Reverse map: task_id → set of lock objects held by that task.
 # Used to force-release locks when a task finishes without calling release().
 _async_task_held_locks: dict[int, set[Any]] = {}
+
+
+def _reset_async_lock_state() -> None:
+    """Clear all cooperative-lock global state (graph edges, owners, held sets).
+
+    Must run before each exploration execution AND each replay attempt: stale
+    wait-for edges / lock owners / held-locks from a prior run (compounded by
+    id() reuse) leak into the next one and cause spurious DeadlockError or
+    phantom ownership (finding F5).
+    """
+    if _async_wait_graph is not None:
+        _async_wait_graph.clear()
+    _async_lock_owners.clear()
+    _async_task_held_locks.clear()
 
 
 class _CooperativeAsyncLock:
@@ -315,11 +331,8 @@ def _unpatch_asyncio_lock() -> None:
     if not _async_lock_patched:
         return
     asyncio.Lock = _real_asyncio_lock  # type: ignore[assignment,misc]
-    if _async_wait_graph is not None:
-        _async_wait_graph.clear()
+    _reset_async_lock_state()
     _async_wait_graph = None
-    _async_lock_owners.clear()
-    _async_task_held_locks.clear()
     _async_lock_patched = False
 
 
@@ -496,11 +509,19 @@ class AsyncDporScheduler(InterleavedLoop):
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)
         _task_id_var.set(task_id)
-        # Set up IO reporter context so SQL interception can report to us
-        from frontrun._io_detection import _io_tls, set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
+        # Set up IO reporter context so SQL interception can report to us.
+        # Async DPOR runs all tasks on one event-loop thread, so the DPOR
+        # scheduler/thread-id and transaction state must be task-aware
+        # (contextvar-backed) rather than per-thread (findings F2, F4).
+        from frontrun._io_detection import (
+            set_dpor_scheduler_task,
+            set_dpor_thread_id_task,
+            set_io_reporter,
+            set_tx_store_task,
+        )
 
-        set_dpor_scheduler(self)
-        set_dpor_thread_id(task_id)
+        set_dpor_scheduler_task(self)
+        set_dpor_thread_id_task(task_id)
 
         if self._detect_sql or self._detect_redis:
 
@@ -517,11 +538,12 @@ class AsyncDporScheduler(InterleavedLoop):
 
             set_io_reporter(_io_reporter)
 
-        # Reset transaction state for this task
-        _io_tls._in_transaction = False
-        _io_tls._is_autobegin = False
-        _io_tls._tx_buffer = []
-        _io_tls._tx_savepoints = {}
+        # Reset transaction state for this task in a fresh per-task store.
+        store = set_tx_store_task()
+        store._in_transaction = False
+        store._is_autobegin = False
+        store._tx_buffer = []
+        store._tx_savepoints = {}
 
     async def run_all(
         self,
@@ -575,7 +597,7 @@ class AsyncDporScheduler(InterleavedLoop):
             if self._current_task == task_id:
                 next_task = self._schedule_next()
                 self._current_task = next_task
-                if next_task is None and len(self._tasks_done) >= self._num_tasks:
+                if next_task is None and len(self._tasks_done) >= self._num_engine_tasks:
                     self._finished = True
             self._condition.notify_all()
 
@@ -591,19 +613,21 @@ class AsyncDporScheduler(InterleavedLoop):
 
         _scheduler_var.set(None)
         _task_id_var.set(None)
-        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
+        from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter
 
-        # Only clear thread-local DPOR/IO state when ALL tasks are done.
-        # In async mode, all tasks share the same thread-local storage.
-        # Clearing the reporter when one task finishes would break I/O
-        # detection for remaining tasks on the same thread.
-        # Note: _cleanup_task_context runs BEFORE _mark_done, so the
-        # current task_id is not yet in _tasks_done; +1 accounts for it.
-        if len(self._tasks_done) + 1 >= self._num_engine_tasks:
-            set_dpor_scheduler(None)
-            set_dpor_thread_id(None)
-            if self._detect_sql or self._detect_redis:
-                set_io_reporter(None)
+        # Clear this task's task-aware DPOR context.  These contextvars are
+        # per-task (they die with the task), but clearing keeps any further
+        # interception in this context from resolving a stale scheduler.
+        set_dpor_scheduler_task(None)
+        set_dpor_thread_id_task(None)
+
+        # The IO reporter is per-OS-thread (shared by all tasks on the event
+        # loop), so only clear it when ALL tasks are done — clearing it when
+        # one task finishes would break I/O detection for the rest.
+        # Note: _cleanup_task_context runs BEFORE _mark_done, so the current
+        # task_id is not yet in _tasks_done; +1 accounts for it.
+        if len(self._tasks_done) + 1 >= self._num_engine_tasks and (self._detect_sql or self._detect_redis):
+            set_io_reporter(None)
 
     def get_shadow_stack(self, frame_id: int) -> ShadowStack:
         stack = self._shadow_stacks.get(frame_id)
@@ -841,6 +865,13 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         self._replay_max_ops = len(self._replay_schedule) * 10 + 10_000
         self._current_task: int | None = schedule[0] if schedule else None
         self._num_replay_tasks = num_tasks
+        # Stubs so the patched cooperative asyncio.Lock can call
+        # engine.report_sync / execution.block_thread without crashing during
+        # replay (finding F3).  _lock_blocked mirrors the DPOR scheduler's
+        # attribute so the same lock-acquire code path works unmodified.
+        self.engine: Any = ReplayEngine()
+        self.execution: Any = ReplayExecution()
+        self._lock_blocked: dict[int, int] = {}
 
     def _extend_schedule(self) -> bool:
         return extend_replay_schedule(
@@ -877,6 +908,11 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         _task_id_var.set(task_id)
 
     def _cleanup_task_context(self, task_id: Any) -> None:
+        # Release any asyncio.Lock objects still held by this task (e.g. the
+        # task crashed or was cancelled without release()).  Without this,
+        # stale holding edges / lock owners leak into later replay attempts
+        # and cause spurious DeadlockError or phantom ownership (finding F5).
+        _release_task_async_locks(task_id)
         _scheduler_var.set(None)
         _task_id_var.set(None)
 
@@ -915,6 +951,9 @@ async def _reproduce_async_counterexample(
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
     for _ in range(reproduce_on_failure):
+        # Clear cooperative-lock global state before EACH replay attempt (F5).
+        _reset_async_lock_state()
+
         scheduler = _ReplayAsyncScheduler(schedule_list, num_tasks, deadlock_timeout=deadlock_timeout)
         state = setup()
         task_funcs: dict[int, Callable[..., Awaitable[None]]] = {}
@@ -935,7 +974,17 @@ async def _reproduce_async_counterexample(
             await scheduler.run_all(task_funcs, timeout=timeout_per_run)
         except DeadlockError:
             deadlocked = True
-        except (TimeoutError, Exception):
+        except TimeoutError:
+            # Run didn't complete within the budget — a failed reproduction.
+            continue
+        except (AttributeError, TypeError, NameError):
+            # Programming errors in our own replay plumbing (e.g. a missing
+            # scheduler attribute) must NOT be silently scored as a failed
+            # reproduction — surface them instead of hiding the bug (F3).
+            raise
+        except Exception:
+            # The user's task body raised: the run produced no usable state,
+            # so this attempt did not reproduce the counterexample.
             continue
         inv_failed, _ = (
             check_invariant(invariant, state) if (invariant is not None and not deadlocked) else (False, None)
@@ -1090,10 +1139,7 @@ async def _explore_async_dpor(
                 execution = step.execution
 
                 # Clear wait-for graph and held-locks tracking between executions
-                if _async_wait_graph is not None:
-                    _async_wait_graph.clear()
-                _async_lock_owners.clear()
-                _async_task_held_locks.clear()
+                _reset_async_lock_state()
 
                 scheduler = AsyncDporScheduler(
                     engine,

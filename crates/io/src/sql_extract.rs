@@ -1,3 +1,30 @@
+/// Validate the big-endian i32 length field at `buf[1..5]` of a tagged
+/// PostgreSQL wire message and return the exclusive end index of the message
+/// (`1 + len`), or None if the message is malformed.
+///
+/// The wire length is a *signed* i32. Negative values are rejected before
+/// widening — `as usize` would sign-extend a negative into a huge value,
+/// after which the index math wraps and slice-indexing panics (process abort
+/// across the LD_PRELOAD hook). All index arithmetic is checked so a crafted
+/// length can never produce an out-of-bounds slice expression. The length
+/// counts the 4-byte length field itself plus the payload, so the minimum
+/// valid value is 5 (4 + 1 byte of payload, e.g. a lone null terminator).
+fn checked_message_end(buf: &[u8]) -> Option<usize> {
+    if buf.len() < 6 {
+        return None;
+    }
+    let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+    if len < 0 {
+        return None;
+    }
+    let len = len as usize;
+    let end = 1usize.checked_add(len)?;
+    if len < 5 || buf.len() < end {
+        return None;
+    }
+    Some(end)
+}
+
 /// Extract SQL query text from a PostgreSQL wire protocol buffer.
 /// Returns None if the buffer doesn't contain a recognizable query message.
 pub fn extract_pg_query(buf: &[u8]) -> Option<&str> {
@@ -7,28 +34,14 @@ pub fn extract_pg_query(buf: &[u8]) -> Option<&str> {
     match buf[0] {
         b'Q' => {
             // Simple query: 'Q' + i32 len + null-terminated SQL
-            if buf.len() < 6 {
-                return None;
-            }
-            let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-            // len includes the 4-byte length field itself + SQL + null terminator,
-            // so minimum valid len is 5 (4 + 1 null byte for empty SQL).
-            if len < 5 || buf.len() < 1 + len {
-                return None;
-            }
-            let sql_bytes = &buf[5..1 + len - 1]; // exclude null terminator
+            let end = checked_message_end(buf)?;
+            let sql_bytes = &buf[5..end - 1]; // exclude null terminator
             std::str::from_utf8(sql_bytes).ok()
         }
         b'P' => {
             // Parse message: 'P' + i32 len + name(str0) + query(str0) + i16 nparams
-            if buf.len() < 6 {
-                return None;
-            }
-            let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-            if buf.len() < 1 + len {
-                return None;
-            }
-            let payload = &buf[5..1 + len];
+            let end = checked_message_end(buf)?;
+            let payload = &buf[5..end];
             // Skip statement name (null-terminated)
             let name_end = payload.iter().position(|&b| b == 0)?;
             let query_start = name_end + 1;
@@ -230,5 +243,40 @@ mod tests {
         assert_eq!(extract_pg_query(&[b'Q']), None);
         assert_eq!(extract_pg_query(&[b'P']), None);
         assert_eq!(extract_pg_query(&[b'X']), None);
+    }
+
+    #[test]
+    fn test_simple_query_negative_length_all_ff() {
+        // 'Q' with length = 0xffffffff (i32 = -1). With the old `as usize`
+        // sign-extension, len becomes a huge value; `1 + len` wraps in release
+        // and the bounds check `buf.len() < 1 + len` passes, leading to a
+        // slice panic on `buf[5..1 + len - 1]`. Must return None instead.
+        let mut buf = vec![b'Q', 0xff, 0xff, 0xff, 0xff];
+        buf.extend_from_slice(&[b'A'; 16]); // arbitrary trailing bytes
+        assert_eq!(extract_pg_query(&buf), None);
+    }
+
+    #[test]
+    fn test_parse_negative_length_high_bit() {
+        // 'P' with length = 0x80000000 (i32 = -2147483648, most negative).
+        let mut buf = vec![b'P', 0x80, 0, 0, 0];
+        buf.extend_from_slice(&[0u8; 16]);
+        assert_eq!(extract_pg_query(&buf), None);
+    }
+
+    #[test]
+    fn test_simple_query_negative_length_minus_two() {
+        // 'Q' with len = -2 (0xfffffffe). Crafted so that without checked
+        // arithmetic the wrapped index math could pass bounds and slice-panic.
+        let mut buf = vec![b'Q', 0xff, 0xff, 0xff, 0xfe];
+        buf.extend_from_slice(&[b'B'; 16]);
+        assert_eq!(extract_pg_query(&buf), None);
+    }
+
+    #[test]
+    fn test_parse_negative_length_minus_one() {
+        let mut buf = vec![b'P', 0xff, 0xff, 0xff, 0xff];
+        buf.extend_from_slice(&[0u8; 16]);
+        assert_eq!(extract_pg_query(&buf), None);
     }
 }

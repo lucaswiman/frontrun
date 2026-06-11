@@ -1326,3 +1326,264 @@ def test_release_dpor_row_locks_no_scheduler() -> None:
 
     # Should not raise
     _release_dpor_row_locks()
+
+
+# ---------------------------------------------------------------------------
+# Finding 3: connection.commit() / rollback() interception
+# ---------------------------------------------------------------------------
+
+
+def test_traced_cursor_execute_recovers_keyword_params() -> None:
+    """TracedCursor must not silently drop keyword params (finding 10c).
+
+    psycopg2 accepts ``execute(sql, vars=params)`` and pymysql
+    ``execute(sql, args=params)``.  Those land in **kwargs; if dropped, the
+    placeholders are never substituted for predicate extraction and the real
+    driver call loses its parameters.
+    """
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("INSERT INTO users VALUES (1, 'Alice')")
+    cur = conn.cursor()
+    log.clear()
+    # sqlite3's TracedCursor.execute accepts parameters as a keyword via kwargs.
+    cur.execute("SELECT * FROM users WHERE id = ?", parameters=(1,))
+    rows = cur.fetchall()
+    assert rows == [(1, "Alice")], "keyword params must reach the driver"
+    conn.close()
+
+
+def test_executemany_insert_records_uncaptured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """executemany INSERT must engage the uncaptured-insert determinism guard.
+
+    executemany assigns one ID per row but lastrowid exposes only the final
+    one, so per-row aliases can't be captured.  Previously this path skipped
+    record_insert entirely, silently disabling the determinism guard (finding
+    10e).  The table must now be recorded as uncaptured.
+    """
+    from frontrun import _sql_insert_tracker
+
+    _sql_insert_tracker.clear_insert_tracker()
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+    try:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+        cur = conn.cursor()
+        cur.executemany("INSERT INTO users (name) VALUES (?)", [("a",), ("b",), ("c",)])
+        assert "users" in _sql_insert_tracker.get_uncaptured_tables(), (
+            "executemany INSERT must record the table as uncaptured"
+        )
+        conn.close()
+    finally:
+        _sql_insert_tracker.clear_insert_tracker()
+
+
+def test_wrap_connection_cursor_traces_explicit_factory() -> None:
+    """conn.cursor(cursor_factory=...) must be wrapped into a traced subclass.
+
+    Before the fix, an explicit per-cursor cursor_factory (e.g. psycopg2's
+    RealDictCursor) bypassed tracing entirely — those queries were invisible at
+    every level (finding 5).  The wrapped conn.cursor must dynamically subclass
+    the requested factory with the traced mixin, preserving the row format.
+    """
+    from frontrun._sql_cursor import _wrap_connection_cursor
+
+    class RealDictCursor:
+        """Stand-in for a user-supplied cursor_factory (preserves row format)."""
+
+        def __init__(self, factory: type) -> None:
+            self.factory = factory
+
+    captured: dict[str, Any] = {}
+
+    class FakeConn:
+        def cursor(self, cursor_factory: type | None = None) -> Any:
+            captured["factory"] = cursor_factory
+            # Mimic the driver building a cursor instance from the factory.
+            return cursor_factory(cursor_factory) if cursor_factory else None
+
+    conn = FakeConn()
+    _wrap_connection_cursor(conn, paramstyle="pyformat")
+    conn.cursor(cursor_factory=RealDictCursor)
+
+    traced_factory = captured["factory"]
+    assert traced_factory is not RealDictCursor, "explicit cursor_factory was not wrapped"
+    assert issubclass(traced_factory, RealDictCursor), "traced factory must subclass the user's factory"
+    assert getattr(traced_factory, "_frontrun_traced_cursor", False), "wrapped factory must be marked traced"
+    # The traced subclass intercepts execute (the whole point of tracing).
+    assert "execute" in traced_factory.__dict__
+
+
+def test_wrap_connection_cursor_idempotent() -> None:
+    """Double-wrapping conn.cursor must not double-wrap the factory."""
+    from frontrun._sql_cursor import _wrap_connection_cursor
+
+    class BaseFactory:
+        def __init__(self, *a: Any) -> None: ...
+
+    captured: dict[str, Any] = {}
+
+    class FakeConn:
+        def cursor(self, cursor_factory: type | None = None) -> Any:
+            captured["factory"] = cursor_factory
+            return None
+
+    conn = FakeConn()
+    _wrap_connection_cursor(conn, paramstyle="pyformat")
+    _wrap_connection_cursor(conn, paramstyle="pyformat")  # second call is a no-op
+    conn.cursor(cursor_factory=BaseFactory)
+    traced = captured["factory"]
+    # Wrapping a factory twice should not subclass a traced subclass again.
+    assert issubclass(traced, BaseFactory)
+    assert sum(1 for c in traced.__mro__ if getattr(c, "_frontrun_traced_cursor", False)) == 1
+
+
+def test_for_update_primary_colset_emits_read_bridge() -> None:
+    """SELECT ... FOR UPDATE on the primary colset must emit a READ bridge.
+
+    A primary-colset FOR UPDATE must conflict with a non-primary-colset access
+    to the same physical row.  Before the fix, lock elevation flipped the kind
+    to "write" before the bridge logic, so the FOR UPDATE emitted neither a
+    READ nor WRITE bridge and could not conflict (finding 6).  This mirrors the
+    plain-UPDATE read-phase behaviour: primary colset → READ bridge.
+    """
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()  # fresh primary-colset registry
+    set_dpor_scheduler(object())  # any non-None scheduler enables the bridge
+    set_dpor_thread_id(0)
+    _io_tls._in_transaction = False
+    try:
+        # First access establishes "id" as the primary colset for users.
+        _report_sql_access("SELECT * FROM users WHERE id = 1 FOR UPDATE")
+        bridge_kinds = {k for r, k in log.events if r == "sql:users"}
+        assert "read" in bridge_kinds, (
+            f"FOR UPDATE on the primary colset must emit a READ bridge resource (got events: {log.events})"
+        )
+
+        # A non-primary-colset access emits a WRITE bridge; READ vs WRITE on
+        # the same sql:users resource is a conflict, as required.
+        log.clear()
+        _report_sql_access("SELECT * FROM users WHERE username = 'alice'")
+        assert ("sql:users", "write") in log.events, (
+            "non-primary colset must emit a WRITE bridge so it conflicts with "
+            f"the FOR UPDATE READ bridge (got: {log.events})"
+        )
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        clear_sql_metadata()
+
+
+def test_connection_commit_flushes_buffer() -> None:
+    """conn.commit() must drive the tx state machine: flush buffer, end tx.
+
+    With ``cur.execute("BEGIN"); ...; conn.commit()`` the textual COMMIT never
+    reaches _handle_tx_op, so without intercepting conn.commit() the buffered
+    accesses are silently discarded and _in_transaction stays True (finding 3).
+    """
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    log.clear()
+    cur.execute("INSERT INTO users VALUES (5, 'Eve')")
+    # Inside the transaction, accesses are buffered (not yet reported).
+    assert ("sql:users", "write") not in log.events
+    conn.commit()
+
+    # After commit, the buffered write must be flushed and tx state cleared.
+    assert _io_tls._in_transaction is False
+    assert any(k == "write" for r, k in log.events if r.startswith("sql:users"))
+    conn.close()
+
+
+def test_connection_rollback_clears_state() -> None:
+    """conn.rollback() must end the transaction and discard the buffer."""
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    log.clear()
+    cur.execute("INSERT INTO users VALUES (6, 'Frank')")
+    conn.rollback()
+
+    assert _io_tls._in_transaction is False
+    # Rolled-back writes must NOT be flushed.
+    assert not any(k == "write" for r, k in log.events if r.startswith("sql:users"))
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Finding 4: pymysql autobegin detection (callable autocommit)
+# ---------------------------------------------------------------------------
+
+
+def test_detect_autobegin_callable_autocommit_method() -> None:
+    """pymysql exposes autocommit as a *method*; the flag is get_autocommit().
+
+    A truthy bound method must not be read as 'autocommit on'.  With autocommit
+    OFF, _detect_autobegin must set _in_transaction (finding 4).
+    """
+    from frontrun._sql_cursor import _detect_autobegin
+
+    class FakePyMySQLConn:
+        def autocommit(self, value: bool | None = None) -> None:  # method, like pymysql
+            pass
+
+        def get_autocommit(self) -> bool:
+            return False  # autocommit OFF → implicit transaction active
+
+    class FakeCursor:
+        connection = FakePyMySQLConn()
+
+    _io_tls._in_transaction = False
+    _io_tls._is_autobegin = False
+    try:
+        _detect_autobegin(FakeCursor())
+        assert _io_tls._in_transaction is True
+        assert _io_tls._is_autobegin is True
+    finally:
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+
+
+def test_detect_autobegin_callable_autocommit_on() -> None:
+    """When pymysql autocommit is ON (get_autocommit()=True), no autobegin."""
+    from frontrun._sql_cursor import _detect_autobegin
+
+    class FakePyMySQLConn:
+        def autocommit(self, value: bool | None = None) -> None:
+            pass
+
+        def get_autocommit(self) -> bool:
+            return True
+
+    class FakeCursor:
+        connection = FakePyMySQLConn()
+
+    _io_tls._in_transaction = False
+    _io_tls._is_autobegin = False
+    try:
+        _detect_autobegin(FakeCursor())
+        assert _io_tls._in_transaction is False
+    finally:
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False

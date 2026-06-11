@@ -57,6 +57,55 @@ class NoOpLock:
         return None
 
 
+class ReplayEngine:
+    """No-op engine used when replaying a fixed DPOR schedule.
+
+    Shared by sync (`_ReplayDporScheduler`) and async (`_ReplayAsyncScheduler`)
+    replay: a replay drives a *fixed* schedule and has no Rust engine, but the
+    instrumentation (cooperative locks, sync reporters) still calls the engine
+    surface — every method must exist and do nothing.
+    """
+
+    def report_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
+        return None
+
+    def report_first_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
+        return None
+
+    def report_io_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
+        return None
+
+    def report_synced_io_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
+        return None
+
+    def report_sync(
+        self, execution: Any, thread_id: int, event_type: str, sync_id: int, path_id: int | None = None
+    ) -> None:
+        return None
+
+    def register_resource_group(self, object_id: int, group_id: int) -> None:
+        return None
+
+
+class ReplayExecution:
+    """No-op stand-in for ``PyExecution`` during counterexample replay.
+
+    The cooperative lock replacements call ``block_thread`` / ``unblock_thread``
+    on ``scheduler.execution`` to keep the DPOR engine from scheduling a
+    lock-blocked thread/task; replay has no engine, so these are no-ops — but
+    they must exist so lock acquire/release doesn't raise AttributeError.
+    """
+
+    def finish_thread(self, thread_id: int) -> None:
+        return None
+
+    def block_thread(self, thread_id: int) -> None:
+        return None
+
+    def unblock_thread(self, thread_id: int) -> None:
+        return None
+
+
 class _DporEngine(Protocol):
     """Subset of :class:`frontrun._dpor.PyDporEngine` used by the driver loop."""
 

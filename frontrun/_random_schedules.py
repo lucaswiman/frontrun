@@ -11,20 +11,69 @@ from __future__ import annotations
 import random
 from typing import Any
 
+# Default maximum per-actor burst length.  A *burst* is a run of consecutive
+# slots given to one actor before yielding, which lets two runnable threads
+# drift more than one opcode apart.  Without bursts (burst == 1 always) the
+# schedule is pure lockstep round-robin and races that need actor B to execute
+# k > 1 opcodes inside a narrow window of actor A are structurally unreachable.
+_DEFAULT_MAX_BURST = 8
 
-def random_round_robin_schedule(rng: random.Random, num_actors: int, max_ops: int) -> list[int]:
-    """Build a fair, round-robin schedule of actor ids.
+# Probability of an occasional larger "skew" burst, drawn from a wider range,
+# to reach interleavings where one actor runs far ahead of the others.
+_SKEW_PROBABILITY = 0.15
+_SKEW_MAX_BURST = 32
 
-    The schedule is a sequence of full permutations of ``range(num_actors)``,
-    so every actor gets the same number of slots. ``num_rounds`` is drawn
-    uniformly from ``[1, max(1, max_ops // num_actors)]``.
+
+def _draw_burst(rng: random.Random, max_burst: int, skew_max_burst: int) -> int:
+    """Draw a burst length, usually in ``[1, max_burst]`` with rare larger skews."""
+    if rng.random() < _SKEW_PROBABILITY:
+        return rng.randint(1, max(1, skew_max_burst))
+    return rng.randint(1, max(1, max_burst))
+
+
+def burst_round(rng: random.Random, actors: list[int], *, max_burst: int = _DEFAULT_MAX_BURST) -> list[int]:
+    """One fair round: shuffle *actors*, give each a burst of consecutive slots.
+
+    Used for dynamic schedule extension (when an explicit schedule runs out
+    mid-execution).  Unlike :func:`random_round_robin_schedule` it draws plain
+    bursts without the occasional skew, keeping extensions close to lockstep
+    while still expressing relative opcode drift > 1.
+    """
+    order = list(actors)
+    rng.shuffle(order)
+    round_slots: list[int] = []
+    for actor in order:
+        round_slots.extend([actor] * rng.randint(1, max(1, max_burst)))
+    return round_slots
+
+
+def random_round_robin_schedule(
+    rng: random.Random,
+    num_actors: int,
+    max_ops: int,
+    *,
+    max_burst: int = _DEFAULT_MAX_BURST,
+    skew_max_burst: int = _SKEW_MAX_BURST,
+) -> list[int]:
+    """Build a fair schedule of actor ids with variable-length bursts.
+
+    Each round is a random permutation of ``range(num_actors)``; each actor in
+    the permutation receives a *burst* of consecutive slots (length drawn from
+    :func:`_draw_burst`).  This keeps every actor appearing in every round
+    (fairness) while allowing relative opcode drift greater than one — so races
+    requiring one thread to run several opcodes inside another thread's window
+    become reachable.
+
+    ``num_rounds`` is drawn uniformly from ``[1, max(1, max_ops // num_actors)]``.
     """
     num_rounds = rng.randint(1, max(1, max_ops // num_actors))
     schedule: list[int] = []
     for _ in range(num_rounds):
         round_perm = list(range(num_actors))
         rng.shuffle(round_perm)
-        schedule.extend(round_perm)
+        for actor in round_perm:
+            burst = _draw_burst(rng, max_burst, skew_max_burst)
+            schedule.extend([actor] * burst)
     return schedule
 
 
@@ -46,10 +95,15 @@ def fair_schedule_strategy(num_actors: int, max_ops: int) -> Any:
         num_rounds = draw(st.integers(min_value=1, max_value=max_rounds))  # type: ignore[attr-defined]
         schedule: list[int] = []
         for _ in range(num_rounds):
-            schedule.extend(draw(st.permutations(actors)))  # type: ignore[attr-defined]
+            for actor in draw(st.permutations(actors)):  # type: ignore[attr-defined]
+                # Variable-length burst so the schedule can express relative
+                # opcode drift > 1.  min_value=1 keeps lockstep round-robin in
+                # the shrink target (Hypothesis shrinks toward 1).
+                burst = draw(st.integers(min_value=1, max_value=_DEFAULT_MAX_BURST))  # type: ignore[attr-defined]
+                schedule.extend([actor] * burst)
         return schedule
 
     return _fair_schedule()
 
 
-__all__ = ["fair_schedule_strategy", "random_round_robin_schedule"]
+__all__ = ["burst_round", "fair_schedule_strategy", "random_round_robin_schedule"]

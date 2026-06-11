@@ -601,6 +601,8 @@ class TestPreviousLineMarkerNoDoubleFire:
     """Previous-line markers should not fire repeatedly on the same line."""
 
     def test_previous_line_marker_updates_tracker(self):
+        import linecache
+
         from frontrun._marker_coordination import MarkerRegistry
         from frontrun._trace_marker_runtime import build_trace_function
 
@@ -615,8 +617,29 @@ class TestPreviousLineMarkerNoDoubleFire:
                 if _reacquire_execution_lock:
                     self._execution_lock.acquire()
 
+        # Use a synthetic source where the marker is on a comment-only line
+        # (line 5) directly above the executable line 6 — the legitimate
+        # prev-line attachment case.  This preserves the no-double-fire intent
+        # while complying with finding 8 (a marker on a *comment* line attaches
+        # to the next executable line; a skipped *code* line does not fire).
+        fname = "prevline_double_fire.py"
+        linecache.cache[fname] = (
+            0,
+            None,
+            [
+                "def f():\n",  # 1
+                "    a = 1\n",  # 2
+                "    b = 2\n",  # 3
+                "    c = 3\n",  # 4
+                "    # frontrun: my_marker\n",  # 5 (comment only)
+                "    d = 4\n",  # 6 (executable)
+            ],
+            fname,
+        )
+
         registry = MarkerRegistry()
-        registry._markers[("test.py", 5)] = "my_marker"
+        registry._markers[(fname, 5)] = "my_marker"
+        registry._scanned_files.add(fname)
 
         coordinator = FakeCoordinator()
 
@@ -628,7 +651,7 @@ class TestPreviousLineMarkerNoDoubleFire:
         )
 
         class FakeCode:
-            co_filename = "test.py"
+            co_filename = fname
 
         class FakeFrame:
             f_code = FakeCode()
@@ -636,8 +659,9 @@ class TestPreviousLineMarkerNoDoubleFire:
             f_locals = {}
 
         coordinator._execution_lock.acquire()
-        trace_fn(FakeFrame(), "line", None)
-        trace_fn(FakeFrame(), "line", None)
+        frame = FakeFrame()
+        trace_fn(frame, "line", None)
+        trace_fn(frame, "line", None)
 
         assert len(coordinator.marker_fires) == 1, (
             f"Previous-line marker should fire only once but fired "

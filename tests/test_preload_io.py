@@ -190,6 +190,11 @@ class TestEventFiltering:
         assert len(filtered) == 0
 
 
+def _rust_escape(s: str) -> str:
+    """Python mirror of crates/io/src/lib.rs::escape_resource (keep in sync)."""
+    return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+
 class TestParseEventLine:
     """Test the shared line parser used by both file and pipe transports."""
 
@@ -206,6 +211,38 @@ class TestParseEventLine:
 
     def test_non_numeric_fd(self):
         assert _parse_event_line("write\tfile:/tmp/x\tNaN\t1\t1") is None
+
+    def test_unescape_round_trip_sql_with_tabs_newlines(self):
+        r"""SQL with tabs/newlines/backslashes survives the escape round-trip.
+
+        Mirrors crates/io/src/lib.rs::escape_resource so the framing stays
+        intact and the parser recovers the original resource exactly.
+        """
+        sql = "UPDATE accounts\nSET balance = balance\t-\t1\nWHERE id = 'a\\b'"
+        escaped = _rust_escape(sql)
+        # Escaped form must contain no raw tab/newline that would break framing.
+        assert "\t" not in escaped
+        assert "\n" not in escaped
+        line = f"sql_write\t{escaped}\t7\t100\t200\n"
+        ev = _parse_event_line(line)
+        assert ev is not None
+        assert ev.kind == "sql_write"
+        assert ev.resource_id == sql
+        assert ev.fd == 7
+
+    def test_unescape_literal_backslash_t_not_tab(self):
+        r"""A literal backslash-t (escaped as \\t) must not become a tab."""
+        # Resource containing a literal backslash followed by 't'
+        resource = "file:/tmp/a\\tb"
+        escaped = _rust_escape(resource)  # -> file:/tmp/a\\tb
+        ev = _parse_event_line(f"write\t{escaped}\t3\t1\t1\n")
+        assert ev is not None
+        assert ev.resource_id == resource
+
+    def test_unescape_no_backslash_passthrough(self):
+        ev = _parse_event_line("write\tfile:/tmp/plain.txt\t3\t1\t1\n")
+        assert ev is not None
+        assert ev.resource_id == "file:/tmp/plain.txt"
 
 
 class TestIOEventDispatcher:

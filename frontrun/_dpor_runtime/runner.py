@@ -446,10 +446,21 @@ class DporBytecodeRunner:
             on_timeout=on_timeout,
         )
 
-        if self.errors:
-            first_error = next(iter(self.errors.values()))
-            if not isinstance(first_error, TimeoutError):
-                raise first_error
+        self._raise_recorded_errors()
+
+    def _raise_recorded_errors(self) -> None:
+        """Raise the first genuine worker error, if any.
+
+        A ``TimeoutError`` recorded by one thread must not mask a real failure
+        (e.g. an ``AssertionError``) recorded by another thread.  We therefore
+        prefer the first non-timeout error and only treat the run as
+        timeout-only when *every* recorded error is a ``TimeoutError`` (finding
+        4)."""
+        if not self.errors:
+            return
+        for error in self.errors.values():
+            if not isinstance(error, TimeoutError):
+                raise error
 
 
 # ---------------------------------------------------------------------------

@@ -60,6 +60,8 @@ from frontrun._sql_transactions import (
     _detect_autobegin,
     _handle_tx_op,
     _report_or_buffer,
+    handle_connection_commit,
+    handle_connection_rollback,
     reset_connection_state,
 )
 
@@ -307,9 +309,22 @@ def _report_sql_access(
             # Track which tables already reported their bridge resource in this op.
             reported_bridges: set[str] = set()
 
-            def report_or_buffer(table: str, kind: str, rows: list[list[Any]]) -> None:
+            def report_or_buffer(
+                table: str, kind: str, rows: list[list[Any]], *, bridge_as_read: bool | None = None
+            ) -> None:
                 temporal = access.temporal_clauses.get(table) if access.temporal_clauses else None
                 has_row_level_predicates = bool(rows and rows[0])
+
+                # Whether this access participates in the primary-colset bridge
+                # as a READ.  Normally this tracks ``kind == "read"`` (pure
+                # INSERT writes stay fully row-granular and emit no bridge).
+                # SELECT ... FOR UPDATE elevates the row-level kind to "write"
+                # for conflict creation, but the *underlying* access is a read:
+                # it must still emit the primary READ bridge so it conflicts
+                # with non-primary-colset accesses to the same physical row,
+                # exactly like a plain UPDATE's read phase (finding 6).
+                if bridge_as_read is None:
+                    bridge_as_read = kind == "read"
 
                 # Conservative Column-Set Partitioning (Defect #1):
                 # When using row-level predicates, we must ensure that accesses using
@@ -336,7 +351,7 @@ def _report_sql_access(
                         # they still conflict conservatively with non-primary
                         # accesses, while primary row-level writes stay fully
                         # row-granular.
-                        if kind == "read":
+                        if bridge_as_read:
                             _report_or_buffer(
                                 reporter,
                                 _sql_resource_id(table, [], db_scope=db_scope),
@@ -372,7 +387,11 @@ def _report_sql_access(
                 # SELECT FOR UPDATE is both read and write to create conflicts.
                 # SHARE locks are treated as reads (they don't block other shares).
                 kind = "write" if lock_update else "read"
-                report_or_buffer(table, kind, pred_rows)
+                # The row-level kind is elevated to "write" for FOR UPDATE, but
+                # the access is still a read for bridge purposes — emit the
+                # primary READ bridge so it conflicts with non-primary-colset
+                # accesses to the same physical row (finding 6).
+                report_or_buffer(table, kind, pred_rows, bridge_as_read=True)
 
             # Report implicit reads from Foreign Key dependencies
             schema = get_schema()
@@ -468,6 +487,39 @@ def _report_sql_access(
     return reported
 
 
+def _wrap_connection_tx_methods(conn: Any) -> None:
+    """Wrap a connection's ``commit`` / ``rollback`` to drive the tx state machine.
+
+    DB-API call sites often end a transaction with ``conn.commit()`` /
+    ``conn.rollback()`` rather than a textual ``COMMIT`` / ``ROLLBACK``.  Those
+    method calls bypass ``cursor.execute()`` interception entirely, so the tx
+    buffer is never flushed and row locks are held until thread exit (finding
+    3).  Wrap the bound methods so they drive the same state machine.
+
+    Best-effort: C-extension connection types (e.g. psycopg2) may reject
+    instance attribute assignment; in that case we leave the connection
+    unwrapped (autobegin/textual-COMMIT paths still apply).
+    """
+    for name, handler in (("commit", handle_connection_commit), ("rollback", handle_connection_rollback)):
+        orig = getattr(conn, name, None)
+        if orig is None or getattr(orig, "_frontrun_tx_wrapped", False):
+            continue
+
+        def _make(orig_method: Any = orig, _handler: Any = handler) -> Any:
+            def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                _handler()
+                return orig_method(*args, **kwargs)
+
+            _wrapped._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
+            return _wrapped
+
+        try:
+            setattr(conn, name, _make())
+        except (AttributeError, TypeError):
+            # C-level connection that forbids attribute assignment — skip.
+            pass
+
+
 def _capture_insert_id(cursor: Any, table: str) -> None:
     """Capture lastrowid after INSERT and report indexical alias.
 
@@ -488,6 +540,20 @@ def _capture_insert_id(cursor: Any, table: str) -> None:
 
     # Report the logical alias as a write (indexical tracking for determinism)
     _report_or_buffer(reporter, alias, "write")
+
+
+def _record_uncaptured_insert(cursor: Any, table: str) -> None:
+    """Record an executemany INSERT as having an uncaptured row ID (finding 10e).
+
+    ``executemany`` inserts multiple rows but ``lastrowid`` exposes only the
+    last one, so per-row indexical aliases cannot be built.  Recording the
+    INSERT with ``concrete_id=None`` adds the table to the uncaptured set,
+    keeping the determinism guard active for this path.
+    """
+    if get_io_reporter() is None:
+        return
+    db_scope = _get_connection_db_scope(cursor)
+    record_insert(table, None, db_scope=db_scope)
 
 
 def _execute_with_retry(original_method: Any, cursor: Any, operation: Any, parameters: Any = None) -> Any:
@@ -584,8 +650,15 @@ def _intercept_execute(
             _release_dpor_row_locks()
 
     # Post-INSERT: capture lastrowid and record indexical alias
-    if insert_match is not None and not is_executemany and reported:
-        _capture_insert_id(self, insert_match.group(1))
+    if insert_match is not None and reported:
+        if not is_executemany:
+            _capture_insert_id(self, insert_match.group(1))
+        else:
+            # executemany INSERT assigns one ID per row, but ``lastrowid`` only
+            # exposes the final row's ID — the per-row IDs cannot be captured.
+            # Record the table as uncaptured so the nondeterminism guard still
+            # fires for this path instead of silently passing (finding 10e).
+            _record_uncaptured_insert(self, insert_match.group(1))
 
     return result
 
@@ -593,6 +666,26 @@ def _intercept_execute(
 # ---------------------------------------------------------------------------
 # Traced cursor/connection subclasses (created dynamically per driver)
 # ---------------------------------------------------------------------------
+
+
+# DB-API drivers spell the bind-parameter keyword differently:
+# psycopg2 → ``vars``, pymysql → ``args``, sqlite3 / generic → ``parameters``.
+_PARAM_KWARG_NAMES = ("parameters", "vars", "args", "params")
+
+
+def _recover_param_kwarg(parameters: Any, kwargs: dict[str, Any]) -> Any:
+    """Recover a bind-parameter value passed as a keyword (finding 10c).
+
+    ``cur.execute(sql, vars=params)`` (psycopg2) / ``args=params`` (pymysql)
+    lands the params in ``**kwargs``; without recovering them the placeholders
+    are never substituted and the real driver call loses its parameters.
+    """
+    if parameters is not None or not kwargs:
+        return parameters
+    for name in _PARAM_KWARG_NAMES:
+        if name in kwargs:
+            return kwargs[name]
+    return parameters
 
 
 def _make_traced_cursor_class(base_cursor_cls: type, paramstyle: str = "format") -> type:
@@ -618,12 +711,14 @@ def _make_traced_cursor_class(base_cursor_cls: type, paramstyle: str = "format")
 
         def execute(self, operation: Any, parameters: Any = None, /, **kwargs: Any) -> Any:  # type: ignore[override]
             original = _ORIGINAL_METHODS.get(_execute_key, base_cursor_cls.execute)
+            parameters = _recover_param_kwarg(parameters, kwargs)
             return _intercept_execute(
                 original, self, operation, parameters, is_executemany=False, paramstyle=self._cursor_paramstyle
             )
 
         def executemany(self, operation: Any, parameters: Any = None, /, **kwargs: Any) -> Any:  # type: ignore[override]
             original = _ORIGINAL_METHODS.get(_executemany_key, base_cursor_cls.executemany)
+            parameters = _recover_param_kwarg(parameters, kwargs)
             return _intercept_execute(
                 original, self, operation, parameters, is_executemany=True, paramstyle=self._cursor_paramstyle
             )
@@ -631,6 +726,59 @@ def _make_traced_cursor_class(base_cursor_cls: type, paramstyle: str = "format")
     TracedCursor.__name__ = f"Traced{base_cursor_cls.__name__}"
     TracedCursor.__qualname__ = f"Traced{base_cursor_cls.__qualname__}"
     return TracedCursor
+
+
+# Shared cache of traced cursor subclasses, keyed by (base factory, paramstyle).
+# Used both by the patched connect() (connection-level cursor_factory) and by
+# the wrapped conn.cursor() (per-cursor cursor_factory) so an explicit factory
+# is wrapped exactly once and the user's row format is preserved (finding 5).
+_TRACED_CURSOR_CLASSES: dict[tuple[type, str], type] = {}
+
+
+def _get_traced_cursor_class(base_cursor_cls: type, paramstyle: str) -> type:
+    """Return (and cache) a traced subclass of *base_cursor_cls*.
+
+    Already-traced classes (subclasses of one we built) are returned as-is to
+    avoid double-wrapping.
+    """
+    if getattr(base_cursor_cls, "_frontrun_traced_cursor", False):
+        return base_cursor_cls
+    key = (base_cursor_cls, paramstyle)
+    cached = _TRACED_CURSOR_CLASSES.get(key)
+    if cached is None:
+        cached = _make_traced_cursor_class(base_cursor_cls, paramstyle=paramstyle)
+        cached._frontrun_traced_cursor = True  # type: ignore[attr-defined]
+        _TRACED_CURSOR_CLASSES[key] = cached
+    return cached
+
+
+def _wrap_connection_cursor(conn: Any, paramstyle: str) -> None:
+    """Wrap ``conn.cursor`` so an explicit ``cursor_factory`` is traced too.
+
+    The patched ``connect()`` injects a traced class via the connection-level
+    ``cursor_factory``, but ``conn.cursor(cursor_factory=RealDictCursor)``
+    overrides it with an *untraced* class, making those queries invisible at
+    every level (finding 5).  We wrap ``conn.cursor`` so an explicit factory is
+    dynamically subclassed with the traced mixin, preserving the user's row
+    format.  Best-effort: skipped when the connection forbids attribute
+    assignment (the connection-level traced factory still covers default
+    cursors).
+    """
+    orig_cursor = getattr(conn, "cursor", None)
+    if orig_cursor is None or getattr(orig_cursor, "_frontrun_cursor_wrapped", False):
+        return
+
+    def _wrapped_cursor(*args: Any, **kwargs: Any) -> Any:
+        factory = kwargs.get("cursor_factory")
+        if factory is not None:
+            kwargs["cursor_factory"] = _get_traced_cursor_class(factory, paramstyle)
+        return orig_cursor(*args, **kwargs)
+
+    _wrapped_cursor._frontrun_cursor_wrapped = True  # type: ignore[attr-defined]
+    try:
+        conn.cursor = _wrapped_cursor
+    except (AttributeError, TypeError):
+        pass
 
 
 def _make_traced_sqlite3_connection_class() -> type:
@@ -655,6 +803,17 @@ def _make_traced_sqlite3_connection_class() -> type:
             cur = self.cursor()
             cur.executemany(sql, parameters)
             return cur
+
+        def commit(self) -> None:  # type: ignore[override]
+            # Drive the tx state machine before the driver call so the buffered
+            # accesses are flushed even when COMMIT is issued via the connection
+            # method rather than as SQL text (finding 3).
+            handle_connection_commit()
+            super().commit()
+
+        def rollback(self) -> None:  # type: ignore[override]
+            handle_connection_rollback()
+            super().rollback()
 
     TracedConnection.__name__ = "TracedConnection"
     TracedConnection.__qualname__ = "TracedConnection"
@@ -731,6 +890,11 @@ def _patch_class_methods(cls: type, paramstyle: str) -> None:
             orig: Any, mname: str = method_name, ps: str = paramstyle, _iem: bool = _is_executemany
         ) -> Any:
             def _patched(self: Any, operation: Any, parameters: Any = None, *args: Any, **kwargs: Any) -> Any:
+                # Recover params passed as a keyword (pymysql ``args=``) — see
+                # finding 10c.  ``*args`` already captures a positional extra.
+                if parameters is None and args:
+                    parameters = args[0]
+                parameters = _recover_param_kwarg(parameters, kwargs)
                 return _intercept_execute(orig, self, operation, parameters, is_executemany=_iem, paramstyle=ps)
 
             return wrap_method_metadata(_patched, orig, name=mname)
@@ -777,17 +941,11 @@ def patch_sql() -> None:
             pass  # driver not installed — skip silently
 
     def _make_patched_connect(orig: Any, default_cursor_cls: type, paramstyle: str, driver: str) -> Any:
-        # Cache traced subclasses by (caller-provided cursor_factory class) to avoid
-        # creating a new class on every connect() call.
-        _cache: dict[type, type] = {}
-
         def patched_connect(*args: Any, **kwargs: Any) -> Any:
             # Wrap whatever cursor_factory the caller already set (e.g. Django's Cursor),
             # rather than using setdefault, which is a no-op when the caller set it first.
             user_factory = kwargs.get("cursor_factory", default_cursor_cls)
-            if user_factory not in _cache:
-                _cache[user_factory] = _make_traced_cursor_class(user_factory, paramstyle=paramstyle)
-            kwargs["cursor_factory"] = _cache[user_factory]
+            kwargs["cursor_factory"] = _get_traced_cursor_class(user_factory, paramstyle)
             from frontrun._cooperative import suppress_sync_reporting as _ssr
             from frontrun._cooperative import unsuppress_sync_reporting as _usr
 
@@ -810,6 +968,8 @@ def patch_sql() -> None:
             # endpoint was registered.  The listener only uses tid
             # suppression for *socket* events, so file I/O passes through.
             suppress_sql_endpoint(conn)
+            _wrap_connection_tx_methods(conn)
+            _wrap_connection_cursor(conn, paramstyle)
             identity = _normalize_db_identity("connection", conn)
             if identity is None and args and isinstance(args[0], str):
                 identity = f"{driver}-dsn:{args[0]}"
@@ -882,4 +1042,5 @@ def unpatch_sql() -> None:
     restore_patches(_PATCHES)
     _PATCHES.clear()
     _ORIGINAL_METHODS.clear()
+    _TRACED_CURSOR_CLASSES.clear()
     _sql_patched = False

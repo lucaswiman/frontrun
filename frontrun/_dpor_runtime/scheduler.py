@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from frontrun._dpor_core import ReplayEngine as _ReplayEngine
+from frontrun._dpor_core import ReplayExecution as _ReplayExecution
 from frontrun._dpor_core import RowLockRegistry, advance_replay_index, extend_replay_schedule
 
 from ._shared import *
@@ -679,6 +681,19 @@ class DporScheduler:
         """Return a stable monotonic integer ID for *res_id* (allocated on first call)."""
         return self._row_lock_registry._row_lock_int_id(res_id)
 
+    def _engine_block_thread(self, thread_id: int) -> None:
+        """Mark *thread_id* blocked in the DPOR engine (finding 1).
+
+        Held under ``_engine_lock`` to serialise PyO3 ``&mut self`` borrows,
+        mirroring the cooperative-lock ``lock_wait`` path in ``runner.py``."""
+        with self._engine_lock:
+            self.execution.block_thread(thread_id)
+
+    def _engine_unblock_thread(self, thread_id: int) -> None:
+        """Clear the engine-blocked flag for *thread_id* (finding 1)."""
+        with self._engine_lock:
+            self.execution.unblock_thread(thread_id)
+
     def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> None:
         """Block until all *resource_ids* can be held by *thread_id*.
 
@@ -715,6 +730,13 @@ class DporScheduler:
                     # _schedule_next() skips it and schedules the holder
                     # instead of cycling (defect #6).
                     self._row_lock_blocked[thread_id] = holder
+                    # Tell the DPOR engine this thread is blocked so the engine
+                    # never *schedules* it while it waits (finding 1). Without
+                    # this, engine.schedule() could commit a step labelled with
+                    # this thread while the holder actually runs, corrupting the
+                    # engine's per-thread bookkeeping (notdep, sleep set
+                    # propagation, preemption counts, and the recorded schedule).
+                    self._engine_block_thread(thread_id)
                     # Yield scheduling to the holder so it can run and
                     # either release the lock or block on one of ours
                     # (triggering WaitForGraph cycle detection).
@@ -724,6 +746,7 @@ class DporScheduler:
                     # Wait for the holder to release
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         self._row_lock_blocked.pop(thread_id, None)
+                        self._engine_unblock_thread(thread_id)
                         if graph is not None:
                             graph.remove_waiting(thread_id, lock_int_id, kind="row_lock")
                         if self._finished or self._error:
@@ -732,6 +755,7 @@ class DporScheduler:
                         # Let the C call proceed; lock_timeout safety net will handle it.
                         return
                     self._row_lock_blocked.pop(thread_id, None)
+                    self._engine_unblock_thread(thread_id)
                     if graph is not None:
                         graph.remove_waiting(thread_id, lock_int_id, kind="row_lock")
                     if self._finished or self._error:
@@ -769,43 +793,6 @@ class DporScheduler:
         with self._condition:
             if self._release_row_locks_unlocked(thread_id):
                 self._condition.notify_all()
-
-
-class _ReplayEngine:
-    """No-op engine used when replaying a fixed DPOR schedule."""
-
-    def report_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
-        return None
-
-    def report_first_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
-        return None
-
-    def report_io_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
-        return None
-
-    def report_synced_io_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
-        return None
-
-    def report_sync(
-        self, execution: Any, thread_id: int, event_type: str, sync_id: int, path_id: int | None = None
-    ) -> None:
-        return None
-
-    def register_resource_group(self, object_id: int, group_id: int) -> None:
-        return None
-
-
-class _ReplayExecution:
-    """Minimal execution object for DporBytecodeRunner TLS plumbing."""
-
-    def finish_thread(self, thread_id: int) -> None:
-        return None
-
-    def block_thread(self, thread_id: int) -> None:
-        return None
-
-    def unblock_thread(self, thread_id: int) -> None:
-        return None
 
 
 class _ReplayDporScheduler(DporScheduler):
