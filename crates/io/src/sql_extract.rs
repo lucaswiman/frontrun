@@ -1,3 +1,30 @@
+/// Validate the big-endian i32 length field at `buf[1..5]` of a tagged
+/// PostgreSQL wire message and return the exclusive end index of the message
+/// (`1 + len`), or None if the message is malformed.
+///
+/// The wire length is a *signed* i32. Negative values are rejected before
+/// widening — `as usize` would sign-extend a negative into a huge value,
+/// after which the index math wraps and slice-indexing panics (process abort
+/// across the LD_PRELOAD hook). All index arithmetic is checked so a crafted
+/// length can never produce an out-of-bounds slice expression. The length
+/// counts the 4-byte length field itself plus the payload, so the minimum
+/// valid value is 5 (4 + 1 byte of payload, e.g. a lone null terminator).
+fn checked_message_end(buf: &[u8]) -> Option<usize> {
+    if buf.len() < 6 {
+        return None;
+    }
+    let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+    if len < 0 {
+        return None;
+    }
+    let len = len as usize;
+    let end = 1usize.checked_add(len)?;
+    if len < 5 || buf.len() < end {
+        return None;
+    }
+    Some(end)
+}
+
 /// Extract SQL query text from a PostgreSQL wire protocol buffer.
 /// Returns None if the buffer doesn't contain a recognizable query message.
 pub fn extract_pg_query(buf: &[u8]) -> Option<&str> {
@@ -7,51 +34,13 @@ pub fn extract_pg_query(buf: &[u8]) -> Option<&str> {
     match buf[0] {
         b'Q' => {
             // Simple query: 'Q' + i32 len + null-terminated SQL
-            if buf.len() < 6 {
-                return None;
-            }
-            // The wire length is a signed i32. Reject negative values
-            // explicitly before widening — `as usize` would sign-extend a
-            // negative into a huge value, after which the index math below
-            // wraps and slice-indexing panics (process abort across the hook).
-            let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
-            if len < 0 {
-                return None;
-            }
-            let len = len as usize;
-            // len includes the 4-byte length field itself + SQL + null terminator,
-            // so minimum valid len is 5 (4 + 1 null byte for empty SQL).
-            // All index arithmetic is checked so a crafted length can never
-            // produce an out-of-bounds slice expression.
-            let end = match 1usize.checked_add(len) {
-                Some(e) => e,
-                None => return None,
-            };
-            if len < 5 || buf.len() < end {
-                return None;
-            }
+            let end = checked_message_end(buf)?;
             let sql_bytes = &buf[5..end - 1]; // exclude null terminator
             std::str::from_utf8(sql_bytes).ok()
         }
         b'P' => {
             // Parse message: 'P' + i32 len + name(str0) + query(str0) + i16 nparams
-            if buf.len() < 6 {
-                return None;
-            }
-            // Reject negative signed lengths before widening (see 'Q' above).
-            let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
-            if len < 0 {
-                return None;
-            }
-            let len = len as usize;
-            let end = match 1usize.checked_add(len) {
-                Some(e) => e,
-                None => return None,
-            };
-            // Need at least the 4-byte length field plus one byte of payload.
-            if len < 5 || buf.len() < end {
-                return None;
-            }
+            let end = checked_message_end(buf)?;
             let payload = &buf[5..end];
             // Skip statement name (null-terminated)
             let name_end = payload.iter().position(|&b| b == 0)?;

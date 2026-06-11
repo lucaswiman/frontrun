@@ -5,6 +5,8 @@ from __future__ import annotations
 from frontrun._dpor_core.concurrency import (
     ExplorationStep,
     NoOpLock,
+    ReplayEngine,
+    ReplayExecution,
     dpor_exploration_iter,
 )
 from frontrun._dpor_core.engine import make_dpor_engine
@@ -27,6 +29,8 @@ from frontrun._dpor_core.utils import (
 __all__ = [
     "ExplorationStep",
     "NoOpLock",
+    "ReplayEngine",
+    "ReplayExecution",
     "RowLockRegistry",
     "advance_replay_index",
     "compute_serializable_baseline_async",

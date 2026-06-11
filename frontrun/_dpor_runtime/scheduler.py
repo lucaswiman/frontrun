@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from frontrun._dpor_core import ReplayEngine as _ReplayEngine
+from frontrun._dpor_core import ReplayExecution as _ReplayExecution
 from frontrun._dpor_core import RowLockRegistry, advance_replay_index, extend_replay_schedule
 
 from ._shared import *
@@ -684,18 +686,12 @@ class DporScheduler:
 
         Held under ``_engine_lock`` to serialise PyO3 ``&mut self`` borrows,
         mirroring the cooperative-lock ``lock_wait`` path in ``runner.py``."""
-        _elock = getattr(self, "_engine_lock", None)
-        if _elock is None:
-            return
-        with _elock:
+        with self._engine_lock:
             self.execution.block_thread(thread_id)
 
     def _engine_unblock_thread(self, thread_id: int) -> None:
         """Clear the engine-blocked flag for *thread_id* (finding 1)."""
-        _elock = getattr(self, "_engine_lock", None)
-        if _elock is None:
-            return
-        with _elock:
+        with self._engine_lock:
             self.execution.unblock_thread(thread_id)
 
     def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> None:
@@ -797,43 +793,6 @@ class DporScheduler:
         with self._condition:
             if self._release_row_locks_unlocked(thread_id):
                 self._condition.notify_all()
-
-
-class _ReplayEngine:
-    """No-op engine used when replaying a fixed DPOR schedule."""
-
-    def report_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
-        return None
-
-    def report_first_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
-        return None
-
-    def report_io_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
-        return None
-
-    def report_synced_io_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
-        return None
-
-    def report_sync(
-        self, execution: Any, thread_id: int, event_type: str, sync_id: int, path_id: int | None = None
-    ) -> None:
-        return None
-
-    def register_resource_group(self, object_id: int, group_id: int) -> None:
-        return None
-
-
-class _ReplayExecution:
-    """Minimal execution object for DporBytecodeRunner TLS plumbing."""
-
-    def finish_thread(self, thread_id: int) -> None:
-        return None
-
-    def block_thread(self, thread_id: int) -> None:
-        return None
-
-    def unblock_thread(self, thread_id: int) -> None:
-        return None
 
 
 class _ReplayDporScheduler(DporScheduler):

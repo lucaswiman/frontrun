@@ -582,10 +582,19 @@ unsafe fn report_send_buf(fd: c_int, buf: *const c_void, len: size_t) {
 /// bytes too. We escape backslash, tab, and newline byte-wise so the Python
 /// parser can split on raw `\t` / `\n` and then unescape exactly once.
 ///
-/// Pure function (no I/O, no allocation beyond the returned String) so it can
+/// Pure function (no I/O; allocates only when escaping is needed) so it can
 /// be unit-tested directly under `cargo test`.
-fn escape_resource(resource: &str) -> String {
-    let mut out = String::with_capacity(resource.len());
+fn escape_resource(resource: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: the common resources (socket endpoints, file paths, fd
+    // labels) contain none of the framing-relevant bytes — borrow as-is
+    // instead of rebuilding the string on every logged event.
+    if !resource
+        .bytes()
+        .any(|b| matches!(b, b'\\' | b'\t' | b'\n'))
+    {
+        return std::borrow::Cow::Borrowed(resource);
+    }
+    let mut out = String::with_capacity(resource.len() + 8);
     // `resource` is valid UTF-8 (it's a &str). None of the escaped bytes
     // (\\, \t, \n — all < 0x80) ever appear inside a multi-byte UTF-8
     // sequence, so iterating by char preserves any non-ASCII content while
@@ -598,7 +607,7 @@ fn escape_resource(resource: &str) -> String {
             _ => out.push(ch),
         }
     }
-    out
+    std::borrow::Cow::Owned(out)
 }
 
 fn log_event(kind: &str, resource: &str, fd: c_int) {
@@ -1197,10 +1206,21 @@ mod linux_intercept {
         real(fd)
     }
 
-    /// Intercept `dup2()` — the target fd is implicitly closed and may be
-    /// reused for a different resource, so drop its stale FD_MAP entry on
-    /// success. (No event is logged; this is purely map maintenance to stop
+    /// Drop the stale FD_MAP entry for a successful `dup2`/`dup3` target fd:
+    /// the target is implicitly closed and may be reused for a different
+    /// resource. (No event is logged; this is purely map maintenance to stop
     /// `ensure_fd_mapped` trusting a reused fd's old mapping.)
+    fn forget_duped_fd(result: c_int, newfd: c_int) {
+        if result >= 0 && newfd > 2 && !is_pipe_fd(newfd) {
+            if let Some(_guard) = ReentrancyGuard::enter() {
+                if let Ok(mut map) = FD_MAP.lock() {
+                    map.remove(newfd);
+                }
+            }
+        }
+    }
+
+    /// Intercept `dup2()` — see `forget_duped_fd`.
     #[no_mangle]
     pub unsafe extern "C" fn dup2(oldfd: c_int, newfd: c_int) -> c_int {
         type Dup2Fn = unsafe extern "C" fn(c_int, c_int) -> c_int;
@@ -1213,18 +1233,11 @@ mod linux_intercept {
         };
 
         let result = real(oldfd, newfd);
-        if result >= 0 && newfd > 2 && !is_pipe_fd(newfd) {
-            if let Some(_guard) = ReentrancyGuard::enter() {
-                if let Ok(mut map) = FD_MAP.lock() {
-                    map.remove(newfd);
-                }
-            }
-        }
+        forget_duped_fd(result, newfd);
         result
     }
 
-    /// Intercept `dup3()` — like `dup2` but takes flags; same stale-entry
-    /// cleanup for the target fd.
+    /// Intercept `dup3()` — like `dup2` but takes flags; see `forget_duped_fd`.
     #[no_mangle]
     pub unsafe extern "C" fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int {
         type Dup3Fn = unsafe extern "C" fn(c_int, c_int, c_int) -> c_int;
@@ -1237,13 +1250,7 @@ mod linux_intercept {
         };
 
         let result = real(oldfd, newfd, flags);
-        if result >= 0 && newfd > 2 && !is_pipe_fd(newfd) {
-            if let Some(_guard) = ReentrancyGuard::enter() {
-                if let Ok(mut map) = FD_MAP.lock() {
-                    map.remove(newfd);
-                }
-            }
-        }
+        forget_duped_fd(result, newfd);
         result
     }
 }

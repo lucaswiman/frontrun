@@ -152,6 +152,37 @@ def _check_lock_cycle(graph: Any, thread_id: int, object_id: int, scheduler: Any
         raise SchedulerAbort(desc)
 
 
+def _timed_acquire_state(timeout: float) -> tuple[float | None, Any]:
+    """Return ``(deadline, graph)`` for a contended acquire (finding 7).
+
+    A timed acquire (``timeout >= 0``) cannot participate in a deadlock: it
+    gives up after its deadline, which releases whatever locks the caller
+    holds (the classic timeout-based avoidance pattern).  So it must NOT
+    register a wait edge in the wait-for graph (that would create a spurious
+    cycle) and must honor the deadline by returning ``False``.  ``graph`` is
+    therefore ``None`` for timed acquires, suppressing all wait-edge
+    bookkeeping in the spin loop.
+    """
+    from frontrun._deadlock import get_wait_for_graph
+
+    if timeout >= 0:
+        return time.monotonic() + timeout, None
+    return None, get_wait_for_graph()
+
+
+def _record_holding(thread_id: int, object_id: int) -> None:
+    """Add a holding edge for a just-acquired lock.
+
+    Done even after a timed acquire (which registered no wait edge), so that
+    other threads waiting on this holder are tracked correctly.
+    """
+    from frontrun._deadlock import get_wait_for_graph
+
+    graph = get_wait_for_graph()
+    if graph is not None:
+        graph.add_holding(thread_id, object_id)
+
+
 # ---------------------------------------------------------------------------
 # Cooperative Lock
 # ---------------------------------------------------------------------------
@@ -175,8 +206,6 @@ class CooperativeLock:
         self._owner_thread_id: int | None = None  # frontrun thread_id, not OS tid
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        from frontrun._deadlock import get_wait_for_graph
-
         # Reentrancy guard: if we're already inside DPOR machinery (e.g.,
         # _sync_reporter or _process_opcode), GC-triggered __del__ chains
         # must not re-enter the scheduler.  Fall back to real blocking.
@@ -208,17 +237,10 @@ class CooperativeLock:
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
 
-        # A timed acquire (timeout >= 0) cannot participate in a deadlock: it
-        # gives up after its deadline, which releases whatever locks the caller
-        # holds (the classic timeout-based avoidance pattern).  So we must NOT
-        # register its wait edge in the graph (it would create a spurious cycle)
-        # and we must honor the deadline by returning False (finding 7).
-        timed = timeout >= 0
-        deadline = time.monotonic() + timeout if timed else None
-
         # Register waiting edge in the wait-for graph; raises SchedulerAbort on
-        # cycle.  Skipped for timed acquires (see above).
-        graph = None if timed else get_wait_for_graph()
+        # cycle.  Skipped (graph is None) for timed acquires — see
+        # _timed_acquire_state.
+        deadline, graph = _timed_acquire_state(timeout)
         if graph is not None:
             _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
 
@@ -260,11 +282,7 @@ class CooperativeLock:
         # Acquired — update graph: remove waiting edge, add holding edge
         if graph is not None:
             graph.remove_waiting(thread_id, self._object_id)
-        # Record that we now hold the lock (even for timed acquires, so other
-        # threads waiting on us are tracked correctly).
-        holding_graph = get_wait_for_graph()
-        if holding_graph is not None:
-            holding_graph.add_holding(thread_id, self._object_id)
+        _record_holding(thread_id, self._object_id)
 
         self._owner_thread_id = thread_id
         self._report("lock_acquire")
@@ -354,8 +372,6 @@ class CooperativeRLock:
         self._acquired_during_dpor_machinery = False
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        from frontrun._deadlock import get_wait_for_graph
-
         me = threading.get_ident()
         if self._owner == me:
             self._count += 1
@@ -402,15 +418,10 @@ class CooperativeRLock:
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
 
-        # A timed acquire cannot deadlock (it gives up after its deadline), so
-        # skip cycle detection / wait-edge registration and honor the deadline
-        # by returning False (finding 7).
-        timed = timeout >= 0
-        deadline = time.monotonic() + timeout if timed else None
-
         # Register waiting edge in the wait-for graph; raises SchedulerAbort on
-        # cycle.  Skipped for timed acquires (see above).
-        graph = None if timed else get_wait_for_graph()
+        # cycle.  Skipped (graph is None) for timed acquires — see
+        # _timed_acquire_state.
+        deadline, graph = _timed_acquire_state(timeout)
         if graph is not None:
             _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
 
@@ -456,9 +467,7 @@ class CooperativeRLock:
         # Acquired — update graph
         if graph is not None:
             graph.remove_waiting(thread_id, self._object_id)
-        holding_graph = get_wait_for_graph()
-        if holding_graph is not None:
-            holding_graph.add_holding(thread_id, self._object_id)
+        _record_holding(thread_id, self._object_id)
 
         self._owner = me
         self._owner_thread_id = thread_id
@@ -822,12 +831,6 @@ class CooperativeCondition:
         """
         if ticket >= self._served:
             self._cancelled.add(ticket)
-            self._discard_consumed_cancellations()
-
-    def _discard_consumed_cancellations(self) -> None:
-        """Drop cancelled tickets that ``_served`` has already passed."""
-        if self._cancelled:
-            self._cancelled = {t for t in self._cancelled if t >= self._served}
 
     def _advance_served(self, n: int) -> int:
         """Advance ``_served`` to wake up to *n* live (non-cancelled) tickets.

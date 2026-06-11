@@ -231,22 +231,19 @@ def parse_redis_access(cmd_name: str, cmd_args: tuple[object, ...]) -> RedisAcce
         A ``RedisAccessResult`` with the read/write key sets and the
         database-wide keyspace intent-lock kind (see ``_keyspace_kind``).
     """
-    upper_orig = cmd_name.upper()
-    result = _parse_redis_access_keys(cmd_name, cmd_args)
+    upper = cmd_name.upper()
+    result = _parse_redis_access_keys(upper, cmd_args)
     # Use the *normalized* command for keyspace classification (compound names
     # like "XGROUP CREATE" are split inside the helper, but our keyspace sets
     # only contain single-word commands, so the first word is what matters).
-    upper = upper_orig.split(" ", 1)[0] if " " in upper_orig else upper_orig
-    keyspace = _keyspace_kind(upper, result)
+    keyspace = _keyspace_kind(upper.split(" ", 1)[0], result)
     if keyspace is None:
         return result
     return result._replace(keyspace=keyspace)
 
 
-def _parse_redis_access_keys(cmd_name: str, cmd_args: tuple[object, ...]) -> RedisAccessResult:
-    """Extract read/write key sets for a command (without keyspace tagging)."""
-    upper = cmd_name.upper()
-
+def _parse_redis_access_keys(upper: str, cmd_args: tuple[object, ...]) -> RedisAccessResult:
+    """Extract read/write key sets for an *uppercased* command (without keyspace tagging)."""
     # Normalize compound command names from redis-py 4.2+ (e.g.
     # "XGROUP CREATE") by splitting the subcommand back into cmd_args.
     if " " in upper:

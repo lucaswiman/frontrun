@@ -82,10 +82,7 @@ def _redis_keyspace_resource_id(db_scope: str | None = None) -> str:
     DPOR detects FLUSH*-vs-key races.  Scoped per database (matching key
     resources) so a flush only conflicts with traffic in the same db.
     """
-    resource = "redis:keyspace"
-    if db_scope is not None:
-        resource = f"{resource}:db={db_scope}"
-    return resource
+    return _redis_resource_id("keyspace", db_scope=db_scope)
 
 
 def _get_redis_db_scope(client: Any) -> str | None:

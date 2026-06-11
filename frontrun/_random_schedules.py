@@ -31,6 +31,22 @@ def _draw_burst(rng: random.Random, max_burst: int, skew_max_burst: int) -> int:
     return rng.randint(1, max(1, max_burst))
 
 
+def burst_round(rng: random.Random, actors: list[int], *, max_burst: int = _DEFAULT_MAX_BURST) -> list[int]:
+    """One fair round: shuffle *actors*, give each a burst of consecutive slots.
+
+    Used for dynamic schedule extension (when an explicit schedule runs out
+    mid-execution).  Unlike :func:`random_round_robin_schedule` it draws plain
+    bursts without the occasional skew, keeping extensions close to lockstep
+    while still expressing relative opcode drift > 1.
+    """
+    order = list(actors)
+    rng.shuffle(order)
+    round_slots: list[int] = []
+    for actor in order:
+        round_slots.extend([actor] * rng.randint(1, max(1, max_burst)))
+    return round_slots
+
+
 def random_round_robin_schedule(
     rng: random.Random,
     num_actors: int,
@@ -90,4 +106,4 @@ def fair_schedule_strategy(num_actors: int, max_ops: int) -> Any:
     return _fair_schedule()
 
 
-__all__ = ["fair_schedule_strategy", "random_round_robin_schedule"]
+__all__ = ["burst_round", "fair_schedule_strategy", "random_round_robin_schedule"]

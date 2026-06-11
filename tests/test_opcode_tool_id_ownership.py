@@ -70,7 +70,7 @@ def test_reclaims_stale_frontrun_slot():
         monitor_returns=False,
     )
     # Forge a dead owner ident (0 is never a live thread ident).
-    obs._TOOL_OWNERS[tool_id].owner_ident = 0
+    obs._TOOL_OWNERS[tool_id] = 0
 
     tid = None
     try:

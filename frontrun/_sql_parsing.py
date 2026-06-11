@@ -108,22 +108,6 @@ def _merge_lock_intent(a: LockIntent | None, b: LockIntent | None) -> LockIntent
     return None
 
 
-def _cte_alias_names(ast: Any) -> set[str]:
-    """Return the set of CTE alias names declared by *ast*'s WITH clause(s).
-
-    These aliases are query-local names (e.g. ``WITH u AS (...) SELECT * FROM u``)
-    and must be excluded from the reported read/write table sets — they are not
-    real tables (finding 1).
-    """
-    from sqlglot import exp  # type: ignore[import-untyped]
-
-    aliases: set[str] = set()
-    for cte in ast.find_all(exp.CTE):
-        if cte.alias:
-            aliases.add(cte.alias)
-    return aliases
-
-
 def _update_write_tables(node: Any) -> set[str]:
     """Tables written by an UPDATE, including MySQL multi-table updates.
 
@@ -224,13 +208,9 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                 # Drop a trailing READ / WRITE / "LOW_PRIORITY WRITE" / "READ LOCAL".
                 lock_words = {"READ", "WRITE", "LOCAL", "LOW_PRIORITY"}
                 name_tokens = [t for t in tokens if t.upper() not in lock_words]
-                # Strip an optional "AS alias": keep only the table name (first token).
+                # The table name is the first token; any "AS alias" tokens follow it.
                 if name_tokens:
-                    if len(name_tokens) >= 3 and name_tokens[1].upper() == "AS":
-                        tbl_name = name_tokens[0]
-                    else:
-                        tbl_name = name_tokens[0]
-                    tables.add(_strip_quotes(tbl_name))
+                    tables.add(_strip_quotes(name_tokens[0]))
                 if any(t.upper() == "WRITE" for t in tokens):
                     mysql_lock_intent = LockIntent.UPDATE
             if tables:
@@ -385,8 +365,12 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
             if isinstance(ast, exp.Select):
                 lock_intent = _extract_lock_intent_from_select(ast)
 
+            # CTE nodes are needed three times below (lock intent, alias
+            # filtering, data-modifying classification); walk the tree once.
+            ctes = list(ast.find_all(exp.CTE))
+
             # Also extract lock intent from CTEs (e.g. WITH cte AS (SELECT ... FOR UPDATE SKIP LOCKED))
-            for cte_node in ast.find_all(exp.CTE):
+            for cte_node in ctes:
                 cte_intent = _extract_lock_intent_from_select(cte_node.this)
                 if cte_intent is not None:
                     lock_intent = _merge_lock_intent(lock_intent, cte_intent)
@@ -436,7 +420,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
             # tables (finding 1).  Data-modifying CTEs (UPDATE/DELETE/INSERT
             # nested in a WITH clause) are classified into the write set with
             # their own sources as reads, so their writes are not lost.
-            cte_aliases = _cte_alias_names(ast)
+            cte_aliases = {c.alias for c in ctes if c.alias}
 
             def _classify_node(node: Any, *, top_level: bool) -> None:
                 """Add reads/writes for a single DML node into the shared sets."""
@@ -488,7 +472,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
 
             # Classify data-modifying CTEs first so their write targets are in
             # the write set before the top-level node's source-read pass runs.
-            for cte_node in ast.find_all(exp.CTE):
+            for cte_node in ctes:
                 inner = cte_node.this
                 if isinstance(inner, (exp.Update, exp.Delete, exp.Insert)):
                     _classify_node(inner, top_level=False)

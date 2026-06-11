@@ -190,6 +190,11 @@ class TestEventFiltering:
         assert len(filtered) == 0
 
 
+def _rust_escape(s: str) -> str:
+    """Python mirror of crates/io/src/lib.rs::escape_resource (keep in sync)."""
+    return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+
 class TestParseEventLine:
     """Test the shared line parser used by both file and pipe transports."""
 
@@ -213,12 +218,8 @@ class TestParseEventLine:
         Mirrors crates/io/src/lib.rs::escape_resource so the framing stays
         intact and the parser recovers the original resource exactly.
         """
-
-        def rust_escape(s: str) -> str:
-            return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
-
         sql = "UPDATE accounts\nSET balance = balance\t-\t1\nWHERE id = 'a\\b'"
-        escaped = rust_escape(sql)
+        escaped = _rust_escape(sql)
         # Escaped form must contain no raw tab/newline that would break framing.
         assert "\t" not in escaped
         assert "\n" not in escaped
@@ -231,13 +232,9 @@ class TestParseEventLine:
 
     def test_unescape_literal_backslash_t_not_tab(self):
         r"""A literal backslash-t (escaped as \\t) must not become a tab."""
-
-        def rust_escape(s: str) -> str:
-            return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
-
         # Resource containing a literal backslash followed by 't'
         resource = "file:/tmp/a\\tb"
-        escaped = rust_escape(resource)  # -> file:/tmp/a\\tb
+        escaped = _rust_escape(resource)  # -> file:/tmp/a\\tb
         ev = _parse_event_line(f"write\t{escaped}\t3\t1\t1\n")
         assert ev is not None
         assert ev.resource_id == resource

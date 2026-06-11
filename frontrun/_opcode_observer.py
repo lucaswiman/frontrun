@@ -22,6 +22,7 @@ import operator as _operator_mod
 import sys
 import threading
 import types
+from collections import deque
 from typing import Any, Literal
 
 from frontrun._cooperative import CooperativeLock as _CooperativeLock
@@ -461,10 +462,10 @@ class StableObjectIds:
         because they are never used as DPOR access objects.
         """
         seen: set[int] = set()
-        queue: list[object] = [root]
+        queue: deque[object] = deque([root])
         count = 0
         while queue and count < self._MAX_PREREGISTER_OBJECTS:
-            obj = queue.pop(0)
+            obj = queue.popleft()
             oid = id(obj)
             if oid in seen:
                 continue
@@ -480,12 +481,12 @@ class StableObjectIds:
             self._enqueue_children(obj, queue)
 
     @staticmethod
-    def _enqueue_children(obj: object, queue: list[object]) -> None:
+    def _enqueue_children(obj: object, queue: deque[object]) -> None:
         """Append *obj*'s children to *queue* in a deterministic order."""
-        # Instance attributes, sorted by name.
+        # Instance attributes, sorted by name (always str — no repr needed).
         obj_dict = getattr(obj, "__dict__", None)
         if isinstance(obj_dict, dict):
-            queue.extend(obj_dict[key] for key in sorted(obj_dict.keys(), key=repr))
+            queue.extend(obj_dict[key] for key in sorted(obj_dict))
         if isinstance(obj, (list, tuple)):
             queue.extend(obj)
         elif isinstance(obj, dict):
@@ -1457,26 +1458,12 @@ def _resolve_tool_id(tool_kind: ToolKind) -> int:
 # ``use_tool_id`` raises ValueError the slot is already held.  We must only
 # force-steal a slot we KNOW belongs to a previous frontrun run that has since
 # finished or died — never an external profiler/optimizer or a concurrent
-# frontrun run in another (still-alive) thread.  This registry records, per
-# tool_id, the frontrun run that claimed it (a monotonically increasing nonce
-# and the owning thread), so the recovery path can tell "stale frontrun run"
-# apart from "live holder".
+# frontrun run in another (still-alive) thread.  This registry maps each
+# claimed tool_id to the ident of the frontrun thread that claimed it, so the
+# recovery path can tell "stale frontrun run" apart from "live holder".
 
-
-class _ToolOwnership:
-    __slots__ = ("nonce", "owner_ident", "tool_name")
-
-    def __init__(self, nonce: int, owner_ident: int, tool_name: str) -> None:
-        self.nonce = nonce
-        self.owner_ident = owner_ident
-        self.tool_name = tool_name
-
-
-_TOOL_OWNERS: dict[int, _ToolOwnership] = {}
+_TOOL_OWNERS: dict[int, int] = {}
 _TOOL_OWNERS_LOCK = threading.Lock()
-# Monotonic nonce counter (mutable single-element list so it can be bumped
-# without a module-level ``global`` / constant-redefinition).
-_tool_nonce = [0]
 
 
 def _owner_thread_alive(owner_ident: int) -> bool:
@@ -1526,20 +1513,19 @@ def setup_opcode_monitoring(
                     f"by {held_by!r} and is not owned by frontrun; refusing to steal it. "
                     "Stop the other monitoring tool before running frontrun."
                 ) from None
-            if _owner_thread_alive(prior.owner_ident):
+            if _owner_thread_alive(prior):
                 # A concurrent frontrun run in another live thread owns it.
                 raise RuntimeError(
                     f"sys.monitoring tool id {tool_id} ({tool_kind}) is in use by a "
-                    f"concurrent frontrun run (thread {prior.owner_ident}); "
+                    f"concurrent frontrun run (thread {prior}); "
                     "frontrun runs that share a tool-id slot cannot overlap."
                 ) from None
             # Genuinely stale: a previous frontrun run that finished/died
             # without tearing down (e.g. pytest-timeout kill).  Force-free.
-            _force_free_tool_id(tool_id, monitor_returns=True)
+            _force_free_tool_id(tool_id)
             mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
 
-        _tool_nonce[0] += 1
-        _TOOL_OWNERS[tool_id] = _ToolOwnership(_tool_nonce[0], threading.get_ident(), tool_name)
+        _TOOL_OWNERS[tool_id] = threading.get_ident()
 
     events = mon.events.PY_START | mon.events.INSTRUCTION  # type: ignore[attr-defined]
     if monitor_returns:
@@ -1559,7 +1545,7 @@ def setup_opcode_monitoring(
     return tool_id
 
 
-def _force_free_tool_id(tool_id: int, *, monitor_returns: bool) -> None:
+def _force_free_tool_id(tool_id: int) -> None:
     """Unregister all callbacks and free *tool_id* (caller verified staleness)."""
     mon = sys.monitoring
     mon.set_events(tool_id, 0)  # type: ignore[attr-defined]
@@ -1578,9 +1564,9 @@ def teardown_opcode_monitoring(tool_id: int | None) -> None:
         # Only free a slot we still own; another run may have reclaimed it after
         # we died, in which case we must not stomp on it.
         owner = _TOOL_OWNERS.get(tool_id)
-        if owner is not None and owner.owner_ident == threading.get_ident():
+        if owner is not None and owner == threading.get_ident():
             del _TOOL_OWNERS[tool_id]
-        _force_free_tool_id(tool_id, monitor_returns=True)
+        _force_free_tool_id(tool_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1763,18 +1749,11 @@ def make_monitoring_callbacks(
             remove_shadow_stack(id(frame))
         return None
 
-    def handle_py_unwind(code: Any, instruction_offset: int, exception: Any) -> Any:
-        # A frame exiting via exception fires PY_UNWIND, not PY_RETURN.  Mirror
-        # handle_py_return's cleanup so the shadow stack keyed by id(frame) is
-        # removed; otherwise a reused frame id inherits a dead operand stack
-        # (finding 4).
-        if not _should_trace_file(code.co_filename):
-            return None
-        thread_id = get_thread_id()
-        if thread_id is not None:
-            frame = sys._getframe(1)
-            remove_shadow_stack(id(frame))
-        return None
+    # A frame exiting via exception fires PY_UNWIND, not PY_RETURN.  The
+    # cleanup is identical (remove the shadow stack keyed by id(frame), else a
+    # reused frame id inherits a dead operand stack — finding 4), and neither
+    # callback looks at its third argument (retval vs. exception).
+    handle_py_unwind = handle_py_return
 
     def handle_instruction(code: Any, instruction_offset: int) -> Any:
         if is_active is not None and not is_active():

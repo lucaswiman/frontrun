@@ -70,7 +70,7 @@ from frontrun._opcode_observer import (
     uninstall_thread_opcode_trace,
 )
 from frontrun._random_schedules import (
-    _DEFAULT_MAX_BURST,
+    burst_round,
     fair_schedule_strategy,
     random_round_robin_schedule,
 )
@@ -156,11 +156,7 @@ class OpcodeScheduler:
         remaining = self._max_ops - len(self.schedule)
         if remaining <= 0:
             return False
-        self._extend_rng.shuffle(active)
-        appended: list[int] = []
-        for actor in active:
-            burst = self._extend_rng.randint(1, _DEFAULT_MAX_BURST)
-            appended.extend([actor] * burst)
+        appended = burst_round(self._extend_rng, active)
         self.schedule.extend(appended[:remaining])
         return True
 

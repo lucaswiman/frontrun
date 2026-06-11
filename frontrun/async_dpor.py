@@ -58,6 +58,8 @@ from frontrun._async_autopause import (
 from frontrun._deadlock import DeadlockError, WaitForGraph, format_cycle
 from frontrun._dpor_core import (
     NoOpLock,
+    ReplayEngine,
+    ReplayExecution,
     RowLockRegistry,
     advance_replay_index,
     compute_serializable_baseline_async,
@@ -166,6 +168,20 @@ _async_lock_owners: dict[int, int] = {}
 # Reverse map: task_id → set of lock objects held by that task.
 # Used to force-release locks when a task finishes without calling release().
 _async_task_held_locks: dict[int, set[Any]] = {}
+
+
+def _reset_async_lock_state() -> None:
+    """Clear all cooperative-lock global state (graph edges, owners, held sets).
+
+    Must run before each exploration execution AND each replay attempt: stale
+    wait-for edges / lock owners / held-locks from a prior run (compounded by
+    id() reuse) leak into the next one and cause spurious DeadlockError or
+    phantom ownership (finding F5).
+    """
+    if _async_wait_graph is not None:
+        _async_wait_graph.clear()
+    _async_lock_owners.clear()
+    _async_task_held_locks.clear()
 
 
 class _CooperativeAsyncLock:
@@ -315,11 +331,8 @@ def _unpatch_asyncio_lock() -> None:
     if not _async_lock_patched:
         return
     asyncio.Lock = _real_asyncio_lock  # type: ignore[assignment,misc]
-    if _async_wait_graph is not None:
-        _async_wait_graph.clear()
+    _reset_async_lock_state()
     _async_wait_graph = None
-    _async_lock_owners.clear()
-    _async_task_held_locks.clear()
     _async_lock_patched = False
 
 
@@ -841,30 +854,6 @@ def _format_async_trace(schedule: list[int], num_tasks: int) -> str:
     return "\n".join(lines)
 
 
-class _NoOpExecution:
-    """No-op stand-in for ``PyExecution`` during counterexample replay.
-
-    The cooperative ``asyncio.Lock`` replacement calls ``block_thread`` /
-    ``unblock_thread`` on ``scheduler.execution`` to keep the DPOR engine from
-    scheduling a lock-blocked task.  Replay drives a *fixed* schedule and has
-    no engine, so these are no-ops — but they must exist so lock acquire/release
-    doesn't raise AttributeError (finding F3).
-    """
-
-    def block_thread(self, _task_id: int) -> None:
-        pass
-
-    def unblock_thread(self, _task_id: int) -> None:
-        pass
-
-
-class _NoOpEngine:
-    """No-op stand-in for ``PyDporEngine`` during counterexample replay."""
-
-    def report_sync(self, _execution: Any, _task_id: int, _kind: str, _lock_id: int) -> None:
-        pass
-
-
 class _ReplayAsyncScheduler(InterleavedLoop):
     """Replay a fixed schedule for async counterexample reproduction."""
 
@@ -880,8 +869,8 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         # engine.report_sync / execution.block_thread without crashing during
         # replay (finding F3).  _lock_blocked mirrors the DPOR scheduler's
         # attribute so the same lock-acquire code path works unmodified.
-        self.engine: Any = _NoOpEngine()
-        self.execution: Any = _NoOpExecution()
+        self.engine: Any = ReplayEngine()
+        self.execution: Any = ReplayExecution()
         self._lock_blocked: dict[int, int] = {}
 
     def _extend_schedule(self) -> bool:
@@ -962,14 +951,8 @@ async def _reproduce_async_counterexample(
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
     for _ in range(reproduce_on_failure):
-        # Clear cooperative-lock global state before EACH replay attempt.
-        # Without this, stale wait-for edges / lock owners / held-locks from a
-        # prior attempt (compounded by id() reuse) leak into the next replay
-        # and cause spurious DeadlockError or phantom ownership (finding F5).
-        if _async_wait_graph is not None:
-            _async_wait_graph.clear()
-        _async_lock_owners.clear()
-        _async_task_held_locks.clear()
+        # Clear cooperative-lock global state before EACH replay attempt (F5).
+        _reset_async_lock_state()
 
         scheduler = _ReplayAsyncScheduler(schedule_list, num_tasks, deadlock_timeout=deadlock_timeout)
         state = setup()
@@ -1156,10 +1139,7 @@ async def _explore_async_dpor(
                 execution = step.execution
 
                 # Clear wait-for graph and held-locks tracking between executions
-                if _async_wait_graph is not None:
-                    _async_wait_graph.clear()
-                _async_lock_owners.clear()
-                _async_task_held_locks.clear()
+                _reset_async_lock_state()
 
                 scheduler = AsyncDporScheduler(
                     engine,
