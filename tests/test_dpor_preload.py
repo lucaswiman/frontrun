@@ -121,7 +121,7 @@ class TestRowLockRegistry:
     def _make_scheduler(self) -> Any:
         """Create a minimal object with the real row-lock methods from DporScheduler."""
         from frontrun._cooperative import real_condition, real_lock
-        from frontrun._dpor_core import RowLockRegistry
+        from frontrun._dpor_core import ReplayEngine, ReplayExecution, RowLockRegistry
         from frontrun.dpor import DporScheduler
 
         class RowLockHost:
@@ -131,6 +131,9 @@ class TestRowLockRegistry:
                 self.deadlock_timeout = 1.0
                 self._lock = real_lock()
                 self._condition = real_condition(self._lock)
+                self._engine_lock = real_lock()
+                self.engine = ReplayEngine()
+                self.execution = ReplayExecution()
                 self._finished = False
                 self._error: Exception | None = None
                 self._current_thread: int | None = None
@@ -220,7 +223,7 @@ class TestRowLockRegistry:
     def _make_scheduler_with_graph(self) -> Any:
         """RowLockHost with WaitForGraph integration fields bound."""
         from frontrun._cooperative import real_condition, real_lock
-        from frontrun._dpor_core import RowLockRegistry
+        from frontrun._dpor_core import ReplayEngine, ReplayExecution, RowLockRegistry
         from frontrun.dpor import DporScheduler
 
         class RowLockHost:
@@ -228,6 +231,9 @@ class TestRowLockRegistry:
                 self.deadlock_timeout = 2.0
                 self._lock = real_lock()
                 self._condition = real_condition(self._lock)
+                self._engine_lock = real_lock()
+                self.engine = ReplayEngine()
+                self.execution = ReplayExecution()
                 self._finished = False
                 self._error: Exception | None = None
                 self._current_thread: int | None = None
