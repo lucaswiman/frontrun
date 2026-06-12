@@ -1566,7 +1566,7 @@ def teardown_opcode_monitoring(tool_id: int | None) -> None:
         owner = _TOOL_OWNERS.get(tool_id)
         if owner is not None and owner == threading.get_ident():
             del _TOOL_OWNERS[tool_id]
-        _force_free_tool_id(tool_id)
+            _force_free_tool_id(tool_id)
 
 
 # ---------------------------------------------------------------------------

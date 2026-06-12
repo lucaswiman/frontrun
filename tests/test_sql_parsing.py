@@ -625,7 +625,8 @@ class TestLockTablesMysql:
 
     def test_lock_tables_read(self):
         r, w, lock, *_ = parse_sql_access("LOCK TABLES t READ")
-        assert "t" in w
+        assert "t" in r
+        assert "t" not in w
         assert lock is LockIntent.SHARE
 
     def test_tx_ops(self):
