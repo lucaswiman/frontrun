@@ -18,3 +18,7 @@ def test_usage_goes_to_stderr() -> None:
 
     assert ret == 1
     assert fake_stdout.getvalue() == ""
+    stderr_output = fake_stderr.getvalue()
+    assert "Usage: frontrun" in stderr_output
+    assert "Examples:" in stderr_output
+    assert "Environment variables:" in stderr_output

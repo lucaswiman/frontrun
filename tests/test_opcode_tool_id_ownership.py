@@ -85,3 +85,61 @@ def test_reclaims_stale_frontrun_slot():
         assert tid == tool_id
     finally:
         obs.teardown_opcode_monitoring(tool_id)
+
+
+def test_teardown_does_not_free_other_owners_slot():
+    """teardown_opcode_monitoring must not free a slot owned by another thread.
+
+    If a run dies and its tool_id is reclaimed by a new run on a different
+    thread, the dead run's teardown must not destroy the new owner's
+    monitoring callbacks.
+    """
+    import threading
+
+    from frontrun import _opcode_observer as obs
+
+    mon = sys.monitoring
+    tool_id = mon.OPTIMIZER_ID
+
+    # Set up monitoring normally.
+    tid = obs.setup_opcode_monitoring(
+        tool_name="frontrun-bytecode",
+        handle_py_start=lambda *a: None,
+        handle_py_return=lambda *a: None,
+        handle_instruction=lambda *a: None,
+        tool_kind="optimizer",
+        monitor_returns=False,
+    )
+    assert tid == tool_id
+
+    # Simulate another thread taking over the slot: forge the owner to a
+    # different (but live) thread ident.  Use the main thread ident since
+    # we're calling teardown from a *different* thread.
+    main_ident = threading.get_ident()
+    # We'll run teardown from a helper thread.  First, forge ownership to
+    # the main thread so the helper thread's teardown should NOT free it.
+    obs._TOOL_OWNERS[tool_id] = main_ident
+
+    freed = []
+
+    def _teardown_from_other_thread():
+        obs.teardown_opcode_monitoring(tool_id)
+        # After teardown, check if the tool is still registered.
+        tool_name = mon.get_tool(tool_id)
+        freed.append(tool_name)
+
+    t = threading.Thread(target=_teardown_from_other_thread)
+    t.start()
+    t.join(timeout=5.0)
+
+    try:
+        # The tool should still be registered because the other thread
+        # should not have freed our slot.
+        assert freed[0] == "frontrun-bytecode", (
+            f"Expected tool to still be 'frontrun-bytecode' but got {freed[0]!r}; "
+            "teardown_opcode_monitoring freed a slot owned by another thread"
+        )
+    finally:
+        # Clean up properly.
+        obs._TOOL_OWNERS[tool_id] = threading.get_ident()
+        obs.teardown_opcode_monitoring(tool_id)
