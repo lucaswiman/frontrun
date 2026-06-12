@@ -56,7 +56,7 @@ it tracks the most recent write to each object per thread.
 **Impact:** Use the fingerprint as a coverage signal:
 - In DPOR: when recent traces produce duplicate fingerprints, bias wakeup tree
   exploration toward branches that reverse different races (complements the
-  search strategies in `search_strategies.md`).
+  search strategies in `crates/dpor/src/path.rs`).
 - In bytecode fuzzing: feed fingerprint novelty back to Hypothesis as a
   coverage target. Hypothesis's `target()` function accepts a float score;
   use `len(new_fingerprints) / len(all_fingerprints)` as the score.

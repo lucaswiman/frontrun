@@ -35,7 +35,7 @@ from frontrun import explore
 
 # All search strategies should produce the same exact Mazurkiewicz trace
 # counts. The strategies only change the *order* of exploration, not the
-# set of explored traces. See ideas/search_strategies.md.
+# set of explored traces. See crates/dpor/src/path.rs.
 SEARCH_STRATEGIES = [
     "dfs",
     "bit-reversal",
