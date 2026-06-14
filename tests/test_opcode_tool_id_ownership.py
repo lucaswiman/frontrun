@@ -44,10 +44,10 @@ def test_refuses_to_steal_external_tool():
         # The external tool must still hold the slot.
         assert mon.get_tool(tool_id) == "external-profiler"
     finally:
-        # Clean up: if frontrun erroneously stole it this free will fail loudly.
-        try:
-            teardown_opcode_monitoring(tool_id)
-        except Exception:
+        # Clean up the external slot explicitly. teardown_opcode_monitoring()
+        # must not free it because frontrun never owned it.
+        teardown_opcode_monitoring(tool_id)
+        if mon.get_tool(tool_id) == "external-profiler":
             mon.free_tool_id(tool_id)
 
 
