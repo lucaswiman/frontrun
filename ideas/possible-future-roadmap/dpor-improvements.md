@@ -1,20 +1,11 @@
 # DPOR Improvements Roadmap
 
-Remaining work for the optimal DPOR implementation. Last reviewed: 2026-03-28.
+Remaining work for the optimal DPOR implementation. Last reviewed: 2026-06-12.
 
-## Implemented
-
-- Wakeup trees (Optimal-DPOR, Algorithm 2)
-- Sleep set propagation through replayed prefix and to new branches (via trace caching)
-- Deferred race detection and notdep sequences
-- Wakeup subtree guidance during replay
-- Stable object keys and per-thread step-count-indexed access caches
-- Lock-aware deferred release backtracking
-- Fix 3: Position-sensitive future access cache (exact Mazurkiewicz trace counts)
-- Fix 4: Provenance-tagged access summaries (`AccessOrigin` enum)
-- Fix 5: `merge(WeakWrite, WeakRead) → WeakWrite`
-- Fix 6: Per-step independence check in `propagate_sleep()` (avoids false wakeups from suffix merge escalation)
-- Defect #15 Approach 2: Resource grouping for SQL tables (`register_resource_group()`)
+Everything from the original optimal-DPOR plan through Fix 6 and Defect #15 Approach 2
+(resource grouping) is implemented — see git history of this file for the full list.
+What remains below is low-priority and should only be picked up with a motivating
+workload in hand.
 
 ---
 
@@ -26,8 +17,6 @@ Before inserting a new sequence into the wakeup tree, check if any existing leaf
 explores an equivalent interleaving using independence information.
 
 **Complexity**: Medium. **Priority**: Low. Benefit uncertain without empirical data.
-
----
 
 ---
 

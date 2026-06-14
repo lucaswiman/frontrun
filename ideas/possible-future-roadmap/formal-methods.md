@@ -101,30 +101,11 @@ PlusCal specs map to frontrun better than raw TLA+:
 
 Agents can generate PlusCal more naturally than raw TLA+ because its imperative process/label structure mirrors actual concurrent Python code.
 
-## Timeline & Sequencing
+## Sequencing
 
-1. **Week 1–2:** Implement linter (1.1) + parsing infrastructure (1.3)
-   - Low effort, builds foundation
-   - Validate agent can extract spec structure from existing SQL specs
-
-2. **Week 2–3:** Add invariant bridge (1.2)
-   - Pure Python, no external tools
-   - Test with existing SQL specs
-
-3. **Week 3–4:** Counterexample replay (2.1)
-   - Requires TLC output parsing
-   - Start with simple trace formats
-
-4. **Week 4–6:** Trace validation (2.2)
-   - Integrates 1.1–2.1
-   - First end-to-end agent pipeline
-
-5. **Week 6–8:** Spec-guided schedules (2.3)
-   - Builds on trace validation
-   - Compare TLC coverage vs. random DPOR
-
-6. **Later:** Refinement checking (3.1)
-   - Only after 2.2, 2.3 solid
+Foundation first (1.1 linter + 1.3 parsing, then 1.2 invariant bridge), then counterexample
+replay (2.1), trace validation (2.2), spec-guided schedules (2.3). Refinement checking (3.1)
+only once 2.2/2.3 are solid.
 
 ## Expected Outcomes
 

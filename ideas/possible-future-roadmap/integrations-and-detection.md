@@ -1,6 +1,18 @@
 # Integrations and Detection: Remaining Work
 
-This document consolidates remaining unfinished work from SQL conflict detection, Redis, and stateful resource detection layers. **Already implemented:** SQL cursor patching for sqlite3/psycopg2/pymysql/aiosqlite/asyncpg, table/row-level conflict detection, wire protocol parsing, Redis key-level detection, I/O detection layers (sys.setprofile, socket/file patching), LD_PRELOAD library.
+Last reviewed: 2026-06-12.
+
+This document consolidates remaining unfinished work from SQL conflict detection, Redis, and
+stateful resource detection layers. **Already implemented:** SQL cursor patching for
+sqlite3/psycopg2/pymysql/aiosqlite/asyncpg, table/row-level conflict detection, wire protocol
+parsing, Redis key-level detection, I/O detection layers (sys.setprofile, socket/file patching),
+LD_PRELOAD library.
+
+Previously-listed items dropped as not worth doing (superseded by existing cursor/driver
+patching, or speculative with no concrete use case): `__class__` reassignment taint
+propagation, `gc.get_referrers()` resource discovery, deterministic record/replay of external
+state, import-hook known-library registry, one-line decorator annotation, frame-local variable
+poisoning. See git history for the original write-ups.
 
 ## High Priority
 
@@ -40,11 +52,9 @@ This document consolidates remaining unfinished work from SQL conflict detection
 
 **What:** Use `cursor.connection.info.backend_pid` (psycopg2/psycopg3) or `conn.in_transaction` (SQLite) to track connection and transaction boundaries more reliably than wire-protocol parsing.
 
-**Why:** Distinguishes independent connections from shared connections. Handles autocommit, savepoints, and driver-specific transaction semantics without C-level wire parsing.
+**Why:** Distinguishes independent connections from shared connections. Handles autocommit, savepoints, and driver-specific transaction semantics without C-level wire parsing. Also a prerequisite-adjacent piece for cross-process exploration (see `ideas/cross_process_exploration.md`), where per-connection identity is what ties an external access to a schedulable client.
 
 **Complexity:** Low. Already accessible from `_sql_cursor.py`. Add to resource_id: `sql:{table}:conn={backend_pid}`. Replaces removed "shared socket" warning with per-connection tracking.
-
-**Status:** Wire-protocol approach documented but deferred. Python driver APIs sufficient for >95% of real-world cases.
 
 **Location:** `frontrun/_sql_cursor.py`, `frontrun/_io_detection.py`
 
@@ -56,9 +66,9 @@ This document consolidates remaining unfinished work from SQL conflict detection
 
 **Why:** Catches I/O from C extensions that bypass Python's socket module (rare but possible), and provides a fallback for detection when other layers are disabled.
 
-**Complexity:** Low (~20 lines). Already tested in `ideas/experiments/test_audit_hook.py`. Limitation: granularity is coarse (entire endpoint, not per-table); audit hooks can't be removed (must gate on test-run flag).
+**Complexity:** Low (~20 lines). Limitation: granularity is coarse (entire endpoint, not per-table); audit hooks can't be removed (must gate on test-run flag).
 
-**Status:** Tested experimentally. Production integration deferred pending need for broader compatibility. Currently `sys.setprofile` + socket/file patching cover the practical cases.
+**Status:** Verified experimentally (experiment scripts not retained in-repo). Production integration deferred pending need for broader compatibility. Currently `sys.setprofile` + socket/file patching cover the practical cases.
 
 **Location:** Could be added to `frontrun/_io_detection.py` as fallback layer
 
@@ -72,37 +82,9 @@ This document consolidates remaining unfinished work from SQL conflict detection
 
 **Complexity:** Low (~30 lines). Add `CALL` to event bitmask, check callable name against `RESOURCE_METHOD_NAMES = {"execute", "send", "recv", "read", "write", "commit", "rollback"}`.
 
-**Status:** Tested in `ideas/experiments/test_monitoring_c_call.py`. Python 3.13 confirmed INSTRUCTION + CALL events coexist on same tool. Not yet integrated into production code.
+**Status:** Verified experimentally on Python 3.13 (INSTRUCTION + CALL events coexist on the same tool). Not yet integrated into production code. Any new hook must go through `frontrun/_opcode_observer.py`, which is the sole owner of `sys.monitoring`.
 
 **Location:** `frontrun/_io_detection.py` (3.12+ only path)
-
----
-
-### `__class__` Reassignment for Pure-Python Objects (Taint Propagation)
-
-**What:** Intercept `PY_RETURN` events in DPOR's `handle_py_return()` callback. Swap the `__class__` of returned objects that look like resources (have `.execute()`, `.send()`, etc.) with instrumented subclasses that self-report method calls.
-
-**Why:** Once swapped, objects auto-report resource accesses with zero tracing overhead for that object.
-
-**Complexity:** Medium (~50 lines). Must handle: C extension types fail silently (fall back to `sys.setprofile`), duck-type check (`hasattr(retval, "execute")`), already-instrumented objects (avoid double-wrapping).
-
-**Status:** Verified in `ideas/experiments/test_class_reassignment.py`. Works perfectly on pure-Python objects (SQLAlchemy Session, Connection). Fails on C extension types (sqlite3.Cursor, socket.socket).
-
-**Location:** `frontrun/_dpor.py` (extend `handle_py_return` callback)
-
----
-
-### `gc.get_referrers()` One-Shot Resource Discovery
-
-**What:** When an audit hook or profile callback detects I/O to endpoint `(host, port)`, call `gc.get_referrers(sock)` once to walk up the reference chain: socket → DBConnection → ConnectionPool → Engine. Cache the mapping `id(engine) → endpoint_identity`.
-
-**Why:** Maps low-level I/O objects to high-level resource owners, enabling more precise conflict reporting and diagnostics.
-
-**Complexity:** Low (~40 lines). Key implementation detail: `gc.get_referrers()` returns `__dict__` dicts, not objects directly; must walk *through* dicts by checking `getattr(r, "__dict__", None) is current`.
-
-**Status:** Verified in `ideas/experiments/test_gc_referrers.py`. Cold walk ~1.5–25ms (one-time cost at connection). Cache lookup ~1µs (1300x speedup).
-
-**Location:** Could be added to `frontrun/_io_detection.py` for resource owner discovery
 
 ---
 
@@ -112,66 +94,17 @@ This document consolidates remaining unfinished work from SQL conflict detection
 
 **What:** Parse PostgreSQL `K` (BackendKeyData) and `Z` (ReadyForQuery) messages in `LD_PRELOAD` recv hooks to extract `backend_pid` and transaction boundaries.
 
-**Why:** Enables transaction tracking and connection identity at C level for non-Python drivers (libpq FFI, etc.).
+**Why:** Enables transaction tracking and connection identity at C level for non-Python drivers (libpq FFI, etc.). Becomes more interesting if cross-process exploration (`ideas/cross_process_exploration.md`) is pursued, since worker processes need not be Python at all once scheduling happens at the wire level.
 
 **Complexity:** Medium. ~10 lines for BackendKeyData (one-time). ~50 lines for ReadyForQuery (requires message framing per fd).
 
-**Status:** Documented. Deferred pending actual use case of C-level direct libpq access (niche). Python driver APIs (`conn.info.backend_pid`, `cursor.connection`) sufficient for mainstream usage.
-
----
-
-### Deterministic Record/Replay of External State (Layer 5)
-
-**What:** Record all I/O operations on first run with their thread ID and vector clock. On subsequent runs, replay recorded responses rather than talking to real databases.
-
-**Why:** Eliminates non-determinism from external state (DB is modified by first run, affects second run).
-
-**Complexity:** High. Requires: message recording (socket/file), replay layer, mocking of I/O responses.
-
-**Status:** Conceptual. Not implemented. Adds architectural complexity; most tests use isolated databases or transactions anyway. Reserved as a future option for integration tests.
-
----
-
-### Import Hook Known-Library Registry (Layer 4)
-
-**What:** On import, detect `sqlite3`, `psycopg2`, `redis`, `sqlalchemy`, etc. and auto-patch their resource methods.
-
-**Why:** Higher precision than audit hooks or profile callbacks. You know exactly which methods are stateful.
-
-**Complexity:** Medium (~100 lines of registry + patching logic). Requires maintenance as libraries evolve.
-
-**Status:** Documented. Not implemented. Current monkey-patching in `_sql_cursor.py` and `_cooperative.py` is sufficient. Would be useful as a plugin system if users want to add custom libraries.
-
----
-
-### One-Line Decorator Annotation (Layer 6)
-
-**What:** `@frontrun.resource("db")` or `with frontrun.accessing("db"):` syntax to mark resource-accessing regions.
-
-**Why:** Minimal config (one decorator) with perfect precision (user says exactly what's a resource).
-
-**Complexity:** Low (~30 lines). Analogous to existing `# frontrun:` trace markers but for resource identity.
-
-**Status:** Documented. Not implemented. Users already have SQL cursor patching + redis patching covering ~95% of cases. Could be added as opt-in if needed.
-
----
-
-## Frame-Local Variable Poisoning (Narrow Use, Deprecated)
-
-**What:** On `sys.settrace` "call" event, swap function arguments with proxy objects using `frame.f_locals` + `PyFrame_LocalsToFast` (3.13+) or `ctypes.pythonapi` (older).
-
-**Why:** Catches C extension types that don't support `__class__` swapping (e.g. `sqlite3.Cursor`).
-
-**Complexity:** Medium. Version-sensitive. Prefer `sys.setprofile` or `__class__` swapping.
-
-**Status:** Documented as fallback. Not implemented. `sys.setprofile` (already in production) is simpler and more reliable for C extension detection.
+**Status:** Documented. Deferred pending an actual use case for C-level direct libpq access. Python driver APIs (`conn.info.backend_pid`, `cursor.connection`) sufficient for mainstream usage.
 
 ---
 
 ## Testing & Validation
 
 - **SQL tests:** `tests/test_sql_*.py` (sqlite3, psycopg2, asyncpg, etc.)
-- **Resource detection experiments:** `ideas/experiments/test_*.py` (audit_hook, class_reassignment, gc_referrers, monitoring_c_call)
 - **Integration tests:** `tests/test_integration_*.py` (require Redis, Postgres)
 
 Run via `make test-3.14` or `make test-integration-3.14`.
@@ -192,4 +125,6 @@ Layer 1: Socket/file monkey-patching (already implemented)
 Layer 0: sys.addaudithook (zero-config but coarse)
 ```
 
-Currently deployed: **Layers 1, 1.5, and targeted Layer 2 (via cursor patching)**. Layers 0, 3, 4, 6 are documented and experimentally verified but not yet integrated.
+Currently deployed: **Layers 1, 1.5, and targeted Layer 2 (via cursor patching)**. The
+unimplemented layers above remain documented here only insofar as they have a plausible
+trigger; the rest were dropped (see note at top).
