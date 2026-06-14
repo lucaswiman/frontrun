@@ -109,4 +109,4 @@ reportUnknownVariableType = false
 reportUnknownMemberType = false
 reportUnknownArgumentType = false
 venvPath = "."
-venv = ".venv-3.14"
+venv = ".venv-3.10"
