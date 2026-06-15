@@ -625,7 +625,8 @@ class TestLockTablesMysql:
 
     def test_lock_tables_read(self):
         r, w, lock, *_ = parse_sql_access("LOCK TABLES t READ")
-        assert "t" in w
+        assert "t" in r
+        assert "t" not in w
         assert lock is LockIntent.SHARE
 
     def test_tx_ops(self):
@@ -639,6 +640,31 @@ class TestLockTablesMysql:
         r, w, lock, tx, *_ = parse_sql_access(sql)
         assert tx is TxOp.COMMIT  # returns last tx_op
         assert "accounts" in w
+
+
+class TestLockTablesMysqlMixed:
+    def test_lock_tables_mixed_read_write(self):
+        """LOCK TABLES t1 READ, t2 WRITE: t1 in read_tables, t2 in write_tables."""
+        r, w, lock, *_ = parse_sql_access("LOCK TABLES t1 READ, t2 WRITE")
+        assert "t1" in r, "READ-locked table should be in read_tables"
+        assert "t1" not in w, "READ-locked table should NOT be in write_tables"
+        assert "t2" in w, "WRITE-locked table should be in write_tables"
+        assert lock is LockIntent.UPDATE
+
+    def test_lock_tables_all_read(self):
+        """LOCK TABLES t1 READ, t2 READ: both in read_tables, none in write_tables."""
+        r, w, lock, *_ = parse_sql_access("LOCK TABLES t1 READ, t2 READ")
+        assert "t1" in r
+        assert "t2" in r
+        assert not w, "READ-only LOCK TABLES should have empty write_tables"
+        assert lock is LockIntent.SHARE
+
+    def test_lock_tables_with_alias(self):
+        """LOCK TABLES t1 AS a READ should extract table name 't1', not alias."""
+        r, w, lock, *_ = parse_sql_access("LOCK TABLES t1 AS a READ")
+        assert "t1" in r
+        assert "a" not in r
+        assert lock is LockIntent.SHARE
 
 
 class TestDjangoPlaceholders:

@@ -199,7 +199,8 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
         # handled below: here each table carries its own trailing lock type.
         if upper.startswith("LOCK TABLES "):
             rest = stripped[12:].strip()
-            tables: set[str] = set()
+            read_tables: set[str] = set()
+            write_tables: set[str] = set()
             mysql_lock_intent: LockIntent = LockIntent.SHARE
             for entry in rest.split(","):
                 tokens = entry.strip().split()
@@ -209,12 +210,16 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                 lock_words = {"READ", "WRITE", "LOCAL", "LOW_PRIORITY"}
                 name_tokens = [t for t in tokens if t.upper() not in lock_words]
                 # The table name is the first token; any "AS alias" tokens follow it.
-                if name_tokens:
-                    tables.add(_strip_quotes(name_tokens[0]))
+                tbl_name = _strip_quotes(name_tokens[0]) if name_tokens else None
+                if tbl_name is None:
+                    continue
                 if any(t.upper() == "WRITE" for t in tokens):
+                    write_tables.add(tbl_name)
                     mysql_lock_intent = LockIntent.UPDATE
-            if tables:
-                return SqlAccessResult(set(), tables, mysql_lock_intent, None, None)
+                else:
+                    read_tables.add(tbl_name)
+            if read_tables or write_tables:
+                return SqlAccessResult(read_tables, write_tables, mysql_lock_intent, None, None)
 
         # LOCK TABLE <table>[, <table>...] [IN <mode> MODE] — sqlglot ERROR for all dialects
         if upper.startswith("LOCK TABLE "):
