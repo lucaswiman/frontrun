@@ -197,26 +197,22 @@ class TestAsyncDporBasic:
 
         shared = 0
 
-        def make_setup() -> type:
-            class State:
-                def __init__(self_inner) -> None:
-                    nonlocal shared
-                    shared = 0
-                    self_inner.value = -1
-            return State
+        class State:
+            def __init__(self) -> None:
+                nonlocal shared
+                shared = 0
+                self.value = -1
 
-        StateClass = make_setup()
-
-        async def increment(state: object) -> None:
+        async def increment(state: State) -> None:
             nonlocal shared
             tmp = shared
             await asyncio.sleep(0)
             shared = tmp + 1
-            state.value = shared  # type: ignore[attr-defined]
+            state.value = shared
 
         result = asyncio.run(
             explore_async_dpor(
-                setup=StateClass,
+                setup=State,
                 tasks=[increment, increment],
                 invariant=lambda _s: shared == 2,
                 deadlock_timeout=5.0,
@@ -1502,6 +1498,5 @@ class TestAsyncDporPreRegister:
             )
 
         assert len(pre_register_calls) >= 1, (
-            "stable_ids.pre_register(state) must be called at least once "
-            "(once per execution) but was never called"
+            "stable_ids.pre_register(state) must be called at least once (once per execution) but was never called"
         )
