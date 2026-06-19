@@ -29,6 +29,7 @@ from frontrun._sql_cursor import (
     _acquire_pending_row_locks,
     _capture_insert_id,
     _detect_autobegin,
+    _record_uncaptured_insert,
     _release_dpor_row_locks,
     _report_sql_access,
     _suppress_endpoint_io,
@@ -115,8 +116,11 @@ async def _intercept_execute_async(
             _release_dpor_row_locks()
 
     # Post-INSERT: capture lastrowid and record indexical alias
-    if insert_match is not None and not is_executemany and reported:
-        _capture_insert_id(self, insert_match.group(1))
+    if insert_match is not None and reported:
+        if not is_executemany:
+            _capture_insert_id(self, insert_match.group(1))
+        else:
+            _record_uncaptured_insert(self, insert_match.group(1))
 
     return result
 

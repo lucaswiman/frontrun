@@ -1152,6 +1152,7 @@ async def _explore_async_dpor(
                 )
 
                 state = setup()
+                stable_ids.pre_register(state)
 
                 task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
                     i: (lambda s=state, t=t: t(s))  # type: ignore[assignment]

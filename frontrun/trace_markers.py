@@ -541,6 +541,7 @@ def explore_marker_interleavings(
 
     num_explored = 0
     failures: list[tuple[int, Schedule]] = []
+    first_explanation: str | None = None
 
     for i, schedule in enumerate(schedules):
         state = setup()
@@ -577,7 +578,9 @@ def explore_marker_interleavings(
 
         invariant_failed, assertion_msg = check_invariant(invariant, state)
         if invariant_failed:
-            first_explanation = f"AssertionError: {assertion_msg}" if assertion_msg else None
+            explanation = f"AssertionError: {assertion_msg}" if assertion_msg else None
+            if first_explanation is None:
+                first_explanation = explanation
             failures.append((i, schedule))
             if stop_on_first:
                 return InterleavingResult(
@@ -585,7 +588,7 @@ def explore_marker_interleavings(
                     counterexample=schedule,
                     num_explored=num_explored,
                     unique_interleavings=num_explored,
-                    explanation=first_explanation,
+                    explanation=explanation,
                 )
 
     if failures:
@@ -595,6 +598,7 @@ def explore_marker_interleavings(
             num_explored=num_explored,
             unique_interleavings=num_explored,
             failures=failures,  # type: ignore[arg-type]
+            explanation=first_explanation,
         )
 
     return InterleavingResult(

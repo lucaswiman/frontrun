@@ -163,8 +163,9 @@ def _handle_tx_op(reporter: Any, tx: Any) -> None:
         store._in_transaction = False
         store._is_autobegin = False
         buffer = getattr(store, "_tx_buffer", [])
-        for res_id, kind in buffer:
-            reporter(res_id, kind)
+        if reporter is not None:
+            for res_id, kind in buffer:
+                reporter(res_id, kind)
         store._tx_buffer = []
         store._tx_savepoints = {}
         _release_dpor_row_locks()

@@ -220,6 +220,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                     read_tables.add(tbl_name)
             if read_tables or write_tables:
                 return SqlAccessResult(read_tables, write_tables, mysql_lock_intent, None, None)
+            return SqlAccessResult(set(), set(), mysql_lock_intent, None, None)
 
         # LOCK TABLE <table>[, <table>...] [IN <mode> MODE] — sqlglot ERROR for all dialects
         if upper.startswith("LOCK TABLE "):
