@@ -342,3 +342,38 @@ class TestExploreMarkerInterleavingsAssertionError:
         )
         assert result.explanation is not None, "assertion message should be preserved in explanation"
         assert "Expected 2" in result.explanation
+
+    def test_multi_failure_explanation_preserved(self):
+        """stop_on_first=False should still set explanation from the first failure.
+
+        The variable ``first_explanation`` is computed on the first invariant
+        violation, but the final InterleavingResult at the end of the function
+        (when stop_on_first=False) does not include it — explanation is always
+        None when there are multiple failures.
+        """
+
+        class State:
+            def __init__(self):
+                self.value = 0
+
+            def increment(self):
+                temp = self.value  # frontrun: read
+                self.value = temp + 1  # frontrun: write
+
+        def invariant(s):
+            assert s.value == 2, "Expected 2"
+            return True
+
+        result = explore_marker_interleavings(
+            setup=State,
+            threads={
+                "t1": (lambda s: s.increment(), ["read", "write"]),
+                "t2": (lambda s: s.increment(), ["read", "write"]),
+            },
+            invariant=invariant,
+            stop_on_first=False,
+        )
+        assert not result.property_holds
+        assert result.explanation is not None, (
+            "explanation should be set from the first failure even with stop_on_first=False"
+        )
