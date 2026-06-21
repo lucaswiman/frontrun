@@ -43,7 +43,7 @@ class TestCopyStatementParsing:
         # Has parens after table name, but the table name itself isn't parenthesized
         r = parse_sql_access("COPY users (name, email) FROM STDIN")
         # This might fall through to sqlglot or be handled by regex
-        assert "users" in r.write_tables or r.read_tables == set()
+        assert "users" in r.write_tables
 
     def test_copy_case_insensitive(self):
         """COPY should be case-insensitive."""

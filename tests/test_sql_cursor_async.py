@@ -781,3 +781,35 @@ class TestAsyncpgExecutemanyDbObj:
         assert "_get_dpor_context" in source, (
             "_dpor_schedule_and_suppress_async should call _get_dpor_context for DPOR scheduling"
         )
+
+
+# ---------------------------------------------------------------------------
+# Bug: async executemany INSERT does not call _record_uncaptured_insert
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_executemany_insert_records_uncaptured() -> None:
+    """Async executemany INSERT must record the table as uncaptured (finding 10e).
+
+    The sync path calls _record_uncaptured_insert for executemany INSERTs
+    so the nondeterminism guard catches uncaptured row IDs.  The async path
+    at _sql_cursor_async.py only handles the single-row case and silently
+    skips the executemany INSERT tracking.
+    """
+    from frontrun import _sql_insert_tracker
+
+    _sql_insert_tracker.clear_insert_tracker()
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql_async()
+    try:
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+            log.clear()
+            await conn.executemany("INSERT INTO users (name) VALUES (?)", [("a",), ("b",), ("c",)])
+        assert "users" in _sql_insert_tracker.get_uncaptured_tables(), (
+            "async executemany INSERT must record the table as uncaptured"
+        )
+    finally:
+        _sql_insert_tracker.clear_insert_tracker()

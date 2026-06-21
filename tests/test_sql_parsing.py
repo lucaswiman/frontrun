@@ -822,3 +822,44 @@ class TestPyformatEscapedPercentWithPlaceholder:
         sql = "SELECT * FROM t WHERE name LIKE '%%%s'"
         result = parse_sql_access(sql)
         assert "t" in result.read_tables
+
+
+# ---------------------------------------------------------------------------
+# Bug: LOCK TABLES fallthrough when 0 tables extracted
+# ---------------------------------------------------------------------------
+
+
+class TestLockTablesFallthroughBug:
+    """When LOCK TABLES fails to extract any tables (pathological input),
+    it should still return an explicit result rather than falling through
+    to subsequent handlers or sqlglot.
+
+    The LOCK TABLES handler at lines 200-222 only returns when it
+    extracts at least one table.  When 0 tables are extracted (all tokens
+    are lock keywords), it falls through past its own guard, bypassing
+    the explicit LOCK handling and delegating to sqlglot which loses
+    the lock_intent information.
+    """
+
+    def test_lock_tables_no_tables_preserves_lock_intent(self):
+        """LOCK TABLES with no extractable table names should still return
+        with an explicit lock_intent rather than falling through to sqlglot.
+
+        When LOCK TABLES extracts 0 tables, the handler should return an
+        explicit empty SqlAccessResult.  Currently it falls through to
+        sqlglot which returns lock_intent=None, losing the information
+        that this was a LOCK statement.
+        """
+        # "WRITE" is a lock_word so name_tokens is empty -> tbl_name is None -> continue
+        # Both read_tables and write_tables stay empty -> falls past the guard
+        # -> falls through to sqlglot -> lock_intent becomes None (wrong)
+        result = parse_sql_access("LOCK TABLES WRITE")
+        assert result.read_tables == set(), f"Expected empty read_tables, got {result.read_tables}"
+        assert result.write_tables == set(), f"Expected empty write_tables, got {result.write_tables}"
+        # The key assertion: a recognized LOCK statement should preserve lock_intent
+        # even when it extracts 0 tables.  The current code falls through to sqlglot
+        # which returns lock_intent=None.
+        assert result.lock_intent is not None, (
+            "LOCK TABLES should return an explicit lock_intent even when 0 tables "
+            "are extracted, not fall through to sqlglot (which loses lock_intent)"
+        )

@@ -195,11 +195,13 @@ class TestAsyncDporBasic:
         require_active("test_async_dpor_closure_race")
         from frontrun.async_dpor import explore_async_dpor
 
+        shared = 0
+
         class State:
             def __init__(self) -> None:
+                nonlocal shared
+                shared = 0
                 self.value = -1
-
-        shared = 0
 
         async def increment(state: State) -> None:
             nonlocal shared
@@ -1450,3 +1452,51 @@ class TestAsyncDporLockTimeout:
             assert get_lock_timeout() == 999, "Previous lock_timeout was not restored"
         finally:
             set_lock_timeout(None)
+
+
+class TestAsyncDporPreRegister:
+    """Async DPOR must call stable_ids.pre_register(state) after setup().
+
+    The sync path in _dpor_runtime/explore.py calls pre_register so that
+    objects created in setup() get deterministic IDs regardless of the
+    schedule.  The async path at async_dpor.py line 1154 is missing this
+    call, causing object IDs to vary with first-touch order across
+    executions.
+    """
+
+    def test_pre_register_called_for_setup_state(self) -> None:
+        """Verify that async DPOR pre-registers setup state objects."""
+        require_active("test_async_dpor_pre_register")
+        from unittest.mock import patch as mock_patch
+
+        from frontrun._opcode_observer import StableObjectIds
+        from frontrun.async_dpor import explore_async_dpor
+
+        pre_register_calls: list[object] = []
+        original_pre_register = StableObjectIds.pre_register
+
+        def tracking_pre_register(self_ids: StableObjectIds, root: object) -> None:
+            pre_register_calls.append(root)
+            return original_pre_register(self_ids, root)
+
+        class State:
+            def __init__(self) -> None:
+                self.value = 0
+
+        async def noop(state: State) -> None:
+            state.value += 1
+            await asyncio.sleep(0)
+
+        with mock_patch.object(StableObjectIds, "pre_register", tracking_pre_register):
+            asyncio.run(
+                explore_async_dpor(
+                    setup=State,
+                    tasks=[noop],
+                    invariant=lambda s: True,
+                    deadlock_timeout=5.0,
+                )
+            )
+
+        assert len(pre_register_calls) >= 1, (
+            "stable_ids.pre_register(state) must be called at least once (once per execution) but was never called"
+        )
