@@ -295,7 +295,13 @@ class CooperativeLock:
 
         # Reentrancy guard: skip scheduler interaction during GC __del__
         if _in_dpor_machinery():
+            owner = self._owner_thread_id
+            self._owner_thread_id = None
             self._lock.release()
+            if owner is not None:
+                graph = get_wait_for_graph()
+                if graph is not None:
+                    graph.remove_holding(owner, self._object_id)
             return
 
         owner = self._owner_thread_id

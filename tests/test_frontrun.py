@@ -29,9 +29,8 @@ def test_cooperative_lock_release_in_dpor_machinery_clears_owner():
     _scheduler_tls._in_dpor_machinery = True
     try:
         lock.release()
-        assert lock._owner_thread_id is not None, (
-            "BUG: _owner_thread_id should still be set (stale) because release() "
-            "skips clearing it when _in_dpor_machinery() is True"
+        assert lock._owner_thread_id is None, (
+            "_owner_thread_id must be cleared even when release() runs inside DPOR machinery"
         )
     finally:
         _scheduler_tls._in_dpor_machinery = False
