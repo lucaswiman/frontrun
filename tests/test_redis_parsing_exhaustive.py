@@ -436,3 +436,11 @@ class TestKeySpecInterpreterEdgeCases:
         result = parse_redis_access("MEMORY", ("DOCTOR",))
         assert result.read_keys == []
         assert result.write_keys == []
+
+
+def test_no_dead_code_in_command_key_specs() -> None:
+    """_COMMAND_KEY_SPECS must not contain commands handled by earlier checks."""
+    from frontrun._redis_command_data import _COMMAND_KEY_SPECS, _EVAL_CMDS, _TX_CONTROL_CMDS
+
+    dead = set(_COMMAND_KEY_SPECS) & (_EVAL_CMDS | _TX_CONTROL_CMDS)
+    assert not dead, f"Dead entries in _COMMAND_KEY_SPECS (shadowed by earlier checks): {dead}"
