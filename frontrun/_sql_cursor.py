@@ -781,8 +781,8 @@ def _wrap_connection_cursor(conn: Any, paramstyle: str) -> None:
         pass
 
 
-def _make_traced_sqlite3_connection_class() -> type:
-    """Return a sqlite3.Connection subclass whose cursor() uses TracedCursor.
+def _make_traced_sqlite3_connection_class(base_cls: type = sqlite3.Connection) -> type:
+    """Return a *base_cls* subclass whose cursor() uses TracedCursor.
 
     On Python 3.14+, ``Connection.execute()`` creates cursors in C without
     calling ``self.cursor()``, so we must also override ``execute`` and
@@ -790,7 +790,7 @@ def _make_traced_sqlite3_connection_class() -> type:
     """
     _traced_cursor_cls = _make_traced_cursor_class(sqlite3.Cursor, paramstyle="qmark")
 
-    class TracedConnection(sqlite3.Connection):
+    class TracedConnection(base_cls):  # type: ignore[valid-type]
         def cursor(self, factory: type = _traced_cursor_cls) -> sqlite3.Cursor:  # type: ignore[override]
             return super().cursor(factory)
 
@@ -815,9 +815,27 @@ def _make_traced_sqlite3_connection_class() -> type:
             handle_connection_rollback()
             super().rollback()
 
-    TracedConnection.__name__ = "TracedConnection"
-    TracedConnection.__qualname__ = "TracedConnection"
+    TracedConnection.__name__ = f"Traced{base_cls.__name__}"
+    TracedConnection.__qualname__ = f"Traced{base_cls.__qualname__}"
     return TracedConnection
+
+
+_TRACED_SQLITE3_CONN_CLASSES: dict[type, type] = {}
+
+
+def _get_traced_sqlite3_connection_class(base_cls: type) -> type:
+    """Return (and cache) a traced subclass of *base_cls* for sqlite3.
+
+    Already-traced classes are returned as-is to avoid double-wrapping.
+    """
+    if getattr(base_cls, "_frontrun_traced_sqlite3_conn", False):
+        return base_cls
+    cached = _TRACED_SQLITE3_CONN_CLASSES.get(base_cls)
+    if cached is None:
+        cached = _make_traced_sqlite3_connection_class(base_cls)
+        cached._frontrun_traced_sqlite3_conn = True  # type: ignore[attr-defined]
+        _TRACED_SQLITE3_CONN_CLASSES[base_cls] = cached
+    return cached
 
 
 # ---------------------------------------------------------------------------
@@ -860,8 +878,11 @@ def _patch_sqlite3() -> None:
     traced_conn_cls = _make_traced_sqlite3_connection_class()
 
     def patched_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        if "factory" not in kwargs:
+        user_factory = kwargs.get("factory")
+        if user_factory is None:
             kwargs["factory"] = traced_conn_cls
+        else:
+            kwargs["factory"] = _get_traced_sqlite3_connection_class(user_factory)
         conn = orig_connect(*args, **kwargs)
         identity = _normalize_db_identity("sqlite", *args, **kwargs)
         if identity is None:
@@ -1043,4 +1064,5 @@ def unpatch_sql() -> None:
     _PATCHES.clear()
     _ORIGINAL_METHODS.clear()
     _TRACED_CURSOR_CLASSES.clear()
+    _TRACED_SQLITE3_CONN_CLASSES.clear()
     _sql_patched = False
