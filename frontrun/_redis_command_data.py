@@ -65,8 +65,6 @@ _COMMAND_KEY_SPECS: dict[str, list[_KeySpec]] = {
     "EXPIRE": [(("idx", 1), ("rng", 0, 1, 0), True, True)],
     "EXPIREAT": [(("idx", 1), ("rng", 0, 1, 0), True, True)],
     "EXPIRETIME": [(("idx", 1), ("rng", 0, 1, 0), True, False)],
-    "FCALL": [(("idx", 2), ("kn", 0, 1, 1), True, True)],
-    "FCALL_RO": [(("idx", 2), ("kn", 0, 1, 1), True, False)],
     "GEOADD": [(("idx", 1), ("rng", 0, 1, 0), True, True)],
     "GEODIST": [(("idx", 1), ("rng", 0, 1, 0), True, False)],
     "GEOHASH": [(("idx", 1), ("rng", 0, 1, 0), True, False)],
