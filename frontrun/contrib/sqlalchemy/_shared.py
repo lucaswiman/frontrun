@@ -78,10 +78,12 @@ def wrap_sync_thread(
             if lock_timeout_sql is not None:
                 conn.exec_driver_sql(lock_timeout_sql)
         except BaseException:
+            import sys
+
             unsuppress_sync_reporting()
             suppress_sync_reporting()
             try:
-                conn_ctx.__exit__(None, None, None)
+                conn_ctx.__exit__(*sys.exc_info())
             finally:
                 unsuppress_sync_reporting()
             raise
