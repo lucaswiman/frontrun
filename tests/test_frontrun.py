@@ -90,8 +90,7 @@ def test_sqlite3_custom_factory_traced():
         original_execute = _ORIGINAL_METHODS.get((sqlite3.Cursor, "execute"))
         assert original_execute is not None, "_ORIGINAL_METHODS should have sqlite3.Cursor.execute"
         assert traced_execute is not original_execute, (
-            "Cursor.execute should be the traced version, not the original — "
-            "custom factory bypassed tracing"
+            "Cursor.execute should be the traced version, not the original — custom factory bypassed tracing"
         )
 
         conn.close()
