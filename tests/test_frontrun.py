@@ -67,3 +67,33 @@ def test_wrap_sync_thread_exit_receives_exception_info_on_lock_timeout_failure()
     assert exit_args[0] is RuntimeError, f"Expected RuntimeError type, got {exit_args[0]}"
     assert isinstance(exit_args[1], RuntimeError), f"Expected RuntimeError instance, got {exit_args[1]}"
     assert exit_args[2] is not None, "Expected a traceback, got None"
+
+
+def test_sqlite3_custom_factory_traced():
+    """sqlite3.connect(factory=CustomConnection) must still trace SQL."""
+    import sqlite3
+
+    from frontrun._sql_cursor import _ORIGINAL_METHODS, patch_sql, unpatch_sql
+
+    class CustomConnection(sqlite3.Connection):
+        custom_attr = True
+
+    try:
+        patch_sql()
+        conn = sqlite3.connect(":memory:", factory=CustomConnection)
+
+        assert isinstance(conn, CustomConnection), "Connection should be an instance of CustomConnection"
+        assert getattr(conn, "custom_attr", False), "Custom attribute should be preserved"
+
+        cur = conn.cursor()
+        traced_execute = type(cur).execute
+        original_execute = _ORIGINAL_METHODS.get((sqlite3.Cursor, "execute"))
+        assert original_execute is not None, "_ORIGINAL_METHODS should have sqlite3.Cursor.execute"
+        assert traced_execute is not original_execute, (
+            "Cursor.execute should be the traced version, not the original — "
+            "custom factory bypassed tracing"
+        )
+
+        conn.close()
+    finally:
+        unpatch_sql()
