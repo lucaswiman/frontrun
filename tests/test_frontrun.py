@@ -96,3 +96,32 @@ def test_sqlite3_custom_factory_traced():
         conn.close()
     finally:
         unpatch_sql()
+
+
+def test_find_cycle_from_resets_visited_per_outer_neighbor():
+    """Visited/path state must be independent per outer-loop iteration.
+
+    The fix resets ``visited`` and ``path`` for each top-level neighbor in
+    ``_find_cycle_from`` so that nodes explored via one neighbor cannot
+    shadow reachable paths through a later neighbor.  This test validates
+    the cycle is found regardless of which neighbor is explored first.
+    """
+    from frontrun._deadlock import WaitForGraph
+
+    g = WaitForGraph()
+
+    start = ("thread", 1)
+    n1 = ("lock", 1)
+    n2 = ("lock", 2)
+    b = ("thread", 2)
+    c = ("lock", 3)
+
+    g._edges[start] = {n1, n2}
+    g._edges[n1] = {b}
+    g._edges[n2] = {b}
+    g._edges[b] = {c}
+    g._edges[c] = {start}
+
+    cycle = g._find_cycle_from(start)
+    assert cycle is not None, "Expected a cycle (start -> ... -> start) but got None"
+    assert cycle[0] == cycle[-1] == start
