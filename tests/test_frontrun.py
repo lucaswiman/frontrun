@@ -34,3 +34,36 @@ def test_cooperative_lock_release_in_dpor_machinery_clears_owner():
         )
     finally:
         _scheduler_tls._in_dpor_machinery = False
+
+
+def test_wrap_sync_thread_exit_receives_exception_info_on_lock_timeout_failure():
+    """conn_ctx.__exit__ must receive real exception info so SQLAlchemy rolls back."""
+    import contextvars
+    from unittest.mock import MagicMock
+
+    from frontrun.contrib.sqlalchemy._shared import wrap_sync_thread
+
+    conn = MagicMock()
+    conn.exec_driver_sql.side_effect = RuntimeError("lock_timeout failed")
+
+    conn_ctx = MagicMock()
+    conn_ctx.__enter__ = MagicMock(return_value=conn)
+    conn_ctx.__exit__ = MagicMock(return_value=False)
+
+    engine = MagicMock()
+    engine.connect.return_value = conn_ctx
+
+    current_connection: contextvars.ContextVar[object] = contextvars.ContextVar("test_conn")
+
+    wrapper = wrap_sync_thread(engine, current_connection, lock_timeout=100, fn=lambda _s: None)
+
+    try:
+        wrapper(None)
+    except RuntimeError:
+        pass
+
+    conn_ctx.__exit__.assert_called_once()
+    exit_args = conn_ctx.__exit__.call_args[0]
+    assert exit_args[0] is RuntimeError, f"Expected RuntimeError type, got {exit_args[0]}"
+    assert isinstance(exit_args[1], RuntimeError), f"Expected RuntimeError instance, got {exit_args[1]}"
+    assert exit_args[2] is not None, "Expected a traceback, got None"
