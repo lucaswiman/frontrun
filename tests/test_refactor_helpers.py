@@ -880,3 +880,37 @@ def test_dpor_exploration_step_carries_execution_and_index() -> None:
         indices.append(step.index)
         assert isinstance(step.execution, _StubExecution)
     assert indices == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# advance_replay_index: extend_fn returning True without adding entries
+# ---------------------------------------------------------------------------
+
+
+def test_advance_replay_index_recheck_bounds_after_extend_fn() -> None:
+    """extend_fn returning True without adding entries must not cause IndexError.
+
+    Bug: after extend_fn() returns True the code falls through to
+    replay_schedule[replay_index] without re-checking the bounds, so an
+    extend_fn that returns True but adds nothing triggers an IndexError.
+    """
+    from frontrun._dpor_core.utils import advance_replay_index
+
+    call_count = 0
+
+    def extend_noop_then_stop() -> bool:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return True
+        return False
+
+    replay_schedule: list[int] = [0]
+    new_index, actor = advance_replay_index(
+        replay_schedule=replay_schedule,
+        replay_index=1,
+        extend_fn=extend_noop_then_stop,
+        actors_done={0},
+    )
+    assert actor is None
+    assert call_count == 2
