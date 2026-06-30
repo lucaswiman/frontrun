@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="DPOR: Dynamic Partial Order Reduction" href="dpor.html"><link rel="prev" title="How Frontrun Works" href="approaches.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>DPOR in Practice - Frontrun 0.5.0 documentation</title>
+        <title>DPOR in Practice - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -252,15 +252,8 @@
         <article role="main" id="furo-main-content">
           <section id="dpor-in-practice">
 <h1>DPOR in Practice<a class="headerlink" href="#dpor-in-practice" title="Link to this heading">¶</a></h1>
-<p>This is a practical guide to using <code class="docutils literal notranslate"><span class="pre">explore()</span></code> (or the old <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code>)
-for systematic concurrency testing. For the underlying algorithm and theory, see
-<a class="reference internal" href="dpor.html"><span class="doc">DPOR: Dynamic Partial Order Reduction</span></a>.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><strong>Prefer</strong> <code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> <strong>(0.5+).</strong> The old <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code>
-function is deprecated and will be removed in 0.6. Use
-<code class="docutils literal notranslate"><span class="pre">frontrun.explore(strategy='dpor')</span></code> (the default) instead.</p>
-</div>
+<p>This is a practical guide to using <a class="reference internal" href="api_reference.html#frontrun.explore" title="frontrun.explore"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code></a> for systematic
+concurrency testing. For the underlying algorithm and theory, see <a class="reference internal" href="dpor.html"><span class="doc">DPOR: Dynamic Partial Order Reduction</span></a>.</p>
 <section id="what-dpor-does">
 <h2>What DPOR does<a class="headerlink" href="#what-dpor-does" title="Link to this heading">¶</a></h2>
 <p>DPOR and the invariant have separate jobs:</p>
@@ -272,7 +265,7 @@ Two interleavings that only differ in the order of independent operations
 (e.g. two reads, or accesses to different objects) are equivalent, so DPOR
 runs only one representative from each equivalence class.</p></li>
 <li><p><strong>The invariant decides whether a bug occurred.</strong> After all workers finish,
-<code class="docutils literal notranslate"><span class="pre">explore()</span></code> calls your invariant on the final state. DPOR has no
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> calls your invariant on the final state. DPOR has no
 built-in notion of “correct” — it doesn’t know that <code class="docutils literal notranslate"><span class="pre">counter</span> <span class="pre">==</span> <span class="pre">1</span></code> is
 wrong and <code class="docutils literal notranslate"><span class="pre">counter</span> <span class="pre">==</span> <span class="pre">2</span></code> is right. You supply that judgement via the
 invariant. Raising <code class="docutils literal notranslate"><span class="pre">AssertionError</span></code> in the invariant is treated as a failure
@@ -282,25 +275,14 @@ invariant. Raising <code class="docutils literal notranslate"><span class="pre">
 even though it is technically a <em>postcondition</em> checked once after the threads
 finish, not a continuously-monitored loop invariant.)</p>
 <p>Putting the two together:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
-<span class="n">result</span> <span class="o">=</span> <span class="n">explore</span><span class="p">(</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="n">MyState</span><span class="p">,</span>                         <span class="c1"># called fresh each execution</span>
     <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">worker_a</span><span class="p">,</span> <span class="n">worker_b</span><span class="p">],</span>          <span class="c1"># each receives the state</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="n">s</span><span class="o">.</span><span class="n">is_consistent</span><span class="p">(),</span> <span class="c1"># checked after all workers finish</span>
 <span class="p">)</span>
 <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>
-</pre></div>
-</div>
-<p>Old API (deprecated):</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
-
-<span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
-    <span class="n">setup</span><span class="o">=</span><span class="n">MyState</span><span class="p">,</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="n">thread_a</span><span class="p">,</span> <span class="n">thread_b</span><span class="p">],</span>
-    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="n">s</span><span class="o">.</span><span class="n">is_consistent</span><span class="p">(),</span>
-<span class="p">)</span>
-<span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">explanation</span>
 </pre></div>
 </div>
 <ol class="arabic simple">
@@ -322,11 +304,10 @@ detection mechanisms are layered from fine-grained to coarse:</p>
 <li><p>Lock acquire and release (<code class="docutils literal notranslate"><span class="pre">threading.Lock</span></code>, <code class="docutils literal notranslate"><span class="pre">threading.RLock</span></code>)</p></li>
 <li><p>Thread spawn and join</p></li>
 <li><p><strong>Redis commands</strong> — <code class="docutils literal notranslate"><span class="pre">execute_command()</span></code> is intercepted on redis-py
-clients when <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code>, which now covers Redis in both sync
-and async contexts.  (The async-only <code class="docutils literal notranslate"><span class="pre">detect_redis=True</span></code> kwarg is
-deprecated in 0.5 and will be removed in 0.6.)  Each command is
-classified as a read or write on specific keys; two threads operating
-on <em>different</em> keys are independent.  See <a class="reference internal" href="redis.html"><span class="doc">Redis Conflict Detection – Technical Details</span></a>.</p></li>
+clients when <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code>, which covers Redis in both sync
+and async contexts.  Each command is classified as a read or write on
+specific keys; two threads operating on <em>different</em> keys are
+independent.  See <a class="reference internal" href="redis.html"><span class="doc">Redis Conflict Detection – Technical Details</span></a>.</p></li>
 <li><p><strong>SQL statements</strong> — <code class="docutils literal notranslate"><span class="pre">cursor.execute()</span></code> is intercepted at the DBAPI
 layer.  Statements are parsed to per-table (or per-row) resource IDs; two
 threads touching <em>different</em> tables or rows are independent.  See
@@ -366,7 +347,7 @@ wait-for-graph and the bytecode tracer.</p></li>
 </ul>
 <p>For cases where DPOR cannot see the shared state, two alternatives are available:</p>
 <ul class="simple">
-<li><p><strong>Bytecode exploration</strong> (<code class="docutils literal notranslate"><span class="pre">explore_interleavings()</span></code>) doesn’t need to
+<li><p><strong>Bytecode exploration</strong> (<code class="docutils literal notranslate"><span class="pre">frontrun.explore_random()</span></code>) doesn’t need to
 <em>understand</em> why a schedule is bad — it checks an invariant after each run
 and reports when the invariant fails.  If a C extension mutates shared state
 in a way that breaks your invariant, bytecode exploration will often find the
@@ -387,8 +368,8 @@ will interfere with the next.</p>
 </section>
 <section id="basic-usage">
 <h2>Basic usage<a class="headerlink" href="#basic-usage" title="Link to this heading">¶</a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code> function is the main entry point:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
+<p>The <code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> function is the main entry point:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -398,9 +379,9 @@ will interfere with the next.</p>
         <span class="n">temp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>
 
-<span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="n">Counter</span><span class="p">,</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
+    <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
 <span class="p">)</span>
 
@@ -412,8 +393,8 @@ will interfere with the next.</p>
 <dt><code class="docutils literal notranslate"><span class="pre">setup</span></code></dt><dd><p>A callable that creates fresh shared state. Called once per execution so
 that each interleaving starts from a clean slate.</p>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">threads</span></code></dt><dd><p>A list of callables, each receiving the state returned by <code class="docutils literal notranslate"><span class="pre">setup</span></code>.
-The length of this list determines the number of threads.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">workers</span></code></dt><dd><p>A list of callables, each receiving the state returned by <code class="docutils literal notranslate"><span class="pre">setup</span></code>.
+The length of this list determines the number of workers.</p>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">invariant</span></code></dt><dd><p>A predicate over the shared state that defines what “correct” means.
 Called after all threads finish each execution. Return <code class="docutils literal notranslate"><span class="pre">True</span></code> if the
@@ -482,8 +463,8 @@ total executions matters, DFS is the best choice.</p>
 </section>
 <section id="interpreting-results">
 <h2>Interpreting results<a class="headerlink" href="#interpreting-results" title="Link to this heading">¶</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code> returns an <code class="docutils literal notranslate"><span class="pre">InterleavingResult</span></code> (the same type used by
-<code class="docutils literal notranslate"><span class="pre">explore_interleavings</span></code>):</p>
+<p><code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> returns an <code class="docutils literal notranslate"><span class="pre">InterleavingResult</span></code> (the same type used by
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore_random</span></code>):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@dataclass</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">InterleavingResult</span><span class="p">:</span>
     <span class="n">property_holds</span><span class="p">:</span> <span class="nb">bool</span>                              <span class="c1"># True if invariant held everywhere</span>
@@ -502,8 +483,8 @@ which threads were scheduled. For example, <code class="docutils literal notrans
 ran for two steps, then thread 1 ran for two steps.</p>
 <p>When a race is found, <code class="docutils literal notranslate"><span class="pre">explanation</span></code> contains a formatted trace showing the
 interleaved source lines, the conflict pattern (lost update, write-write, etc.),
-and reproduction statistics. This is the same output for both <code class="docutils literal notranslate"><span class="pre">explore_dpor</span></code>
-and <code class="docutils literal notranslate"><span class="pre">explore_interleavings</span></code>.</p>
+and reproduction statistics. This is the same output for both <code class="docutils literal notranslate"><span class="pre">frontrun.explore</span></code>
+and <code class="docutils literal notranslate"><span class="pre">frontrun.explore_random</span></code>.</p>
 <p>If <code class="docutils literal notranslate"><span class="pre">num_explored</span></code> is 1, your threads probably don’t share any
 state — the engine saw no conflicts and skipped everything. This is a sign
 that either the test is trivially correct or the shared state is not being
@@ -514,7 +495,8 @@ accessed in a way the tracer can see (e.g. through a C extension).</p>
 <p>A common pattern is to first show that a race exists, then show that adding
 a lock eliminates it:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">UnsafeCounter</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -535,17 +517,17 @@ a lock eliminates it:</p>
             <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_unsafe_counter_has_race</span><span class="p">():</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">UnsafeCounter</span><span class="p">,</span>
-        <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
+        <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">explanation</span>  <span class="c1"># fails — has a race!</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_safe_counter_is_correct</span><span class="p">():</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">SafeCounter</span><span class="p">,</span>
-        <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
+        <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">explanation</span>
@@ -556,7 +538,7 @@ a lock eliminates it:</p>
 <h2>Example: multiple shared objects<a class="headerlink" href="#example-multiple-shared-objects" title="Link to this heading">¶</a></h2>
 <p>DPOR tracks objects independently, so races on different attributes are
 detected separately:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Bank</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -570,9 +552,9 @@ detected separately:</p>
         <span class="bp">self</span><span class="o">.</span><span class="n">b</span> <span class="o">=</span> <span class="n">temp_b</span> <span class="o">+</span> <span class="n">amount</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_concurrent_transfers_conserve_total</span><span class="p">():</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">Bank</span><span class="p">,</span>
-        <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">b</span><span class="p">:</span> <span class="n">b</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span> <span class="k">lambda</span> <span class="n">b</span><span class="p">:</span> <span class="n">b</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">)],</span>
+        <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">b</span><span class="p">:</span> <span class="n">b</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span> <span class="k">lambda</span> <span class="n">b</span><span class="p">:</span> <span class="n">b</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">)],</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">b</span><span class="p">:</span> <span class="n">b</span><span class="o">.</span><span class="n">a</span> <span class="o">+</span> <span class="n">b</span><span class="o">.</span><span class="n">b</span> <span class="o">==</span> <span class="mi">200</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">explanation</span>  <span class="c1"># fails — total is not conserved</span>
@@ -587,7 +569,7 @@ database drivers like psycopg2/libpq. DPOR consumes these events
 automatically when <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> (the default).</p>
 <p><strong>How it works:</strong></p>
 <ol class="arabic simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code> starts an <code class="docutils literal notranslate"><span class="pre">IOEventDispatcher</span></code> that creates
+<li><p><code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> starts an <code class="docutils literal notranslate"><span class="pre">IOEventDispatcher</span></code> that creates
 an <code class="docutils literal notranslate"><span class="pre">os.pipe()</span></code> and passes the write-end FD to the Rust
 <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code> library via the <code class="docutils literal notranslate"><span class="pre">FRONTRUN_IO_FD</span></code> environment
 variable. The Rust library writes event records to the pipe for
@@ -617,7 +599,7 @@ by chance, but it has no awareness of the underlying I/O conflicts.</p>
 </section>
 <section id="orm-helpers-django-dpor-and-sqlalchemy-dpor">
 <h2>ORM helpers: <code class="docutils literal notranslate"><span class="pre">django_dpor</span></code> and <code class="docutils literal notranslate"><span class="pre">sqlalchemy_dpor</span></code><a class="headerlink" href="#orm-helpers-django-dpor-and-sqlalchemy-dpor" title="Link to this heading">¶</a></h2>
-<p>Writing correct <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code> tests against a real database requires
+<p>Writing correct <code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> tests against a real database requires
 boilerplate: each thread needs its own connection, stale connections from a
 previous execution must be closed, and optional lock timeouts must be injected
 before the thread runs. The <code class="docutils literal notranslate"><span class="pre">frontrun.contrib</span></code> package provides ready-made
@@ -635,7 +617,7 @@ wrappers that handle this automatically.</p>
 <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">explanation</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">django_dpor</span></code> wraps <code class="docutils literal notranslate"><span class="pre">explore_dpor</span></code> and:</p>
+<p><code class="docutils literal notranslate"><span class="pre">django_dpor</span></code> wraps <code class="docutils literal notranslate"><span class="pre">frontrun.explore</span></code> and:</p>
 <ul class="simple">
 <li><p>Calls <code class="docutils literal notranslate"><span class="pre">connections.close_all()</span></code> before each execution so threads open
 fresh connections (avoids sharing a stale connection across DPOR replays).</p></li>
@@ -645,7 +627,7 @@ thread so every thread has its own independent connection.</p></li>
 converting C-level row-lock blocking into a fast PostgreSQL error rather than
 a hang.</p></li>
 </ul>
-<p>All extra keyword arguments are forwarded to <code class="docutils literal notranslate"><span class="pre">explore_dpor</span></code>.</p>
+<p>All extra keyword arguments are forwarded to <code class="docutils literal notranslate"><span class="pre">frontrun.explore</span></code>.</p>
 </section>
 <section id="sqlalchemy-dpor">
 <h3><code class="docutils literal notranslate"><span class="pre">sqlalchemy_dpor</span></code><a class="headerlink" href="#sqlalchemy-dpor" title="Link to this heading">¶</a></h3>
@@ -661,7 +643,7 @@ a hang.</p></li>
 <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">explanation</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">sqlalchemy_dpor</span></code> wraps <code class="docutils literal notranslate"><span class="pre">explore_dpor</span></code> and:</p>
+<p><code class="docutils literal notranslate"><span class="pre">sqlalchemy_dpor</span></code> wraps <code class="docutils literal notranslate"><span class="pre">frontrun.explore</span></code> and:</p>
 <ul class="simple">
 <li><p>Calls <code class="docutils literal notranslate"><span class="pre">engine.dispose()</span></code> before each execution to close pooled connections.</p></li>
 <li><p>Opens a fresh <code class="docutils literal notranslate"><span class="pre">engine.connect()</span></code> connection for each thread and stores it
@@ -679,7 +661,7 @@ in a <code class="docutils literal notranslate"><span class="pre">ContextVar</sp
 </pre></div>
 </div>
 <p>Both helpers accept <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> (the default) and all other
-<code class="docutils literal notranslate"><span class="pre">explore_dpor</span></code> keyword arguments.</p>
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore</span></code> keyword arguments.</p>
 </section>
 <section id="async-usage">
 <h3>Async usage<a class="headerlink" href="#async-usage" title="Link to this heading">¶</a></h3>
@@ -720,7 +702,8 @@ then treats each Redis key as an independent resource, the same way it treats
 Python-level attribute accesses.</p>
 <p><strong>Sync usage</strong> (<code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> is the default; no extra parameter needed):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">redis</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_redis_lost_update</span><span class="p">(</span><span class="n">redis_port</span><span class="p">):</span>
     <span class="k">class</span><span class="w"> </span><span class="nc">State</span><span class="p">:</span>
@@ -741,20 +724,21 @@ Python-level attribute accesses.</p>
         <span class="n">r</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
         <span class="k">return</span> <span class="n">result</span> <span class="o">==</span> <span class="mi">2</span>
 
-    <span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">State</span><span class="p">,</span>
-        <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="n">increment</span><span class="p">,</span> <span class="n">increment</span><span class="p">],</span>
+        <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">increment</span><span class="p">,</span> <span class="n">increment</span><span class="p">],</span>
         <span class="n">invariant</span><span class="o">=</span><span class="n">invariant</span><span class="p">,</span>
         <span class="n">detect_io</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>          <span class="c1"># enables Redis key-level patching (default)</span>
     <span class="p">)</span>
     <span class="k">assert</span> <span class="ow">not</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span>   <span class="c1"># race detected!</span>
 </pre></div>
 </div>
-<p><strong>Async usage</strong> (<code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> covers Redis from 0.5):</p>
+<p><strong>Async usage</strong> (<code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> covers Redis):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">redis.asyncio</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">aioredis</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_async_redis_check_then_act</span><span class="p">(</span><span class="n">redis_port</span><span class="p">):</span>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">maybe_init</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
@@ -763,7 +747,7 @@ Python-level attribute accesses.</p>
             <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;resource&quot;</span><span class="p">,</span> <span class="s2">&quot;initialized&quot;</span><span class="p">)</span>
         <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">aclose</span><span class="p">()</span>
 
-    <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">explore</span><span class="p">(</span>
+    <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">workers</span><span class="o">=</span><span class="n">maybe_init</span><span class="p">,</span>
         <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
@@ -796,7 +780,7 @@ key-level semantics.</p></li>
 <p><code class="xref py py-meth docutils literal notranslate"><span class="pre">InterleavingResult.assert_holds()</span></code> is the recommended way to check a DPOR
 result in a test.  It raises <code class="docutils literal notranslate"><span class="pre">AssertionError</span></code> with the full race explanation
 when the invariant failed, and does nothing on success:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span><span class="n">setup</span><span class="p">,</span> <span class="p">[</span><span class="n">thread1</span><span class="p">,</span> <span class="n">thread2</span><span class="p">],</span> <span class="n">invariant</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span><span class="n">setup</span><span class="o">=</span><span class="n">setup</span><span class="p">,</span> <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">thread1</span><span class="p">,</span> <span class="n">thread2</span><span class="p">],</span> <span class="n">invariant</span><span class="o">=</span><span class="n">invariant</span><span class="p">)</span>
 <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>          <span class="c1"># preferred</span>
 <span class="c1"># instead of: assert result.property_holds, result.explanation</span>
 </pre></div>
@@ -890,7 +874,7 @@ when the invariant failed, and does nothing on success:</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
+</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

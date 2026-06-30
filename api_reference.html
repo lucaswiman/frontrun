@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Frontrun Case Studies: Concurrency Bug Detection" href="CASE_STUDIES.html"><link rel="prev" title="How It Works Under the Hood" href="internals.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>API Reference - Frontrun 0.5.0 documentation</title>
+        <title>API Reference - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -255,25 +255,6 @@
 <section id="module-frontrun.common">
 <span id="common-data-structures"></span><h2>Common Data Structures<a class="headerlink" href="#module-frontrun.common" title="Link to this heading">¶</a></h2>
 <p>Shared data structures for frontrun.</p>
-<dl class="py function">
-<dt class="sig sig-object py" id="frontrun.common.deprecate">
-<span class="sig-prename descclassname"><span class="pre">frontrun.common.</span></span><span class="sig-name descname"><span class="pre">deprecate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">message</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/common.html#deprecate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.common.deprecate" title="Link to this definition">¶</a></dt>
-<dd><p>Wrap <em>fn</em> in a <code class="xref py py-class docutils literal notranslate"><span class="pre">DeprecationWarning</span></code>-emitting shim.</p>
-<p>The wrapper is <code class="xref py py-func docutils literal notranslate"><span class="pre">functools.wraps()</span></code>-preserving so <code class="docutils literal notranslate"><span class="pre">help()</span></code> and
-the inspectable signature still reflect <em>fn</em>.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>fn</strong> (<em>_F</em>)</p></li>
-<li><p><strong>message</strong> (<em>str</em>)</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><em>_F</em></p>
-</dd>
-</dl>
-</dd></dl>
-
 <dl class="py function">
 <dt class="sig sig-object py" id="frontrun.common.any_async">
 <span class="sig-prename descclassname"><span class="pre">frontrun.common.</span></span><span class="sig-name descname"><span class="pre">any_async</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fns</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/common.html#any_async"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.common.any_async" title="Link to this definition">¶</a></dt>
@@ -401,9 +382,7 @@ execute which marker in order.</p>
 <span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">frontrun.common.</span></span><span class="sig-name descname"><span class="pre">InterleavingResult</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">property_holds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">counterexample</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_explored</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">unique_interleavings</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">failures</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">explanation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reproduction_attempts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reproduction_successes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sql_anomaly</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">races_detected</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/common.html#InterleavingResult"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.common.InterleavingResult" title="Link to this definition">¶</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
 <p>Result of exploring interleavings.</p>
-<p>Returned by <a class="reference internal" href="#frontrun.bytecode.explore_interleavings" title="frontrun.bytecode.explore_interleavings"><code class="xref py py-func docutils literal notranslate"><span class="pre">explore_interleavings()</span></code></a>,
-<a class="reference internal" href="#frontrun.async_shuffler.explore_interleavings" title="frontrun.async_shuffler.explore_interleavings"><code class="xref py py-func docutils literal notranslate"><span class="pre">explore_interleavings()</span></code></a>, and
-<a class="reference internal" href="#frontrun.dpor.explore_dpor" title="frontrun.dpor.explore_dpor"><code class="xref py py-func docutils literal notranslate"><span class="pre">explore_dpor()</span></code></a>.</p>
+<p>Returned by <a class="reference internal" href="#frontrun.explore" title="frontrun.explore"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code></a>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
@@ -683,115 +662,176 @@ when it returns <code class="docutils literal notranslate"><span class="pre">Non
 </dd></dl>
 
 </section>
-<section id="module-frontrun.dpor">
-<span id="dpor-systematic-exploration"></span><h2>DPOR (Systematic Exploration)<a class="headerlink" href="#module-frontrun.dpor" title="Link to this heading">¶</a></h2>
-<p>Public sync DPOR API and compatibility re-exports.</p>
+<section id="unified-exploration-entry-points">
+<h2>Unified Exploration Entry Points<a class="headerlink" href="#unified-exploration-entry-points" title="Link to this heading">¶</a></h2>
 <dl class="py function">
-<dt class="sig sig-object py" id="frontrun.dpor.explore_dpor">
-<span class="sig-prename descclassname"><span class="pre">frontrun.dpor.</span></span><span class="sig-name descname"><span class="pre">explore_dpor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">setup</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">threads</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">invariant</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_executions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">preemption_bound</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_branches</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout_per_run</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stop_on_first</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detect_io</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deadlock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reproduce_on_failure</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warn_nondeterministic_sql</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_packages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">track_dunder_dict_accesses</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">search</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patch_sleep</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serializable_invariant</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error_on_any_race</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#frontrun.dpor.explore_dpor" title="Link to this definition">¶</a></dt>
-<dd><p>Deprecated alias for the DPOR exploration entry point.</p>
-<div class="deprecated">
-<p><span class="versionmodified deprecated">Deprecated since version 0.5: </span><code class="docutils literal notranslate"><span class="pre">explore_dpor</span></code> will be removed in 0.6. Use <code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code>
-with <code class="docutils literal notranslate"><span class="pre">strategy='dpor'</span></code> (the default) instead.</p>
-</div>
+<dt class="sig sig-object py" id="frontrun.explore">
+<span class="sig-prename descclassname"><span class="pre">frontrun.</span></span><span class="sig-name descname"><span class="pre">explore</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">setup</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">workers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">invariant</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">strategy</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'dpor'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_executions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">preemption_bound</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_branches</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout_per_run</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stop_on_first</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detect_io</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deadlock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reproduce_on_failure</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warn_nondeterministic_sql</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_packages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">track_dunder_dict_accesses</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">search</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patch_sleep</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serializable_invariant</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error_on_any_race</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_attempts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_ops</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">debug</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detect_sql</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/explore.html#explore"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.explore" title="Link to this definition">¶</a></dt>
+<dd><p>Explore thread/task interleavings for concurrency bugs.</p>
+<p>A unified entry point that dispatches to the appropriate underlying
+implementation based on worker type (sync vs async) and strategy.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>setup</strong> (<em>Callable</em><em>[</em><em>[</em><em>]</em><em>, </em><em>T</em><em>]</em>)</p></li>
-<li><p><strong>threads</strong> (<em>list</em><em>[</em><em>Callable</em><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>None</em><em>]</em><em>]</em>)</p></li>
-<li><p><strong>invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>bool</em><em>]</em>)</p></li>
-<li><p><strong>max_executions</strong> (<em>int</em><em> | </em><em>None</em>)</p></li>
-<li><p><strong>preemption_bound</strong> (<em>int</em><em> | </em><em>None</em>)</p></li>
-<li><p><strong>max_branches</strong> (<em>int</em>)</p></li>
-<li><p><strong>timeout_per_run</strong> (<em>float</em>)</p></li>
-<li><p><strong>stop_on_first</strong> (<em>bool</em>)</p></li>
-<li><p><strong>detect_io</strong> (<em>bool</em>)</p></li>
-<li><p><strong>deadlock_timeout</strong> (<em>float</em>)</p></li>
-<li><p><strong>reproduce_on_failure</strong> (<em>int</em>)</p></li>
-<li><p><strong>total_timeout</strong> (<em>float</em><em> | </em><em>None</em>)</p></li>
-<li><p><strong>warn_nondeterministic_sql</strong> (<em>bool</em>)</p></li>
-<li><p><strong>lock_timeout</strong> (<em>int</em><em> | </em><em>None</em>)</p></li>
-<li><p><strong>trace_packages</strong> (<em>list</em><em>[</em><em>str</em><em>] </em><em>| </em><em>None</em>)</p></li>
-<li><p><strong>track_dunder_dict_accesses</strong> (<em>bool</em>)</p></li>
-<li><p><strong>search</strong> (<em>str</em><em> | </em><em>None</em>)</p></li>
-<li><p><strong>patch_sleep</strong> (<em>bool</em>)</p></li>
-<li><p><strong>serializable_invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>Any</em><em>] </em><em>| </em><em>bool</em>)</p></li>
-<li><p><strong>error_on_any_race</strong> (<em>bool</em>)</p></li>
+<li><p><strong>setup</strong> (<em>Callable</em><em>[</em><em>[</em><em>]</em><em>, </em><em>Any</em><em>]</em>) – Creates fresh shared state for each execution.</p></li>
+<li><p><strong>workers</strong> (<em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Any</em><em>] </em><em>| </em><em>list</em><em>[</em><em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Any</em><em>]</em><em>] </em><em>| </em><em>tuple</em><em>[</em><em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Any</em><em>]</em><em>, </em><em>...</em><em>]</em>) – A callable (when <code class="docutils literal notranslate"><span class="pre">count</span></code> is provided) or a list/tuple of
+callables. Sync callables run as threads; async callables (coroutine
+functions) run as asyncio tasks.</p></li>
+<li><p><strong>invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>bool</em><em>]</em>) – Predicate over shared state; must be True after all
+workers complete.</p></li>
+<li><p><strong>count</strong> (<em>int</em><em> | </em><em>None</em>) – When <code class="docutils literal notranslate"><span class="pre">workers</span></code> is a single callable, replicate it this many
+times. Must be positive. Cannot be used when <code class="docutils literal notranslate"><span class="pre">workers</span></code> is a
+list/tuple.</p></li>
+<li><p><strong>strategy</strong> (<em>Literal</em><em>[</em><em>'dpor'</em><em>, </em><em>'random'</em><em>]</em>) – <code class="docutils literal notranslate"><span class="pre">&quot;dpor&quot;</span></code> (default) for systematic DPOR exploration, or
+<code class="docutils literal notranslate"><span class="pre">&quot;random&quot;</span></code> for random schedule sampling.</p></li>
+<li><p><strong>max_executions</strong> (<em>int</em><em> | </em><em>None</em>) – Safety limit on total executions (DPOR only).</p></li>
+<li><p><strong>preemption_bound</strong> (<em>int</em><em> | </em><em>None</em>) – Limit on preemptions per execution (DPOR only).</p></li>
+<li><p><strong>max_branches</strong> (<em>int</em>) – Maximum scheduling points per execution (DPOR only).</p></li>
+<li><p><strong>timeout_per_run</strong> (<em>float</em>) – Timeout for each individual run.</p></li>
+<li><p><strong>stop_on_first</strong> (<em>bool</em>) – Stop on first invariant violation (DPOR only).</p></li>
+<li><p><strong>detect_io</strong> (<em>bool</em>) – Detect socket/file I/O operations as resource accesses.
+For async DPOR, also activates Redis key-level patching.</p></li>
+<li><p><strong>deadlock_timeout</strong> (<em>float</em>) – Seconds to wait before declaring a deadlock.</p></li>
+<li><p><strong>reproduce_on_failure</strong> (<em>int</em>) – Replay counterexample this many times.</p></li>
+<li><p><strong>total_timeout</strong> (<em>float</em><em> | </em><em>None</em>) – Maximum total exploration time in seconds.</p></li>
+<li><p><strong>warn_nondeterministic_sql</strong> (<em>bool</em>) – Raise on nondeterministic SQL INSERT.</p></li>
+<li><p><strong>lock_timeout</strong> (<em>int</em><em> | </em><em>None</em>) – Auto-set PostgreSQL lock_timeout (milliseconds).</p></li>
+<li><p><strong>trace_packages</strong> (<em>list</em><em>[</em><em>str</em><em>] </em><em>| </em><em>None</em>) – Package patterns to trace in addition to user code.</p></li>
+<li><p><strong>track_dunder_dict_accesses</strong> (<em>bool</em>) – Report <code class="docutils literal notranslate"><span class="pre">obj.__dict__</span></code> accesses (DPOR).</p></li>
+<li><p><strong>search</strong> (<em>str</em><em> | </em><em>None</em>) – Wakeup-tree traversal strategy (DPOR only).</p></li>
+<li><p><strong>patch_sleep</strong> (<em>bool</em>) – Replace <code class="docutils literal notranslate"><span class="pre">time.sleep</span></code> / <code class="docutils literal notranslate"><span class="pre">asyncio.sleep</span></code> with no-op.</p></li>
+<li><p><strong>serializable_invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Any</em><em>] </em><em>| </em><em>bool</em>) – Check serializability against sequential runs.</p></li>
+<li><p><strong>error_on_any_race</strong> (<em>bool</em>) – Treat unsynchronized races as failures (DPOR only).</p></li>
+<li><p><strong>max_attempts</strong> (<em>int</em>) – Random schedule samples to try (random strategy only).</p></li>
+<li><p><strong>max_ops</strong> (<em>int</em><em> | </em><em>None</em>) – Maximum schedule length per attempt (random strategy only).</p></li>
+<li><p><strong>seed</strong> (<em>int</em><em> | </em><em>None</em>) – RNG seed for reproducibility (random strategy only).</p></li>
+<li><p><strong>debug</strong> (<em>bool</em>) – Enable debug output (random strategy only).</p></li>
+<li><p><strong>detect_sql</strong> (<em>bool</em>) – Patch async SQL drivers (async DPOR only).</p></li>
 </ul>
 </dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference internal" href="#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><code class="xref py py-class docutils literal notranslate"><span class="pre">InterleavingResult</span></code></a> (sync) or a coroutine
+that resolves to one (async workers).</p>
+</dd>
+<dt class="field-odd">Raises<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>ValueError</strong> – If <code class="docutils literal notranslate"><span class="pre">count</span></code> and a list of workers are both provided,
+    <code class="docutils literal notranslate"><span class="pre">count</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code>, or <code class="docutils literal notranslate"><span class="pre">strategy</span></code> is unrecognised.</p>
+</dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference internal" href="#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><em>InterleavingResult</em></a></p>
+<dd class="field-even"><p><em>Any</em></p>
 </dd>
 </dl>
 </dd></dl>
 
-</section>
-<section id="module-frontrun.bytecode">
-<span id="bytecode-instrumentation"></span><h2>Bytecode Instrumentation<a class="headerlink" href="#module-frontrun.bytecode" title="Link to this heading">¶</a></h2>
-<p>Bytecode-level deterministic concurrency testing.</p>
-<p>Uses sys.settrace with f_trace_opcodes to intercept execution at every
-bytecode instruction, enabling fine-grained control over thread interleaving.</p>
-<p>This pairs naturally with property-based testing: rather than specifying exact
-schedules, generate random interleavings and check that invariants hold (or
-that bugs can be found).</p>
-<p>The core insight: CPython context switches happen between bytecode instructions.
-By controlling which thread gets to execute each instruction, we can explore a
-broad range of possible interleavings.  Schedules use variable-length per-thread
-bursts (see <code class="xref py py-mod docutils literal notranslate"><span class="pre">frontrun._random_schedules</span></code>) so that two threads can drift
-more than one opcode apart — this reaches races that require one thread to run
-several opcodes inside a narrow window of another.  Random exploration is a
-<em>sampler</em>, not an exhaustive enumeration (use the DPOR strategy for systematic
-coverage).</p>
-<p>Example — find a race condition with random schedule exploration:</p>
-<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.bytecode</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_interleavings</span>
-<span class="gp">&gt;&gt;&gt;</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">:</span>
-<span class="gp">... </span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<span class="gp">... </span>        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="mi">0</span>
-<span class="gp">... </span>    <span class="k">def</span><span class="w"> </span><span class="nf">increment</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<span class="gp">... </span>        <span class="n">temp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
-<span class="gp">... </span>        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>
-<span class="gp">&gt;&gt;&gt;</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span> <span class="o">=</span> <span class="n">explore_interleavings</span><span class="p">(</span>
-<span class="gp">... </span>    <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">Counter</span><span class="p">(),</span>
-<span class="gp">... </span>    <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
-<span class="gp">... </span>    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
-<span class="gp">... </span><span class="p">)</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">explanation</span>  <span class="c1"># fails — lost update!</span>
-</pre></div>
-</div>
 <dl class="py function">
-<dt class="sig sig-object py" id="frontrun.bytecode.explore_interleavings">
-<span class="sig-prename descclassname"><span class="pre">frontrun.bytecode.</span></span><span class="sig-name descname"><span class="pre">explore_interleavings</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">setup</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">threads</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">invariant</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_attempts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_ops</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">300</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout_per_run</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">debug</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detect_io</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deadlock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reproduce_on_failure</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warn_nondeterministic_sql</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_packages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patch_sleep</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serializable_invariant</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error_on_any_race</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#frontrun.bytecode.explore_interleavings" title="Link to this definition">¶</a></dt>
-<dd><p>Deprecated alias for <code class="xref py py-func docutils literal notranslate"><span class="pre">explore_random()</span></code>.</p>
-<div class="deprecated">
-<p><span class="versionmodified deprecated">Deprecated since version 0.5: </span><code class="docutils literal notranslate"><span class="pre">explore_interleavings</span></code> will be removed in 0.6. Use
-<code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> with <code class="docutils literal notranslate"><span class="pre">strategy='random'</span></code> instead.</p>
+<dt class="sig sig-object py" id="frontrun.explore_random">
+<span class="sig-prename descclassname"><span class="pre">frontrun.</span></span><span class="sig-name descname"><span class="pre">explore_random</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">setup</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">threads</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">invariant</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_attempts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_ops</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">300</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout_per_run</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">debug</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detect_io</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deadlock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reproduce_on_failure</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warn_nondeterministic_sql</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_packages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patch_sleep</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serializable_invariant</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error_on_any_race</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/bytecode.html#explore_random"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.explore_random" title="Link to this definition">¶</a></dt>
+<dd><p>Search for interleavings that violate an invariant.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>When running under <strong>pytest</strong>, this function requires the
+<code class="docutils literal notranslate"><span class="pre">frontrun</span></code> CLI wrapper (<code class="docutils literal notranslate"><span class="pre">frontrun</span> <span class="pre">pytest</span> <span class="pre">...</span></code>) or the
+<code class="docutils literal notranslate"><span class="pre">--frontrun-patch-locks</span></code> flag.  Without it, the test is
+automatically skipped.</p>
 </div>
+<p>Generates random opcode-level schedules and tests whether the invariant
+holds under each one. If a violation is found, returns immediately with
+the counterexample schedule.</p>
+<p>This is the bytecode-level analogue of property-based testing: instead
+of generating random <em>inputs</em>, we generate random <em>interleavings</em> and
+check that the result satisfies an invariant.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>setup</strong> (<em>Callable</em><em>[</em><em>[</em><em>]</em><em>, </em><em>T</em><em>]</em>)</p></li>
-<li><p><strong>threads</strong> (<em>list</em><em>[</em><em>Callable</em><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>None</em><em>]</em><em>]</em>)</p></li>
-<li><p><strong>invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>bool</em><em>]</em>)</p></li>
-<li><p><strong>max_attempts</strong> (<em>int</em>)</p></li>
-<li><p><strong>max_ops</strong> (<em>int</em>)</p></li>
-<li><p><strong>timeout_per_run</strong> (<em>float</em>)</p></li>
-<li><p><strong>seed</strong> (<em>int</em><em> | </em><em>None</em>)</p></li>
+<li><p><strong>setup</strong> (<em>Callable</em><em>[</em><em>[</em><em>]</em><em>, </em><em>T</em><em>]</em>) – Returns fresh shared state for each attempt.</p></li>
+<li><p><strong>threads</strong> (<em>list</em><em>[</em><em>Callable</em><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>None</em><em>]</em><em>]</em>) – Callables that each receive the state as their argument.</p></li>
+<li><p><strong>invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>bool</em><em>]</em>) – Predicate on the state. Returns True if the property holds.</p></li>
+<li><p><strong>max_attempts</strong> (<em>int</em>) – How many random interleavings to try.</p></li>
+<li><p><strong>max_ops</strong> (<em>int</em>) – Maximum schedule length per attempt.</p></li>
+<li><p><strong>timeout_per_run</strong> (<em>float</em>) – Timeout for each individual run.</p></li>
+<li><p><strong>seed</strong> (<em>int</em><em> | </em><em>None</em>) – Optional RNG seed for reproducibility.</p></li>
+<li><p><strong>detect_io</strong> (<em>bool</em>) – Automatically detect socket/file I/O and treat them
+as scheduling points (default True).</p></li>
+<li><p><strong>deadlock_timeout</strong> (<em>float</em>) – Seconds to wait before declaring a deadlock
+(default 5.0).  Increase for code that legitimately blocks
+in C extensions (NumPy, database queries, network I/O).</p></li>
+<li><p><strong>reproduce_on_failure</strong> (<em>int</em>) – When a counterexample is found, replay the
+same schedule this many times to measure reproducibility
+(default 10).  Set to 0 to skip reproduction testing.</p></li>
+<li><p><strong>total_timeout</strong> (<em>float</em><em> | </em><em>None</em>) – Maximum total time in seconds for the entire
+exploration (default None = unlimited).  When exceeded, returns
+results gathered so far.</p></li>
+<li><p><strong>warn_nondeterministic_sql</strong> (<em>bool</em>) – If True (default), raise
+<a class="reference internal" href="#frontrun.common.NondeterministicSQLError" title="frontrun.common.NondeterministicSQLError"><code class="xref py py-class docutils literal notranslate"><span class="pre">NondeterministicSQLError</span></code></a> when SQL
+INSERT statements are detected but <code class="docutils literal notranslate"><span class="pre">lastrowid</span></code> capture
+failed (e.g. psycopg2 without RETURNING).  Set to False to
+suppress.  When capture succeeds, INSERTs use stable
+indexical resource IDs automatically.</p></li>
+<li><p><strong>trace_packages</strong> (<em>list</em><em>[</em><em>str</em><em>] </em><em>| </em><em>None</em>) – List of package name patterns (fnmatch syntax) to
+trace in addition to user code.  By default, code in
+site-packages is skipped.  Use this to include specific
+installed packages, e.g. <code class="docutils literal notranslate"><span class="pre">[&quot;django_*&quot;,</span> <span class="pre">&quot;mylib.*&quot;]</span></code>.</p></li>
 <li><p><strong>debug</strong> (<em>bool</em>)</p></li>
-<li><p><strong>detect_io</strong> (<em>bool</em>)</p></li>
-<li><p><strong>deadlock_timeout</strong> (<em>float</em>)</p></li>
-<li><p><strong>reproduce_on_failure</strong> (<em>int</em>)</p></li>
-<li><p><strong>total_timeout</strong> (<em>float</em><em> | </em><em>None</em>)</p></li>
-<li><p><strong>warn_nondeterministic_sql</strong> (<em>bool</em>)</p></li>
-<li><p><strong>trace_packages</strong> (<em>list</em><em>[</em><em>str</em><em>] </em><em>| </em><em>None</em>)</p></li>
 <li><p><strong>patch_sleep</strong> (<em>bool</em>)</p></li>
 <li><p><strong>serializable_invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>Any</em><em>] </em><em>| </em><em>bool</em>)</p></li>
 <li><p><strong>error_on_any_race</strong> (<em>bool</em>)</p></li>
 </ul>
 </dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference internal" href="#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><em>InterleavingResult</em></a></p>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>InterleavingResult with the outcome.  The <code class="docutils literal notranslate"><span class="pre">unique_interleavings</span></code>
+field reports how many distinct execution orderings were observed,
+providing a lower bound on exploration coverage.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><em>InterleavingResult</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="frontrun.explore_async_random">
+<span class="property"><span class="k"><span class="pre">async</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">frontrun.</span></span><span class="sig-name descname"><span class="pre">explore_async_random</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">setup</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tasks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">invariant</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_attempts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_ops</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout_per_run</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deadlock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detect_sql</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_packages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patch_sleep</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serializable_invariant</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error_on_any_race</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/async_shuffler.html#explore_async_random"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.explore_async_random" title="Link to this definition">¶</a></dt>
+<dd><p>Search for async interleavings that violate an invariant.</p>
+<p>Generates random await-point-level schedules and tests whether the
+invariant holds under each one. If a violation is found, returns
+immediately with the counterexample schedule.</p>
+<p>This is the async analogue of property-based testing for concurrency:
+instead of generating random <em>inputs</em>, we generate random <em>interleavings</em>
+and check that the result satisfies an invariant.</p>
+<p>Note: max_ops defaults to 100 (vs 300 for bytecode.py) because async
+code has far fewer interleaving points than threaded bytecode execution.
+Each await_point() call represents a much coarser-grained checkpoint.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>setup</strong> (<em>Callable</em><em>[</em><em>[</em><em>]</em><em>, </em><em>Any</em><em>]</em>) – Returns fresh shared state for each attempt.</p></li>
+<li><p><strong>tasks</strong> (<em>list</em><em>[</em><em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Coroutine</em><em>[</em><em>Any</em><em>, </em><em>Any</em><em>, </em><em>None</em><em>]</em><em>]</em><em>]</em>) – Async callables that each receive the state as their argument.</p></li>
+<li><p><strong>invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>bool</em><em>]</em>) – Predicate on the state. Returns True if the property holds.</p></li>
+<li><p><strong>max_attempts</strong> (<em>int</em>) – How many random interleavings to try.</p></li>
+<li><p><strong>max_ops</strong> (<em>int</em>) – Maximum schedule length per attempt.</p></li>
+<li><p><strong>timeout_per_run</strong> (<em>float</em>) – Timeout for each individual run.</p></li>
+<li><p><strong>seed</strong> (<em>int</em><em> | </em><em>None</em>) – Optional RNG seed for reproducibility.</p></li>
+<li><p><strong>deadlock_timeout</strong> (<em>float</em>) – Seconds to wait before declaring a deadlock
+(default 5.0).  Increase for code that legitimately blocks
+in C extensions (NumPy, database queries, network I/O).</p></li>
+<li><p><strong>detect_sql</strong> (<em>bool</em>) – If <code class="docutils literal notranslate"><span class="pre">True</span></code>, patch async DBAPI drivers (aiosqlite,
+psycopg AsyncCursor, aiomysql, asyncpg) to intercept SQL
+and report table-level conflicts.</p></li>
+<li><p><strong>trace_packages</strong> (<em>list</em><em>[</em><em>str</em><em>] </em><em>| </em><em>None</em>) – Accepted for API compatibility but not used.
+The async shuffler operates at await-point granularity and
+does not perform file-level tracing.</p></li>
+<li><p><strong>patch_sleep</strong> (<em>bool</em>)</p></li>
+<li><p><strong>serializable_invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Any</em><em>] </em><em>| </em><em>bool</em>)</p></li>
+<li><p><strong>error_on_any_race</strong> (<em>bool</em>)</p></li>
+<li><p><strong>total_timeout</strong> (<em>float</em><em> | </em><em>None</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>InterleavingResult with the outcome.  The <code class="docutils literal notranslate"><span class="pre">unique_interleavings</span></code>
+field reports how many distinct schedule orderings were observed.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><em>InterleavingResult</em></a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -819,9 +859,7 @@ Step(“thread2”, “write”),</p>
 </dl>
 <p>])</p>
 <p>executor = TraceExecutor(schedule)
-executor.run(“thread1”, worker_function)
-executor.run(“thread2”, worker_function)
-executor.wait()
+executor.run({“thread1”: worker_function, “thread2”: worker_function})
 <a href="#id15"><span class="problematic" id="id16">``</span></a><a href="#id17"><span class="problematic" id="id18">`</span></a></p>
 </dd>
 </dl>
@@ -933,14 +971,13 @@ calling this method.</p>
 <span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">frontrun.trace_markers.</span></span><span class="sig-name descname"><span class="pre">TraceExecutor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schedule</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">deadlock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/trace_markers.html#TraceExecutor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.trace_markers.TraceExecutor" title="Link to this definition">¶</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
 <p>Facade over sync and async marker-based schedule execution.</p>
-<p>Sync usage matches the historical <code class="docutils literal notranslate"><span class="pre">TraceExecutor</span></code> API:</p>
+<p>Pass a dict mapping thread/task names to zero-argument callables (sync
+or async).  <code class="docutils literal notranslate"><span class="pre">run</span></code> starts every worker and waits for them in one call:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;t1&quot;</span><span class="p">,</span> <span class="n">worker1</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;t2&quot;</span><span class="p">,</span> <span class="n">worker2</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="n">worker1</span><span class="p">,</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="n">worker2</span><span class="p">})</span>
 </pre></div>
 </div>
-<p>Async usage accepts the async-task mapping directly:</p>
+<p>Async usage accepts the async-task mapping the same way:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
 <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">&quot;task1&quot;</span><span class="p">:</span> <span class="n">coro1</span><span class="p">,</span> <span class="s2">&quot;task2&quot;</span><span class="p">:</span> <span class="n">coro2</span><span class="p">})</span>
 </pre></div>
@@ -955,31 +992,19 @@ calling this method.</p>
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="frontrun.trace_markers.TraceExecutor.run">
-<span class="sig-name descname"><span class="pre">run</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">execution_name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">args</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kwargs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/trace_markers.html#TraceExecutor.run"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.trace_markers.TraceExecutor.run" title="Link to this definition">¶</a></dt>
-<dd><p>Run one or more threads under schedule control.</p>
-<p><strong>New (preferred) form</strong> — pass a dict mapping thread names to callables.
-This starts all threads and waits for them in a single call:</p>
+<span class="sig-name descname"><span class="pre">run</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tasks</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/trace_markers.html#TraceExecutor.run"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.trace_markers.TraceExecutor.run" title="Link to this definition">¶</a></dt>
+<dd><p>Run all named workers under schedule control and wait for completion.</p>
+<p>Pass a dict mapping thread/task names to zero-argument callables.
+<code class="docutils literal notranslate"><span class="pre">run</span></code> starts every worker and joins them in a single call:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">&quot;thread1&quot;</span><span class="p">:</span> <span class="n">fn1</span><span class="p">,</span> <span class="s2">&quot;thread2&quot;</span><span class="p">:</span> <span class="n">fn2</span><span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
 </pre></div>
 </div>
-<p><strong>Legacy form</strong> — pass a name and a callable separately.
-The caller must then call <a class="reference internal" href="#frontrun.trace_markers.TraceExecutor.wait" title="frontrun.trace_markers.TraceExecutor.wait"><code class="xref py py-meth docutils literal notranslate"><span class="pre">wait()</span></code></a> explicitly.
-This form is <em>deprecated</em> and will be removed in 0.6:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;thread1&quot;</span><span class="p">,</span> <span class="n">fn1</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;thread2&quot;</span><span class="p">,</span> <span class="n">fn2</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
-</pre></div>
-</div>
+<p>Async coroutines in the dict are dispatched to the async executor.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>execution_name</strong> (<em>str</em><em> | </em><em>dict</em><em>[</em><em>str</em><em>, </em><em>Callable</em><em>[</em><em>[</em><em>...</em><em>]</em><em>, </em><em>Any</em><em>]</em><em>]</em>) – Either a <code class="docutils literal notranslate"><span class="pre">{name:</span> <span class="pre">callable}</span></code> dict (new form) or a
-string thread name (deprecated legacy form).</p></li>
-<li><p><strong>target</strong> (<em>Callable</em><em>[</em><em>[</em><em>...</em><em>]</em><em>, </em><em>None</em><em>] </em><em>| </em><em>None</em>) – Target callable for the legacy individual-call form.</p></li>
-<li><p><strong>args</strong> (<em>tuple</em><em>[</em><em>Any</em><em>, </em><em>...</em><em>]</em>) – Positional arguments forwarded to <em>target</em> (legacy form only).</p></li>
-<li><p><strong>kwargs</strong> (<em>dict</em><em>[</em><em>str</em><em>, </em><em>Any</em><em>] </em><em>| </em><em>None</em>) – Keyword arguments forwarded to <em>target</em> (legacy form only).</p></li>
-<li><p><strong>timeout</strong> (<em>float</em><em> | </em><em>None</em>) – Total wait timeout in seconds (dict form only; for the
-legacy form pass <em>timeout</em> to <a class="reference internal" href="#frontrun.trace_markers.TraceExecutor.wait" title="frontrun.trace_markers.TraceExecutor.wait"><code class="xref py py-meth docutils literal notranslate"><span class="pre">wait()</span></code></a> instead).</p></li>
+<li><p><strong>tasks</strong> (<em>dict</em><em>[</em><em>str</em><em>, </em><em>Callable</em><em>[</em><em>[</em><em>...</em><em>]</em><em>, </em><em>Any</em><em>]</em><em>]</em>) – Mapping of execution-unit name to a zero-argument callable.</p></li>
+<li><p><strong>timeout</strong> (<em>float</em><em> | </em><em>None</em>) – Total wait timeout in seconds.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
@@ -1482,7 +1507,7 @@ at each await point, we can explore the full space of possible interleavings —
 and there are far fewer of them than in threaded code.</p>
 <p>Example — find a race condition with random schedule exploration:</p>
 <div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_interleavings</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 <span class="gp">&gt;&gt;&gt;</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">:</span>
 <span class="gp">... </span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -1492,7 +1517,7 @@ and there are far fewer of them than in threaded code.</p>
 <span class="gp">... </span>        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>  <span class="c1"># any natural await is a scheduling point</span>
 <span class="gp">... </span>        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>
 <span class="gp">&gt;&gt;&gt;</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">explore_interleavings</span><span class="p">(</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">frontrun</span><span class="o">.</span><span class="n">explore_async_random</span><span class="p">(</span>
 <span class="gp">... </span>    <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">Counter</span><span class="p">(),</span>
 <span class="gp">... </span>    <span class="n">tasks</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
 <span class="gp">... </span>    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
@@ -1769,40 +1794,6 @@ field reports how many distinct schedule orderings were observed.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p><a class="reference internal" href="#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><em>InterleavingResult</em></a></p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py function">
-<dt class="sig sig-object py" id="frontrun.async_shuffler.explore_interleavings">
-<span class="sig-prename descclassname"><span class="pre">frontrun.async_shuffler.</span></span><span class="sig-name descname"><span class="pre">explore_interleavings</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">setup</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tasks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">invariant</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_attempts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_ops</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout_per_run</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">deadlock_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detect_sql</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_packages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patch_sleep</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serializable_invariant</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error_on_any_race</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#frontrun.async_shuffler.explore_interleavings" title="Link to this definition">¶</a></dt>
-<dd><p>Deprecated alias for <a class="reference internal" href="#frontrun.async_shuffler.explore_async_random" title="frontrun.async_shuffler.explore_async_random"><code class="xref py py-func docutils literal notranslate"><span class="pre">explore_async_random()</span></code></a>.</p>
-<div class="deprecated">
-<p><span class="versionmodified deprecated">Deprecated since version 0.5: </span><code class="docutils literal notranslate"><span class="pre">explore_interleavings</span></code> (async form) will be removed in 0.6. Use
-<code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> with <code class="docutils literal notranslate"><span class="pre">strategy='random'</span></code> and async worker
-functions instead.</p>
-</div>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>setup</strong> (<em>Callable</em><em>[</em><em>[</em><em>]</em><em>, </em><em>Any</em><em>]</em>)</p></li>
-<li><p><strong>tasks</strong> (<em>list</em><em>[</em><em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Coroutine</em><em>[</em><em>Any</em><em>, </em><em>Any</em><em>, </em><em>None</em><em>]</em><em>]</em><em>]</em>)</p></li>
-<li><p><strong>invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>bool</em><em>]</em>)</p></li>
-<li><p><strong>max_attempts</strong> (<em>int</em>)</p></li>
-<li><p><strong>max_ops</strong> (<em>int</em>)</p></li>
-<li><p><strong>timeout_per_run</strong> (<em>float</em>)</p></li>
-<li><p><strong>seed</strong> (<em>int</em><em> | </em><em>None</em>)</p></li>
-<li><p><strong>deadlock_timeout</strong> (<em>float</em>)</p></li>
-<li><p><strong>detect_sql</strong> (<em>bool</em>)</p></li>
-<li><p><strong>trace_packages</strong> (<em>list</em><em>[</em><em>str</em><em>] </em><em>| </em><em>None</em>)</p></li>
-<li><p><strong>patch_sleep</strong> (<em>bool</em>)</p></li>
-<li><p><strong>serializable_invariant</strong> (<em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Any</em><em>] </em><em>| </em><em>bool</em>)</p></li>
-<li><p><strong>error_on_any_race</strong> (<em>bool</em>)</p></li>
-<li><p><strong>total_timeout</strong> (<em>float</em><em> | </em><em>None</em>)</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference internal" href="#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><em>InterleavingResult</em></a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -2479,7 +2470,7 @@ task’s connection.</p></li>
 <li><p><strong>trace_packages</strong> (<em>list</em><em>[</em><em>str</em><em>] </em><em>| </em><em>None</em>) – Package name patterns (fnmatch syntax) to trace.
 Defaults to <code class="xref py py-data docutils literal notranslate"><span class="pre">DJANGO_TRACE_PACKAGES</span></code>.
 Pass <code class="docutils literal notranslate"><span class="pre">[]</span></code> to disable extra tracing beyond user code.</p></li>
-<li><p><strong>**kwargs</strong> (<em>Any</em>) – Forwarded verbatim to <code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code>.</p></li>
+<li><p><strong>**kwargs</strong> (<em>Any</em>) – Forwarded verbatim to <a class="reference internal" href="#frontrun.explore" title="frontrun.explore"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code></a>.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
@@ -2545,7 +2536,7 @@ Use <a class="reference internal" href="#frontrun.contrib.sqlalchemy.get_async_c
 <li><p><strong>lock_timeout</strong> (<em>int</em><em> | </em><em>None</em>) – If set, execute <code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">lock_timeout</span> <span class="pre">=</span> <span class="pre">&lt;N&gt;ms</span></code> on each
 task’s connection.</p></li>
 <li><p><strong>detect_sql</strong> (<em>bool</em>) – Passed through to the async DPOR engine (default True).</p></li>
-<li><p><strong>**kwargs</strong> (<em>Any</em>) – Forwarded verbatim to <code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code>.</p></li>
+<li><p><strong>**kwargs</strong> (<em>Any</em>) – Forwarded verbatim to <a class="reference internal" href="#frontrun.explore" title="frontrun.explore"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code></a>.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
@@ -2655,7 +2646,6 @@ The async form returns an awaitable.</p>
             <ul>
 <li><a class="reference internal" href="#">API Reference</a><ul>
 <li><a class="reference internal" href="#module-frontrun.common">Common Data Structures</a><ul>
-<li><a class="reference internal" href="#frontrun.common.deprecate"><code class="docutils literal notranslate"><span class="pre">deprecate()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.common.any_async"><code class="docutils literal notranslate"><span class="pre">any_async()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.common.check_invariant"><code class="docutils literal notranslate"><span class="pre">check_invariant()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.common.NondeterministicSQLError"><code class="docutils literal notranslate"><span class="pre">NondeterministicSQLError</span></code></a></li>
@@ -2699,12 +2689,10 @@ The async form returns an awaitable.</p>
 <li><a class="reference internal" href="#frontrun.common.check_serializability_violation"><code class="docutils literal notranslate"><span class="pre">check_serializability_violation()</span></code></a></li>
 </ul>
 </li>
-<li><a class="reference internal" href="#module-frontrun.dpor">DPOR (Systematic Exploration)</a><ul>
-<li><a class="reference internal" href="#frontrun.dpor.explore_dpor"><code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code></a></li>
-</ul>
-</li>
-<li><a class="reference internal" href="#module-frontrun.bytecode">Bytecode Instrumentation</a><ul>
-<li><a class="reference internal" href="#frontrun.bytecode.explore_interleavings"><code class="docutils literal notranslate"><span class="pre">explore_interleavings()</span></code></a></li>
+<li><a class="reference internal" href="#unified-exploration-entry-points">Unified Exploration Entry Points</a><ul>
+<li><a class="reference internal" href="#frontrun.explore"><code class="docutils literal notranslate"><span class="pre">explore()</span></code></a></li>
+<li><a class="reference internal" href="#frontrun.explore_random"><code class="docutils literal notranslate"><span class="pre">explore_random()</span></code></a></li>
+<li><a class="reference internal" href="#frontrun.explore_async_random"><code class="docutils literal notranslate"><span class="pre">explore_async_random()</span></code></a></li>
 </ul>
 </li>
 <li><a class="reference internal" href="#module-frontrun.trace_markers">Trace Markers</a><ul>
@@ -2772,7 +2760,6 @@ The async form returns an awaitable.</p>
 <li><a class="reference internal" href="#frontrun.async_shuffler.controlled_interleaving"><code class="docutils literal notranslate"><span class="pre">controlled_interleaving()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.async_shuffler.run_with_schedule"><code class="docutils literal notranslate"><span class="pre">run_with_schedule()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.async_shuffler.explore_async_random"><code class="docutils literal notranslate"><span class="pre">explore_async_random()</span></code></a></li>
-<li><a class="reference internal" href="#frontrun.async_shuffler.explore_interleavings"><code class="docutils literal notranslate"><span class="pre">explore_interleavings()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.async_shuffler.schedule_strategy"><code class="docutils literal notranslate"><span class="pre">schedule_strategy()</span></code></a></li>
 </ul>
 </li>
@@ -2863,7 +2850,7 @@ The async form returns an awaitable.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
+</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

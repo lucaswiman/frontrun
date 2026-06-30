@@ -10,22 +10,14 @@ Common Data Structures
    :show-inheritance:
 
 
-DPOR (Systematic Exploration)
-------------------------------
+Unified Exploration Entry Points
+---------------------------------
 
-.. automodule:: frontrun.dpor
-   :members: explore_dpor
-   :undoc-members:
-   :show-inheritance:
+.. autofunction:: frontrun.explore
 
+.. autofunction:: frontrun.explore_random
 
-Bytecode Instrumentation
--------------------------
-
-.. automodule:: frontrun.bytecode
-   :members: explore_interleavings
-   :undoc-members:
-   :show-inheritance:
+.. autofunction:: frontrun.explore_async_random
 
 
 Trace Markers

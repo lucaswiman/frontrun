@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.bytecode - Frontrun 0.4.1 documentation</title>
+        <title>frontrun.bytecode - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.4.1 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.4.1 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -251,12 +251,17 @@
 <span class="sd">that bugs can be found).</span>
 
 <span class="sd">The core insight: CPython context switches happen between bytecode instructions.</span>
-<span class="sd">By controlling which thread gets to execute each instruction, we can explore</span>
-<span class="sd">the full space of possible interleavings.</span>
+<span class="sd">By controlling which thread gets to execute each instruction, we can explore a</span>
+<span class="sd">broad range of possible interleavings.  Schedules use variable-length per-thread</span>
+<span class="sd">bursts (see :mod:`frontrun._random_schedules`) so that two threads can drift</span>
+<span class="sd">more than one opcode apart — this reaches races that require one thread to run</span>
+<span class="sd">several opcodes inside a narrow window of another.  Random exploration is a</span>
+<span class="sd">*sampler*, not an exhaustive enumeration (use the DPOR strategy for systematic</span>
+<span class="sd">coverage).</span>
 
 <span class="sd">Example — find a race condition with random schedule exploration:</span>
 
-<span class="sd">    &gt;&gt;&gt; from frontrun.bytecode import explore_interleavings</span>
+<span class="sd">    &gt;&gt;&gt; import frontrun</span>
 <span class="sd">    &gt;&gt;&gt;</span>
 <span class="sd">    &gt;&gt;&gt; class Counter:</span>
 <span class="sd">    ...     def __init__(self):</span>
@@ -265,7 +270,7 @@
 <span class="sd">    ...         temp = self.value</span>
 <span class="sd">    ...         self.value = temp + 1</span>
 <span class="sd">    &gt;&gt;&gt;</span>
-<span class="sd">    &gt;&gt;&gt; result = explore_interleavings(</span>
+<span class="sd">    &gt;&gt;&gt; result = frontrun.explore_random(</span>
 <span class="sd">    ...     setup=lambda: Counter(),</span>
 <span class="sd">    ...     threads=[lambda c: c.increment(), lambda c: c.increment()],</span>
 <span class="sd">    ...     invariant=lambda c: c.value == 2,</span>
@@ -284,10 +289,12 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._cooperative</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">clear_context</span><span class="p">,</span>
     <span class="n">patch_locks</span><span class="p">,</span>
+    <span class="n">patch_sleep</span><span class="p">,</span>
     <span class="n">real_condition</span><span class="p">,</span>
     <span class="n">real_lock</span><span class="p">,</span>
     <span class="n">set_context</span><span class="p">,</span>
     <span class="n">unpatch_locks</span><span class="p">,</span>
+    <span class="n">unpatch_sleep</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._deadlock</span><span class="w"> </span><span class="kn">import</span> <span class="n">DeadlockError</span><span class="p">,</span> <span class="n">SchedulerAbort</span><span class="p">,</span> <span class="n">install_wait_for_graph</span><span class="p">,</span> <span class="n">uninstall_wait_for_graph</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._io_detection</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
@@ -297,25 +304,34 @@
     <span class="n">set_io_reporter</span><span class="p">,</span>
     <span class="n">unpatch_io</span><span class="p">,</span>
 <span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._opcode_observer</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">OpcodeTraceHandle</span><span class="p">,</span>
+    <span class="n">install_thread_opcode_trace</span><span class="p">,</span>
+    <span class="n">start_opcode_trace</span><span class="p">,</span>
+    <span class="n">stop_opcode_trace</span><span class="p">,</span>
+    <span class="n">uninstall_thread_opcode_trace</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._random_schedules</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">burst_round</span><span class="p">,</span>
+    <span class="n">fair_schedule_strategy</span><span class="p">,</span>
+    <span class="n">random_round_robin_schedule</span><span class="p">,</span>
+<span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._sql_cursor</span><span class="w"> </span><span class="kn">import</span> <span class="n">patch_sql</span><span class="p">,</span> <span class="n">unpatch_sql</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._sql_insert_tracker</span><span class="w"> </span><span class="kn">import</span> <span class="n">check_uncaptured_inserts</span><span class="p">,</span> <span class="n">clear_insert_tracker</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._threaded_runner</span><span class="w"> </span><span class="kn">import</span> <span class="n">PatchScope</span><span class="p">,</span> <span class="n">notify_scheduler_timeout</span><span class="p">,</span> <span class="n">run_thread_group</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._trace_format</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceRecorder</span><span class="p">,</span> <span class="n">build_call_chain</span><span class="p">,</span> <span class="n">format_trace</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceFilter</span> <span class="k">as</span> <span class="n">_TraceFilter</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">is_cmdline_user_code</span> <span class="k">as</span> <span class="n">_is_cmdline_user_code</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">is_dynamic_code</span> <span class="k">as</span> <span class="n">_is_dynamic_code</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">set_active_trace_filter</span> <span class="k">as</span> <span class="n">_set_active_trace_filter</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">should_trace_file</span> <span class="k">as</span> <span class="n">_should_trace_file</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.cli</span><span class="w"> </span><span class="kn">import</span> <span class="n">require_active</span> <span class="k">as</span> <span class="n">_require_frontrun_env</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">InterleavingResult</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">InterleavingResult</span><span class="p">,</span>
+    <span class="n">check_invariant</span><span class="p">,</span>
+    <span class="n">check_serializability_violation</span><span class="p">,</span>
+<span class="p">)</span>
 
 <span class="c1"># Type variable for the shared state passed between setup and thread functions</span>
 <span class="n">T</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;T&quot;</span><span class="p">)</span>
-
-<span class="n">_PY_VERSION</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">version_info</span><span class="p">[:</span><span class="mi">2</span><span class="p">]</span>
-<span class="c1"># sys.monitoring (PEP 669) is available since 3.12 and is required for</span>
-<span class="c1"># free-threaded builds (3.13t/3.14t) where sys.settrace + f_trace_opcodes</span>
-<span class="c1"># has a known crash bug (CPython #118415).</span>
-<span class="n">_USE_SYS_MONITORING</span> <span class="o">=</span> <span class="n">_PY_VERSION</span> <span class="o">&gt;=</span> <span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">12</span><span class="p">)</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">OpcodeScheduler</span><span class="p">:</span>
@@ -350,6 +366,10 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">num_threads</span> <span class="o">=</span> <span class="n">num_threads</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span> <span class="o">=</span> <span class="n">deadlock_timeout</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops</span> <span class="o">=</span> <span class="n">max_ops</span> <span class="k">if</span> <span class="n">max_ops</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="nb">len</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span> <span class="o">*</span> <span class="mi">10</span> <span class="o">+</span> <span class="mi">10000</span>
+        <span class="c1"># Deterministic RNG for dynamic schedule extension.  Seeded from the</span>
+        <span class="c1"># initial schedule so the extension is reproducible for a given run</span>
+        <span class="c1"># (and replay re-uses the already-recorded self.schedule list anyway).</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_extend_rng</span> <span class="o">=</span> <span class="n">random</span><span class="o">.</span><span class="n">Random</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">schedule</span><span class="p">))</span> <span class="o">&amp;</span> <span class="mh">0xFFFFFFFF</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">=</span> <span class="mi">0</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">real_lock</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span> <span class="o">=</span> <span class="n">real_condition</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="p">)</span>
@@ -359,17 +379,25 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">trace_recorder</span> <span class="o">=</span> <span class="n">trace_recorder</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_extend_schedule</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Append a round-robin round of all active threads.</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Append a round of all active threads with variable-length bursts.</span>
 
-<span class="sd">        Returns True if the schedule was extended, False if all threads</span>
-<span class="sd">        are done or the max_ops cap was reached.</span>
+<span class="sd">        Each active thread gets a burst of consecutive slots (rather than a</span>
+<span class="sd">        single slot) so that, like the initial random schedule, dynamically</span>
+<span class="sd">        extended schedules can express relative opcode drift &gt; 1 between</span>
+<span class="sd">        threads.  Returns True if the schedule was extended, False if all</span>
+<span class="sd">        threads are done or the max_ops cap was reached.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span>
         <span class="n">active</span> <span class="o">=</span> <span class="p">[</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">num_threads</span><span class="p">)</span> <span class="k">if</span> <span class="n">t</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_threads_done</span><span class="p">]</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">active</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">active</span><span class="p">)</span>
+        <span class="c1"># Only add entries up to the max_ops cap to prevent overshoot.</span>
+        <span class="n">remaining</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops</span> <span class="o">-</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">remaining</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="n">appended</span> <span class="o">=</span> <span class="n">burst_round</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_extend_rng</span><span class="p">,</span> <span class="n">active</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">appended</span><span class="p">[:</span><span class="n">remaining</span><span class="p">])</span>
         <span class="k">return</span> <span class="kc">True</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">wait_for_turn</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
@@ -398,6 +426,13 @@
                     <span class="k">return</span> <span class="kc">True</span>
 
                 <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="p">):</span>
+                    <span class="c1"># Re-check terminal conditions before indexing: another</span>
+                    <span class="c1"># thread may have finished the run or advanced past the end</span>
+                    <span class="c1"># of the schedule while we were blocked in wait() (9a).</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_error</span><span class="p">:</span>
+                        <span class="k">return</span> <span class="kc">False</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">&gt;=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">):</span>
+                        <span class="k">continue</span>
                     <span class="n">needed</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_index</span><span class="p">]</span>
                     <span class="k">if</span> <span class="n">needed</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_threads_done</span><span class="p">:</span>
                         <span class="k">continue</span>
@@ -450,9 +485,6 @@
 <span class="sd">    another thread that tries to acquire it.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="c1"># sys.monitoring tool ID (use OPTIMIZER_ID to avoid conflict with DPOR&#39;s PROFILER_ID)</span>
-    <span class="n">_TOOL_ID</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
-
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">scheduler</span><span class="p">:</span> <span class="n">OpcodeScheduler</span><span class="p">,</span> <span class="n">detect_io</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span> <span class="o">=</span> <span class="n">scheduler</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">detect_io</span> <span class="o">=</span> <span class="n">detect_io</span>
@@ -460,7 +492,8 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">errors</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_lock_patched</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_io_patched</span> <span class="o">=</span> <span class="kc">False</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_monitoring_active</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sleep_patched</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_opcode_handle</span><span class="p">:</span> <span class="n">OpcodeTraceHandle</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_patch_locks</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Replace threading and queue primitives with cooperative versions.&quot;&quot;&quot;</span>
@@ -475,6 +508,17 @@
 
             <span class="n">uninstall_wait_for_graph</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_lock_patched</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_patch_sleep</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Replace time.sleep with a cooperative no-op.&quot;&quot;&quot;</span>
+        <span class="n">patch_sleep</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sleep_patched</span> <span class="o">=</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_unpatch_sleep</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Restore original time.sleep.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sleep_patched</span><span class="p">:</span>
+            <span class="n">unpatch_sleep</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_sleep_patched</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_patch_io</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Replace socket and open with traced versions.&quot;&quot;&quot;</span>
@@ -491,120 +535,70 @@
             <span class="n">unpatch_io</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_io_patched</span> <span class="o">=</span> <span class="kc">False</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_make_trace</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]:</span>  <span class="c1"># type: ignore[return-value]</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Create a sys.settrace function for the given thread.&quot;&quot;&quot;</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">patch_scope</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">patch_sleep</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PatchScope</span><span class="p">:</span>
+        <span class="n">scope</span> <span class="o">=</span> <span class="n">PatchScope</span><span class="p">()</span>
+        <span class="n">scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_patch_locks</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unpatch_locks</span><span class="p">)</span>
+        <span class="n">scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_patch_io</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unpatch_io</span><span class="p">)</span>
+        <span class="n">scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_patch_sleep</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unpatch_sleep</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">scope</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_start_opcode_trace</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Construct opcode tracing via the tracer-backend.</span>
+
+<span class="sd">        On sys.monitoring (3.12+) this also installs the global tool;</span>
+<span class="sd">        per-thread activation is a no-op.  On sys.settrace (3.10-3.11) this</span>
+<span class="sd">        only constructs the trace callback; per-thread activation happens</span>
+<span class="sd">        in :meth:`_thread_runtime` via ``install_thread_opcode_trace``.</span>
+
+<span class="sd">        Uses the OPTIMIZER tool ID slot (DPOR uses PROFILER) and skips</span>
+<span class="sd">        PY_RETURN registration since BytecodeShuffler does not maintain a</span>
+<span class="sd">        shadow stack.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">scheduler</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span>
         <span class="n">recorder</span> <span class="o">=</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">trace_recorder</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._cooperative</span><span class="w"> </span><span class="kn">import</span> <span class="n">_scheduler_tls</span>
 
-        <span class="k">def</span><span class="w"> </span><span class="nf">trace</span><span class="p">(</span><span class="n">frame</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">event</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">arg</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>  <span class="c1"># type: ignore[name-defined]</span>
-            <span class="k">if</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_finished</span> <span class="ow">or</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span><span class="p">:</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">_get_tid</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">tid</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">_scheduler_tls</span><span class="p">,</span> <span class="s2">&quot;thread_id&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">tid</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="k">return</span> <span class="kc">None</span>
-
-            <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s2">&quot;call&quot;</span><span class="p">:</span>
-                <span class="n">filename</span> <span class="o">=</span> <span class="n">frame</span><span class="o">.</span><span class="n">f_code</span><span class="o">.</span><span class="n">co_filename</span>
-                <span class="k">if</span> <span class="n">_should_trace_file</span><span class="p">(</span><span class="n">filename</span><span class="p">):</span>
-                    <span class="c1"># Only trace dynamically generated code (&lt;string&gt;, etc.)</span>
-                    <span class="c1"># if its caller is user code.  Libraries like SQLAlchemy</span>
-                    <span class="c1"># and dataclasses use exec/compile internally, creating</span>
-                    <span class="c1"># thousands of scheduling points in non-user code.</span>
-                    <span class="c1"># Exception: in python -c mode, functions defined in</span>
-                    <span class="c1"># the -c string ARE user code.</span>
-                    <span class="k">if</span> <span class="n">_is_dynamic_code</span><span class="p">(</span><span class="n">filename</span><span class="p">)</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">_is_cmdline_user_code</span><span class="p">(</span><span class="n">filename</span><span class="p">,</span> <span class="n">frame</span><span class="o">.</span><span class="n">f_globals</span><span class="p">):</span>
-                        <span class="n">caller</span> <span class="o">=</span> <span class="n">frame</span><span class="o">.</span><span class="n">f_back</span>
-                        <span class="k">if</span> <span class="n">caller</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">_should_trace_file</span><span class="p">(</span><span class="n">caller</span><span class="o">.</span><span class="n">f_code</span><span class="o">.</span><span class="n">co_filename</span><span class="p">):</span>
-                            <span class="k">return</span> <span class="kc">None</span>
-                    <span class="n">frame</span><span class="o">.</span><span class="n">f_trace_opcodes</span> <span class="o">=</span> <span class="kc">True</span>
-                    <span class="k">return</span> <span class="n">trace</span>
-                <span class="k">return</span> <span class="kc">None</span>
-
-            <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s2">&quot;opcode&quot;</span><span class="p">:</span>
-                <span class="k">if</span> <span class="n">recorder</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                    <span class="n">recorder</span><span class="o">.</span><span class="n">record_from_opcode</span><span class="p">(</span><span class="n">thread_id</span><span class="p">,</span> <span class="n">frame</span><span class="p">)</span>
-                <span class="n">scheduler</span><span class="o">.</span><span class="n">wait_for_turn</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
-                <span class="k">return</span> <span class="n">trace</span>
-
-            <span class="k">return</span> <span class="n">trace</span>
-
-        <span class="k">return</span> <span class="n">trace</span>
-
-    <span class="c1"># --- sys.monitoring backend (3.12+) ---</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">_setup_monitoring</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Set up sys.monitoring INSTRUCTION events for opcode-level scheduling.&quot;&quot;&quot;</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="n">_USE_SYS_MONITORING</span><span class="p">:</span>
-            <span class="k">return</span>
-
-        <span class="n">mon</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">monitoring</span>
-        <span class="n">tool_id</span> <span class="o">=</span> <span class="n">mon</span><span class="o">.</span><span class="n">OPTIMIZER_ID</span>  <span class="c1"># type: ignore[attr-defined]</span>
-        <span class="n">BytecodeShuffler</span><span class="o">.</span><span class="n">_TOOL_ID</span> <span class="o">=</span> <span class="n">tool_id</span>
-
-        <span class="n">mon</span><span class="o">.</span><span class="n">use_tool_id</span><span class="p">(</span><span class="n">tool_id</span><span class="p">,</span> <span class="s2">&quot;frontrun-bytecode&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore[attr-defined]</span>
-        <span class="n">mon</span><span class="o">.</span><span class="n">set_events</span><span class="p">(</span><span class="n">tool_id</span><span class="p">,</span> <span class="n">mon</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">PY_START</span> <span class="o">|</span> <span class="n">mon</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">INSTRUCTION</span><span class="p">)</span>  <span class="c1"># type: ignore[attr-defined]</span>
-
-        <span class="n">scheduler</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span>
-
-        <span class="k">def</span><span class="w"> </span><span class="nf">handle_py_start</span><span class="p">(</span><span class="n">code</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">instruction_offset</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-            <span class="c1"># Only use mon.DISABLE for code that should *never* be traced</span>
-            <span class="c1"># (stdlib, site-packages, frontrun internals).  Do NOT disable</span>
-            <span class="c1"># for transient conditions like scheduler._finished — DISABLE</span>
-            <span class="c1"># permanently removes INSTRUCTION events from the code object,</span>
-            <span class="c1"># corrupting monitoring state for subsequent iterations and</span>
-            <span class="c1"># tests that share the same tool ID.</span>
-            <span class="k">if</span> <span class="ow">not</span> <span class="n">_should_trace_file</span><span class="p">(</span><span class="n">code</span><span class="o">.</span><span class="n">co_filename</span><span class="p">):</span>
-                <span class="k">return</span> <span class="n">mon</span><span class="o">.</span><span class="n">DISABLE</span>  <span class="c1"># type: ignore[attr-defined]</span>
-            <span class="k">return</span> <span class="kc">None</span>
-
-        <span class="n">recorder</span> <span class="o">=</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">trace_recorder</span>
-
-        <span class="k">def</span><span class="w"> </span><span class="nf">handle_instruction</span><span class="p">(</span><span class="n">code</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">instruction_offset</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-            <span class="k">if</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_finished</span> <span class="ow">or</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span><span class="p">:</span>
-                <span class="k">return</span> <span class="kc">None</span>
-            <span class="k">if</span> <span class="ow">not</span> <span class="n">_should_trace_file</span><span class="p">(</span><span class="n">code</span><span class="o">.</span><span class="n">co_filename</span><span class="p">):</span>
-                <span class="k">return</span> <span class="kc">None</span>
-            <span class="c1"># Skip dynamically generated code (&lt;string&gt;, etc.) unless its</span>
-            <span class="c1"># caller is user code.  Libraries use exec/compile internally</span>
-            <span class="c1"># and those shouldn&#39;t create scheduling points.  Exception:</span>
-            <span class="c1"># in python -c mode, functions defined in the -c string</span>
-            <span class="c1"># ARE user code.</span>
-            <span class="k">if</span> <span class="n">_is_dynamic_code</span><span class="p">(</span><span class="n">code</span><span class="o">.</span><span class="n">co_filename</span><span class="p">):</span>
-                <span class="n">frame</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">_getframe</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
-                <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_cmdline_user_code</span><span class="p">(</span><span class="n">code</span><span class="o">.</span><span class="n">co_filename</span><span class="p">,</span> <span class="n">frame</span><span class="o">.</span><span class="n">f_globals</span><span class="p">):</span>
-                    <span class="n">caller</span> <span class="o">=</span> <span class="n">frame</span><span class="o">.</span><span class="n">f_back</span>
-                    <span class="k">if</span> <span class="n">caller</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">_should_trace_file</span><span class="p">(</span><span class="n">caller</span><span class="o">.</span><span class="n">f_code</span><span class="o">.</span><span class="n">co_filename</span><span class="p">):</span>
-                        <span class="k">return</span> <span class="kc">None</span>
-
-            <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._cooperative</span><span class="w"> </span><span class="kn">import</span> <span class="n">_scheduler_tls</span>
-
-            <span class="n">thread_id</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">_scheduler_tls</span><span class="p">,</span> <span class="s2">&quot;thread_id&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-            <span class="k">if</span> <span class="n">thread_id</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="k">return</span> <span class="kc">None</span>
-            <span class="c1"># Guard against zombie threads from a previous runner</span>
+            <span class="c1"># Guard against zombie threads from a previous runner instance</span>
+            <span class="c1"># (sys.monitoring is global, so old threads can still trip the</span>
+            <span class="c1"># callback after this scheduler&#39;s run ends).</span>
             <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">_scheduler_tls</span><span class="p">,</span> <span class="s2">&quot;scheduler&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">scheduler</span><span class="p">:</span>
                 <span class="k">return</span> <span class="kc">None</span>
+            <span class="k">return</span> <span class="n">tid</span>  <span class="c1"># type: ignore[no-any-return]</span>
 
+        <span class="k">def</span><span class="w"> </span><span class="nf">_on_opcode</span><span class="p">(</span><span class="n">code</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">offset</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">frame</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">tid</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">recorder</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">frame</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">_getframe</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
-                <span class="n">recorder</span><span class="o">.</span><span class="n">record_from_opcode</span><span class="p">(</span><span class="n">thread_id</span><span class="p">,</span> <span class="n">frame</span><span class="p">)</span>
+                <span class="n">recorder</span><span class="o">.</span><span class="n">record_from_opcode</span><span class="p">(</span><span class="n">tid</span><span class="p">,</span> <span class="n">frame</span><span class="p">)</span>
+            <span class="n">scheduler</span><span class="o">.</span><span class="n">wait_for_turn</span><span class="p">(</span><span class="n">tid</span><span class="p">)</span>
+            <span class="c1"># Signal &quot;yielded&quot; so make_settrace_callback applies the CPython</span>
+            <span class="c1"># 3.10-3.11 LocalsToFast workaround (re-reads frame.f_locals to</span>
+            <span class="c1"># refresh the snapshot).  wait_for_turn can block this thread while</span>
+            <span class="c1"># another runs, and if that other thread mutates a shared closure</span>
+            <span class="c1"># cell, the stale f_locals snapshot would otherwise be written back</span>
+            <span class="c1"># over the new value when this frame resumes — a lost update that</span>
+            <span class="c1"># shows up as a false positive on lock-protected closures (only on</span>
+            <span class="c1"># the settrace path; 3.12+ monitoring ignores this return value).</span>
+            <span class="k">return</span> <span class="kc">True</span>
 
-            <span class="n">scheduler</span><span class="o">.</span><span class="n">wait_for_turn</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
-            <span class="k">return</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_opcode_handle</span> <span class="o">=</span> <span class="n">start_opcode_trace</span><span class="p">(</span>
+            <span class="n">get_thread_id</span><span class="o">=</span><span class="n">_get_tid</span><span class="p">,</span>
+            <span class="n">on_opcode</span><span class="o">=</span><span class="n">_on_opcode</span><span class="p">,</span>
+            <span class="n">is_active</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="ow">not</span> <span class="p">(</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_finished</span> <span class="ow">or</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span><span class="p">),</span>
+            <span class="n">tool_name</span><span class="o">=</span><span class="s2">&quot;frontrun-bytecode&quot;</span><span class="p">,</span>
+            <span class="n">tool_kind</span><span class="o">=</span><span class="s2">&quot;optimizer&quot;</span><span class="p">,</span>
+            <span class="n">monitor_returns</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="p">)</span>
 
-        <span class="n">mon</span><span class="o">.</span><span class="n">register_callback</span><span class="p">(</span><span class="n">tool_id</span><span class="p">,</span> <span class="n">mon</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">PY_START</span><span class="p">,</span> <span class="n">handle_py_start</span><span class="p">)</span>  <span class="c1"># type: ignore[attr-defined]</span>
-        <span class="n">mon</span><span class="o">.</span><span class="n">register_callback</span><span class="p">(</span><span class="n">tool_id</span><span class="p">,</span> <span class="n">mon</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">INSTRUCTION</span><span class="p">,</span> <span class="n">handle_instruction</span><span class="p">)</span>  <span class="c1"># type: ignore[attr-defined]</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_monitoring_active</span> <span class="o">=</span> <span class="kc">True</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">_teardown_monitoring</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Remove sys.monitoring callbacks and free the tool ID.&quot;&quot;&quot;</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_monitoring_active</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_stop_opcode_trace</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Tear down opcode tracing started by :meth:`_start_opcode_trace`.&quot;&quot;&quot;</span>
+        <span class="n">handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_opcode_handle</span>
+        <span class="k">if</span> <span class="n">handle</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
-        <span class="n">mon</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">monitoring</span>
-        <span class="n">tool_id</span> <span class="o">=</span> <span class="n">BytecodeShuffler</span><span class="o">.</span><span class="n">_TOOL_ID</span>
-        <span class="k">if</span> <span class="n">tool_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">mon</span><span class="o">.</span><span class="n">set_events</span><span class="p">(</span><span class="n">tool_id</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>  <span class="c1"># type: ignore[attr-defined]</span>
-            <span class="n">mon</span><span class="o">.</span><span class="n">register_callback</span><span class="p">(</span><span class="n">tool_id</span><span class="p">,</span> <span class="n">mon</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">PY_START</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>  <span class="c1"># type: ignore[attr-defined]</span>
-            <span class="n">mon</span><span class="o">.</span><span class="n">register_callback</span><span class="p">(</span><span class="n">tool_id</span><span class="p">,</span> <span class="n">mon</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">INSTRUCTION</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>  <span class="c1"># type: ignore[attr-defined]</span>
-            <span class="n">mon</span><span class="o">.</span><span class="n">free_tool_id</span><span class="p">(</span><span class="n">tool_id</span><span class="p">)</span>  <span class="c1"># type: ignore[attr-defined]</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_monitoring_active</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="n">stop_opcode_trace</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_opcode_handle</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="c1"># --- Thread entry points ---</span>
 
@@ -643,60 +637,43 @@
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">detect_io</span><span class="p">:</span>
             <span class="n">set_io_reporter</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_run_thread_settrace</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">func</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span> <span class="n">args</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="n">kwargs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Thread entry using sys.settrace (3.10-3.11).&quot;&quot;&quot;</span>
+    <span class="nd">@contextmanager</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_thread_runtime</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
+        <span class="n">set_context</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_setup_io_reporter</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
+        <span class="c1"># Register OpcodeScheduler as the dpor scheduler so that</span>
+        <span class="c1"># _intercept_execute (SQL cursor patching) can create scheduling</span>
+        <span class="c1"># points during replay, matching the schedule generated by DPOR.</span>
+        <span class="n">set_dpor_scheduler</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="p">)</span>
+        <span class="n">set_dpor_thread_id</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
+        <span class="c1"># On sys.settrace (3.10-3.11) this activates the per-thread tracer;</span>
+        <span class="c1"># on sys.monitoring (3.12+) it is a no-op (the tool was registered</span>
+        <span class="c1"># globally in run()).</span>
+        <span class="n">handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_opcode_handle</span>
+        <span class="k">if</span> <span class="n">handle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">install_thread_opcode_trace</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">set_context</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_setup_io_reporter</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
-            <span class="c1"># Register OpcodeScheduler as the dpor scheduler so that</span>
-            <span class="c1"># _intercept_execute (SQL cursor patching) can create scheduling</span>
-            <span class="c1"># points during replay, matching the schedule generated by DPOR.</span>
-            <span class="n">set_dpor_scheduler</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="p">)</span>
-            <span class="n">set_dpor_thread_id</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
-
-            <span class="n">trace_fn</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_trace</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
-            <span class="n">sys</span><span class="o">.</span><span class="n">settrace</span><span class="p">(</span><span class="n">trace_fn</span><span class="p">)</span>
-            <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-        <span class="k">except</span> <span class="n">SchedulerAbort</span><span class="p">:</span>
-            <span class="k">pass</span>  <span class="c1"># scheduler already has the error; just exit cleanly</span>
-        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">errors</span><span class="p">[</span><span class="n">thread_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">e</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">report_error</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+            <span class="k">yield</span>
         <span class="k">finally</span><span class="p">:</span>
-            <span class="n">sys</span><span class="o">.</span><span class="n">settrace</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">handle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">uninstall_thread_opcode_trace</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_teardown_io_reporter</span><span class="p">()</span>
             <span class="n">set_dpor_scheduler</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
             <span class="n">set_dpor_thread_id</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
             <span class="n">clear_context</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">mark_done</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_run_thread_monitoring</span><span class="p">(</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_run_thread</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">func</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span> <span class="n">args</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="n">kwargs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Thread entry using sys.monitoring (3.12+).&quot;&quot;&quot;</span>
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">set_context</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_setup_io_reporter</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
-            <span class="c1"># Register OpcodeScheduler as the dpor scheduler so that</span>
-            <span class="c1"># _intercept_execute (SQL cursor patching) can create scheduling</span>
-            <span class="c1"># points during replay, matching the schedule generated by DPOR.</span>
-            <span class="n">set_dpor_scheduler</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="p">)</span>
-            <span class="n">set_dpor_thread_id</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
-
-            <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_thread_runtime</span><span class="p">(</span><span class="n">thread_id</span><span class="p">):</span>
+                <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
         <span class="k">except</span> <span class="n">SchedulerAbort</span><span class="p">:</span>
             <span class="k">pass</span>  <span class="c1"># scheduler already has the error; just exit cleanly</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">errors</span><span class="p">[</span><span class="n">thread_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">e</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">report_error</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
-        <span class="k">finally</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_teardown_io_reporter</span><span class="p">()</span>
-            <span class="n">set_dpor_scheduler</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
-            <span class="n">set_dpor_thread_id</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
-            <span class="n">clear_context</span><span class="p">()</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">mark_done</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
@@ -718,45 +695,36 @@
         <span class="k">if</span> <span class="n">kwargs</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">kwargs</span> <span class="o">=</span> <span class="p">[{}</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">funcs</span><span class="p">]</span>
 
-        <span class="n">use_monitoring</span> <span class="o">=</span> <span class="n">_USE_SYS_MONITORING</span>
-        <span class="k">if</span> <span class="n">use_monitoring</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_setup_monitoring</span><span class="p">()</span>
-            <span class="n">run_thread</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_run_thread_monitoring</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">run_thread</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_run_thread_settrace</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_start_opcode_trace</span><span class="p">()</span>
+        <span class="n">run_thread</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_run_thread</span>
 
-        <span class="k">try</span><span class="p">:</span>
-            <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">kw</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">funcs</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)):</span>
-                <span class="n">t</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">(</span>
-                    <span class="n">target</span><span class="o">=</span><span class="n">run_thread</span><span class="p">,</span>
-                    <span class="n">args</span><span class="o">=</span><span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">func</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">kw</span><span class="p">),</span>
-                    <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;frontrun-</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-                    <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-                <span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">threads</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+        <span class="n">thread_args</span> <span class="o">=</span> <span class="p">[(</span><span class="n">a</span><span class="p">,</span> <span class="n">kw</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span><span class="p">,</span> <span class="n">kw</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)]</span>
 
-            <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">threads</span><span class="p">:</span>
-                <span class="n">t</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">make_thread_target</span><span class="p">(</span>
+            <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+            <span class="n">func</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span>
+            <span class="n">packed_args</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+        <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]:</span>
+            <span class="n">a</span><span class="p">,</span> <span class="n">kw</span> <span class="o">=</span> <span class="n">packed_args</span>
 
-            <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="n">timeout</span>
-            <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">threads</span><span class="p">:</span>
-                <span class="n">remaining</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">())</span>
-                <span class="n">t</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">remaining</span><span class="p">)</span>
+            <span class="k">def</span><span class="w"> </span><span class="nf">target</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">run_thread</span><span class="p">(</span><span class="n">thread_id</span><span class="p">,</span> <span class="n">func</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">kw</span><span class="p">)</span>
 
-            <span class="c1"># Signal scheduler to abort if any threads are still alive.</span>
-            <span class="c1"># On free-threaded Python, condition notifications can be lost</span>
-            <span class="c1"># and threads may still be blocked in wait_for_turn.</span>
-            <span class="n">alive</span> <span class="o">=</span> <span class="p">[</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">threads</span> <span class="k">if</span> <span class="n">t</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()]</span>
-            <span class="k">if</span> <span class="n">alive</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span> <span class="o">=</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Timed out waiting for </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">alive</span><span class="p">)</span><span class="si">}</span><span class="s2"> thread(s) to complete&quot;</span><span class="p">)</span>
-                <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_condition</span><span class="p">:</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
-                <span class="c1"># Give threads a brief grace period to notice the error</span>
-                <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">alive</span><span class="p">:</span>
-                    <span class="n">t</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
-        <span class="k">finally</span><span class="p">:</span>
-            <span class="k">if</span> <span class="n">use_monitoring</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_teardown_monitoring</span><span class="p">()</span>
+            <span class="k">return</span> <span class="n">target</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">on_timeout</span><span class="p">(</span><span class="n">alive</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">notify_scheduler_timeout</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="p">,</span> <span class="n">alive</span><span class="p">)</span>
+
+        <span class="n">run_thread_group</span><span class="p">(</span>
+            <span class="n">funcs</span><span class="o">=</span><span class="n">funcs</span><span class="p">,</span>
+            <span class="n">args</span><span class="o">=</span><span class="n">thread_args</span><span class="p">,</span>
+            <span class="n">make_thread_target</span><span class="o">=</span><span class="n">make_thread_target</span><span class="p">,</span>
+            <span class="n">name_prefix</span><span class="o">=</span><span class="s2">&quot;frontrun&quot;</span><span class="p">,</span>
+            <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+            <span class="n">thread_store</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">threads</span><span class="p">,</span>
+            <span class="n">teardown</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_stop_opcode_trace</span><span class="p">,</span>
+            <span class="n">on_timeout</span><span class="o">=</span><span class="n">on_timeout</span><span class="p">,</span>
+        <span class="p">)</span>
 
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">errors</span><span class="p">:</span>
             <span class="k">raise</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">errors</span><span class="o">.</span><span class="n">values</span><span class="p">())[</span><span class="mi">0</span><span class="p">]</span>
@@ -796,6 +764,7 @@
     <span class="n">debug</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">deadlock_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
     <span class="n">trace_recorder</span><span class="p">:</span> <span class="n">TraceRecorder</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">patch_sleep</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Run one interleaving and return the state object.</span>
 
@@ -822,9 +791,7 @@
     <span class="n">runner</span> <span class="o">=</span> <span class="n">BytecodeShuffler</span><span class="p">(</span><span class="n">scheduler</span><span class="p">,</span> <span class="n">detect_io</span><span class="o">=</span><span class="n">detect_io</span><span class="p">)</span>
 
     <span class="c1"># Patch locks BEFORE setup() so any locks created there are cooperative</span>
-    <span class="n">runner</span><span class="o">.</span><span class="n">_patch_locks</span><span class="p">()</span>
-    <span class="n">runner</span><span class="o">.</span><span class="n">_patch_io</span><span class="p">()</span>
-    <span class="k">try</span><span class="p">:</span>
+    <span class="k">with</span> <span class="n">runner</span><span class="o">.</span><span class="n">patch_scope</span><span class="p">(</span><span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">):</span>
         <span class="n">state</span> <span class="o">=</span> <span class="n">setup</span><span class="p">()</span>
 
         <span class="k">def</span><span class="w"> </span><span class="nf">make_thread_func</span><span class="p">(</span><span class="n">thread_func</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="kc">None</span><span class="p">],</span> <span class="n">thread_state</span><span class="p">:</span> <span class="n">T</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]:</span>
@@ -834,24 +801,30 @@
             <span class="k">return</span> <span class="n">thread_wrapper</span>
 
         <span class="n">funcs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[</span><span class="n">make_thread_func</span><span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">threads</span><span class="p">]</span>
+        <span class="n">timed_out</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="n">runner</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">funcs</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
         <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">debug</span><span class="p">:</span>
                 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Timed out with </span><span class="si">{</span><span class="n">timeout</span><span class="si">=}</span><span class="s2"> on </span><span class="si">{</span><span class="n">schedule</span><span class="si">=}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+            <span class="n">timed_out</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="c1"># Re-raise DeadlockError so callers (e.g. reproduction logic) can</span>
         <span class="c1"># detect that a deadlock occurred during replay.</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span><span class="p">,</span> <span class="n">DeadlockError</span><span class="p">):</span>
             <span class="k">raise</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span>
-    <span class="k">finally</span><span class="p">:</span>
-        <span class="n">runner</span><span class="o">.</span><span class="n">_unpatch_io</span><span class="p">()</span>
-        <span class="n">runner</span><span class="o">.</span><span class="n">_unpatch_locks</span><span class="p">()</span>
+        <span class="c1"># Surface a timeout (from runner.run or a scheduler-recorded</span>
+        <span class="c1"># TimeoutError) instead of returning a state that timed-out daemon</span>
+        <span class="c1"># threads may still be mutating.  Evaluating an invariant on such a</span>
+        <span class="c1"># half-finished racing state is meaningless (finding 9d).  Callers in</span>
+        <span class="c1"># exploration loops catch this and skip the schedule as inconclusive.</span>
+        <span class="k">if</span> <span class="n">timed_out</span> <span class="ow">or</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span><span class="p">,</span> <span class="ne">TimeoutError</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;run_with_schedule timed out after </span><span class="si">{</span><span class="n">timeout</span><span class="si">}</span><span class="s2">s; worker threads did not complete&quot;</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">state</span>
 
 
-<div class="viewcode-block" id="explore_interleavings">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.bytecode.explore_interleavings">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">explore_interleavings</span><span class="p">(</span>
+<div class="viewcode-block" id="explore_random">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.explore_random">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">explore_random</span><span class="p">(</span>
     <span class="n">setup</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">T</span><span class="p">],</span>
     <span class="n">threads</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="kc">None</span><span class="p">]],</span>
     <span class="n">invariant</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="nb">bool</span><span class="p">],</span>
@@ -866,6 +839,9 @@
     <span class="n">total_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">warn_nondeterministic_sql</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">trace_packages</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">patch_sleep</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="n">serializable_invariant</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">error_on_any_race</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">InterleavingResult</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Search for interleavings that violate an invariant.</span>
 
@@ -919,10 +895,16 @@
 <span class="sd">        field reports how many distinct execution orderings were observed,</span>
 <span class="sd">        providing a lower bound on exploration coverage.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
-    <span class="n">_require_frontrun_env</span><span class="p">(</span><span class="s2">&quot;explore_interleavings&quot;</span><span class="p">)</span>
+    <span class="n">_require_frontrun_env</span><span class="p">(</span><span class="s2">&quot;explore_random&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">error_on_any_race</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;error_on_any_race requires DPOR (use frontrun.explore with strategy=&#39;dpor&#39; instead)&quot;</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">trace_packages</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">_set_active_trace_filter</span><span class="p">(</span><span class="n">_TraceFilter</span><span class="p">(</span><span class="n">trace_packages</span><span class="p">))</span>
     <span class="k">try</span><span class="p">:</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._dpor_core</span><span class="w"> </span><span class="kn">import</span> <span class="n">compute_serializable_baseline_sync</span>
+
+        <span class="n">serial_valid_states</span><span class="p">,</span> <span class="n">serial_hash_fn</span> <span class="o">=</span> <span class="n">compute_serializable_baseline_sync</span><span class="p">(</span><span class="n">setup</span><span class="p">,</span> <span class="n">threads</span><span class="p">,</span> <span class="n">serializable_invariant</span><span class="p">)</span>
+
         <span class="n">rng</span> <span class="o">=</span> <span class="n">random</span><span class="o">.</span><span class="n">Random</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span>
         <span class="n">num_threads</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">threads</span><span class="p">)</span>
         <span class="n">result</span> <span class="o">=</span> <span class="n">InterleavingResult</span><span class="p">(</span><span class="n">property_holds</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">num_explored</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
@@ -932,33 +914,64 @@
         <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">max_attempts</span><span class="p">):</span>
             <span class="k">if</span> <span class="n">total_deadline</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">&gt;</span> <span class="n">total_deadline</span><span class="p">:</span>
                 <span class="k">break</span>
-            <span class="n">num_rounds</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">max_ops</span> <span class="o">//</span> <span class="n">num_threads</span><span class="p">))</span>
-            <span class="n">schedule</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
-            <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_rounds</span><span class="p">):</span>
-                <span class="n">round_perm</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">num_threads</span><span class="p">))</span>
-                <span class="n">rng</span><span class="o">.</span><span class="n">shuffle</span><span class="p">(</span><span class="n">round_perm</span><span class="p">)</span>
-                <span class="n">schedule</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">round_perm</span><span class="p">)</span>
+            <span class="n">schedule</span> <span class="o">=</span> <span class="n">random_round_robin_schedule</span><span class="p">(</span><span class="n">rng</span><span class="p">,</span> <span class="n">num_threads</span><span class="p">,</span> <span class="n">max_ops</span><span class="p">)</span>
 
             <span class="n">clear_insert_tracker</span><span class="p">()</span>
             <span class="k">if</span> <span class="n">debug</span><span class="p">:</span>
                 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Running with </span><span class="si">{</span><span class="n">schedule</span><span class="si">=}</span><span class="s2"> </span><span class="si">{</span><span class="n">threads</span><span class="si">=}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
             <span class="n">recorder</span> <span class="o">=</span> <span class="n">TraceRecorder</span><span class="p">()</span>
-            <span class="n">state</span> <span class="o">=</span> <span class="n">run_with_schedule</span><span class="p">(</span>
-                <span class="n">schedule</span><span class="p">,</span>
-                <span class="n">setup</span><span class="p">,</span>
-                <span class="n">threads</span><span class="p">,</span>
-                <span class="n">timeout</span><span class="o">=</span><span class="n">timeout_per_run</span><span class="p">,</span>
-                <span class="n">detect_io</span><span class="o">=</span><span class="n">detect_io</span><span class="p">,</span>
-                <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span>
-                <span class="n">trace_recorder</span><span class="o">=</span><span class="n">recorder</span><span class="p">,</span>
-            <span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">state</span> <span class="o">=</span> <span class="n">run_with_schedule</span><span class="p">(</span>
+                    <span class="n">schedule</span><span class="p">,</span>
+                    <span class="n">setup</span><span class="p">,</span>
+                    <span class="n">threads</span><span class="p">,</span>
+                    <span class="n">timeout</span><span class="o">=</span><span class="n">timeout_per_run</span><span class="p">,</span>
+                    <span class="n">detect_io</span><span class="o">=</span><span class="n">detect_io</span><span class="p">,</span>
+                    <span class="n">debug</span><span class="o">=</span><span class="n">debug</span><span class="p">,</span>
+                    <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span>
+                    <span class="n">trace_recorder</span><span class="o">=</span><span class="n">recorder</span><span class="p">,</span>
+                    <span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">,</span>
+                <span class="p">)</span>
+            <span class="k">except</span> <span class="n">DeadlockError</span> <span class="k">as</span> <span class="n">dl_err</span><span class="p">:</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="n">seen_schedule_hashes</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">schedule</span><span class="p">)))</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span> <span class="o">=</span> <span class="kc">False</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Deadlock detected after </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2"> interleaving(s).</span><span class="se">\n\n</span><span class="si">{</span><span class="n">dl_err</span><span class="o">.</span><span class="n">cycle_description</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="p">)</span>
+                <span class="k">return</span> <span class="n">result</span>
+            <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
+                <span class="c1"># The run did not complete within timeout_per_run; worker</span>
+                <span class="c1"># threads may still be mutating the state.  Skip this schedule</span>
+                <span class="c1"># as inconclusive rather than evaluating the invariant on a</span>
+                <span class="c1"># half-finished racing state (finding 9d).</span>
+                <span class="k">if</span> <span class="n">debug</span><span class="p">:</span>
+                    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Skipping timed-out schedule: </span><span class="si">{</span><span class="n">schedule</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="n">seen_schedule_hashes</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">schedule</span><span class="p">)))</span>
+                <span class="k">continue</span>
             <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
             <span class="n">seen_schedule_hashes</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">schedule</span><span class="p">)))</span>
 
             <span class="k">if</span> <span class="n">warn_nondeterministic_sql</span><span class="p">:</span>
                 <span class="n">check_uncaptured_inserts</span><span class="p">()</span>
 
-            <span class="k">if</span> <span class="ow">not</span> <span class="n">invariant</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
+            <span class="c1"># --- serializable_invariant check ---</span>
+            <span class="k">if</span> <span class="n">serial_valid_states</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">explanation</span> <span class="o">=</span> <span class="n">check_serializability_violation</span><span class="p">(</span>
+                    <span class="n">state</span><span class="p">,</span> <span class="n">serial_valid_states</span><span class="p">,</span> <span class="n">serial_hash_fn</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span>
+                <span class="p">)</span>
+                <span class="k">if</span> <span class="n">explanation</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span> <span class="o">=</span> <span class="kc">False</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="n">explanation</span>
+                    <span class="k">return</span> <span class="n">result</span>
+
+            <span class="n">invariant_failed</span><span class="p">,</span> <span class="n">assertion_msg</span> <span class="o">=</span> <span class="n">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">invariant_failed</span><span class="p">:</span>
                 <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span> <span class="o">=</span> <span class="kc">False</span>
                 <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
                 <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
@@ -975,21 +988,27 @@
                                 <span class="n">timeout</span><span class="o">=</span><span class="n">timeout_per_run</span><span class="p">,</span>
                                 <span class="n">detect_io</span><span class="o">=</span><span class="n">detect_io</span><span class="p">,</span>
                                 <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span>
+                                <span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">,</span>
                             <span class="p">)</span>
-                            <span class="k">if</span> <span class="ow">not</span> <span class="n">invariant</span><span class="p">(</span><span class="n">replay_state</span><span class="p">):</span>
+                            <span class="n">replay_failed</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="n">replay_state</span><span class="p">)</span>
+                            <span class="k">if</span> <span class="n">replay_failed</span><span class="p">:</span>
                                 <span class="n">successes</span> <span class="o">+=</span> <span class="mi">1</span>
                         <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
                             <span class="k">pass</span>  <span class="c1"># timeout / crash during replay — not a reproduction</span>
                     <span class="n">result</span><span class="o">.</span><span class="n">reproduction_attempts</span> <span class="o">=</span> <span class="n">reproduce_on_failure</span>
                     <span class="n">result</span><span class="o">.</span><span class="n">reproduction_successes</span> <span class="o">=</span> <span class="n">successes</span>
 
-                <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="n">format_trace</span><span class="p">(</span>
+                <span class="n">trace_explanation</span> <span class="o">=</span> <span class="n">format_trace</span><span class="p">(</span>
                     <span class="n">recorder</span><span class="o">.</span><span class="n">events</span><span class="p">,</span>
                     <span class="n">num_threads</span><span class="o">=</span><span class="n">num_threads</span><span class="p">,</span>
                     <span class="n">num_explored</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="p">,</span>
                     <span class="n">reproduction_attempts</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">reproduction_attempts</span><span class="p">,</span>
                     <span class="n">reproduction_successes</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">reproduction_successes</span><span class="p">,</span>
                 <span class="p">)</span>
+                <span class="k">if</span> <span class="n">assertion_msg</span><span class="p">:</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;AssertionError: </span><span class="si">{</span><span class="n">assertion_msg</span><span class="si">}</span><span class="se">\n\n</span><span class="si">{</span><span class="n">trace_explanation</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="n">trace_explanation</span>
 
                 <span class="k">return</span> <span class="n">result</span>
 
@@ -1023,20 +1042,7 @@
 <span class="sd">    still interact oddly with threading. Consider using</span>
 <span class="sd">    settings(phases=[Phase.generate]) to skip shrinking if needed.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
-    <span class="kn">from</span><span class="w"> </span><span class="nn">hypothesis</span><span class="w"> </span><span class="kn">import</span> <span class="n">strategies</span> <span class="k">as</span> <span class="n">st</span>
-
-    <span class="n">max_rounds</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">max_ops</span> <span class="o">//</span> <span class="n">num_threads</span><span class="p">)</span>
-    <span class="n">threads</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">num_threads</span><span class="p">))</span>
-
-    <span class="nd">@st</span><span class="o">.</span><span class="n">composite</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">_fair_schedule</span><span class="p">(</span><span class="n">draw</span><span class="p">:</span> <span class="n">st</span><span class="o">.</span><span class="n">DrawFn</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
-        <span class="n">num_rounds</span> <span class="o">=</span> <span class="n">draw</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">integers</span><span class="p">(</span><span class="n">min_value</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">max_value</span><span class="o">=</span><span class="n">max_rounds</span><span class="p">))</span>
-        <span class="n">schedule</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
-        <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_rounds</span><span class="p">):</span>
-            <span class="n">schedule</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">draw</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">permutations</span><span class="p">(</span><span class="n">threads</span><span class="p">)))</span>
-        <span class="k">return</span> <span class="n">schedule</span>
-
-    <span class="k">return</span> <span class="n">_fair_schedule</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">fair_schedule_strategy</span><span class="p">(</span><span class="n">num_threads</span><span class="p">,</span> <span class="n">max_ops</span><span class="p">)</span>
 </pre></div>
         </article>
       </div>
@@ -1069,7 +1075,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=c87aa342"></script>
+</div><script src="../../_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

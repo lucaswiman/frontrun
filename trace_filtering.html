@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="How It Works Under the Hood" href="internals.html"><link rel="prev" title="Redis Conflict Detection – Technical Details" href="redis.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Trace Filtering - Frontrun 0.5.0 documentation</title>
+        <title>Trace Filtering - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -267,11 +267,11 @@ the filter to include specific installed packages.</p>
 <p>All exploration entry points accept an optional <code class="docutils literal notranslate"><span class="pre">trace_packages</span></code>
 argument — a list of package-name patterns using <code class="xref py py-mod docutils literal notranslate"><span class="pre">fnmatch</span></code> syntax
 (<code class="docutils literal notranslate"><span class="pre">*</span></code> matches any string, <code class="docutils literal notranslate"><span class="pre">?</span></code> matches one character).</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
-<span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="n">make_state</span><span class="p">,</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="n">thread_a</span><span class="p">,</span> <span class="n">thread_b</span><span class="p">],</span>
+    <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">thread_a</span><span class="p">,</span> <span class="n">thread_b</span><span class="p">],</span>
     <span class="n">invariant</span><span class="o">=</span><span class="n">check_invariant</span><span class="p">,</span>
     <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;mylib.*&quot;</span><span class="p">,</span> <span class="s2">&quot;django_filters.*&quot;</span><span class="p">],</span>
 <span class="p">)</span>
@@ -315,9 +315,8 @@ almost always the desired behaviour.</p>
 </div>
 <p>These entry points accept <code class="docutils literal notranslate"><span class="pre">trace_packages</span></code>:</p>
 <ul class="simple">
-<li><p><a class="reference internal" href="api_reference.html#frontrun.dpor.explore_dpor" title="frontrun.dpor.explore_dpor"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.dpor.explore_dpor()</span></code></a></p></li>
-<li><p><a class="reference internal" href="api_reference.html#frontrun.bytecode.explore_interleavings" title="frontrun.bytecode.explore_interleavings"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.bytecode.explore_interleavings()</span></code></a></p></li>
-<li><p><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.async_dpor.explore_async_dpor()</span></code></p></li>
+<li><p><a class="reference internal" href="api_reference.html#frontrun.explore" title="frontrun.explore"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code></a></p></li>
+<li><p><a class="reference internal" href="api_reference.html#frontrun.explore_random" title="frontrun.explore_random"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore_random()</span></code></a></p></li>
 <li><p><a class="reference internal" href="api_reference.html#frontrun.contrib.django.django_dpor" title="frontrun.contrib.django.django_dpor"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.contrib.django.django_dpor()</span></code></a> (has Django-specific defaults)</p></li>
 </ul>
 </section>
@@ -505,7 +504,7 @@ and <code class="docutils literal notranslate"><span class="pre">django_filters.
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
+</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

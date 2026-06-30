@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.async_shuffler - Frontrun 0.5.0 documentation</title>
+        <title>frontrun.async_shuffler - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -259,7 +259,7 @@
 <span class="sd">Example — find a race condition with random schedule exploration:</span>
 
 <span class="sd">    &gt;&gt;&gt; import asyncio</span>
-<span class="sd">    &gt;&gt;&gt; from frontrun import explore_interleavings</span>
+<span class="sd">    &gt;&gt;&gt; import frontrun</span>
 <span class="sd">    &gt;&gt;&gt;</span>
 <span class="sd">    &gt;&gt;&gt; class Counter:</span>
 <span class="sd">    ...     def __init__(self):</span>
@@ -269,7 +269,7 @@
 <span class="sd">    ...         await asyncio.sleep(0)  # any natural await is a scheduling point</span>
 <span class="sd">    ...         self.value = temp + 1</span>
 <span class="sd">    &gt;&gt;&gt;</span>
-<span class="sd">    &gt;&gt;&gt; result = asyncio.run(explore_interleavings(</span>
+<span class="sd">    &gt;&gt;&gt; result = asyncio.run(frontrun.explore_async_random(</span>
 <span class="sd">    ...     setup=lambda: Counter(),</span>
 <span class="sd">    ...     tasks=[lambda c: c.increment(), lambda c: c.increment()],</span>
 <span class="sd">    ...     invariant=lambda c: c.value == 2,</span>
@@ -300,16 +300,14 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">_sql_async_available</span><span class="p">,</span> <span class="n">patch_sql_async</span><span class="p">,</span> <span class="n">unpatch_sql_async</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_scheduler</span><span class="w"> </span><span class="kn">import</span> <span class="n">InterleavedLoop</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">DEPRECATION_MESSAGES</span><span class="p">,</span>
     <span class="n">InterleavingResult</span><span class="p">,</span>
     <span class="n">check_invariant</span><span class="p">,</span>
     <span class="n">check_serializability_violation</span><span class="p">,</span>
-    <span class="n">deprecate</span><span class="p">,</span>
 <span class="p">)</span>
 
 
 <div class="viewcode-block" id="AwaitScheduler">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AwaitScheduler">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">AwaitScheduler</span><span class="p">(</span><span class="n">InterleavedLoop</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Controls async task execution at await-point granularity.</span>
 
@@ -334,7 +332,7 @@
     <span class="c1"># -- InterleavedLoop policy -----------------------------------------</span>
 
 <div class="viewcode-block" id="AwaitScheduler.should_proceed">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AwaitScheduler.should_proceed">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.should_proceed">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">should_proceed</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">marker</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
         <span class="c1"># Skip past done tasks</span>
         <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">):</span>
@@ -351,7 +349,7 @@
 
 
 <div class="viewcode-block" id="AwaitScheduler.on_proceed">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AwaitScheduler.on_proceed">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.on_proceed">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">on_proceed</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">marker</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">):</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">+=</span> <span class="mi">1</span></div>
@@ -407,7 +405,7 @@
     <span class="c1"># -- DPOR-compat no-ops (the random shuffler has no DPOR engine) ------</span>
 
 <div class="viewcode-block" id="AwaitScheduler.report_and_wait">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AwaitScheduler.report_and_wait">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.report_and_wait">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">report_and_wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_frame</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">_thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op scheduling hook called by async SQL interception.</span>
 
@@ -418,19 +416,19 @@
 
 
 <div class="viewcode-block" id="AwaitScheduler.acquire_row_locks">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AwaitScheduler.acquire_row_locks">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.acquire_row_locks">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">acquire_row_locks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">_resource_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op: random exploration does not arbitrate SQL row locks.&quot;&quot;&quot;</span></div>
 
 
 <div class="viewcode-block" id="AwaitScheduler.release_row_locks">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AwaitScheduler.release_row_locks">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.release_row_locks">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">release_row_locks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op: random exploration does not arbitrate SQL row locks.&quot;&quot;&quot;</span></div>
 
 
 <div class="viewcode-block" id="AwaitScheduler.pause">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AwaitScheduler.pause">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.pause">[docs]</a>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">pause</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">marker</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">depth</span> <span class="o">=</span> <span class="n">_in_scheduler_pause</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
         <span class="n">_in_scheduler_pause</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">depth</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
@@ -449,7 +447,7 @@
 
 
 <div class="viewcode-block" id="AsyncShuffler">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AsyncShuffler">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AsyncShuffler">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">AsyncShuffler</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Run concurrent async functions with await-point-level interleaving control.</span>
 
@@ -467,7 +465,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">timed_out</span> <span class="o">=</span> <span class="kc">False</span>
 
 <div class="viewcode-block" id="AsyncShuffler.run">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.AsyncShuffler.run">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.AsyncShuffler.run">[docs]</a>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">funcs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="kc">None</span><span class="p">]]],</span>
@@ -518,7 +516,7 @@
 
 
 <div class="viewcode-block" id="controlled_interleaving">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.controlled_interleaving">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.controlled_interleaving">[docs]</a>
 <span class="nd">@asynccontextmanager</span>
 <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">controlled_interleaving</span><span class="p">(</span><span class="n">schedule</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="n">num_tasks</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncGenerator</span><span class="p">[</span><span class="n">AsyncShuffler</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Context manager for running async code under a specific interleaving.</span>
@@ -546,7 +544,7 @@
 
 
 <div class="viewcode-block" id="run_with_schedule">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.run_with_schedule">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.run_with_schedule">[docs]</a>
 <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run_with_schedule</span><span class="p">(</span>
     <span class="n">schedule</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span>
     <span class="n">setup</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Any</span><span class="p">],</span>
@@ -608,7 +606,7 @@
 
 
 <div class="viewcode-block" id="explore_async_random">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.explore_async_random">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.explore_async_random">[docs]</a>
 <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">explore_async_random</span><span class="p">(</span>
     <span class="n">setup</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Any</span><span class="p">],</span>
     <span class="n">tasks</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="kc">None</span><span class="p">]]],</span>
@@ -662,7 +660,7 @@
 <span class="sd">        field reports how many distinct schedule orderings were observed.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="n">error_on_any_race</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;error_on_any_race requires DPOR (use explore_async_dpor instead)&quot;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;error_on_any_race requires DPOR (use frontrun.explore with strategy=&#39;dpor&#39; instead)&quot;</span><span class="p">)</span>
 
     <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._dpor_core</span><span class="w"> </span><span class="kn">import</span> <span class="n">compute_serializable_baseline_async</span>
 
@@ -735,18 +733,8 @@
 
 
 
-<span class="n">explore_interleavings</span> <span class="o">=</span> <span class="n">deprecate</span><span class="p">(</span><span class="n">explore_async_random</span><span class="p">,</span> <span class="n">DEPRECATION_MESSAGES</span><span class="p">[</span><span class="s2">&quot;explore_async_interleavings&quot;</span><span class="p">])</span>
-<span class="n">explore_interleavings</span><span class="o">.</span><span class="vm">__doc__</span> <span class="o">=</span> <span class="p">(</span>
-    <span class="s2">&quot;Deprecated alias for :func:`explore_async_random`.</span><span class="se">\n\n</span><span class="s2">&quot;</span>
-    <span class="s2">&quot;.. deprecated:: 0.5</span><span class="se">\n</span><span class="s2">&quot;</span>
-    <span class="s2">&quot;    ``explore_interleavings`` (async form) will be removed in 0.6. Use</span><span class="se">\n</span><span class="s2">&quot;</span>
-    <span class="s2">&quot;    :func:`frontrun.explore` with ``strategy=&#39;random&#39;`` and async worker</span><span class="se">\n</span><span class="s2">&quot;</span>
-    <span class="s2">&quot;    functions instead.&quot;</span>
-<span class="p">)</span>
-
-
 <div class="viewcode-block" id="schedule_strategy">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.async_shuffler.schedule_strategy">[docs]</a>
+<a class="viewcode-back" href="../../api_reference.html#frontrun.schedule_strategy">[docs]</a>
 <span class="k">def</span><span class="w"> </span><span class="nf">schedule_strategy</span><span class="p">(</span><span class="n">num_tasks</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">max_ops</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>  <span class="c1"># type: ignore[name-defined]</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Hypothesis strategy for generating fair await-point schedules.</span>
 
@@ -803,7 +791,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=1dd76d02"></script>
+</div><script src="../../_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

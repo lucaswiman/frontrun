@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.trace_markers - Frontrun 0.5.0 documentation</title>
+        <title>frontrun.trace_markers - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -264,14 +264,11 @@
 <span class="sd">    ])</span>
 
 <span class="sd">    executor = TraceExecutor(schedule)</span>
-<span class="sd">    executor.run(&quot;thread1&quot;, worker_function)</span>
-<span class="sd">    executor.run(&quot;thread2&quot;, worker_function)</span>
-<span class="sd">    executor.wait()</span>
+<span class="sd">    executor.run({&quot;thread1&quot;: worker_function, &quot;thread2&quot;: worker_function})</span>
 <span class="sd">    ```</span>
 <span class="sd">&quot;&quot;&quot;</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
 
@@ -282,7 +279,7 @@
     <span class="n">finalize_marker_executor_run</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._trace_marker_runtime</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_trace_function</span><span class="p">,</span> <span class="n">run_traced_callable</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">DEPRECATION_MESSAGES</span><span class="p">,</span> <span class="n">InterleavingResult</span><span class="p">,</span> <span class="n">Schedule</span><span class="p">,</span> <span class="n">Step</span><span class="p">,</span> <span class="n">any_async</span><span class="p">,</span> <span class="n">check_invariant</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">InterleavingResult</span><span class="p">,</span> <span class="n">Schedule</span><span class="p">,</span> <span class="n">Step</span><span class="p">,</span> <span class="n">any_async</span><span class="p">,</span> <span class="n">check_invariant</span>
 
 <span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span>
     <span class="s2">&quot;MARKER_PATTERN&quot;</span><span class="p">,</span>
@@ -414,16 +411,15 @@
 <span class="k">class</span><span class="w"> </span><span class="nc">TraceExecutor</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Facade over sync and async marker-based schedule execution.</span>
 
-<span class="sd">    Sync usage matches the historical ``TraceExecutor`` API:</span>
+<span class="sd">    Pass a dict mapping thread/task names to zero-argument callables (sync</span>
+<span class="sd">    or async).  ``run`` starts every worker and waits for them in one call:</span>
 
 <span class="sd">    .. code-block:: python</span>
 
 <span class="sd">       executor = TraceExecutor(schedule)</span>
-<span class="sd">       executor.run(&quot;t1&quot;, worker1)</span>
-<span class="sd">       executor.run(&quot;t2&quot;, worker2)</span>
-<span class="sd">       executor.wait()</span>
+<span class="sd">       executor.run({&quot;t1&quot;: worker1, &quot;t2&quot;: worker2})</span>
 
-<span class="sd">    Async usage accepts the async-task mapping directly:</span>
+<span class="sd">    Async usage accepts the async-task mapping the same way:</span>
 
 <span class="sd">    .. code-block:: python</span>
 
@@ -464,83 +460,35 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">_sync</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">fn</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_sync</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_run_individual</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span>
-        <span class="n">execution_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
-        <span class="n">target</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span>
-        <span class="n">args</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span>
-        <span class="n">kwargs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Start a single named thread (legacy individual-call form).&quot;&quot;&quot;</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mode</span> <span class="o">==</span> <span class="s2">&quot;async&quot;</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;TraceExecutor is already running in async mode&quot;</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_mode</span> <span class="o">=</span> <span class="s2">&quot;sync&quot;</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_sync</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">execution_name</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span>
-
 <div class="viewcode-block" id="TraceExecutor.run">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.trace_markers.TraceExecutor.run">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span>
-        <span class="n">execution_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]],</span>
-        <span class="n">target</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-        <span class="n">args</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span>
-        <span class="n">kwargs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-        <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run one or more threads under schedule control.</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tasks</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]],</span> <span class="o">*</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run all named workers under schedule control and wait for completion.</span>
 
-<span class="sd">        **New (preferred) form** — pass a dict mapping thread names to callables.</span>
-<span class="sd">        This starts all threads and waits for them in a single call::</span>
+<span class="sd">        Pass a dict mapping thread/task names to zero-argument callables.</span>
+<span class="sd">        ``run`` starts every worker and joins them in a single call::</span>
 
 <span class="sd">            executor.run({&quot;thread1&quot;: fn1, &quot;thread2&quot;: fn2}, timeout=5.0)</span>
 
-<span class="sd">        **Legacy form** — pass a name and a callable separately.</span>
-<span class="sd">        The caller must then call :meth:`wait` explicitly.</span>
-<span class="sd">        This form is *deprecated* and will be removed in 0.6::</span>
-
-<span class="sd">            executor.run(&quot;thread1&quot;, fn1)</span>
-<span class="sd">            executor.run(&quot;thread2&quot;, fn2)</span>
-<span class="sd">            executor.wait(timeout=5.0)</span>
+<span class="sd">        Async coroutines in the dict are dispatched to the async executor.</span>
 
 <span class="sd">        Args:</span>
-<span class="sd">            execution_name: Either a ``{name: callable}`` dict (new form) or a</span>
-<span class="sd">                string thread name (deprecated legacy form).</span>
-<span class="sd">            target: Target callable for the legacy individual-call form.</span>
-<span class="sd">            args: Positional arguments forwarded to *target* (legacy form only).</span>
-<span class="sd">            kwargs: Keyword arguments forwarded to *target* (legacy form only).</span>
-<span class="sd">            timeout: Total wait timeout in seconds (dict form only; for the</span>
-<span class="sd">                legacy form pass *timeout* to :meth:`wait` instead).</span>
+<span class="sd">            tasks: Mapping of execution-unit name to a zero-argument callable.</span>
+<span class="sd">            timeout: Total wait timeout in seconds.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">execution_name</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
-            <span class="k">if</span> <span class="n">target</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
-                    <span class="s2">&quot;TraceExecutor.run(): cannot mix the dict form and the legacy positional form. &quot;</span>
-                    <span class="s2">&quot;Pass either run({&#39;name&#39;: fn, ...}) or run(&#39;name&#39;, fn), not both.&quot;</span>
-                <span class="p">)</span>
-            <span class="k">if</span> <span class="n">any_async</span><span class="p">(</span><span class="n">execution_name</span><span class="o">.</span><span class="n">values</span><span class="p">()):</span>
-                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mode</span> <span class="o">==</span> <span class="s2">&quot;sync&quot;</span><span class="p">:</span>
-                    <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;TraceExecutor is already running in sync mode&quot;</span><span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_mode</span> <span class="o">=</span> <span class="s2">&quot;async&quot;</span>
-                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_async</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                    <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncTraceExecutor</span>
+        <span class="k">if</span> <span class="n">any_async</span><span class="p">(</span><span class="n">tasks</span><span class="o">.</span><span class="n">values</span><span class="p">()):</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mode</span> <span class="o">==</span> <span class="s2">&quot;sync&quot;</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;TraceExecutor is already running in sync mode&quot;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_mode</span> <span class="o">=</span> <span class="s2">&quot;async&quot;</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_async</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncTraceExecutor</span>
 
-                    <span class="bp">self</span><span class="o">.</span><span class="n">_async</span> <span class="o">=</span> <span class="n">AsyncTraceExecutor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">,</span> <span class="n">deadlock_timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_async</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">execution_name</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">_DEFAULT_ASYNC_TIMEOUT</span> <span class="k">if</span> <span class="n">timeout</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">timeout</span><span class="p">)</span>
-                <span class="k">return</span>
-
-            <span class="c1"># All values are sync callables → use the new sync dict form.</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_run_dict</span><span class="p">(</span><span class="n">execution_name</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_async</span> <span class="o">=</span> <span class="n">AsyncTraceExecutor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">,</span> <span class="n">deadlock_timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_async</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">tasks</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">_DEFAULT_ASYNC_TIMEOUT</span> <span class="k">if</span> <span class="n">timeout</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">timeout</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="k">if</span> <span class="n">target</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;TraceExecutor.run() missing target for sync execution&quot;</span><span class="p">)</span>
-
-        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
-            <span class="n">DEPRECATION_MESSAGES</span><span class="p">[</span><span class="s2">&quot;trace_executor_run_legacy_form&quot;</span><span class="p">],</span>
-            <span class="ne">DeprecationWarning</span><span class="p">,</span>
-            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-        <span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_run_individual</span><span class="p">(</span><span class="n">execution_name</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span></div>
+        <span class="c1"># All values are sync callables → use the sync dict form.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_run_dict</span><span class="p">(</span><span class="n">tasks</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="TraceExecutor.wait">
@@ -904,7 +852,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=1dd76d02"></script>
+</div><script src="../../_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

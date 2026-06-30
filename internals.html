@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="API Reference" href="api_reference.html"><link rel="prev" title="Trace Filtering" href="trace_filtering.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>How It Works Under the Hood - Frontrun 0.5.0 documentation</title>
+        <title>How It Works Under the Hood - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -539,7 +539,7 @@ wakeup sequences for better coverage.  Optionally adds
 <p><strong>Async shuffler</strong> does <em>not</em> use opcode tracing.  It stays entirely in a
 single asyncio event loop and uses <code class="docutils literal notranslate"><span class="pre">InterleavedLoop</span></code> plus
 <code class="docutils literal notranslate"><span class="pre">contextvars</span></code> to control tasks at natural coroutine suspension points.
-<code class="docutils literal notranslate"><span class="pre">explore_interleavings()</span></code> generates random schedules over those await
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore_async_random()</span></code> generates random schedules over those await
 boundaries and checks the invariant afterward.  It does not try to
 understand which schedules are equivalent; it simply samples them.</p>
 <p><strong>Async DPOR</strong> also stays in a single asyncio event loop, but the
@@ -559,15 +559,15 @@ from the Rust interception library are available via
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>DPOR consumes <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code> events when <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> (the
-default).  <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code> starts an <code class="docutils literal notranslate"><span class="pre">IOEventDispatcher</span></code> that
+default).  <code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> starts an <code class="docutils literal notranslate"><span class="pre">IOEventDispatcher</span></code> that
 reads the pipe, and a <code class="docutils literal notranslate"><span class="pre">_PreloadBridge</span></code> maps OS thread IDs to DPOR
 logical thread IDs and buffers events for draining at each scheduling
 point.  This means C extensions that call libc <code class="docutils literal notranslate"><span class="pre">send()</span></code>/<code class="docutils literal notranslate"><span class="pre">recv()</span></code>
 directly (e.g. psycopg2 via libpq) are covered — DPOR treats the
 shared socket endpoint as a conflict and explores alternative
 orderings around the I/O.</p>
-<p>The bytecode explorer does <em>not</em> consume <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code> events.  It
-relies on Python-level monkey-patching (and random scheduling) to
+<p>The random bytecode explorer does <em>not</em> consume <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code> events.
+It relies on Python-level monkey-patching (and random scheduling) to
 find races involving C-level I/O.</p>
 </div>
 <div class="table-wrapper colwidths-given docutils container" id="id1">
@@ -695,7 +695,7 @@ how much they observe and how they choose schedules.</p>
 boundary.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">await_point()</span></code> is optional; it just adds an extra explicit yield.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">AwaitScheduler</span></code> follows a concrete list of task indices, or
-<code class="docutils literal notranslate"><span class="pre">explore_interleavings()</span></code> samples random such lists.</p></li>
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore_async_random()</span></code> samples random such lists.</p></li>
 <li><p>No Python opcode tracing runs inside the block between two
 await boundaries.</p></li>
 <li><p>This makes the implementation simple and the schedules stable across
@@ -836,7 +836,7 @@ same <code class="docutils literal notranslate"><span class="pre">WaitForGraph</
 SchedulerAbort raised in detecting thread
 Other threads see scheduler._error and exit their spin loops
 runner.run() returns normally (no TimeoutError)
-explore_dpor checks isinstance(scheduler._error, DeadlockError)
+explore checks isinstance(scheduler._error, DeadlockError)
     → result.property_holds = False
     → result.explanation = &quot;Deadlock detected ... &lt;cycle&gt;&quot;
     → result.counterexample = schedule trace
@@ -1269,7 +1269,7 @@ insertion as before.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
+</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

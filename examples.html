@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="SQLAlchemy Lost-Update Race Condition" href="orm_race.html"><link rel="prev" title="Search Strategies" href="search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Examples - Frontrun 0.5.0 documentation</title>
+        <title>Examples - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -281,9 +281,10 @@ The second write overwrites the first, losing one transfer:</p>
 <span class="p">])</span>
 
 <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;transfer1&quot;</span><span class="p">,</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">))</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;transfer2&quot;</span><span class="p">,</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">))</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
+<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
+    <span class="s2">&quot;transfer1&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
+    <span class="s2">&quot;transfer2&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
+<span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
 
 <span class="k">assert</span> <span class="n">account</span><span class="o">.</span><span class="n">balance</span> <span class="o">==</span> <span class="mi">150</span>  <span class="c1"># should be 200; one transfer lost</span>
 </pre></div>
@@ -320,9 +321,10 @@ regardless of which thread arrives first:</p>
 <span class="p">])</span>
 
 <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;transfer1&quot;</span><span class="p">,</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">))</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;transfer2&quot;</span><span class="p">,</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">))</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
+<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
+    <span class="s2">&quot;transfer1&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
+    <span class="s2">&quot;transfer2&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
+<span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
 
 <span class="k">assert</span> <span class="n">account</span><span class="o">.</span><span class="n">balance</span> <span class="o">==</span> <span class="mi">200</span>  <span class="c1"># both transfers applied correctly</span>
 </pre></div>
@@ -332,7 +334,7 @@ regardless of which thread arrives first:</p>
 <h2>Automatic Race Finding with DPOR<a class="headerlink" href="#automatic-race-finding-with-dpor" title="Link to this heading">¶</a></h2>
 <p>DPOR systematically explores all meaningfully different interleavings.
 No markers needed — it detects shared-memory conflicts automatically:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -342,9 +344,9 @@ No markers needed — it detects shared-memory conflicts automatically:</p>
         <span class="n">temp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>
 
-<span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="n">Counter</span><span class="p">,</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
+    <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">()],</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
 <span class="p">)</span>
 
@@ -374,7 +376,7 @@ No markers needed — it detects shared-memory conflicts automatically:</p>
 <p>Bytecode exploration generates random opcode-level schedules. It often
 finds races very quickly and can catch races invisible to DPOR (e.g. shared
 state in C extensions), but the error traces are less interpretable:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.bytecode</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_interleavings</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="mi">0</span><span class="p">):</span>
@@ -384,7 +386,7 @@ state in C extensions), but the error traces are less interpretable:</p>
         <span class="n">temp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>
 
-<span class="n">result</span> <span class="o">=</span> <span class="n">explore_interleavings</span><span class="p">(</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore_random</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">Counter</span><span class="p">(</span><span class="n">value</span><span class="o">=</span><span class="mi">0</span><span class="p">),</span>
     <span class="n">threads</span><span class="o">=</span><span class="p">[</span>
         <span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span>
@@ -461,7 +463,7 @@ state in C extensions), but the error traces are less interpretable:</p>
 </section>
 <section id="interactive-html-exploration-reports">
 <h2>Interactive HTML Exploration Reports<a class="headerlink" href="#interactive-html-exploration-reports" title="Link to this heading">¶</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code> can write a self-contained interactive HTML report that
+<p><code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> can write a self-contained interactive HTML report that
 lets you step through every explored execution, inspect thread switch-points,
 and see the conflicting attribute accesses that caused each reordering.</p>
 <p><strong>Generating a report from pytest</strong> — pass <code class="docutils literal notranslate"><span class="pre">--frontrun-report</span> <span class="pre">PATH</span></code> to the
@@ -470,9 +472,9 @@ and see the conflicting attribute accesses that caused each reordering.</p>
 </pre></div>
 </div>
 <p><strong>Generating a report from a script</strong> — set <code class="docutils literal notranslate"><span class="pre">_global_report_path</span></code> before
-calling <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun._report</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
+calling <code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">frontrun._report</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Accounts</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -492,9 +494,9 @@ calling <code class="docutils literal notranslate"><span class="pre">explore_dpo
 
 <span class="n">frontrun</span><span class="o">.</span><span class="n">_report</span><span class="o">.</span><span class="n">_global_report_path</span> <span class="o">=</span> <span class="s2">&quot;dpor_report.html&quot;</span>
 <span class="k">try</span><span class="p">:</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">Accounts</span><span class="p">,</span>
-        <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="n">transfer_a_to_b</span><span class="p">,</span> <span class="n">transfer_b_to_c</span><span class="p">],</span>
+        <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">transfer_a_to_b</span><span class="p">,</span> <span class="n">transfer_b_to_c</span><span class="p">],</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">accs</span><span class="p">:</span> <span class="n">accs</span><span class="o">.</span><span class="n">a</span> <span class="o">+</span> <span class="n">accs</span><span class="o">.</span><span class="n">b</span> <span class="o">+</span> <span class="n">accs</span><span class="o">.</span><span class="n">c</span> <span class="o">==</span> <span class="mi">300</span><span class="p">,</span>
         <span class="n">preemption_bound</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
     <span class="p">)</span>
@@ -631,7 +633,7 @@ interception via <code class="docutils literal notranslate"><span class="pre">LD
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
+</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

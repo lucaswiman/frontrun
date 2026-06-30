@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="How Frontrun Works" href="approaches.html"><link rel="prev" title="Installation" href="installation.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Quick Start - Frontrun 0.5.0 documentation</title>
+        <title>Quick Start - Frontrun 0.6.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -359,17 +359,6 @@ them in a single call:</p>
 </pre></div>
 </div>
 <p>This is the preferred form and matches the async API exactly.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><strong>Legacy API (deprecated)</strong></p>
-<p>The original two-step form is still supported but emits a
-<code class="docutils literal notranslate"><span class="pre">DeprecationWarning</span></code> and will be removed in version 0.6:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;thread1&quot;</span><span class="p">,</span> <span class="n">task_function_1</span><span class="p">)</span>   <span class="c1"># deprecated</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;thread2&quot;</span><span class="p">,</span> <span class="n">task_function_2</span><span class="p">)</span>   <span class="c1"># deprecated</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
 </section>
 <section id="async-support">
 <h2>Async Support<a class="headerlink" href="#async-support" title="Link to this heading">¶</a></h2>
@@ -444,7 +433,7 @@ scheduled tasks.</p>
 <h2>Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts<a class="headerlink" href="#prefer-assert-holds-over-manual-asserts" title="Link to this heading">¶</a></h2>
 <p>Instead of writing <code class="docutils literal notranslate"><span class="pre">assert</span> <span class="pre">result.property_holds,</span> <span class="pre">result.explanation</span></code> after
 every exploration call, use the convenience helper <code class="xref py py-meth docutils literal notranslate"><span class="pre">InterleavingResult.assert_holds()</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span><span class="n">setup</span><span class="p">,</span> <span class="p">[</span><span class="n">thread1</span><span class="p">,</span> <span class="n">thread2</span><span class="p">],</span> <span class="n">invariant</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span><span class="n">setup</span><span class="o">=</span><span class="n">setup</span><span class="p">,</span> <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">thread1</span><span class="p">,</span> <span class="n">thread2</span><span class="p">],</span> <span class="n">invariant</span><span class="o">=</span><span class="n">invariant</span><span class="p">)</span>
 <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>  <span class="c1"># raises AssertionError with explanation on failure</span>
 </pre></div>
 </div>
@@ -529,7 +518,7 @@ when multiple assertions appear in one test:</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
+</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

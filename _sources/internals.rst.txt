@@ -343,7 +343,7 @@ wakeup sequences for better coverage.  Optionally adds
 **Async shuffler** does *not* use opcode tracing.  It stays entirely in a
 single asyncio event loop and uses ``InterleavedLoop`` plus
 ``contextvars`` to control tasks at natural coroutine suspension points.
-``explore_interleavings()`` generates random schedules over those await
+``frontrun.explore_async_random()`` generates random schedules over those await
 boundaries and checks the invariant afterward.  It does not try to
 understand which schedules are equivalent; it simply samples them.
 
@@ -366,7 +366,7 @@ from the Rust interception library are available via
 .. note::
 
    DPOR consumes ``LD_PRELOAD`` events when ``detect_io=True`` (the
-   default).  ``explore_dpor()`` starts an ``IOEventDispatcher`` that
+   default).  ``frontrun.explore()`` starts an ``IOEventDispatcher`` that
    reads the pipe, and a ``_PreloadBridge`` maps OS thread IDs to DPOR
    logical thread IDs and buffers events for draining at each scheduling
    point.  This means C extensions that call libc ``send()``/``recv()``
@@ -374,8 +374,8 @@ from the Rust interception library are available via
    shared socket endpoint as a conflict and explores alternative
    orderings around the I/O.
 
-   The bytecode explorer does *not* consume ``LD_PRELOAD`` events.  It
-   relies on Python-level monkey-patching (and random scheduling) to
+   The random bytecode explorer does *not* consume ``LD_PRELOAD`` events.
+   It relies on Python-level monkey-patching (and random scheduling) to
    find races involving C-level I/O.
 
 .. list-table:: Mechanism usage by approach
@@ -470,7 +470,7 @@ how much they observe and how they choose schedules.
   boundary.
 - ``await_point()`` is optional; it just adds an extra explicit yield.
 - ``AwaitScheduler`` follows a concrete list of task indices, or
-  ``explore_interleavings()`` samples random such lists.
+  ``frontrun.explore_async_random()`` samples random such lists.
 - No Python opcode tracing runs inside the block between two
   await boundaries.
 - This makes the implementation simple and the schedules stable across
@@ -635,7 +635,7 @@ same ``WaitForGraph`` and the DFS traverses edges regardless of kind.
     SchedulerAbort raised in detecting thread
     Other threads see scheduler._error and exit their spin loops
     runner.run() returns normally (no TimeoutError)
-    explore_dpor checks isinstance(scheduler._error, DeadlockError)
+    explore checks isinstance(scheduler._error, DeadlockError)
         → result.property_holds = False
         → result.explanation = "Deadlock detected ... <cycle>"
         → result.counterexample = schedule trace
