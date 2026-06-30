@@ -484,8 +484,8 @@ class TestExploreRandomDeadlockHandling:
         )
 
 
-def test_timeout_does_not_inflate_unique_interleavings():
-    """Timed-out schedules must not count toward unique_interleavings.
+def test_timeout_counts_as_explored():
+    """Timed-out schedules must be counted in both num_explored and unique_interleavings.
 
     Regression: the TimeoutError handler added the schedule hash to
     seen_schedule_hashes without incrementing num_explored, causing
@@ -505,7 +505,7 @@ def test_timeout_does_not_inflate_unique_interleavings():
         seed=42,
         patch_sleep=False,
     )
+    assert result.num_explored > 0, "timed-out runs should still count as explored"
     assert result.unique_interleavings <= result.num_explored, (
-        f"unique_interleavings ({result.unique_interleavings}) should not exceed "
-        f"num_explored ({result.num_explored}); timed-out runs were counted as unique"
+        f"unique_interleavings ({result.unique_interleavings}) should not exceed num_explored ({result.num_explored})"
     )
