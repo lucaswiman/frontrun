@@ -41,7 +41,8 @@ sees each process as a "thread" id.
 ```
 ┌─────────────────────────────┐
 │ coordinator (test process)  │   owns: Rust DPOR engine, RowLockRegistry,
-│   explore(processes={...})  │         wait-for graph, schedule trace, invariant
+│   frontrun.explore(         │         wait-for graph, schedule trace, invariant
+│       processes={...})      │
 └──────────┬──────────────────┘
            │ unix socket (length-prefixed msgpack/json)
    ┌───────┴────────┬─────────────────┐
@@ -94,9 +95,9 @@ engine, repeat until the wakeup tree is exhausted. Counterexample = schedule of
 ## API sketch
 
 ```python
-from frontrun import explore
+import frontrun
 
-result = explore(
+result = frontrun.explore(
     strategy="dpor",
     processes={
         "worker_a": frontrun.Subprocess("myapp.checkout:run", args=(order_id,)),

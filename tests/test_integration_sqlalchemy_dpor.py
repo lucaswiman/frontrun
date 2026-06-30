@@ -4,7 +4,7 @@ Verifies that ``sqlalchemy_dpor`` correctly:
 1. Disposes the engine before each execution (fresh connections via patch_sql)
 2. Provides per-thread connections via ``get_connection()``
 3. Injects ``lock_timeout`` on each thread's connection
-4. Passes ``lock_timeout`` through to ``explore_dpor`` for raw connections
+4. Passes ``lock_timeout`` through to ``explore()`` for raw connections
 5. Detects TOCTOU races with check-then-insert patterns
 """
 
@@ -273,13 +273,13 @@ def test_sqlalchemy_setup_failure_closes_connection(monkeypatch: pytest.MonkeyPa
     def _thread_fn(_state: object) -> None:
         raise AssertionError("thread should not run after setup failure")
 
-    def _explore_dpor(*, setup, threads, invariant, detect_io, lock_timeout, **kwargs):  # type: ignore[no-untyped-def]
+    def _fake_explore_dpor(*, setup, threads, invariant, detect_io, lock_timeout, **kwargs):  # type: ignore[no-untyped-def]
         with pytest.raises(RuntimeError, match="SET lock_timeout failed"):
             wrapped_setup = setup()
             threads[0](wrapped_setup)
         return object()
 
-    monkeypatch.setattr("frontrun.dpor.explore_dpor", _explore_dpor)
+    monkeypatch.setattr("frontrun._dpor_runtime.explore._explore_dpor", _fake_explore_dpor)
 
     try:
         sa_helper.sqlalchemy_dpor(

@@ -30,7 +30,7 @@ def _scheduler_run_evaluable(error: BaseException | None) -> bool:
     return not isinstance(error, (DeadlockError, TimeoutError))
 
 
-def _explore_dpor(
+def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-module by frontrun._strategy and contrib helpers
     setup: Callable[[], T],
     threads: list[Callable[[T], None]],
     invariant: Callable[[T], bool],
@@ -54,9 +54,9 @@ def _explore_dpor(
 ) -> InterleavingResult:
     """Systematically explore interleavings using DPOR.
 
-    This is the DPOR replacement for ``explore_interleavings()``. Instead of
-    random sampling, it uses the DPOR algorithm to explore only distinct
-    interleavings (modulo independent operation reordering).
+    Internal sync DPOR exploration. Called via :func:`frontrun.explore`
+    (strategy='dpor', the default).  Uses the DPOR algorithm to explore only
+    distinct interleavings (modulo independent operation reordering).
 
     Args:
         setup: Creates fresh shared state for each execution.
@@ -149,7 +149,7 @@ def _explore_dpor(
        ``--frontrun-patch-locks`` flag.  Without it, the test is
        automatically skipped.
     """
-    _require_frontrun_env("explore_dpor")
+    _require_frontrun_env("frontrun.explore")
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 
@@ -530,12 +530,3 @@ def _explore_dpor(
         generate_html_report(report, report_path)
 
     return result
-
-
-explore_dpor = deprecate(_explore_dpor, DEPRECATION_MESSAGES["explore_dpor"])
-explore_dpor.__doc__ = (
-    "Deprecated alias for the DPOR exploration entry point.\n\n"
-    ".. deprecated:: 0.5\n"
-    "    ``explore_dpor`` will be removed in 0.6. Use :func:`frontrun.explore`\n"
-    "    with ``strategy='dpor'`` (the default) instead."
-)

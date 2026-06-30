@@ -19,14 +19,9 @@ manual markers. It automatically detects attribute reads/writes, subscript
 accesses, and lock operations. The exploration engine is written in Rust for
 performance.
 
-.. note::
-
-   Prefer :func:`frontrun.explore` (the new unified API, 0.5+). The old
-   ``explore_dpor`` function is deprecated and will be removed in 0.6.
-
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
    class Counter:
        def __init__(self):
@@ -36,24 +31,13 @@ performance.
            temp = self.value
            self.value = temp + 1
 
-   result = explore(
+   result = frontrun.explore(
        setup=Counter,
        workers=Counter.increment,
        count=2,
        invariant=lambda c: c.value == 2,
    )
    result.assert_holds()
-
-Old API (deprecated)::
-
-   from frontrun.dpor import explore_dpor
-
-   result = explore_dpor(
-       setup=Counter,
-       threads=[lambda c: c.increment(), lambda c: c.increment()],
-       invariant=lambda c: c.value == 2,
-   )
-   assert result.property_holds, result.explanation
 
 When a race is found, ``result.explanation`` contains an interleaved source-line
 trace showing which threads accessed which shared state and the conflict pattern.
@@ -125,15 +109,9 @@ Random exploration (``strategy="random"``) does property-based exploration in th
 opcode-level schedules and checks that an invariant holds under each one,
 returning any counterexample schedule.
 
-.. note::
-
-   Prefer :func:`frontrun.explore` with ``strategy="random"`` (the new unified
-   API, 0.5+). The old ``explore_interleavings`` function is deprecated and
-   will be removed in 0.6.
-
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
    class Counter:
        def __init__(self, value=0):
@@ -144,7 +122,7 @@ returning any counterexample schedule.
            self.value = temp + 1
 
    def test_counter_is_atomic():
-       result = explore(
+       result = frontrun.explore(
            setup=lambda: Counter(value=0),
            workers=Counter.increment,
            count=2,
@@ -154,20 +132,6 @@ returning any counterexample schedule.
            seed=42,
        )
        result.assert_holds()
-
-Old API (deprecated)::
-
-   from frontrun.bytecode import explore_interleavings
-
-   result = explore_interleavings(
-       setup=lambda: Counter(value=0),
-       threads=[lambda c: c.increment(), lambda c: c.increment()],
-       invariant=lambda c: c.value == 2,
-       max_attempts=200,
-       max_ops=200,
-       seed=42,
-   )
-   assert result.property_holds, result.explanation
 
 Random exploration often finds races very quickly --- sometimes on the
 first attempt --- because even a single random schedule has a reasonable chance
@@ -195,7 +159,7 @@ debugging this library or building tooling on top of it, rather than for general
    Opcode-level schedules are not stable across Python versions. CPython does not guarantee
    that the same source code will compile to the same bytecode between minor releases, so a
    specific schedule that reproduces a race on Python 3.12 may not reproduce the same
-   interleaving on 3.13. Counterexample schedules returned by ``explore_interleavings``
+   interleaving on 3.13. Counterexample schedules returned by ``frontrun.explore_random``
    are likewise best treated as ephemeral debugging artifacts rather than long-lived test fixtures.
 
    The async variant (``frontrun.async_shuffler``) uses natural ``await``
@@ -357,9 +321,10 @@ produce minimal counterexamples:
    def test_counter_is_atomic(schedule):
        counter = Counter()
        executor = TraceExecutor(schedule)
-       executor.run("t1", counter.increment)
-       executor.run("t2", counter.increment)
-       executor.wait(timeout=5.0)
+       executor.run({
+           "t1": counter.increment,
+           "t2": counter.increment,
+       }, timeout=5.0)
        assert counter.value == 2
 
 **Enumeration:**
@@ -459,7 +424,7 @@ Use :meth:`~frontrun.common.InterleavingResult.assert_holds` to check the result
 in a single call — it raises ``AssertionError`` (with the full race explanation)
 on failure and returns ``None`` on success::
 
-   result = explore_dpor(setup, [t1, t2], invariant)
+   result = frontrun.explore(setup=setup, workers=[t1, t2], invariant=invariant)
    result.assert_holds()   # raises with explanation when property_holds is False
 
 This is preferable to ``assert result.property_holds, result.explanation``

@@ -31,7 +31,7 @@ import threading
 
 import pytest
 
-from frontrun import explore
+import frontrun
 
 # All search strategies should produce the same exact Mazurkiewicz trace
 # counts. The strategies only change the *order* of exploration, not the
@@ -105,7 +105,7 @@ class TestIndependentState:
 
             return thread_fn
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: all(s.slots[i].value == i + 1 for i in range(len(s.slots))),
@@ -204,7 +204,7 @@ class TestTwoThreadsSharedState:
             return thread_fn
 
         expected = 2**n
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
@@ -283,7 +283,7 @@ class TestNThreadsWithLock:
             return thread_fn
 
         expected = math.factorial(n)
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: True,
@@ -350,7 +350,7 @@ class TestTwoThreadsSharedStateWithLock:
 
             return thread_fn
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
@@ -407,7 +407,7 @@ class TestFileIOTraceCount:
 
             return thread_fn
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: all(open(paths[i]).read() == str(i + 1) for i in range(n)),
@@ -451,7 +451,7 @@ class TestFileIOTraceCount:
 
             return thread_fn
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
@@ -499,7 +499,7 @@ class TestFileIOTraceCount:
         import math
 
         expected = math.factorial(n)
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: True,
@@ -914,7 +914,7 @@ class TestPostgreSQLRawPsycopg2TraceCount:
 
             return thread_fn
 
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
@@ -958,7 +958,7 @@ class TestPostgreSQLRawPsycopg2TraceCount:
             return thread_fn
 
         expected = math.factorial(n)
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[make_thread(i) for i in range(n)],
             invariant=lambda s: True,
@@ -1007,7 +1007,7 @@ class TestPostgreSQLRawPsycopg2TraceCount:
             finally:
                 _pg_close_suppressed(conn)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[thread_a, thread_b],
             invariant=lambda s: True,
@@ -1060,7 +1060,7 @@ class TestPostgreSQLRawPsycopg2TraceCount:
             return thread_fn
 
         expected = 2**n
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,
@@ -1139,7 +1139,7 @@ class TestPostgreSQLRawPsycopg2SuppressBug:
 
             return thread_fn
 
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[make_thread(0), make_thread(1)],
             invariant=lambda s: True,

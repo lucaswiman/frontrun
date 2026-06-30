@@ -143,7 +143,7 @@ Currently, `step()` picks the min-index thread from the wakeup tree
 heuristics.
 
 **Implementation**:
-1. Add a `randomize: bool` (or `seed: int | None`) parameter to `explore_dpor()`
+1. Add a `randomize: bool` (or `seed: int | None`) parameter to `frontrun.explore()`
 2. In `Path::step()`, instead of `wakeup.min_thread()`, use
    `wakeup.random_thread(rng)` — pick uniformly at random from the available
    wakeup tree children
@@ -275,7 +275,7 @@ explore (shallow backtracks, find bugs in distant parts of the space).
 
 **Start with Proposal A** (randomized wakeup tree ordering). It's the lowest
 effort, doesn't compromise any DPOR guarantees, and directly addresses the
-concern about DFS ordering bias. A `seed` parameter on `explore_dpor()` would
+concern about DFS ordering bias. A `seed` parameter on `frontrun.explore()` would
 let users run multiple randomized explorations in parallel for even better
 coverage.
 
@@ -295,21 +295,21 @@ subtle.
 
 ---
 
-## Relation to existing `explore_interleavings()`
+## Relation to existing `frontrun.explore_random()`
 
-We already have a pure-random bytecode explorer (`explore_interleavings()` in
+We already have a pure-random bytecode explorer (`frontrun.explore_random()` in
 `bytecode.py`) that generates random round-robin schedules via Hypothesis.
 This is complementary to — not competitive with — the proposals above:
 
-- `explore_interleavings()` explores **random schedules** (many schedules per
+- `frontrun.explore_random()` explores **random schedules** (many schedules per
   equivalence class, no trace-level deduplication)
-- `explore_dpor()` explores **equivalence classes** (one schedule per class,
-  systematic)
+- `frontrun.explore(strategy="dpor")` explores **equivalence classes** (one schedule per
+  class, systematic)
 - The proposals here add **randomized ordering** to the systematic exploration,
   getting the best of both worlds
 
 The fingerprinting from Proposal B could potentially be shared: use the same
-trace fingerprint to detect when `explore_interleavings()` is stuck in a
+trace fingerprint to detect when `frontrun.explore_random()` is stuck in a
 neighborhood, and inject a Hypothesis-generated schedule that targets a
 different region.
 

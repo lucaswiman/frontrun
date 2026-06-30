@@ -29,7 +29,8 @@ sys.path.insert(0, os.path.join(_test_dir, "..", "external_repos", "pydis"))
 from external_tests_helpers import print_exploration_result
 from pydis.__main__ import RedisProtocol, dictionary, expiration
 
-from frontrun.bytecode import explore_interleavings, run_with_schedule
+import frontrun
+from frontrun.bytecode import run_with_schedule
 
 
 class RealPydisIncrState:
@@ -74,7 +75,7 @@ class RealPydisSetNxState:
 def test_real_pydis_incr_lost_update():
     """Find the INCR lost update in real pydis code."""
 
-    result = explore_interleavings(
+    result = frontrun.explore_random(
         setup=lambda: RealPydisIncrState(),
         threads=[
             lambda s: s.thread1(),
@@ -96,7 +97,7 @@ def test_real_pydis_incr_lost_update():
 def test_real_pydis_set_nx_race():
     """Find the SET NX race in real pydis code."""
 
-    result = explore_interleavings(
+    result = frontrun.explore_random(
         setup=lambda: RealPydisSetNxState(),
         threads=[
             lambda s: s.thread1(),
@@ -123,7 +124,7 @@ def test_real_pydis_incr_sweep():
     total_explored = 0
 
     for seed in range(20):
-        result = explore_interleavings(
+        result = frontrun.explore_random(
             setup=lambda: RealPydisIncrState(),
             threads=[
                 lambda s: s.thread1(),
@@ -149,7 +150,7 @@ def test_real_pydis_incr_sweep():
 def test_real_pydis_incr_reproduce():
     """Find and reproduce the INCR lost update."""
 
-    result = explore_interleavings(
+    result = frontrun.explore_random(
         setup=lambda: RealPydisIncrState(),
         threads=[
             lambda s: s.thread1(),

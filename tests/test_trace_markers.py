@@ -553,50 +553,6 @@ def test_dict_form_non_callable_value():
         executor.run({"t1": "not_a_function"})  # type: ignore[arg-type]
 
 
-def test_old_form_emits_deprecation_warning():
-    """Calling run(name, fn) emits DeprecationWarning."""
-    account = BankAccount(balance=100)
-
-    schedule = Schedule(
-        [
-            Step("thread1", "read_balance"),
-            Step("thread1", "write_balance"),
-        ]
-    )
-
-    executor = TraceExecutor(schedule)
-    with pytest.warns(DeprecationWarning, match="deprecated"):
-        executor.run("thread1", lambda: account.transfer(50))
-    executor.wait(timeout=5.0)
-
-    assert account.balance == 150
-
-
-def test_old_form_still_works_after_warning():
-    """The deprecated individual-call form still executes correctly."""
-    account = BankAccount(balance=100)
-
-    schedule = Schedule(
-        [
-            Step("thread1", "read_balance"),
-            Step("thread2", "read_balance"),
-            Step("thread1", "write_balance"),
-            Step("thread2", "write_balance"),
-        ]
-    )
-
-    executor = TraceExecutor(schedule)
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        executor.run("thread1", lambda: account.transfer(50))
-        executor.run("thread2", lambda: account.transfer(50))
-    executor.wait(timeout=5.0)
-
-    assert account.balance == 150
-
-
 class TestPreviousLineMarkerNoDoubleFire:
     """Previous-line markers should not fire repeatedly on the same line."""
 

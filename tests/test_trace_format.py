@@ -5,11 +5,12 @@ Covers:
 - Filtering and deduplication
 - Conflict classification
 - Full format_trace output
-- Integration with explore_interleavings and explore_dpor
+- Integration with explore_random and explore() (DPOR)
 """
 
 from __future__ import annotations
 
+import frontrun
 from frontrun._trace_format import (
     SourceLineEvent,
     TraceEvent,
@@ -674,14 +675,13 @@ class TestInterleavingResultRepr:
 
 
 # ---------------------------------------------------------------------------
-# Integration tests: explore_interleavings produces explanation
+# Integration tests: explore_random produces explanation
 # ---------------------------------------------------------------------------
 
 
 class TestBytecodeIntegration:
     def test_explore_counter_has_explanation(self) -> None:
-        """explore_interleavings should produce an explanation for a counter race."""
-        from frontrun.bytecode import explore_interleavings
+        """explore_random should produce an explanation for a counter race."""
 
         class Counter:
             def __init__(self) -> None:
@@ -691,7 +691,7 @@ class TestBytecodeIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_interleavings(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -707,8 +707,7 @@ class TestBytecodeIntegration:
         assert "value" in result.explanation
 
     def test_explore_counter_reproduction_stats(self) -> None:
-        """explore_interleavings should report reproduction stats."""
-        from frontrun.bytecode import explore_interleavings
+        """explore_random should report reproduction stats."""
 
         class Counter:
             def __init__(self) -> None:
@@ -718,7 +717,7 @@ class TestBytecodeIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_interleavings(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -737,7 +736,6 @@ class TestBytecodeIntegration:
 
     def test_explore_counter_skip_reproduction(self) -> None:
         """reproduce_on_failure=0 skips reproduction testing."""
-        from frontrun.bytecode import explore_interleavings
 
         class Counter:
             def __init__(self) -> None:
@@ -747,7 +745,7 @@ class TestBytecodeIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_interleavings(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -768,8 +766,6 @@ class TestBytecodeIntegration:
         """A flaky race (random.random()) should have reproduction rate well below 100%."""
         import random as stdlib_random
 
-        from frontrun.bytecode import explore_interleavings
-
         class Counter:
             def __init__(self) -> None:
                 self.value = 0
@@ -784,7 +780,7 @@ class TestBytecodeIntegration:
             # Bug present, but randomly ignore it ~50% of the time
             return stdlib_random.random() < 0.5
 
-        result = explore_interleavings(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=flaky_invariant,
@@ -807,8 +803,6 @@ class TestBytecodeIntegration:
         """When no race is found, explanation should be None."""
         import threading
 
-        from frontrun.bytecode import explore_interleavings
-
         class SafeCounter:
             def __init__(self) -> None:
                 self.value = 0
@@ -819,7 +813,7 @@ class TestBytecodeIntegration:
                     temp = self.value
                     self.value = temp + 1
 
-        result = explore_interleavings(
+        result = frontrun.explore_random(
             setup=SafeCounter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -835,14 +829,13 @@ class TestBytecodeIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Integration tests: explore_dpor produces explanation
+# Integration tests: explore() (DPOR) produces explanation
 # ---------------------------------------------------------------------------
 
 
 class TestDporIntegration:
     def test_dpor_counter_has_explanation(self) -> None:
-        """explore_dpor should produce an explanation for a counter race."""
-        from frontrun.dpor import explore_dpor
+        """explore() should produce an explanation for a counter race."""
 
         class Counter:
             def __init__(self) -> None:
@@ -852,9 +845,9 @@ class TestDporIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=500,
             preemption_bound=2,
@@ -866,8 +859,7 @@ class TestDporIntegration:
         assert "value" in result.explanation
 
     def test_dpor_counter_reproduction_stats(self) -> None:
-        """explore_dpor should report reproduction stats."""
-        from frontrun.dpor import explore_dpor
+        """explore() should report reproduction stats."""
 
         class Counter:
             def __init__(self) -> None:
@@ -877,9 +869,9 @@ class TestDporIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=500,
             preemption_bound=2,
@@ -896,8 +888,6 @@ class TestDporIntegration:
         """When DPOR finds no race, explanation should be None."""
         import threading
 
-        from frontrun.dpor import explore_dpor
-
         class LockedCounter:
             def __init__(self) -> None:
                 self.value = 0
@@ -908,9 +898,9 @@ class TestDporIntegration:
                     temp = self.value
                     self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=LockedCounter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=50,
             preemption_bound=2,

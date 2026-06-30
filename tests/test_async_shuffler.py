@@ -10,14 +10,14 @@ import asyncio
 
 import pytest
 
-from frontrun import explore_interleavings as explore_interleavings_api
+import frontrun
 from frontrun.async_shuffler import (
     AsyncShuffler,
     AwaitScheduler,
     _task_id_var,
     await_point,
     controlled_interleaving,
-    explore_interleavings,
+    explore_async_random,
     run_with_schedule,
 )
 
@@ -225,7 +225,7 @@ def test_bank_account_race_reproduced():
 
 
 # ---------------------------------------------------------------------------
-# Property-based tests: explore_interleavings
+# Property-based tests: explore_async_random
 # ---------------------------------------------------------------------------
 
 
@@ -233,7 +233,7 @@ def test_explore_finds_counter_race():
     """Random exploration should find an interleaving that breaks the counter."""
 
     async def _test():
-        result = await explore_interleavings(
+        result = await explore_async_random(
             setup=lambda: Counter(value=0),
             tasks=[
                 lambda c: c.increment(),
@@ -257,7 +257,7 @@ def test_explore_bank_account_race():
     """Random exploration should find a lost-update in BankAccount."""
 
     async def _test():
-        result = await explore_interleavings(
+        result = await explore_async_random(
             setup=lambda: BankAccount(balance=100),
             tasks=[
                 lambda acc: acc.transfer(50),
@@ -280,7 +280,7 @@ def test_explore_finds_natural_await_race():
     """Random exploration should treat natural awaits as scheduling points."""
 
     async def _test():
-        result = await explore_interleavings(
+        result = await explore_async_random(
             setup=lambda: NaturalCounter(value=0),
             tasks=[
                 lambda c: c.increment(),
@@ -298,11 +298,11 @@ def test_explore_finds_natural_await_race():
     asyncio.run(_test())
 
 
-def test_top_level_explore_interleavings_dispatches_to_async_shuffler():
-    """The package-level explore_interleavings wrapper should dispatch async tasks."""
+def test_top_level_explore_async_random_dispatches_to_async_shuffler():
+    """The package-level explore_async_random wrapper should dispatch async tasks."""
 
     async def _test():
-        result = await explore_interleavings_api(
+        result = await frontrun.explore_async_random(
             setup=lambda: NaturalCounter(value=0),
             tasks=[
                 lambda c: c.increment(),
@@ -324,7 +324,7 @@ def test_explore_three_tasks():
     """Three tasks incrementing a counter — exploration finds the race."""
 
     async def _test():
-        result = await explore_interleavings(
+        result = await explore_async_random(
             setup=lambda: Counter(value=0),
             tasks=[
                 lambda c: c.increment(),
@@ -360,7 +360,7 @@ def test_run_with_schedule_returns_state():
     asyncio.run(_test())
 
 
-def test_explore_interleavings_unwinds_patch_stack_in_reverse_order(monkeypatch: pytest.MonkeyPatch):
+def test_explore_async_random_unwinds_patch_stack_in_reverse_order(monkeypatch: pytest.MonkeyPatch):
     events: list[str] = []
 
     def patch_sql() -> None:
@@ -383,7 +383,7 @@ def test_explore_interleavings_unwinds_patch_stack_in_reverse_order(monkeypatch:
 
     async def _test() -> None:
         with pytest.raises(RuntimeError, match="setup boom"):
-            await explore_interleavings(
+            await explore_async_random(
                 setup=lambda: (_ for _ in ()).throw(RuntimeError("setup boom")),
                 tasks=[lambda _state: asyncio.sleep(0)],
                 invariant=lambda _state: True,
@@ -412,8 +412,8 @@ def test_explore_with_seed_is_reproducible():
             max_ops=50,
         )
 
-        r1 = await explore_interleavings(**kwargs, seed=123)
-        r2 = await explore_interleavings(**kwargs, seed=123)
+        r1 = await explore_async_random(**kwargs, seed=123)
+        r2 = await explore_async_random(**kwargs, seed=123)
 
         assert r1.property_holds == r2.property_holds
         assert r1.num_explored == r2.num_explored

@@ -17,11 +17,10 @@ import threading
 import pytest
 from frontrun._dpor import PyDporEngine
 
-from frontrun import explore
+import frontrun
 from frontrun._deadlock import SchedulerAbort
 from frontrun._dpor_runtime.runner import DporBytecodeRunner
 from frontrun.common import InterleavingResult
-from frontrun.dpor import explore_dpor
 
 # ---------------------------------------------------------------------------
 # Low-level Rust engine tests (via PyO3)
@@ -289,7 +288,7 @@ def test_dpor_runner_swallows_scheduler_abort(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# High-level explore_dpor tests (full bytecode tracing)
+# High-level explore() (DPOR) tests (full bytecode tracing)
 # ---------------------------------------------------------------------------
 
 
@@ -387,9 +386,9 @@ class TestExploreDpor:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=500,
             preemption_bound=2,
@@ -422,9 +421,9 @@ class TestExploreDpor:
                 current = self.get_balance()
                 self.set_balance(current + amount)
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=AccountBalance,
-            threads=[lambda bal: bal.deposit(100), lambda bal: bal.deposit(100)],
+            workers=[lambda bal: bal.deposit(100), lambda bal: bal.deposit(100)],
             invariant=lambda bal: bal.get_balance() == 200,
             max_executions=500,
             preemption_bound=2,
@@ -444,9 +443,9 @@ class TestExploreDpor:
             def atomic_set(self, val: int) -> None:
                 self.value = val
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=AtomicCounter,
-            threads=[
+            workers=[
                 lambda c: setattr(c, "value", c.value + 1),
                 lambda c: setattr(c, "value", c.value + 1),
             ],
@@ -475,9 +474,9 @@ class TestExploreDpor:
                 self.a.balance = temp_a - amount
                 self.b.balance = temp_b + amount
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Bank,
-            threads=[lambda b: b.transfer(50), lambda b: b.transfer(50)],
+            workers=[lambda b: b.transfer(50), lambda b: b.transfer(50)],
             invariant=lambda b: b.a.balance + b.b.balance == 200,
             max_executions=500,
             preemption_bound=2,
@@ -498,9 +497,9 @@ class TestExploreDpor:
                     temp = self.value
                     self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=LockedCounter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=50,
             preemption_bound=2,
@@ -516,9 +515,9 @@ class TestExploreDpor:
                 self.a = 0
                 self.b = 0
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[
+            workers=[
                 lambda s: setattr(s, "a", 1),
                 lambda s: setattr(s, "b", 1),
             ],
@@ -530,7 +529,7 @@ class TestExploreDpor:
         assert result.property_holds
 
     def test_result_structure(self) -> None:
-        """explore_dpor result should have expected fields."""
+        """explore() result should have expected fields."""
 
         class Counter:
             def __init__(self) -> None:
@@ -540,9 +539,9 @@ class TestExploreDpor:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=50,
             preemption_bound=2,
@@ -566,9 +565,9 @@ class TestExploreDpor:
             def increment(self) -> None:
                 self.value += 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=500,
             preemption_bound=2,
@@ -587,9 +586,9 @@ class TestExploreDpor:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             preemption_bound=None,
             max_executions=500,
@@ -608,9 +607,9 @@ class TestExploreDpor:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Counter,
-            threads=[
+            workers=[
                 lambda c: c.increment(),
                 lambda c: c.increment(),
                 lambda c: c.increment(),
@@ -640,9 +639,9 @@ class TestEdgeCases:
             def run(self) -> None:
                 self.value = 42
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[lambda s: s.run()],
+            workers=[lambda s: s.run()],
             invariant=lambda s: s.value == 42,
             max_executions=10,
         )
@@ -661,9 +660,9 @@ class TestEdgeCases:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: True,  # Always passes
             max_executions=3,
             preemption_bound=None,
@@ -717,9 +716,9 @@ class TestGlobalVariableRace:
     """DPOR detects lost-update on module-level globals (LOAD_GLOBAL / STORE_GLOBAL)."""
 
     def test_dpor_detects_global_race(self) -> None:
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=_GlobalCounterState,
-            threads=[_global_increment, _global_increment],
+            workers=[_global_increment, _global_increment],
             invariant=_global_invariant,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -728,9 +727,9 @@ class TestGlobalVariableRace:
 
     def test_dpor_detects_augmented_global_assignment(self) -> None:
         """``global_var += 1`` compiles to LOAD_GLOBAL + BINARY_OP + STORE_GLOBAL."""
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=_SimpleGlobalState,
-            threads=[_simple_global_inc, _simple_global_inc],
+            workers=[_simple_global_inc, _simple_global_inc],
             invariant=_simple_global_check,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -824,9 +823,9 @@ class TestContainerMethodRace:
 
     def test_dpor_detects_list_append_race(self) -> None:
         """list.append() executes in C but the CALL handler reports the write."""
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=_ListAppendState,
-            threads=[_list_append_thread, _list_append_thread],
+            workers=[_list_append_thread, _list_append_thread],
             invariant=_list_append_invariant,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -835,9 +834,9 @@ class TestContainerMethodRace:
 
     def test_dpor_detects_set_add_race(self) -> None:
         """set.add() executes in C but the CALL handler reports the write."""
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=_SetAddState,
-            threads=[_set_check_and_add, _set_check_and_add],
+            workers=[_set_check_and_add, _set_check_and_add],
             invariant=_set_add_invariant,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -969,9 +968,9 @@ class TestSyncPrimitiveCorrectness:
     """DPOR correctly handles lock/semaphore-protected critical sections."""
 
     def test_dpor_correctly_handles_semaphore(self) -> None:
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=_SemaphoreCounterState,
-            threads=[_semaphore_increment, _semaphore_increment],
+            workers=[_semaphore_increment, _semaphore_increment],
             invariant=_semaphore_invariant,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -982,9 +981,9 @@ class TestSyncPrimitiveCorrectness:
         )
 
     def test_dpor_correctly_handles_bounded_semaphore(self) -> None:
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=_BoundedSemaphoreCounterState,
-            threads=[_bounded_semaphore_increment, _bounded_semaphore_increment],
+            workers=[_bounded_semaphore_increment, _bounded_semaphore_increment],
             invariant=_bounded_semaphore_invariant,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -995,9 +994,9 @@ class TestSyncPrimitiveCorrectness:
         )
 
     def test_dpor_correctly_handles_lock(self) -> None:
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=_LockCounterState,
-            threads=[_lock_increment, _lock_increment],
+            workers=[_lock_increment, _lock_increment],
             invariant=_lock_invariant,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1008,9 +1007,9 @@ class TestSyncPrimitiveCorrectness:
 
     def test_dpor_detects_global_dict_race(self) -> None:
         """DPOR detects the race via STORE_SUBSCR even though the dict is loaded via LOAD_GLOBAL."""
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=_TrackedDictState,
-            threads=[_tracked_dict_inc, _tracked_dict_inc],
+            workers=[_tracked_dict_inc, _tracked_dict_inc],
             invariant=_tracked_dict_inv,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1053,9 +1052,9 @@ class TestDeadlockAsInvariantViolation:
                 with s.lock_a:
                     pass
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[thread0, thread1],
+            workers=[thread0, thread1],
             invariant=lambda s: True,  # no data invariant — deadlock itself is the problem
             max_executions=500,
             preemption_bound=2,
@@ -1097,9 +1096,9 @@ class TestDeadlockAsInvariantViolation:
                 with s.lock_b:
                     pass
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[thread0, thread1],
+            workers=[thread0, thread1],
             invariant=lambda s: True,
             max_executions=100,
             detect_io=False,
@@ -1140,9 +1139,9 @@ class TestDeadlockAsInvariantViolation:
                 with s.lock_a:
                     pass
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[thread0, thread1, thread2],
+            workers=[thread0, thread1, thread2],
             invariant=lambda s: True,
             max_executions=1000,
             preemption_bound=2,
@@ -1190,9 +1189,9 @@ class TestDeadlockAsInvariantViolation:
         def thread2(s: State) -> None:
             s.t2_done = True
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[thread0, thread1, thread2],
+            workers=[thread0, thread1, thread2],
             invariant=lambda s: True,
             max_executions=1000,
             preemption_bound=2,
@@ -1246,9 +1245,9 @@ class TestDeadlockAsInvariantViolation:
                     with s.lock_b:
                         pass
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[thread0, thread1],
+            workers=[thread0, thread1],
             invariant=lambda s: True,
             max_executions=500,
             preemption_bound=2,
@@ -1286,9 +1285,9 @@ class TestDeadlockAsInvariantViolation:
         def thread1(s: State) -> None:
             s.x = 2
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[thread0, thread1],
+            workers=[thread0, thread1],
             invariant=lambda s: s.x != 1,
             max_executions=100,
             preemption_bound=2,
@@ -1330,9 +1329,9 @@ class TestDeadlockAsInvariantViolation:
 
             return philosopher
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[make_philosopher(i) for i in range(num_philosophers)],
+            workers=[make_philosopher(i) for i in range(num_philosophers)],
             invariant=lambda s: True,
             max_executions=1000,
             preemption_bound=2,
@@ -1368,9 +1367,9 @@ class TestDeadlockAsInvariantViolation:
 
             return philosopher
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[make_philosopher(i) for i in range(num_philosophers)],
+            workers=[make_philosopher(i) for i in range(num_philosophers)],
             invariant=lambda s: True,
             max_executions=5000,
             preemption_bound=2,
@@ -1410,9 +1409,9 @@ class TestDeadlockAsInvariantViolation:
 
             return philosopher
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[make_philosopher(i) for i in range(num_philosophers)],
+            workers=[make_philosopher(i) for i in range(num_philosophers)],
             invariant=lambda s: True,
             max_executions=50000,
             preemption_bound=2,
@@ -1432,9 +1431,9 @@ class TestDeadlockAsInvariantViolation:
 
 
 class TestStableObjectIds:
-    """Object keys must be stable across executions within one explore_dpor call.
+    """Object keys must be stable across executions within one explore() call.
 
-    When explore_dpor creates fresh state via setup() each execution, id(obj)
+    When explore() creates fresh state via setup() each execution, id(obj)
     changes because Python allocates new objects at different addresses.  The
     StableObjectIds class assigns monotonically increasing IDs so that the same
     logical object (accessed in the same deterministic order during replay)
@@ -1583,7 +1582,7 @@ class TestLoadSpecialNameMapping:
                 s.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Container,
                 workers=worker,
                 count=2,

@@ -26,7 +26,7 @@ try:
 except ImportError:
     pytest.skip("redis package not installed", allow_module_level=True)
 
-from frontrun.dpor import explore_dpor
+import frontrun
 
 
 class TestStateDependentReplayReproduction:
@@ -109,9 +109,9 @@ class TestStateDependentReplayReproduction:
             meta = json.loads(raw)  # type: ignore[arg-type]
             return meta["status"] == "SUCCESS"
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[store_success, store_failure],
+            workers=[store_success, store_failure],
             invariant=invariant,
             detect_io=True,
             max_executions=50,

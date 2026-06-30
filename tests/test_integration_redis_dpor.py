@@ -33,7 +33,7 @@ try:
 except ImportError:
     pytest.skip("redis package not installed", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 
 pytestmark = pytest.mark.integration
 
@@ -68,7 +68,7 @@ class TestRedisCounterRaceKeyLevel:
             r.close()
             return result == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=invariant,
@@ -105,7 +105,7 @@ class TestRedisCounterRaceKeyLevel:
             r.close()
             return result == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=invariant,
@@ -150,7 +150,7 @@ class TestRedisCheckThenActKeyLevel:
             r.close()
             return result == 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[maybe_init, maybe_init],
             invariant=invariant,
@@ -188,7 +188,7 @@ class TestRedisCheckThenActKeyLevel:
             r.close()
             return result == 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[maybe_init, maybe_init],
             invariant=invariant,
@@ -235,7 +235,7 @@ class TestRedisInventoryRaceKeyLevel:
             r.close()
             return stock >= 0 and sold <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[buy, buy],
             invariant=invariant,
@@ -289,7 +289,7 @@ class TestRedisTransferRaceKeyLevel:
             r.close()
             return bal_a + bal_b == 200
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[transfer_a_to_b, transfer_a_to_b_also],
             invariant=invariant,
@@ -328,7 +328,7 @@ class TestRedisTransferRaceKeyLevel:
             r.close()
             return bal_a + bal_b == 200
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[
                 lambda s: transfer(s, 10),
@@ -374,7 +374,7 @@ class TestRedisHashRaceKeyLevel:
             # Two debits of 10 each: 100 - 10 - 10 = 80
             return balance == 80
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[debit, debit],
             invariant=invariant,
@@ -406,7 +406,7 @@ class TestRedisHashRaceKeyLevel:
             r.close()
             return balance == 80
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[debit, debit],
             invariant=invariant,
@@ -454,7 +454,7 @@ class TestAsyncRedisCounterRace:
             return result == 2
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[increment, increment],
                 invariant=invariant,
@@ -496,7 +496,7 @@ class TestAsyncRedisCounterRace:
             return result == 2
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[increment, increment],
                 invariant=invariant,
@@ -552,7 +552,7 @@ class TestAsyncRedisTransferRace:
             return bal_a + bal_b == 200
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[transfer_10, transfer_30],
                 invariant=invariant,
@@ -599,7 +599,7 @@ class TestAsyncRedisCheckThenAct:
             return result == 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[maybe_init, maybe_init],
                 invariant=invariant,
@@ -649,7 +649,7 @@ class TestRedisListRaceKeyLevel:
             # Only 1 task in queue — at most 1 should be processed
             return processed <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[worker, worker],
             invariant=invariant,
@@ -702,7 +702,7 @@ class TestRedisSetRaceKeyLevel:
             r.close()
             return count == 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[process_item, process_item],
             invariant=invariant,
@@ -758,7 +758,7 @@ class TestAsyncRedisIndependentKeys:
             return a == "1" and b == "1"
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[write_a, write_b],
                 invariant=invariant,
@@ -807,7 +807,7 @@ class TestAsyncRedisHashRace:
             return balance == 80
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[debit, debit],
                 invariant=invariant,
@@ -887,7 +887,7 @@ class TestMultiResourceRace:
             # registration_count should be 1 if only one thread registered
             return state.registration_count == 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[
                 lambda s: register_user(s, "alice@a.com"),
@@ -949,7 +949,7 @@ class TestMultiResourceRace:
             conn.close()
             return db_count == 1 and state.registration_count == 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[
                 lambda s: register_user(s, "alice@a.com"),
@@ -996,7 +996,7 @@ class TestRedisPipelineKeyLevel:
             r.close()
             return result == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment_via_pipeline, increment_via_pipeline],
             invariant=invariant,
@@ -1072,7 +1072,7 @@ class TestDporPathCountIndependent:
             return True
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[worker_a, worker_b],
                 invariant=invariant,
@@ -1120,7 +1120,7 @@ class TestDporPathCountIndependent:
             return True
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[worker_a, worker_b],
                 invariant=invariant,
@@ -1176,7 +1176,7 @@ class TestDporPathCountSerialized:
             # Each worker does +1 (set) then +1 (incr) = +2 per worker, 2 workers = 4
             return counter == 4
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[worker, worker],
             invariant=invariant,
@@ -1227,7 +1227,7 @@ class TestDporPathCountSerialized:
             return counter == 2
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[worker, worker],
                 invariant=invariant,

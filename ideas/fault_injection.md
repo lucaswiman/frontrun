@@ -62,9 +62,9 @@ A fault run "passes" only if, after the fault propagates and surviving threads f
 ## API sketch
 
 ```python
-from frontrun import explore
+import frontrun
 
-result = explore(
+result = frontrun.explore(
     strategy="bytecode",          # v1: bytecode + marker strategies
     threads={...},
     invariant=...,
@@ -86,7 +86,7 @@ raise. Register any new strategy variant as a `Strategy`/`AsyncStrategy` adapter
    machinery: enumerate await points by running once fault-free and counting pauses per
    task, then re-run once per (task, pause-index) injecting `CancelledError` at that pause.
    Works for both `async_shuffler` and `async_dpor` paths since both share
-   `_async_autopause.py`. Deliverable: `explore(strategy="async-cancellation", ...)`.
+   `_async_autopause.py`. Deliverable: `frontrun.explore(strategy="async-cancellation", ...)`.
 2. **Sync exception injection at marker/lock/SQL points** with the same enumerate-then-
    inject loop, plus the built-in lock/transaction invariants above.
 3. **Interleaving × fault product.** Combine with random schedule exploration (Hypothesis

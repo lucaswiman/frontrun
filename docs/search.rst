@@ -381,25 +381,25 @@ API usage
 ---------
 
 The search strategy is set via the ``search_strategy`` and ``search_seed``
-parameters to ``explore_dpor()``:
+parameters to ``frontrun.explore()``:
 
 .. code-block:: python
 
-   from frontrun import explore_dpor
+   import frontrun
 
    # Default: DFS
-   results = explore_dpor(fn, thread_fns=[t0, t1])
+   results = frontrun.explore(fn, workers=[t0, t1])
 
    # BitReversal with seed
-   results = explore_dpor(
-       fn, thread_fns=[t0, t1],
+   results = frontrun.explore(
+       fn, workers=[t0, t1],
        search_strategy="bit_reversal",
        search_seed=42,
    )
 
    # Stop on first bug with RoundRobin
-   results = explore_dpor(
-       fn, thread_fns=[t0, t1],
+   results = frontrun.explore(
+       fn, workers=[t0, t1],
        search_strategy="round_robin",
        search_seed=0,
        stop_on_first=True,

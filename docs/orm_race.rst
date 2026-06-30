@@ -86,9 +86,10 @@ on the ``session.get()`` and ``session.commit()`` lines let
    ])
 
    executor = TraceExecutor(schedule)
-   executor.run("a", handler_a)
-   executor.run("b", handler_b)
-   executor.wait(timeout=10.0)
+   executor.run({
+       "a": handler_a,
+       "b": handler_b,
+   }, timeout=10.0)
 
 Output:
 
@@ -115,14 +116,14 @@ Output:
 Demo 2 --- Bytecode exploration (automatic)
 --------------------------------------------
 
-``explore_interleavings`` generates random opcode-level schedules,
+``frontrun.explore_random`` generates random opcode-level schedules,
 running both handlers against the real database on each attempt.
 No trace markers are needed --- the explorer finds the bad interleaving
 on its own:
 
 .. code-block:: python
 
-   from frontrun.bytecode import explore_interleavings
+   import frontrun
 
    class _State:
        def __init__(self):
@@ -137,7 +138,7 @@ on its own:
            user.login_count = user.login_count + 1
            session.commit()
 
-   result = explore_interleavings(
+   result = frontrun.explore_random(
        setup=_State,
        threads=[_thread_fn, _thread_fn],
        invariant=lambda s: _read_count() == 2,
@@ -194,8 +195,8 @@ a way that triggers the database-level race. It doesn't need to
 
 .. note::
 
-   The ``explore_dpor`` calls in Demos 2 and 3 manage connections manually
-   (``engine.dispose()`` in ``setup``, one ``Session`` per thread). The
+   The ``frontrun.explore`` calls in Demos 2 and 3 manage connections manually
+   (``engine.dispose()`` in ``setup``, one ``Session`` per worker). The
    :mod:`frontrun.contrib.sqlalchemy` module provides a ``sqlalchemy_dpor``
    helper that handles this boilerplate automatically. See
    :doc:`dpor_guide` for details.
@@ -203,7 +204,7 @@ a way that triggers the database-level race. It doesn't need to
 Demo 3 --- DPOR systematic exploration
 ---------------------------------------
 
-``explore_dpor`` with ``detect_io=True`` uses the ``LD_PRELOAD`` library
+``frontrun.explore`` with ``detect_io=True`` uses the ``LD_PRELOAD`` library
 to intercept C-level ``send()``/``recv()`` calls from psycopg2 (which
 bypasses Python's socket module).  The intercepted I/O events are routed
 through ``IOEventDispatcher`` → ``_PreloadBridge`` → the DPOR engine,
@@ -212,11 +213,11 @@ which treats them as conflict points on the shared resource
 
 .. code-block:: python
 
-   from frontrun.dpor import explore_dpor
+   import frontrun
 
-   result = explore_dpor(
+   result = frontrun.explore(
        setup=_State,
-       threads=[_thread_fn, _thread_fn],
+       workers=[_thread_fn, _thread_fn],
        invariant=lambda s: _read_count() == 2,
        detect_io=True,
        deadlock_timeout=15.0,

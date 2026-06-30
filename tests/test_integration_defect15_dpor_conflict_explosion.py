@@ -21,7 +21,7 @@ except ImportError:
 from frontrun.cli import require_active
 
 pytestmark = pytest.mark.integration
-from frontrun.dpor import explore_dpor
+import frontrun
 
 _DB_NAME = os.environ.get("FRONTRUN_TEST_DB", "frontrun_test")
 _DSN = os.environ.get("DATABASE_URL", f"dbname={_DB_NAME}")
@@ -198,9 +198,9 @@ def test_simple_check_then_insert_is_found(pg_tables) -> None:
 
         return thread_fn
 
-    result = explore_dpor(
+    result = frontrun.explore(
         setup=_State,
-        threads=[make_simple_thread(0), make_simple_thread(1)],
+        workers=[make_simple_thread(0), make_simple_thread(1)],
         invariant=_invariant,
         detect_io=True,
         timeout_per_run=10.0,
@@ -229,9 +229,9 @@ def test_orm_style_check_then_insert_race(pg_tables) -> None:
     """
     require_active("test_orm_style_check_then_insert_race")
 
-    result = explore_dpor(
+    result = frontrun.explore(
         setup=_State,
-        threads=[_make_orm_style_thread(0), _make_orm_style_thread(1)],
+        workers=[_make_orm_style_thread(0), _make_orm_style_thread(1)],
         invariant=_invariant,
         detect_io=True,
         timeout_per_run=10.0,

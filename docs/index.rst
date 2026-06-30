@@ -72,9 +72,10 @@ points that let you force a specific execution order:
        ])
 
        executor = TraceExecutor(schedule)
-       executor.run("thread1", counter.increment)
-       executor.run("thread2", counter.increment)
-       executor.wait(timeout=5.0)
+       executor.run({
+           "thread1": counter.increment,
+           "thread2": counter.increment,
+       }, timeout=5.0)
 
        assert counter.value == 1  # One increment lost
 

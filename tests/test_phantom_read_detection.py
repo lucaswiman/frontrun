@@ -30,9 +30,9 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
+import frontrun
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 from frontrun._tracing import _FRONTRUN_DIR
-from frontrun.dpor import explore_dpor
 
 # ---------------------------------------------------------------------------
 # Helper: compile a "library ORM" wrapper invisible to the DPOR tracer
@@ -250,9 +250,9 @@ class TestDporPhantomReadDetection:
                 # Token limit is 1 — should never have more than 1 token
                 return count <= 1
 
-            result = explore_dpor(
+            result = frontrun.explore(
                 setup=setup,
-                threads=[thread_fn, thread_fn],
+                workers=[thread_fn, thread_fn],
                 invariant=invariant,
                 detect_io=True,
                 reproduce_on_failure=0,

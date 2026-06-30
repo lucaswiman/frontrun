@@ -10,12 +10,11 @@ import threading
 
 import pytest
 
-from frontrun import explore_interleavings as explore_interleavings_api
+import frontrun
 from frontrun.bytecode import (
     BytecodeShuffler,
     OpcodeScheduler,
     controlled_interleaving,
-    explore_interleavings,
     explore_random,
     run_with_schedule,
 )
@@ -190,13 +189,13 @@ def test_bank_account_race_reproduced():
 
 
 # ---------------------------------------------------------------------------
-# Property-based tests: explore_interleavings
+# Property-based tests: explore_random
 # ---------------------------------------------------------------------------
 
 
 def test_explore_finds_counter_race():
     """Random exploration should find an interleaving that breaks the counter."""
-    result = explore_interleavings(
+    result = explore_random(
         setup=lambda: Counter(value=0),
         threads=[
             lambda c: c.increment(),
@@ -214,9 +213,9 @@ def test_explore_finds_counter_race():
     assert result.counterexample is not None
 
 
-def test_top_level_explore_interleavings_dispatches_to_bytecode():
-    """The package-level explore_interleavings wrapper should dispatch sync threads."""
-    result = explore_interleavings_api(
+def test_top_level_explore_random_dispatches_to_bytecode():
+    """The package-level explore_random wrapper should dispatch sync threads."""
+    result = frontrun.explore_random(
         setup=lambda: Counter(value=0),
         threads=[
             lambda c: c.increment(),
@@ -240,7 +239,7 @@ def test_cooperative_locks_prevent_deadlock():
     run and release the lock, preventing the deadlock that would occur if
     Lock.acquire() blocked in C.
     """
-    result = explore_interleavings(
+    result = explore_random(
         setup=lambda: SafeCounter(value=0),
         threads=[
             lambda c: c.increment(),
@@ -259,7 +258,7 @@ def test_cooperative_locks_prevent_deadlock():
 
 def test_explore_bank_account_race():
     """Random exploration should find a lost-update in BankAccount."""
-    result = explore_interleavings(
+    result = explore_random(
         setup=lambda: BankAccount(balance=100),
         threads=[
             lambda acc: acc.transfer(50),
@@ -278,7 +277,7 @@ def test_explore_bank_account_race():
 
 def test_explore_three_threads():
     """Three threads incrementing a counter — exploration finds the race."""
-    result = explore_interleavings(
+    result = explore_random(
         setup=lambda: Counter(value=0),
         threads=[
             lambda c: c.increment(),
@@ -321,8 +320,8 @@ def test_explore_with_seed_is_reproducible():
         max_ops=200,
     )
 
-    r1 = explore_interleavings(**kwargs, seed=123)
-    r2 = explore_interleavings(**kwargs, seed=123)
+    r1 = explore_random(**kwargs, seed=123)
+    r2 = explore_random(**kwargs, seed=123)
 
     assert r1.property_holds == r2.property_holds
     assert r1.num_explored == r2.num_explored

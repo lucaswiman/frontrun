@@ -22,7 +22,7 @@ The approach:
 Usage::
 
     import asyncio
-    from frontrun.async_dpor import explore_async_dpor
+    import frontrun
 
     class Counter:
         def __init__(self):
@@ -33,9 +33,10 @@ Usage::
             await asyncio.sleep(0)  # any natural await works
             self.value = temp + 1
 
-    result = await explore_async_dpor(
+    result = await frontrun.explore(
         setup=lambda: Counter(),
-        tasks=[lambda c: c.increment(), lambda c: c.increment()],
+        workers=Counter.increment,
+        count=2,
         invariant=lambda c: c.value == 2,
     )
     assert result.property_holds, result.explanation  # fails — lost update!
@@ -90,7 +91,6 @@ from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun.async_scheduler import InterleavedLoop
 from frontrun.common import (
-    DEPRECATION_MESSAGES,
     InterleavingResult,
     check_invariant,
     check_serializability_violation,
@@ -100,7 +100,7 @@ try:
     from frontrun._dpor import PyDporEngine, PyExecution  # type: ignore[reportAttributeAccessIssue]
 except ModuleNotFoundError as _err:
     raise ModuleNotFoundError(
-        "explore_async_dpor requires the frontrun._dpor Rust extension.\n"
+        "frontrun.explore with async workers requires the frontrun._dpor Rust extension.\n"
         "Build it with:  make build-dpor-3.14   (or build-dpor-3.10 / build-dpor-3.14t)\n"
         "Or install from source:  pip install -e ."
     ) from _err
@@ -690,7 +690,7 @@ class AsyncDporScheduler(InterleavedLoop):
         holder to release.  Instead we:
         - Record the holding edge when the lock is free (or already ours).
         - Detect cycles instantly via WaitForGraph when another task holds
-          the lock, raising DeadlockError so explore_async_dpor reports it.
+          the lock, raising DeadlockError so frontrun.explore reports it.
         """
         graph = _async_wait_graph
         self.engine.report_access(
@@ -994,7 +994,7 @@ async def _reproduce_async_counterexample(
     return reproduce_on_failure, successes
 
 
-async def _explore_async_dpor(
+async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-module by frontrun._strategy and contrib helpers
     setup: Callable[[], T],
     tasks: list[Callable[[T], Coroutine[Any, Any, None]]],
     invariant: Callable[[T], bool],
@@ -1017,8 +1017,9 @@ async def _explore_async_dpor(
 ) -> InterleavingResult:
     """Systematically explore async interleavings using DPOR.
 
-    This is the async equivalent of ``explore_dpor()``.  Instead of threads,
-    it runs async tasks with ``await_point()`` as the scheduling granularity.
+    Async DPOR implementation; called via :func:`frontrun.explore` with async
+    workers.  Instead of threads, it runs async tasks with ``await_point()`` as
+    the scheduling granularity.
     The Rust DPOR engine systematically explores every distinct interleaving,
     using vector clocks to prune redundant orderings.
 
@@ -1270,31 +1271,3 @@ async def _explore_async_dpor(
         set_lock_timeout(prev_lock_timeout)
 
     return result
-
-
-async def explore_async_dpor(*args: Any, **kwargs: Any) -> InterleavingResult:
-    """Deprecated alias for async DPOR exploration.
-
-    .. deprecated:: 0.5
-        ``explore_async_dpor`` will be removed in 0.6.  Use
-        :func:`frontrun.explore` with async worker functions instead.
-
-    ``detect_redis=True`` is also deprecated in this release; pass
-    ``detect_io=True`` instead (it now covers Redis in both sync and
-    async contexts).
-    """
-    import warnings
-
-    warnings.warn(DEPRECATION_MESSAGES["explore_async_dpor"], DeprecationWarning, stacklevel=2)
-    detect_redis = kwargs.pop("detect_redis", False)
-    detect_io = kwargs.pop("detect_io", False)
-    if detect_redis and not detect_io:
-        warnings.warn(
-            DEPRECATION_MESSAGES["detect_redis_param"],
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    # detect_io=True implies both detect_sql and detect_redis in the new API
-    kwargs["detect_redis"] = detect_redis or detect_io
-    kwargs["detect_sql"] = kwargs.get("detect_sql", False) or detect_io
-    return await _explore_async_dpor(*args, **kwargs)

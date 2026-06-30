@@ -19,10 +19,10 @@ class TestDjangoSharedConnectionWrapper:
 
 
 class TestSqlalchemyAsyncLockTimeoutForwarding:
-    """async_sqlalchemy_dpor should forward lock_timeout to explore_async_dpor."""
+    """async_sqlalchemy_dpor should forward lock_timeout to _explore_async_dpor."""
 
     def test_lock_timeout_forwarded(self) -> None:
-        """lock_timeout should be passed through to explore_async_dpor.
+        """lock_timeout should be passed through to _explore_async_dpor.
 
         Regression: lock_timeout is consumed by the function signature and
         NOT present in **kwargs, so it was never forwarded (unlike the sync
@@ -32,7 +32,7 @@ class TestSqlalchemyAsyncLockTimeoutForwarding:
 
         source = inspect.getsource(async_sqlalchemy_dpor)
         assert "lock_timeout=lock_timeout" in source, (
-            "async_sqlalchemy_dpor does not forward lock_timeout to explore_async_dpor. "
+            "async_sqlalchemy_dpor does not forward lock_timeout to _explore_async_dpor. "
             "The sync version (sqlalchemy_dpor) passes lock_timeout=lock_timeout explicitly."
         )
 

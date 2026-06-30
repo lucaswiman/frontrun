@@ -6,6 +6,186 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+0.6.0 (unreleased)
+------------------
+
+**Removals.** The deprecation shims announced in 0.5 have been deleted.
+There is now exactly one public entry point for interleaving exploration —
+``frontrun.explore()`` — plus the renamed bytecode helpers
+``frontrun.explore_random`` / ``frontrun.explore_async_random``.
+
+Removed (previously deprecated in 0.5):
+
+* ``frontrun.explore_dpor`` and ``frontrun.dpor.explore_dpor`` — use
+  ``frontrun.explore(...)`` (strategy ``"dpor"`` is the default).
+* ``frontrun.explore_async_dpor`` and
+  ``frontrun.async_dpor.explore_async_dpor`` — use ``frontrun.explore(...)``
+  with async ``workers=`` (the dispatcher detects coroutine functions
+  automatically).
+* ``frontrun.explore_interleavings`` (sync, from package or
+  ``frontrun.bytecode``) — use ``frontrun.explore_random(...)`` or
+  ``frontrun.explore(..., strategy="random")``.
+* ``frontrun.explore_async_interleavings`` (and
+  ``frontrun.async_shuffler.explore_interleavings``) — use
+  ``frontrun.explore_async_random(...)`` or ``frontrun.explore(...,
+  strategy="random")`` with async workers.
+* ``TraceExecutor.run(name, fn)`` positional form — use the dict form
+  ``executor.run({"name": fn, ...}, timeout=...)``. The dict form starts
+  every thread and waits for completion in one call, so the matching
+  ``executor.wait(timeout=...)`` is no longer needed.
+* ``detect_redis=True`` on the async DPOR public surface — superseded by
+  ``detect_io=True``, which now activates Redis key-level patching in
+  both sync and async DPOR.
+
+Also removed: the ``frontrun.common.DEPRECATION_MESSAGES`` registry and
+the ``frontrun.common.deprecate()`` helper that backed the 0.5 shims.
+
+Migration guide
+~~~~~~~~~~~~~~~
+
+Every replacement is a one-line edit. ``threads=`` becomes ``workers=``
+when moving to ``frontrun.explore``; the helper aliases keep their
+original ``threads=`` / ``tasks=`` parameter names.
+
+Sync DPOR::
+
+    # Before
+    from frontrun.dpor import explore_dpor
+    result = explore_dpor(setup=Counter, threads=[Counter.increment, Counter.increment], invariant=inv)
+
+    # After
+    import frontrun
+    result = frontrun.explore(setup=Counter, workers=[Counter.increment, Counter.increment], invariant=inv)
+    # ...or, with the count shorthand:
+    result = frontrun.explore(setup=Counter, workers=Counter.increment, count=2, invariant=inv)
+
+Async DPOR (with Redis I/O detection)::
+
+    # Before
+    from frontrun.async_dpor import explore_async_dpor
+    result = await explore_async_dpor(setup=make_state, tasks=[worker, worker], invariant=inv, detect_redis=True)
+
+    # After
+    import frontrun
+    result = await frontrun.explore(setup=make_state, workers=[worker, worker], invariant=inv, detect_io=True)
+
+Sync random/bytecode exploration::
+
+    # Before
+    from frontrun.bytecode import explore_interleavings
+    result = explore_interleavings(setup=Counter, threads=[Counter.increment, Counter.increment], invariant=inv)
+
+    # After (option A — preferred, single import)
+    import frontrun
+    result = frontrun.explore_random(setup=Counter, threads=[Counter.increment, Counter.increment], invariant=inv)
+    # (option B — uniform entry point)
+    result = frontrun.explore(setup=Counter, workers=[Counter.increment, Counter.increment], invariant=inv, strategy="random")
+
+Async random/shuffler exploration::
+
+    # Before
+    from frontrun.async_shuffler import explore_interleavings
+    result = await explore_interleavings(setup=make_state, tasks=[worker, worker], invariant=inv)
+
+    # After
+    import frontrun
+    result = await frontrun.explore_async_random(setup=make_state, tasks=[worker, worker], invariant=inv)
+
+``TraceExecutor`` (sync trace-marker schedule)::
+
+    # Before
+    executor = TraceExecutor(schedule)
+    executor.run("thread1", worker1)
+    executor.run("thread2", worker2)
+    executor.wait(timeout=5.0)
+
+    # After
+    executor = TraceExecutor(schedule)
+    executor.run({"thread1": worker1, "thread2": worker2}, timeout=5.0)
+
+Agent upgrade prompt
+~~~~~~~~~~~~~~~~~~~~
+
+Copy-paste the block below to a coding agent (Claude Code, Cursor,
+Copilot, etc.) and point it at your repo to perform the migration
+mechanically. It assumes Python and is written so the agent does not
+need any other context.
+
+.. code-block:: text
+
+    You are migrating a Python project that uses `frontrun` from 0.5 to 0.6.
+    In 0.6 the deprecated APIs from 0.5 were removed. Update every call site
+    so the project keeps working on 0.6. Make the smallest possible change at
+    each site.
+
+    Apply these textual rewrites in order (each rewrite covers imports + the
+    call sites that follow). Pay attention to keyword names — `threads=` only
+    becomes `workers=` when migrating to `frontrun.explore`; the
+    `explore_random` / `explore_async_random` aliases keep `threads=` / `tasks=`.
+
+    1. Sync DPOR:
+         - Replace `from frontrun.dpor import explore_dpor` (and `from frontrun
+           import explore_dpor`) with `import frontrun`.
+         - Rewrite `explore_dpor(setup=..., threads=[a, b], invariant=..., **kw)`
+           to `frontrun.explore(setup=..., workers=[a, b], invariant=..., **kw)`.
+           Strategy defaults to "dpor"; do NOT add `strategy="dpor"` unless the
+           call site also passes some other strategy in a sibling branch.
+         - If the threads list is `[fn, fn, ..., fn]` of length N, prefer
+           `workers=fn, count=N` for clarity.
+
+    2. Async DPOR:
+         - Replace `from frontrun.async_dpor import explore_async_dpor` with
+           `import frontrun`.
+         - Rewrite `await explore_async_dpor(setup=..., tasks=[a, b],
+           invariant=..., detect_sql=True, detect_redis=True, **kw)` to
+           `await frontrun.explore(setup=..., workers=[a, b], invariant=...,
+           detect_io=True, **kw)`. The new `detect_io=True` covers both SQL
+           and Redis patching in async DPOR.
+         - If the original call only set `detect_sql=True` (no Redis), keep
+           `detect_sql=True` and do NOT add `detect_io=True`.
+         - If the original call only set `detect_redis=True`, replace it with
+           `detect_io=True`.
+
+    3. Sync random / bytecode:
+         - Replace `from frontrun.bytecode import explore_interleavings` (and
+           `from frontrun import explore_interleavings` when used with
+           `threads=`) with `import frontrun`.
+         - Rename `explore_interleavings(...)` calls to
+           `frontrun.explore_random(...)`. Keep the `threads=` keyword as-is.
+
+    4. Async random / shuffler:
+         - Replace `from frontrun.async_shuffler import explore_interleavings`
+           and `from frontrun import explore_async_interleavings` with
+           `import frontrun`.
+         - Rename `explore_interleavings(...)` / `explore_async_interleavings(...)`
+           calls to `frontrun.explore_async_random(...)`. Keep `tasks=` as-is.
+
+    5. `frontrun import explore_interleavings` ambiguous dispatcher:
+         - Inspect the call. If the kwarg is `threads=`, use rule 3 (sync).
+           If the kwarg is `tasks=`, use rule 4 (async).
+
+    6. `TraceExecutor` legacy form:
+         - Replace consecutive `executor.run("name1", fn1)` /
+           `executor.run("name2", fn2)` / ... / `executor.wait(timeout=T)`
+           with a single `executor.run({"name1": fn1, "name2": fn2, ...},
+           timeout=T)`.
+         - If a single `executor.run("name", fn)` is followed later by
+           `executor.wait()`, collapse to `executor.run({"name": fn})` (no
+           timeout) or `executor.run({"name": fn}, timeout=T)` if a timeout
+           was passed.
+         - The new `run()` no longer accepts a positional `name` + `fn`;
+           there is no separate `wait()` step.
+
+    7. Documentation/comments referring to the removed names should be
+       updated to mention the canonical replacement (e.g. `frontrun.explore`).
+       Do NOT leave parenthetical "(formerly explore_dpor)" notes — write
+       the docs as if the new API has always been the only one.
+
+    Finally, run the project's test suite and fix anything that imports
+    the removed names indirectly (e.g. modules that re-exported them).
+    Confirm `python -c "import frontrun; frontrun.explore; frontrun.explore_random;
+    frontrun.explore_async_random"` succeeds before considering the migration done.
+
 0.5.0 (2026-06-29)
 -----------------
 

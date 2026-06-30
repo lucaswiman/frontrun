@@ -3,7 +3,7 @@ Tests demonstrating frontrun's ability to detect four classes of concurrency bug
 
 For each bug class, we have three types of tests:
 1. Exact reproduction using trace_markers/async_trace_markers with a specific Schedule
-2. Property-based exploration using bytecode/async_shuffler with explore_interleavings
+2. Property-based exploration using bytecode/async_shuffler with explore_random / explore_async_random
 3. Hypothesis-based testing using bytecode/async_shuffler with schedule_strategy
 
 Bug classes covered:
@@ -19,7 +19,7 @@ import pytest
 from hypothesis import Phase, given, settings
 
 from frontrun.async_shuffler import (
-    explore_interleavings as async_explore_interleavings,
+    explore_async_random,
 )
 from frontrun.async_shuffler import (
     run_with_schedule as async_run_with_schedule,
@@ -29,7 +29,7 @@ from frontrun.async_shuffler import (
 )
 from frontrun.async_trace_markers import AsyncTraceExecutor
 from frontrun.bytecode import (
-    explore_interleavings,
+    explore_random,
     run_with_schedule,
     schedule_strategy,
 )
@@ -85,7 +85,7 @@ def test_atomicity_violation_exploration():
 
     Randomly explores interleavings to find the atomicity violation.
     """
-    result = explore_interleavings(
+    result = explore_random(
         setup=lambda: BuggyCounterBytecode(),
         threads=[
             lambda c: c.increment(),
@@ -168,7 +168,7 @@ def test_order_violation_exploration():
         # Check if resource was used before init (should be False)
         return not manager.used_before_init
 
-    result = explore_interleavings(
+    result = explore_random(
         setup=lambda: BuggyResourceManagerBytecode(),
         threads=[
             lambda m: m.init_resource("hello"),
@@ -301,7 +301,7 @@ def test_async_suspension_point_race_exploration():
     """
 
     async def run_exploration():
-        result = await async_explore_interleavings(
+        result = await explore_async_random(
             setup=lambda: AsyncBuggyCounterBytecode(),
             tasks=[
                 lambda c: c.increment(),
@@ -389,7 +389,7 @@ def test_async_order_violation_exploration():
             # Check if resource was used before init (should be False)
             return not manager.used_before_init
 
-        result = await async_explore_interleavings(
+        result = await explore_async_random(
             setup=lambda: AsyncBuggyResourceManagerBytecode(),
             tasks=[
                 lambda m: m.init_resource("hello"),

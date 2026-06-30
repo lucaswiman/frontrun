@@ -464,9 +464,9 @@ def test_bytecode_shuffler_with_socket_io():
         server.close()
 
 
-def test_explore_interleavings_with_io():
-    """explore_interleavings works with detect_io enabled."""
-    from frontrun.bytecode import explore_interleavings
+def test_explore_random_with_io():
+    """explore_random works with detect_io enabled."""
+    import frontrun
 
     class SharedState:
         def __init__(self):
@@ -478,7 +478,7 @@ def test_explore_interleavings_with_io():
     def thread_b(state: SharedState):
         state.data.append("b")
 
-    result = explore_interleavings(
+    result = frontrun.explore_random(
         setup=SharedState,
         threads=[thread_a, thread_b],
         invariant=lambda s: len(s.data) == 2,

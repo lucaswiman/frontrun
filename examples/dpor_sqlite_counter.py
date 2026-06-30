@@ -80,8 +80,8 @@ def _read_counter(db_path: str) -> int:
 
 def run_exploration(report_path: str | None = None) -> None:
     """Racy read-modify-write: DPOR should find an invariant violation."""
+    import frontrun
     import frontrun._report
-    from frontrun.dpor import explore_dpor
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
@@ -89,9 +89,9 @@ def run_exploration(report_path: str | None = None) -> None:
     try:
         frontrun._report._global_report_path = report_path
         try:
-            result = explore_dpor(
+            result = frontrun.explore(
                 setup=lambda: State(db_path),
-                threads=[racy_increment, racy_increment],
+                workers=[racy_increment, racy_increment],
                 invariant=lambda s: _read_counter(db_path) == 2,
                 detect_io=True,
                 preemption_bound=2,
@@ -107,8 +107,8 @@ def run_exploration(report_path: str | None = None) -> None:
 
 def run_exploration_fixed(report_path: str | None = None) -> None:
     """Atomic SQL update: DPOR should find no violations."""
+    import frontrun
     import frontrun._report
-    from frontrun.dpor import explore_dpor
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
@@ -116,9 +116,9 @@ def run_exploration_fixed(report_path: str | None = None) -> None:
     try:
         frontrun._report._global_report_path = report_path
         try:
-            result = explore_dpor(
+            result = frontrun.explore(
                 setup=lambda: State(db_path),
-                threads=[atomic_increment, atomic_increment],
+                workers=[atomic_increment, atomic_increment],
                 invariant=lambda s: _read_counter(db_path) == 2,
                 detect_io=True,
                 preemption_bound=2,

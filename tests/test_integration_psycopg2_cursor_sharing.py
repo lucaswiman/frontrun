@@ -44,7 +44,7 @@ try:
 except ImportError:
     pytest.skip("psycopg2 not installed", allow_module_level=True)
 
-from frontrun.dpor import explore_dpor
+import frontrun
 
 pytestmark = pytest.mark.integration
 
@@ -117,7 +117,7 @@ class TestSharedCursorRace:
         permissive — it accepts *None* or wrong values as a violation to
         surface any symptom of the sharing.
         """
-        # Use a fresh connection per explore_dpor run so we don't bleed state.
+        # Use a fresh connection per explore() run so we don't bleed state.
         shared_conn = psycopg2.connect(_DB_URL)
 
         class State:
@@ -147,9 +147,9 @@ class TestSharedCursorRace:
             return r0 == 100 and r1 == 200
 
         try:
-            result = explore_dpor(
+            result = frontrun.explore(
                 setup=State,
-                threads=[make_thread(0), make_thread(1)],
+                workers=[make_thread(0), make_thread(1)],
                 invariant=invariant,
                 max_executions=30,
                 deadlock_timeout=10.0,
@@ -209,9 +209,9 @@ class TestPerThreadCursorSafe:
             return r0 == 100 and r1 == 200
 
         try:
-            result = explore_dpor(
+            result = frontrun.explore(
                 setup=State,
-                threads=[make_thread(0), make_thread(1)],
+                workers=[make_thread(0), make_thread(1)],
                 invariant=invariant,
                 max_executions=30,
                 deadlock_timeout=10.0,

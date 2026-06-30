@@ -22,8 +22,8 @@ try:
 except ImportError:
     pytest.skip("psycopg2 not installed", allow_module_level=True)
 
+import frontrun
 from frontrun.cli import require_active
-from frontrun.dpor import explore_dpor
 
 _DB_NAME = os.environ.get("FRONTRUN_TEST_DB", "frontrun_test")
 _DB_URL = os.environ.get("DATABASE_URL", f"dbname={_DB_NAME}")
@@ -99,9 +99,9 @@ class TestSharedSocketDeadlock:
             conn.close()
             return val == 2
 
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=State,
-            threads=[thread_fn, thread_fn],
+            workers=[thread_fn, thread_fn],
             invariant=invariant,
             detect_io=True,
             timeout_per_run=5.0,

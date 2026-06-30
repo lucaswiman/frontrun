@@ -45,14 +45,14 @@ def make_philosopher(i: int):
 
 def run_exploration(report_path: str | None = None) -> None:
     """Run DPOR exploration, optionally writing an HTML report to *report_path*."""
+    import frontrun
     import frontrun._report
-    from frontrun.dpor import explore_dpor
 
     frontrun._report._global_report_path = report_path
     try:
-        result = explore_dpor(
+        result = frontrun.explore(
             setup=Table,
-            threads=[make_philosopher(i) for i in range(3)],
+            workers=[make_philosopher(i) for i in range(3)],
             invariant=lambda _: True,
             preemption_bound=2,
             stop_on_first=False,

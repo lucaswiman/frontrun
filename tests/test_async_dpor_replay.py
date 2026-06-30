@@ -28,7 +28,7 @@ def test_lock_counterexample_reproduces() -> None:
     crash in lock plumbing and report 0 reproductions.
     """
     require_active("test_async_dpor_lock_replay")
-    from frontrun.async_dpor import explore_async_dpor
+    import frontrun
 
     class Counter:
         def __init__(self) -> None:
@@ -41,11 +41,15 @@ def test_lock_counterexample_reproduces() -> None:
             await asyncio.sleep(0)
             self.value = temp + 1
 
+    async def _do_increment(c: Counter) -> None:
+        await c.increment()
+
     result = asyncio.run(
-        explore_async_dpor(
+        frontrun.explore(
             setup=Counter,
-            tasks=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[_do_increment, _do_increment],
             invariant=lambda c: c.value == 2,
+            strategy="dpor",
             deadlock_timeout=2.0,
             timeout_per_run=3.0,
             reproduce_on_failure=10,

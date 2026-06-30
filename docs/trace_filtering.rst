@@ -23,11 +23,11 @@ argument — a list of package-name patterns using :mod:`fnmatch` syntax
 
 .. code-block:: python
 
-   from frontrun.dpor import explore_dpor
+   import frontrun
 
-   result = explore_dpor(
+   result = frontrun.explore(
        setup=make_state,
-       threads=[thread_a, thread_b],
+       workers=[thread_a, thread_b],
        invariant=check_invariant,
        trace_packages=["mylib.*", "django_filters.*"],
    )
@@ -61,9 +61,8 @@ file's path inside ``site-packages``.  For example, a file at
 
 These entry points accept ``trace_packages``:
 
-- :func:`frontrun.dpor.explore_dpor`
-- :func:`frontrun.bytecode.explore_interleavings`
-- :func:`frontrun.async_dpor.explore_async_dpor`
+- :func:`frontrun.explore`
+- :func:`frontrun.explore_random`
 - :func:`frontrun.contrib.django.django_dpor` (has Django-specific defaults)
 
 

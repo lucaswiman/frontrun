@@ -36,9 +36,10 @@ The second write overwrites the first, losing one transfer:
    ])
 
    executor = TraceExecutor(schedule)
-   executor.run("transfer1", lambda: account.transfer(50))
-   executor.run("transfer2", lambda: account.transfer(50))
-   executor.wait(timeout=5.0)
+   executor.run({
+       "transfer1": lambda: account.transfer(50),
+       "transfer2": lambda: account.transfer(50),
+   }, timeout=5.0)
 
    assert account.balance == 150  # should be 200; one transfer lost
 
@@ -78,9 +79,10 @@ regardless of which thread arrives first:
    ])
 
    executor = TraceExecutor(schedule)
-   executor.run("transfer1", lambda: account.transfer(50))
-   executor.run("transfer2", lambda: account.transfer(50))
-   executor.wait(timeout=5.0)
+   executor.run({
+       "transfer1": lambda: account.transfer(50),
+       "transfer2": lambda: account.transfer(50),
+   }, timeout=5.0)
 
    assert account.balance == 200  # both transfers applied correctly
 
@@ -93,7 +95,7 @@ No markers needed --- it detects shared-memory conflicts automatically:
 
 .. code-block:: python
 
-   from frontrun.dpor import explore_dpor
+   import frontrun
 
    class Counter:
        def __init__(self):
@@ -103,9 +105,9 @@ No markers needed --- it detects shared-memory conflicts automatically:
            temp = self.value
            self.value = temp + 1
 
-   result = explore_dpor(
+   result = frontrun.explore(
        setup=Counter,
-       threads=[lambda c: c.increment(), lambda c: c.increment()],
+       workers=[lambda c: c.increment(), lambda c: c.increment()],
        invariant=lambda c: c.value == 2,
    )
 
@@ -140,7 +142,7 @@ state in C extensions), but the error traces are less interpretable:
 
 .. code-block:: python
 
-   from frontrun.bytecode import explore_interleavings
+   import frontrun
 
    class Counter:
        def __init__(self, value=0):
@@ -150,7 +152,7 @@ state in C extensions), but the error traces are less interpretable:
            temp = self.value
            self.value = temp + 1
 
-   result = explore_interleavings(
+   result = frontrun.explore_random(
        setup=lambda: Counter(value=0),
        threads=[
            lambda c: c.increment(),
@@ -232,7 +234,7 @@ Async trace markers let you control interleaving at ``await`` boundaries:
 Interactive HTML Exploration Reports
 --------------------------------------
 
-``explore_dpor()`` can write a self-contained interactive HTML report that
+``frontrun.explore()`` can write a self-contained interactive HTML report that
 lets you step through every explored execution, inspect thread switch-points,
 and see the conflicting attribute accesses that caused each reordering.
 
@@ -244,12 +246,12 @@ and see the conflicting attribute accesses that caused each reordering.
    frontrun pytest tests/ --frontrun-report dpor_report.html
 
 **Generating a report from a script** --- set ``_global_report_path`` before
-calling ``explore_dpor()``:
+calling ``frontrun.explore()``:
 
 .. code-block:: python
 
+   import frontrun
    import frontrun._report
-   from frontrun.dpor import explore_dpor
 
    class Accounts:
        def __init__(self) -> None:
@@ -269,9 +271,9 @@ calling ``explore_dpor()``:
 
    frontrun._report._global_report_path = "dpor_report.html"
    try:
-       result = explore_dpor(
+       result = frontrun.explore(
            setup=Accounts,
-           threads=[transfer_a_to_b, transfer_b_to_c],
+           workers=[transfer_a_to_b, transfer_b_to_c],
            invariant=lambda accs: accs.a + accs.b + accs.c == 300,
            preemption_bound=2,
        )

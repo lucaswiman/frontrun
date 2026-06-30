@@ -127,17 +127,6 @@ them in a single call:
 
 This is the preferred form and matches the async API exactly.
 
-.. note::
-
-   **Legacy API (deprecated)**
-
-   The original two-step form is still supported but emits a
-   ``DeprecationWarning`` and will be removed in version 0.6::
-
-       executor.run("thread1", task_function_1)   # deprecated
-       executor.run("thread2", task_function_2)   # deprecated
-       executor.wait(timeout=5.0)
-
 
 Async Support
 -------------
@@ -217,7 +206,7 @@ Prefer ``assert_holds()`` over manual asserts
 Instead of writing ``assert result.property_holds, result.explanation`` after
 every exploration call, use the convenience helper :meth:`InterleavingResult.assert_holds`::
 
-   result = explore_dpor(setup, [thread1, thread2], invariant)
+   result = frontrun.explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
    result.assert_holds()  # raises AssertionError with explanation on failure
 
 An optional ``msg_prefix`` is prepended to the explanation, which is handy

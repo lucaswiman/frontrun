@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.join(_test_dir, "..", "external_repos", "TPool", "src
 from external_tests_helpers import print_exploration_result, print_seed_sweep_results
 from TPool import WildPool
 
-from frontrun.bytecode import explore_interleavings, run_with_schedule
+import frontrun
+from frontrun.bytecode import run_with_schedule
 
 
 class RealTPoolState:
@@ -61,7 +62,7 @@ class RealTPoolState:
 def test_real_tpool_toctou_explore():
     """Find the TOCTOU in real WildPool._should_keep_going()."""
 
-    result = explore_interleavings(
+    result = frontrun.explore_random(
         setup=lambda: RealTPoolState(),
         threads=[
             lambda s: s.worker_checks(),
@@ -87,7 +88,7 @@ def test_real_tpool_toctou_sweep_seeds():
     total_explored = 0
 
     for seed in range(20):
-        result = explore_interleavings(
+        result = frontrun.explore_random(
             setup=lambda: RealTPoolState(),
             threads=[
                 lambda s: s.worker_checks(),
@@ -109,7 +110,7 @@ def test_real_tpool_toctou_sweep_seeds():
 def test_real_tpool_reproduce():
     """Find a counterexample and reproduce it 10 times."""
 
-    result = explore_interleavings(
+    result = frontrun.explore_random(
         setup=lambda: RealTPoolState(),
         threads=[
             lambda s: s.worker_checks(),

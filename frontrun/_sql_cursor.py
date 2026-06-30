@@ -852,7 +852,7 @@ _PATCHES: list[tuple[Any, str, Any]] = []
 _ORIGINAL_METHODS: dict[tuple[type, str], Any] = {}
 
 # Global lock_timeout (milliseconds) to inject on new PostgreSQL connections.
-# Set by explore_dpor(lock_timeout=...) and cleared after exploration.
+# Set by frontrun.explore(lock_timeout=...) and cleared after exploration.
 _lock_timeout_ms: int | None = None
 
 

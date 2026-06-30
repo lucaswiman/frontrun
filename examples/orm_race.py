@@ -52,9 +52,8 @@ import time
 from sqlalchemy import String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-from frontrun.bytecode import explore_interleavings
+import frontrun
 from frontrun.common import Schedule, Step
-from frontrun.dpor import explore_dpor
 from frontrun.trace_markers import TraceExecutor
 
 _DB_NAME = "frontrun_test"
@@ -174,9 +173,7 @@ def demo_trace_markers() -> None:
     )
 
     executor = TraceExecutor(schedule)
-    executor.run("a", handler_a)
-    executor.run("b", handler_b)
-    executor.wait(timeout=10.0)
+    executor.run({"a": handler_a, "b": handler_b}, timeout=10.0)
 
     if errors:
         for label, msg in errors.items():
@@ -206,7 +203,7 @@ def demo_trace_markers() -> None:
 # Demo 2: Automatic detection with bytecode exploration
 # ============================================================================
 #
-# explore_interleavings generates random opcode-level schedules and runs
+# explore_random generates random opcode-level schedules and runs
 # both handlers under controlled interleaving.  psycopg2 (used under the
 # hood by SQLAlchemy) releases the GIL during C-level I/O, so the
 # scheduler has real interleaving leverage.
@@ -248,7 +245,7 @@ def demo_bytecode_exploration() -> None:
             assert user is not None
             return user.login_count == 2
 
-    result = explore_interleavings(
+    result = frontrun.explore_random(
         setup=_State,
         threads=[_thread_fn, _thread_fn],
         invariant=_invariant,
@@ -329,9 +326,9 @@ def demo_dpor() -> None:
             assert user is not None
             return user.login_count == 2
 
-    result = explore_dpor(
+    result = frontrun.explore(
         setup=_State,
-        threads=[_thread_fn, _thread_fn],
+        workers=[_thread_fn, _thread_fn],
         invariant=_invariant,
         detect_io=True,
         deadlock_timeout=15.0,
