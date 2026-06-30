@@ -23,9 +23,9 @@ argument — a list of package-name patterns using :mod:`fnmatch` syntax
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
-   result = explore(
+   result = frontrun.explore(
        setup=make_state,
        workers=[thread_a, thread_b],
        invariant=check_invariant,

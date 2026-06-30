@@ -16,7 +16,7 @@ Unified entry point is `frontrun.explore(strategy=...)`, which dispatches throug
 - `frontrun/` — Python package (pure Python + compiled `_dpor` extension)
   - `_dpor_core/` — pure helpers shared by sync + async DPOR (`engine.py`, `invariants.py`, `concurrency.py`, `failures.py`, `row_locks.py`, `utils.py`)
   - `_dpor_runtime/` — sync DPOR internals (`explore.py`, `scheduler.py`, `runner.py`, `replay.py`, `preload_bridge.py`)
-  - `_strategy.py` — `Strategy` / `AsyncStrategy` Protocols + adapter registries used by `explore()`
+  - `_strategy.py` — `Strategy` / `AsyncStrategy` Protocols + adapter registries used by `frontrun.explore()`
   - `contrib/django/`, `contrib/sqlalchemy/` — framework-specific helpers (`_sync.py`, `_async.py`, `_shared.py`)
   - Large modules worth knowing about before editing:
     - `_opcode_observer.py` — sole owner of `sys.settrace` / `sys.monitoring`. Exposes `start_opcode_trace`, `stop_opcode_trace`, `install_thread_opcode_trace`, `install_thread_line_trace`. **No other module should touch `sys.settrace` / `sys.monitoring` / `f_trace_opcodes` directly** — go through this API.
@@ -81,7 +81,7 @@ Integration tests require additional packages and services:
 - 3.14t (free-threaded) routes opcode tracing through `sys.monitoring` rather than `sys.settrace` (CPython #118415). The choice is encapsulated in `_opcode_observer.py::start_opcode_trace`; callers don't pick. If you need a new tracer hook, extend the API there rather than reaching for `sys.*` directly.
 - `_cooperative.py` is sync-only by design: asyncio is already cooperative, so async paths use stock primitives. Don't try to add an async mirror.
 - The async DPOR pipeline still lives in a single `async_dpor.py` instead of mirroring `_dpor_runtime/`. The shared `_dpor_core/` package is the staging area for pulling more out of both — currently holds engine construction, serializability-baseline computation, and race-failure formatting. The next slice (worker/scheduler abstraction) is not yet done.
-- When adding a new exploration approach, register it as a `Strategy` / `AsyncStrategy` adapter in `frontrun/_strategy.py` so `explore(strategy=...)` picks it up — don't add another branch in `explore.py`.
+- When adding a new exploration approach, register it as a `Strategy` / `AsyncStrategy` adapter in `frontrun/_strategy.py` so `frontrun.explore(strategy=...)` picks it up — don't add another branch in `explore.py`.
 - The package exposes `explore_random` / `explore_async_random` lazily via `frontrun.__getattr__` (PEP 562) to avoid importing the bytecode shuffler at startup. Add new lazy attributes by extending `_LAZY_IMPORTS` in `frontrun/__init__.py`.
 - Benchmarks live under `benchmarks/` only — there is no top-level bench script.
 

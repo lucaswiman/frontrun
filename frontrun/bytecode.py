@@ -19,7 +19,7 @@ coverage).
 
 Example — find a race condition with random schedule exploration:
 
-    >>> from frontrun.bytecode import explore_random
+    >>> import frontrun
     >>>
     >>> class Counter:
     ...     def __init__(self):
@@ -28,7 +28,7 @@ Example — find a race condition with random schedule exploration:
     ...         temp = self.value
     ...         self.value = temp + 1
     >>>
-    >>> result = explore_random(
+    >>> result = frontrun.explore_random(
     ...     setup=lambda: Counter(),
     ...     threads=[lambda c: c.increment(), lambda c: c.increment()],
     ...     invariant=lambda c: c.value == 2,

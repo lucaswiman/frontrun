@@ -40,7 +40,7 @@ try:
 except ImportError:
     pytest.skip("redis package not installed", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 
 pytestmark = pytest.mark.integration
 
@@ -91,7 +91,7 @@ class TestCeleryRedisBackendRace:
             r.close()
             return write_count <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[task_a, task_b],
             invariant=invariant,
@@ -149,7 +149,7 @@ class TestCelerySQLBackendRace:
             conn.close()
             return value == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment_task, increment_task],
             invariant=invariant,
@@ -194,7 +194,7 @@ class TestCelerySQLBackendRace:
             conn.close()
             return value == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment_task, increment_task],
             invariant=invariant,
@@ -256,7 +256,7 @@ class TestCeleryResultOverwrite:
             r.close()
             return val == "result-1"
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[task_a, task_b],
             invariant=invariant,

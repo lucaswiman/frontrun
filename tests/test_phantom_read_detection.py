@@ -30,7 +30,7 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
-from frontrun import explore
+import frontrun
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 from frontrun._tracing import _FRONTRUN_DIR
 
@@ -250,7 +250,7 @@ class TestDporPhantomReadDetection:
                 # Token limit is 1 — should never have more than 1 token
                 return count <= 1
 
-            result = explore(
+            result = frontrun.explore(
                 setup=setup,
                 workers=[thread_fn, thread_fn],
                 invariant=invariant,

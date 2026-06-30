@@ -16,7 +16,7 @@ _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_src = os.path.join(_test_dir, "..", "external_repos", "cachetools", "src")
 sys.path.insert(0, os.path.abspath(_repo_src))
 
-from frontrun import explore_random  # noqa: E402
+import frontrun  # noqa: E402
 
 
 @contextmanager
@@ -68,7 +68,7 @@ def _currsize_invariant(s):
 def test_b1_cache_currsize(max_attempts=500, max_ops=200):
     """Cache.__setitem__: currsize lost update."""
     with timeout_minutes(5):
-        return print_result("Cache currsize", explore_random(
+        return print_result("Cache currsize", frontrun.explore_random(
             setup=lambda: CacheCurrsizeState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_currsize_invariant,
@@ -99,7 +99,7 @@ def _del_currsize_invariant(s):
 def test_b2_cache_del_currsize(max_attempts=500, max_ops=200):
     """Cache.__delitem__: currsize lost update on concurrent delete."""
     with timeout_minutes(5):
-        return print_result("Cache del currsize", explore_random(
+        return print_result("Cache del currsize", frontrun.explore_random(
             setup=lambda: CacheDelCurrsizeState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_del_currsize_invariant,
@@ -141,7 +141,7 @@ def _lru_get_del_invariant(s):
 def test_b3_lru_get_del(max_attempts=500, max_ops=200):
     """LRUCache: concurrent get + delete TOCTOU on __order."""
     with timeout_minutes(5):
-        return print_result("LRU get+del TOCTOU", explore_random(
+        return print_result("LRU get+del TOCTOU", frontrun.explore_random(
             setup=lambda: LRUGetDelState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_lru_get_del_invariant,
@@ -187,7 +187,7 @@ def _rr_index_invariant(s):
 def test_b4_rrcache_index(max_attempts=500, max_ops=200):
     """RRCache.__setitem__: concurrent inserts corrupt index."""
     with timeout_minutes(5):
-        return print_result("RRCache index collision", explore_random(
+        return print_result("RRCache index collision", frontrun.explore_random(
             setup=lambda: RRCacheIndexState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_rr_index_invariant,
@@ -230,7 +230,7 @@ def _cached_stats_invariant(s):
 def test_b5_cached_stats(max_attempts=500, max_ops=200):
     """@cached without lock: hits/misses lost update."""
     with timeout_minutes(5):
-        return print_result("@cached stats lost update", explore_random(
+        return print_result("@cached stats lost update", frontrun.explore_random(
             setup=lambda: CachedStatsState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_cached_stats_invariant,
@@ -278,7 +278,7 @@ def _lfu_links_invariant(s):
 def test_b6_lfu_links(max_attempts=500, max_ops=200):
     """LFUCache: concurrent gets corrupt frequency link structure."""
     with timeout_minutes(5):
-        return print_result("LFU link corruption", explore_random(
+        return print_result("LFU link corruption", frontrun.explore_random(
             setup=lambda: LFUGetState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_lfu_links_invariant,
@@ -311,7 +311,7 @@ def _set_del_currsize_invariant(s):
 def test_b7_cache_set_del(max_attempts=500, max_ops=200):
     """Cache: concurrent set + delete corrupts currsize."""
     with timeout_minutes(5):
-        return print_result("Cache set+del currsize", explore_random(
+        return print_result("Cache set+del currsize", frontrun.explore_random(
             setup=lambda: CacheSetDelState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_set_del_currsize_invariant,
@@ -348,7 +348,7 @@ def _timer_nesting_invariant(s):
 def test_b8_timer_nesting(max_attempts=500, max_ops=200):
     """TTLCache._Timer: __nesting lost update from concurrent get()."""
     with timeout_minutes(5):
-        return print_result("TTLCache timer nesting", explore_random(
+        return print_result("TTLCache timer nesting", frontrun.explore_random(
             setup=lambda: TimerNestingState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_timer_nesting_invariant,
@@ -396,7 +396,7 @@ def _locked_stats_invariant(s):
 def test_s1_cached_locked_stats(max_attempts=15000, max_ops=400):
     """@cached with lock: stats should be accurate."""
     with timeout_minutes(5):
-        return print_result("@cached locked stats", explore_random(
+        return print_result("@cached locked stats", frontrun.explore_random(
             setup=lambda: CachedLockedStatsState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_locked_stats_invariant,
@@ -442,7 +442,7 @@ def _locked_data_invariant(s):
 def test_s2_cached_locked_data(max_attempts=15000, max_ops=400):
     """@cached with lock: all computed values stored correctly."""
     with timeout_minutes(5):
-        return print_result("@cached locked data", explore_random(
+        return print_result("@cached locked data", frontrun.explore_random(
             setup=lambda: CachedLockedDataState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_locked_data_invariant,
@@ -486,7 +486,7 @@ def _condition_invariant(s):
 def test_s3_cached_condition(max_attempts=15000, max_ops=400):
     """@cached with condition: prevents stampede, accurate stats."""
     with timeout_minutes(5):
-        return print_result("@cached condition", explore_random(
+        return print_result("@cached condition", frontrun.explore_random(
             setup=lambda: CachedConditionState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_condition_invariant,
@@ -521,7 +521,7 @@ def _single_key_invariant(s):
 def test_s4_cache_single_key(max_attempts=15000, max_ops=400):
     """Cache: individual key-value pairs are always retrievable."""
     with timeout_minutes(5):
-        return print_result("Cache single-key integrity", explore_random(
+        return print_result("Cache single-key integrity", frontrun.explore_random(
             setup=lambda: CacheSingleKeyState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_single_key_invariant,

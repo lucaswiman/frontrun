@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from frontrun import explore
+import frontrun
 from frontrun._cooperative import patch_sleep, unpatch_sleep
 
 
@@ -77,7 +77,7 @@ class TestSleepInDpor:
                 state.value += 1
 
         start = time.monotonic()
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[thread_with_sleep, thread_with_sleep],
             invariant=lambda s: s.value == 4,
@@ -99,7 +99,7 @@ class TestSleepInDpor:
             time.sleep(0.1)  # Scheduling point — other thread can run here
             state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[thread_a, thread_a],
             invariant=lambda s: s.value == 2,
@@ -122,7 +122,7 @@ class TestSleepInDpor:
             if elapsed >= 0.01:
                 state.slept = True
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[thread_func],
             invariant=lambda s: s.slept,
@@ -149,7 +149,7 @@ class TestAsyncSleepPatching:
 
         async def run() -> None:
             start = time.monotonic()
-            result = await explore(
+            result = await frontrun.explore(
                 setup=State,
                 workers=[task_with_sleep, task_with_sleep],
                 invariant=lambda s: s.value == 4,

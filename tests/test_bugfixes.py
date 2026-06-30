@@ -12,7 +12,7 @@ from unittest.mock import patch as mock_patch
 import pytest
 from frontrun._dpor import PyDporEngine
 
-from frontrun import explore
+import frontrun
 from frontrun._cooperative import CooperativeCondition
 from frontrun.bytecode import BytecodeShuffler, OpcodeScheduler
 from frontrun.common import Schedule, Step
@@ -233,7 +233,7 @@ class TestDporStopOnFirst:
                 temp = self.value
                 self.value = temp + 1
 
-        result_early = explore(
+        result_early = frontrun.explore(
             setup=Counter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -243,7 +243,7 @@ class TestDporStopOnFirst:
         assert result_early.counterexample is not None
         early_count = result_early.num_explored
 
-        result_full = explore(
+        result_full = frontrun.explore(
             setup=Counter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -266,7 +266,7 @@ class TestDporStopOnFirst:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,

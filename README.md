@@ -121,7 +121,7 @@ DPOR (Dynamic Partial Order Reduction) *systematically* explores every meaningfu
 When a race is found, the error trace shows the exact sequence of conflicting accesses and which threads were involved:
 
 ```python
-from frontrun import explore
+import frontrun
 
 class Counter:
     def __init__(self):
@@ -132,7 +132,7 @@ class Counter:
         self.value = temp + 1
 
 def test_counter_is_atomic():
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -175,7 +175,7 @@ The random strategy often finds races very quickly — sometimes on the first at
 The trade-off: error traces are less interpretable. You get the specific opcode schedule that broke the invariant and a best-effort interleaved source trace, but not the causal conflict analysis that DPOR provides.
 
 ```python
-from frontrun import explore
+import frontrun
 
 class Counter:
     def __init__(self, value=0):
@@ -186,7 +186,7 @@ class Counter:
         self.value = temp + 1
 
 def test_counter_is_atomic():
-    result = explore(
+    result = frontrun.explore(
         setup=lambda: Counter(value=0),
         workers=Counter.increment,
         count=2,
@@ -239,7 +239,7 @@ DPOR goes beyond coarse socket-level detection for Redis: it intercepts `execute
 **Sync DPOR** — Redis patching is active automatically when `detect_io=True` (the default):
 
 ```python
-from frontrun import explore
+import frontrun
 import redis
 
 def test_redis_counter_race(redis_port):
@@ -255,7 +255,7 @@ def test_redis_counter_race(redis_port):
         r.set("counter", str(val + 1))
         r.close()
 
-    result = explore(
+    result = frontrun.explore(
         setup=State,
         workers=[increment, increment],
         invariant=lambda s: int(redis.Redis(port=redis_port).get("counter")) == 2,
@@ -267,7 +267,7 @@ def test_redis_counter_race(redis_port):
 **Async DPOR** — `detect_io=True` covers Redis in async too:
 
 ```python
-from frontrun import explore
+import frontrun
 import redis.asyncio as aioredis
 
 async def test_async_redis_race(redis_port):
@@ -277,7 +277,7 @@ async def test_async_redis_race(redis_port):
         await r.set("counter", str(val + 1))
         await r.aclose()
 
-    result = await explore(
+    result = await frontrun.explore(
         setup=lambda: None,
         workers=increment,
         count=2,
@@ -322,9 +322,9 @@ with IOEventDispatcher() as dispatcher:
 By default, frontrun only traces user code — files outside the stdlib, `site-packages`, and frontrun's own internals. When the code under test lives inside an installed package (Django apps, plugin architectures, etc.), pass `trace_packages` to widen the filter:
 
 ```python
-from frontrun import explore
+import frontrun
 
-result = explore(
+result = frontrun.explore(
     setup=make_state,
     workers=[thread_a, thread_b],
     invariant=check_invariant,
@@ -385,7 +385,7 @@ Async exploration works at natural ``await`` boundaries instead of opcodes, maki
 
 ```python
 import asyncio
-from frontrun import explore
+import frontrun
 
 class Counter:
     def __init__(self):
@@ -398,7 +398,7 @@ class Counter:
 
 # DPOR (default) — systematic
 async def test_async_counter_dpor():
-    result = await explore(
+    result = await frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -408,7 +408,7 @@ async def test_async_counter_dpor():
 
 # Random strategy — fast, probabilistic
 async def test_async_counter_random():
-    result = await explore(
+    result = await frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -482,7 +482,7 @@ confusing failures when the environment isn't properly set up.
 with the race explanation on failure and returns `None` silently on success:
 
 ```python
-result = explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
+result = frontrun.explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
 result.assert_holds()  # preferred over: assert result.property_holds, result.explanation
 ```
 

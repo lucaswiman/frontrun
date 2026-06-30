@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from frontrun import explore
+import frontrun
 
 # ---------------------------------------------------------------------------
 # Racy test: two threads share ONE cursor
@@ -79,7 +79,7 @@ class TestSqlite3SharedCursorRace:
             return r0 == 100 and r1 == 200
 
         try:
-            result = explore(
+            result = frontrun.explore(
                 setup=State,
                 workers=[make_thread(0), make_thread(1)],
                 invariant=invariant,
@@ -147,7 +147,7 @@ class TestSqlite3PerThreadCursorSafe:
             return r0 == 100 and r1 == 200
 
         try:
-            result = explore(
+            result = frontrun.explore(
                 setup=State,
                 workers=[make_thread(0), make_thread(1)],
                 invariant=invariant,

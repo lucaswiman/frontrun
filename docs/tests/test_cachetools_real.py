@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(_test_dir, "..", "external_repos", "cachetools",
 from cachetools import Cache
 from external_tests_helpers import print_exploration_result, print_seed_sweep_results
 
-from frontrun import explore_random
+import frontrun
 from frontrun.bytecode import run_with_schedule
 
 
@@ -40,7 +40,7 @@ class RealCacheState:
 def test_real_cachetools_lost_update():
     """Find the currsize lost update in real Cache.__setitem__."""
 
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: RealCacheState(),
         threads=[
             lambda s: s.thread1(),
@@ -66,7 +66,7 @@ def test_real_cachetools_lost_update_sweep():
     total_explored = 0
 
     for seed in range(20):
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=lambda: RealCacheState(),
             threads=[
                 lambda s: s.thread1(),
@@ -88,7 +88,7 @@ def test_real_cachetools_lost_update_sweep():
 def test_real_cachetools_reproduce():
     """Find a counterexample and reproduce it 10 times."""
 
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: RealCacheState(),
         threads=[
             lambda s: s.thread1(),

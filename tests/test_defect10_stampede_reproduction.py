@@ -28,7 +28,7 @@ try:
 except ImportError:
     pytest.skip("redis package not installed", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 
 
 class TestStampedeReproduction:
@@ -60,7 +60,7 @@ class TestStampedeReproduction:
             r.close()
             return count == 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[get_or_compute, get_or_compute],
             invariant=invariant,
@@ -100,7 +100,7 @@ class TestStampedeReproduction:
             r.close()
             return result == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=invariant,
@@ -169,7 +169,7 @@ class TestStampedeReproduction:
             r.close()
             return count <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[pipeline_stampede, pipeline_stampede],
             invariant=invariant,
@@ -235,7 +235,7 @@ class TestStampedeReproduction:
             r.close()
             return count <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[_make_fn(0), _make_fn(1)],
             invariant=_inv,

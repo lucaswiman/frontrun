@@ -11,6 +11,7 @@ import asyncio
 
 import pytest
 
+import frontrun
 from frontrun.cli import require_active
 
 _async_global_counter = 0
@@ -23,7 +24,6 @@ class TestAsyncDporBasic:
     def test_finds_lost_update(self) -> None:
         """DPOR should systematically find the lost-update race."""
         require_active("test_async_dpor_lost_update")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -35,7 +35,7 @@ class TestAsyncDporBasic:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -50,7 +50,6 @@ class TestAsyncDporBasic:
     def test_no_race_when_atomic(self) -> None:
         """DPOR should verify correctness when there's no race."""
         require_active("test_async_dpor_no_race")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -61,7 +60,7 @@ class TestAsyncDporBasic:
             counter.value += 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[safe_increment, safe_increment],
                 strategy="dpor",
@@ -76,7 +75,6 @@ class TestAsyncDporBasic:
     def test_tracks_stale_read_across_await(self) -> None:
         """DPOR should catch a stale read carried across an await boundary."""
         require_active("test_async_dpor_stale_read_across_await")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -92,7 +90,7 @@ class TestAsyncDporBasic:
             await asyncio.sleep(0)
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -107,7 +105,6 @@ class TestAsyncDporBasic:
     def test_independent_objects_collapse_to_one_execution(self) -> None:
         """Independent await-delimited blocks should not create extra executions."""
         require_active("test_async_dpor_independent_objects")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -125,7 +122,7 @@ class TestAsyncDporBasic:
             await asyncio.sleep(0)
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[set_a, set_b],
                 strategy="dpor",
@@ -142,7 +139,6 @@ class TestAsyncDporBasic:
     def test_detects_global_race(self) -> None:
         """Async DPOR should trace LOAD_GLOBAL/STORE_GLOBAL conflicts."""
         require_active("test_async_dpor_global_race")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -156,7 +152,7 @@ class TestAsyncDporBasic:
             _async_global_counter = tmp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -170,7 +166,6 @@ class TestAsyncDporBasic:
     def test_detects_augmented_global_race(self) -> None:
         """Async DPOR should trace global += via LOAD_GLOBAL/STORE_GLOBAL."""
         require_active("test_async_dpor_global_augassign")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -185,7 +180,7 @@ class TestAsyncDporBasic:
             _async_global_augmented += 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -199,7 +194,6 @@ class TestAsyncDporBasic:
     def test_detects_closure_cell_race(self) -> None:
         """Async DPOR should trace LOAD_DEREF/STORE_DEREF conflicts."""
         require_active("test_async_dpor_closure_race")
-        from frontrun import explore
 
         shared = 0
 
@@ -217,7 +211,7 @@ class TestAsyncDporBasic:
             state.value = shared
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -231,7 +225,6 @@ class TestAsyncDporBasic:
     def test_traces_sync_helper_inside_coroutine(self) -> None:
         """Tracing should continue through synchronous helper frames."""
         require_active("test_async_dpor_sync_helper")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -246,7 +239,7 @@ class TestAsyncDporBasic:
             helper(state, snapshot + 1)
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[update, update],
                 strategy="dpor",
@@ -260,7 +253,6 @@ class TestAsyncDporBasic:
     def test_detects_container_method_conflict(self) -> None:
         """Passthrough builtin reads should conflict with C-level container writes."""
         require_active("test_async_dpor_container_method_conflict")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -278,7 +270,7 @@ class TestAsyncDporBasic:
             await asyncio.sleep(0)
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[append_item, measure_length],
                 strategy="dpor",
@@ -295,7 +287,6 @@ class TestAsyncDporBasic:
     def test_disjoint_dict_keys_collapse_to_one_execution(self) -> None:
         """Disjoint subscript writes should not create extra executions."""
         require_active("test_async_dpor_disjoint_dict_keys")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -312,7 +303,7 @@ class TestAsyncDporBasic:
             await asyncio.sleep(0)
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[set_a, set_b],
                 strategy="dpor",
@@ -329,7 +320,6 @@ class TestAsyncDporBasic:
     def test_three_tasks(self) -> None:
         """DPOR should handle three concurrent tasks."""
         require_active("test_async_dpor_three_tasks")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -341,7 +331,7 @@ class TestAsyncDporBasic:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment, increment],
                 strategy="dpor",
@@ -355,7 +345,6 @@ class TestAsyncDporBasic:
     def test_multiple_await_points(self) -> None:
         """DPOR should explore interleavings with multiple await points per task."""
         require_active("test_async_dpor_multiple_awaits")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -374,7 +363,7 @@ class TestAsyncDporBasic:
             state.log.append("b2")
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[task_a, task_b],
                 strategy="dpor",
@@ -390,7 +379,6 @@ class TestAsyncDporBasic:
     def test_stop_on_first(self) -> None:
         """stop_on_first=True should stop after finding the first violation."""
         require_active("test_async_dpor_stop_on_first")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -402,7 +390,7 @@ class TestAsyncDporBasic:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -431,7 +419,6 @@ class TestAsyncDporDeadlock:
         interleaving and report it — not actually deadlock.
         """
         require_active("test_async_dpor_two_coroutine_deadlock")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -455,7 +442,7 @@ class TestAsyncDporDeadlock:
                 state.row2.release()
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[coroutine1, coroutine2],
                 strategy="dpor",
@@ -476,7 +463,6 @@ class TestAsyncDporDeadlock:
         lock and waits for its second.
         """
         require_active("test_async_dpor_three_coroutine_deadlock")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -509,7 +495,7 @@ class TestAsyncDporDeadlock:
                 state.row3.release()
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[coroutine1, coroutine2, coroutine3],
                 strategy="dpor",
@@ -540,8 +526,6 @@ class TestAsyncDporDeadlock:
         import tempfile
 
         import aiosqlite  # type: ignore[import-untyped]
-
-        from frontrun import explore
 
         fd, db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
@@ -582,7 +566,7 @@ class TestAsyncDporDeadlock:
 
         async def run() -> object:
             await _setup_db()
-            return await explore(
+            return await frontrun.explore(
                 setup=State,
                 workers=[coroutine1, coroutine2],
                 strategy="dpor",
@@ -608,7 +592,6 @@ class TestAsyncDporDeadlock:
         The partial deadlock should still be detected even though C3 finishes.
         """
         require_active("test_async_dpor_partial_deadlock")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -636,7 +619,7 @@ class TestAsyncDporDeadlock:
             state.c3_done = True
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[coroutine1, coroutine2, coroutine3],
                 strategy="dpor",
@@ -655,7 +638,6 @@ class TestAsyncDporDeadlock:
         so no cycle is possible.
         """
         require_active("test_async_dpor_no_deadlock")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -679,7 +661,7 @@ class TestAsyncDporDeadlock:
                 state.lock_a.release()
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[coroutine1, coroutine2],
                 strategy="dpor",
@@ -698,7 +680,6 @@ class TestAsyncDporDeadlock:
         by the same coroutine is an instant deadlock.
         """
         require_active("test_async_dpor_self_deadlock")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -715,7 +696,7 @@ class TestAsyncDporDeadlock:
             pass
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[coroutine1, coroutine2],
                 strategy="dpor",
@@ -734,7 +715,6 @@ class TestAsyncDporDeadlock:
         to reach the state where both hold one lock.
         """
         require_active("test_async_dpor_asymmetric_deadlock")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -770,7 +750,7 @@ class TestAsyncDporDeadlock:
                 state.lock_b.release()
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[coroutine1, coroutine2],
                 strategy="dpor",
@@ -792,7 +772,6 @@ class TestAsyncDporDeadlock:
         where C1 sets the flag before C2 reads it triggers the deadlock.
         """
         require_active("test_async_dpor_data_dependent_deadlock")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -830,7 +809,7 @@ class TestAsyncDporDeadlock:
                     state.lock_a.release()
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[coroutine1, coroutine2],
                 strategy="dpor",
@@ -851,7 +830,6 @@ class TestAsyncDporDeadlock:
         enough interleavings).
         """
         require_active("test_async_dpor_dining_philosophers")
-        from frontrun import explore
 
         num_philosophers = 3
 
@@ -873,7 +851,7 @@ class TestAsyncDporDeadlock:
             return philosopher
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[make_philosopher(i) for i in range(num_philosophers)],
                 strategy="dpor",
@@ -946,7 +924,6 @@ class TestAsyncDporCleanup:
         to acquire the same lock without timing out.
         """
         require_active("test_async_dpor_lock_cleanup_on_exception")
-        from frontrun import explore
 
         class State:
             def __init__(self) -> None:
@@ -964,7 +941,7 @@ class TestAsyncDporCleanup:
             state.lock.release()
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[task0_crashes, task1_acquires],
                 strategy="dpor",
@@ -995,7 +972,6 @@ class TestAsyncDporExplanation:
         NOT for invariant violations. The explanation field stays None.
         """
         require_active("test_async_dpor_invariant_explanation")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -1007,7 +983,7 @@ class TestAsyncDporExplanation:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -1028,7 +1004,6 @@ class TestAsyncDporExplanation:
         at which points, making it possible to understand the race condition.
         """
         require_active("test_async_dpor_explanation_content")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -1040,7 +1015,7 @@ class TestAsyncDporExplanation:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -1064,7 +1039,6 @@ class TestAsyncDporReproduceOnFailure:
     def test_reproduce_on_failure_default(self) -> None:
         """By default, reproduce_on_failure=10 replays the counterexample."""
         require_active("test_async_dpor_reproduce_default")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -1076,7 +1050,7 @@ class TestAsyncDporReproduceOnFailure:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -1096,7 +1070,6 @@ class TestAsyncDporReproduceOnFailure:
     def test_reproduce_on_failure_zero(self) -> None:
         """reproduce_on_failure=0 skips replay."""
         require_active("test_async_dpor_reproduce_zero")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -1108,7 +1081,7 @@ class TestAsyncDporReproduceOnFailure:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -1125,7 +1098,6 @@ class TestAsyncDporReproduceOnFailure:
     def test_reproduce_on_failure_custom(self) -> None:
         """reproduce_on_failure=3 replays exactly 3 times."""
         require_active("test_async_dpor_reproduce_custom")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -1137,7 +1109,7 @@ class TestAsyncDporReproduceOnFailure:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -1164,8 +1136,6 @@ class TestAsyncDporTotalTimeout:
         require_active("test_async_dpor_total_timeout")
         import time
 
-        from frontrun import explore
-
         class State:
             def __init__(self) -> None:
                 self.a = 0
@@ -1188,7 +1158,7 @@ class TestAsyncDporTotalTimeout:
 
         start = time.monotonic()
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[task_a, task_b],
                 strategy="dpor",
@@ -1209,7 +1179,6 @@ class TestAsyncDporWarnNondeterministicSQL:
     def test_parameter_accepted(self) -> None:
         """async explore(strategy="dpor") should accept warn_nondeterministic_sql parameter."""
         require_active("test_async_dpor_warn_nondeterministic_sql")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -1221,7 +1190,7 @@ class TestAsyncDporWarnNondeterministicSQL:
 
         # Should not raise — parameter should be accepted
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -1235,7 +1204,6 @@ class TestAsyncDporWarnNondeterministicSQL:
     def test_raises_on_uncaptured_inserts(self) -> None:
         """When warn_nondeterministic_sql=True (default), should raise NondeterministicSQLError."""
         require_active("test_async_dpor_warn_nondeterministic_sql_raises")
-        from frontrun import explore
         from frontrun._sql_insert_tracker import clear_insert_tracker, record_insert
         from frontrun.common import NondeterministicSQLError
 
@@ -1251,7 +1219,7 @@ class TestAsyncDporWarnNondeterministicSQL:
 
         with pytest.raises(NondeterministicSQLError, match="test_table"):
             asyncio.run(
-                explore(
+                frontrun.explore(
                     setup=State,
                     workers=[task_with_uncaptured_insert],
                     strategy="dpor",
@@ -1268,7 +1236,6 @@ class TestAsyncDporWarnNondeterministicSQL:
     def test_suppressed_when_false(self) -> None:
         """When warn_nondeterministic_sql=False, should NOT raise on uncaptured INSERTs."""
         require_active("test_async_dpor_warn_nondeterministic_sql_suppressed")
-        from frontrun import explore
         from frontrun._sql_insert_tracker import clear_insert_tracker, record_insert
 
         class State:
@@ -1282,7 +1249,7 @@ class TestAsyncDporWarnNondeterministicSQL:
 
         # Should NOT raise
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[task_with_uncaptured_insert],
                 strategy="dpor",
@@ -1300,7 +1267,6 @@ class TestAsyncDporWarnNondeterministicSQL:
     def test_clears_insert_tracker_between_executions(self) -> None:
         """Insert tracker should be cleared between DPOR executions."""
         require_active("test_async_dpor_clears_insert_tracker")
-        from frontrun import explore
         from frontrun._sql_insert_tracker import get_records
 
         class Counter:
@@ -1317,7 +1283,7 @@ class TestAsyncDporWarnNondeterministicSQL:
             counter.value = temp + 1
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -1340,7 +1306,6 @@ class TestAsyncDporLockTimeout:
     def test_parameter_accepted(self) -> None:
         """async explore(strategy="dpor") should accept lock_timeout parameter."""
         require_active("test_async_dpor_lock_timeout")
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -1352,7 +1317,7 @@ class TestAsyncDporLockTimeout:
 
         # Should not raise — parameter should be accepted
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[increment, increment],
                 strategy="dpor",
@@ -1366,7 +1331,6 @@ class TestAsyncDporLockTimeout:
     def test_sets_global_lock_timeout(self) -> None:
         """lock_timeout should be set during exploration and restored after."""
         require_active("test_async_dpor_lock_timeout_global")
-        from frontrun import explore
         from frontrun._sql_cursor import get_lock_timeout
 
         class State:
@@ -1384,7 +1348,7 @@ class TestAsyncDporLockTimeout:
         assert get_lock_timeout() is None
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[check_lock_timeout],
                 strategy="dpor",
@@ -1406,7 +1370,6 @@ class TestAsyncDporLockTimeout:
     def test_restores_previous_lock_timeout(self) -> None:
         """lock_timeout should restore the previous value, not just None."""
         require_active("test_async_dpor_lock_timeout_restore")
-        from frontrun import explore
         from frontrun._sql_cursor import get_lock_timeout, set_lock_timeout
 
         class State:
@@ -1421,7 +1384,7 @@ class TestAsyncDporLockTimeout:
         set_lock_timeout(999)
         try:
             result = asyncio.run(
-                explore(
+                frontrun.explore(
                     setup=State,
                     workers=[noop_task],
                     strategy="dpor",
@@ -1451,7 +1414,6 @@ class TestAsyncDporPreRegister:
         require_active("test_async_dpor_pre_register")
         from unittest.mock import patch as mock_patch
 
-        from frontrun import explore
         from frontrun._opcode_observer import StableObjectIds
 
         pre_register_calls: list[object] = []
@@ -1471,7 +1433,7 @@ class TestAsyncDporPreRegister:
 
         with mock_patch.object(StableObjectIds, "pre_register", tracking_pre_register):
             asyncio.run(
-                explore(
+                frontrun.explore(
                     setup=State,
                     workers=[noop],
                     strategy="dpor",

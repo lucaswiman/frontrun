@@ -1,6 +1,6 @@
 import sqlite3
 
-from frontrun import explore
+import frontrun
 from frontrun._io_detection import set_io_reporter
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 
@@ -38,7 +38,7 @@ def test_cross_column_conflict_fix():
 
     # We expect DPOR to find the interleaving where both SELECT before either UPDATE.
     # This leads to s.activated == 2, which fails the invariant.
-    res = explore(
+    res = frontrun.explore(
         setup=State,
         workers=[thread_fn, thread_fn],
         invariant=lambda s: s.activated < 2,

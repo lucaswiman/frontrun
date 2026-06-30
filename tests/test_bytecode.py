@@ -10,7 +10,7 @@ import threading
 
 import pytest
 
-from frontrun import explore_random as explore_random_api
+import frontrun
 from frontrun.bytecode import (
     BytecodeShuffler,
     OpcodeScheduler,
@@ -215,7 +215,7 @@ def test_explore_finds_counter_race():
 
 def test_top_level_explore_random_dispatches_to_bytecode():
     """The package-level explore_random wrapper should dispatch sync threads."""
-    result = explore_random_api(
+    result = frontrun.explore_random(
         setup=lambda: Counter(value=0),
         threads=[
             lambda c: c.increment(),

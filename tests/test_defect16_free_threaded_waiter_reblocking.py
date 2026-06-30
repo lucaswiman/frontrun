@@ -14,7 +14,7 @@ import threading
 
 import pytest
 
-from frontrun import explore
+import frontrun
 
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 SEARCHES = ["bit-reversal:42", "stride", "stride:3", "conflict-first"]
@@ -46,7 +46,7 @@ def test_waiters_reblock_after_losing_lock_race() -> None:
 
     for iteration in range(8):
         for search in SEARCHES:
-            result = explore(
+            result = frontrun.explore(
                 setup=_State,
                 workers=[_make_thread(i) for i in range(3)],
                 invariant=lambda s: True,

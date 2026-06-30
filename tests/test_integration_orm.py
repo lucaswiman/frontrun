@@ -33,10 +33,9 @@ try:
 except ImportError:
     pytest.skip("sqlalchemy not installed", allow_module_level=True)
 
-from frontrun import explore_random
+import frontrun
 
 pytestmark = pytest.mark.integration
-from frontrun import explore
 from frontrun.common import Schedule, Step
 from frontrun.trace_markers import TraceExecutor
 
@@ -182,7 +181,7 @@ class TestOrmBytecodeExploration:
         def _invariant(_state: _State) -> bool:
             return _read_count(engine) == 2
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_State,
             threads=[_thread_fn, _thread_fn],
             invariant=_invariant,
@@ -224,7 +223,7 @@ class TestOrmDpor:
         def _invariant(_state: _State) -> bool:
             return _read_count(engine) == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[_thread_fn, _thread_fn],
             invariant=_invariant,
@@ -288,7 +287,7 @@ class TestOrmRowLockDeadlock:
         def _invariant(_state: _State) -> bool:
             return True  # deadlock fires before invariant check
 
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[thread_a, thread_b],
             invariant=_invariant,
@@ -336,7 +335,7 @@ class TestOrmRowLockDeadlock:
         def _invariant(_state: _State) -> bool:
             return True
 
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[thread_a, thread_b],
             invariant=_invariant,

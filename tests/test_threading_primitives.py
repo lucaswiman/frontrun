@@ -13,7 +13,7 @@ Some tests may timeout/deadlock, demonstrating the need for cooperative wrappers
 import queue
 import threading
 
-from frontrun import explore_random
+import frontrun
 
 # ---------------------------------------------------------------------------
 # Test: threading.RLock
@@ -45,7 +45,7 @@ def test_rlock_race_condition():
     Without a cooperative RLock, the blocking acquire() in C code will
     deadlock the scheduler. This test demonstrates the race condition.
     """
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: RLockCounter(),
         threads=[
             lambda c: c.increment_with_reentry(),
@@ -101,7 +101,7 @@ def test_semaphore_race_condition():
     Without a cooperative Semaphore, blocking acquire() will deadlock
     the scheduler when the semaphore is exhausted.
     """
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: SemaphoreResource(max_resources=1),
         threads=[
             lambda r: r.use_resource(),
@@ -145,7 +145,7 @@ def test_bounded_semaphore_race_condition():
     BoundedSemaphore is like Semaphore but raises on over-release.
     Without cooperative wrapper, blocking acquire() will deadlock.
     """
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: BoundedSemaphoreResource(),
         threads=[
             lambda r: r.acquire_and_release(),
@@ -277,7 +277,7 @@ def test_event_race_condition():
     Without a cooperative Event, wait() blocks in C code and deadlocks
     the scheduler. The setter thread can't run to actually set the event.
     """
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: EventCoordinator(),
         threads=[
             lambda e: e.waiter(),
@@ -330,7 +330,7 @@ def test_condition_race_condition():
     Without a cooperative Condition, wait() blocks in C code and deadlocks
     the scheduler. The putter thread can't run to notify.
     """
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: ConditionQueue(),
         threads=[
             lambda q: q.put("item1"),
@@ -375,7 +375,7 @@ def test_queue_get_race_condition():
     Without a cooperative Queue, get() blocks in C code when queue is empty,
     deadlocking the scheduler. The producer can't run to add items.
     """
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: QueueConsumer(),
         threads=[
             lambda q: q.produce("item1"),
@@ -423,7 +423,7 @@ def test_queue_put_race_condition():
     Without a cooperative Queue, put() blocks in C code when queue is full,
     deadlocking the scheduler. The consumer can't run to make space.
     """
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: QueueProducer(),
         threads=[
             lambda q: q.produce("item1"),
@@ -476,7 +476,7 @@ def test_multiple_primitives_race_condition():
     This test combines RLock, Event, and Queue to demonstrate
     complex race conditions when primitives are not cooperative.
     """
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: MultiPrimitiveSystem(),
         threads=[
             lambda s: s.producer(),

@@ -21,7 +21,7 @@ performance.
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
    class Counter:
        def __init__(self):
@@ -31,7 +31,7 @@ performance.
            temp = self.value
            self.value = temp + 1
 
-   result = explore(
+   result = frontrun.explore(
        setup=Counter,
        workers=Counter.increment,
        count=2,
@@ -111,7 +111,7 @@ returning any counterexample schedule.
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
    class Counter:
        def __init__(self, value=0):
@@ -122,7 +122,7 @@ returning any counterexample schedule.
            self.value = temp + 1
 
    def test_counter_is_atomic():
-       result = explore(
+       result = frontrun.explore(
            setup=lambda: Counter(value=0),
            workers=Counter.increment,
            count=2,
@@ -424,7 +424,7 @@ Use :meth:`~frontrun.common.InterleavingResult.assert_holds` to check the result
 in a single call — it raises ``AssertionError`` (with the full race explanation)
 on failure and returns ``None`` on success::
 
-   result = explore(setup=setup, workers=[t1, t2], invariant=invariant)
+   result = frontrun.explore(setup=setup, workers=[t1, t2], invariant=invariant)
    result.assert_holds()   # raises with explanation when property_holds is False
 
 This is preferable to ``assert result.property_holds, result.explanation``

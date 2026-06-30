@@ -95,7 +95,7 @@ No markers needed --- it detects shared-memory conflicts automatically:
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
    class Counter:
        def __init__(self):
@@ -105,7 +105,7 @@ No markers needed --- it detects shared-memory conflicts automatically:
            temp = self.value
            self.value = temp + 1
 
-   result = explore(
+   result = frontrun.explore(
        setup=Counter,
        workers=[lambda c: c.increment(), lambda c: c.increment()],
        invariant=lambda c: c.value == 2,
@@ -142,7 +142,7 @@ state in C extensions), but the error traces are less interpretable:
 
 .. code-block:: python
 
-   from frontrun import explore_random
+   import frontrun
 
    class Counter:
        def __init__(self, value=0):
@@ -152,7 +152,7 @@ state in C extensions), but the error traces are less interpretable:
            temp = self.value
            self.value = temp + 1
 
-   result = explore_random(
+   result = frontrun.explore_random(
        setup=lambda: Counter(value=0),
        threads=[
            lambda c: c.increment(),
@@ -234,7 +234,7 @@ Async trace markers let you control interleaving at ``await`` boundaries:
 Interactive HTML Exploration Reports
 --------------------------------------
 
-``explore()`` can write a self-contained interactive HTML report that
+``frontrun.explore()`` can write a self-contained interactive HTML report that
 lets you step through every explored execution, inspect thread switch-points,
 and see the conflicting attribute accesses that caused each reordering.
 
@@ -246,12 +246,12 @@ and see the conflicting attribute accesses that caused each reordering.
    frontrun pytest tests/ --frontrun-report dpor_report.html
 
 **Generating a report from a script** --- set ``_global_report_path`` before
-calling ``explore()``:
+calling ``frontrun.explore()``:
 
 .. code-block:: python
 
+   import frontrun
    import frontrun._report
-   from frontrun import explore
 
    class Accounts:
        def __init__(self) -> None:
@@ -271,7 +271,7 @@ calling ``explore()``:
 
    frontrun._report._global_report_path = "dpor_report.html"
    try:
-       result = explore(
+       result = frontrun.explore(
            setup=Accounts,
            workers=[transfer_a_to_b, transfer_b_to_c],
            invariant=lambda accs: accs.a + accs.b + accs.c == 300,

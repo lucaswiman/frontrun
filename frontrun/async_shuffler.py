@@ -17,7 +17,7 @@ and there are far fewer of them than in threaded code.
 Example — find a race condition with random schedule exploration:
 
     >>> import asyncio
-    >>> from frontrun import explore_async_random
+    >>> import frontrun
     >>>
     >>> class Counter:
     ...     def __init__(self):
@@ -27,7 +27,7 @@ Example — find a race condition with random schedule exploration:
     ...         await asyncio.sleep(0)  # any natural await is a scheduling point
     ...         self.value = temp + 1
     >>>
-    >>> result = asyncio.run(explore_async_random(
+    >>> result = asyncio.run(frontrun.explore_async_random(
     ...     setup=lambda: Counter(),
     ...     tasks=[lambda c: c.increment(), lambda c: c.increment()],
     ...     invariant=lambda c: c.value == 2,

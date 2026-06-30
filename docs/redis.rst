@@ -155,9 +155,9 @@ parameter is needed.
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
-   result = explore(
+   result = frontrun.explore(
        setup=State,
        workers=[thread_a, thread_b],
        invariant=check_invariant,
@@ -170,9 +170,9 @@ parameter is needed.
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
-   result = await explore(
+   result = await frontrun.explore(
        setup=State,
        workers=[task_a, task_b],
        invariant=check_invariant,

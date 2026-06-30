@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from frontrun import explore
+import frontrun
 
 # ---------------------------------------------------------------------------
 # Embedded HTTP key-value server
@@ -183,7 +183,7 @@ class TestHttpCounterRace:
         def invariant(state: State) -> bool:
             return int(_http_get(base_url, "counter")) == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=invariant,
@@ -214,7 +214,7 @@ class TestHttpCounterRace:
         def invariant(state: State) -> bool:
             return int(_http_get(base_url, "counter")) == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=invariant,
@@ -261,7 +261,7 @@ class TestHttpConfigRace:
             config = json.loads(_http_get(base_url, "config"))
             return config.get("feature_a") is True and config.get("feature_b") is True
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[update_field_a, update_field_b],
             invariant=invariant,
@@ -294,7 +294,7 @@ class TestHttpConfigRace:
             config = json.loads(_http_get(base_url, "config"))
             return config.get("feature_a") is True and config.get("feature_b") is True
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[
                 lambda s: update_field(s, "feature_a"),
@@ -350,7 +350,7 @@ class TestHttpTransferRace:
             # Total must be conserved: 100 + 100 = 200
             return bal_a + bal_b == 200
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[transfer_10, transfer_30],
             invariant=invariant,
@@ -386,7 +386,7 @@ class TestHttpTransferRace:
             bal_b = int(_http_get(base_url, "balance_b"))
             return bal_a + bal_b == 200
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[
                 lambda s: transfer(s, 10),
@@ -435,7 +435,7 @@ class TestHttpInventoryRace:
             sold = int(_http_get(base_url, "sold"))
             return stock >= 0 and sold <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[buy, buy],
             invariant=invariant,
@@ -472,7 +472,7 @@ class TestHttpInventoryRace:
             sold = int(_http_get(base_url, "sold"))
             return stock >= 0 and sold <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[buy, buy],
             invariant=invariant,

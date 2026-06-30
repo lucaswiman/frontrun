@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from frontrun import explore
+import frontrun
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -156,7 +156,7 @@ class TestClosureCellRace:
     """LOAD_DEREF / STORE_DEREF on nonlocal (cell) variables."""
 
     def test_dpor_detects_closure_cell_race(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_ClosureCounterState,
             workers=[lambda s: s.increment(), lambda s: s.increment()],
             invariant=lambda s: s.get() == 2,
@@ -174,7 +174,7 @@ class TestSetattrRace:
             temp = getattr(state, "value")
             setattr(state, "value", temp + 1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SetattrCounterState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -192,7 +192,7 @@ class TestObjectDunderSetattrRace:
             temp = object.__getattribute__(state, "value")
             object.__setattr__(state, "value", temp + 1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DunderSetattrState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -215,7 +215,7 @@ class TestDictDirectAccessRace:
             temp = d["value"]
             d["value"] = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DictAccessState,
             workers=[attr_inc, dict_inc],
             invariant=lambda s: s.value == 2,
@@ -233,7 +233,7 @@ class TestExecEvalRace:
         def inc(state: _ExecCounterState) -> None:
             exec("state.value = state.value + 1", {"state": state})  # noqa: S102
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ExecCounterState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -247,7 +247,7 @@ class TestExecEvalRace:
             temp = eval("state.value", {"state": state})  # noqa: S307
             exec("state.value = temp + 1", {"state": state, "temp": temp})  # noqa: S102
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ExecCounterState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -271,7 +271,7 @@ class TestGlobalSubscriptRace:
             tmp = g["_global_via_subscript"]
             g["_global_via_subscript"] = tmp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_GlobalSubscriptState,
             workers=[store_global_inc, subscript_inc],
             invariant=lambda _s: _global_via_subscript == 2,
@@ -289,7 +289,7 @@ class TestOperatorModuleRace:
             temp = operator.getitem(state.data, "count")
             operator.setitem(state.data, "count", temp + 1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_OperatorModuleState,
             workers=[inc, inc],
             invariant=lambda s: s.data["count"] == 2,
@@ -303,7 +303,7 @@ class TestClosureListCompoundRace:
     """Closure cell + len() + list mutation (compound)."""
 
     def test_dpor_detects_closure_list_race(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_ClosureListState,
             workers=[lambda s: s.append_and_count(), lambda s: s.append_and_count()],
             invariant=lambda s: s.get_count() == 2,
@@ -322,7 +322,7 @@ class TestTypeSetattrCompoundRace:
             temp = getattr(cls, "class_counter")
             setattr(cls, "class_counter", temp + 1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_TypeSetattrState,
             workers=[inc, inc],
             invariant=lambda s: type(s).class_counter == 2,
@@ -345,7 +345,7 @@ class TestVarsAliasRace:
             temp = d["value"]
             d["value"] = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_VarsAliasState,
             workers=[attr_inc, vars_inc],
             invariant=lambda s: s.value == 2,
@@ -364,7 +364,7 @@ class TestCompileExecRace:
             code = compile("state.value = state.value + 1", "<generated>", "exec")
             exec(code, {"state": state})  # noqa: S102
 
-        result = explore(
+        result = frontrun.explore(
             setup=_CompileExecState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -383,7 +383,7 @@ class TestDictOperatorRace:
             temp = operator.getitem(d, "a")
             operator.setitem(d, "a", temp + 1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DictUpdateState,
             workers=[inc, inc],
             invariant=lambda s: s.counts["a"] == 2,
@@ -408,7 +408,7 @@ class TestExecGlobalMixedRace:
                 globals(),
             )
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ExecGlobalState,
             workers=[normal_inc, exec_inc],
             invariant=lambda _s: _exec_global_counter == 2,
@@ -422,7 +422,7 @@ class TestAugmentedClosureRace:
     """nonlocal x; x += 1 (augmented assignment on closure cell)."""
 
     def test_dpor_detects_augmented_closure_race(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_AugmentedClosureState,
             workers=[lambda s: s.increment(), lambda s: s.increment()],
             invariant=lambda s: s.get() == 2,
@@ -440,7 +440,7 @@ class TestWrapperDescriptorRace:
             temp = dict.__getitem__(state.data, "count")
             dict.__setitem__(state.data, "count", temp + 1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_WrapperDescriptorState,
             workers=[inc, inc],
             invariant=lambda s: s.data["count"] == 2,
@@ -631,7 +631,7 @@ class TestDefaultdictFactoryRace:
             temp = state.data["counter"]
             state.data["counter"] = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DefaultdictFactoryState,
             workers=[inc, inc],
             invariant=lambda s: s.data["counter"] == 2,
@@ -649,7 +649,7 @@ class TestPropertyDescriptorRace:
             temp = state.value
             state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_PropertyDescriptorState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -667,7 +667,7 @@ class TestChainMapLayeredRace:
             temp = state.child["count"]
             state.child["count"] = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ChainMapState,
             workers=[inc, inc],
             invariant=lambda s: s.child["count"] == 2,
@@ -689,7 +689,7 @@ class TestClassAssignmentRace:
             temp = state.value
             state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ClassAssignmentState,
             workers=[mutate_class, read_and_inc],
             invariant=lambda s: s.value == 2,
@@ -712,7 +712,7 @@ class TestWeakrefCallbackRace:
             temp = state.counter
             state.counter = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_WeakrefCallbackState,
             workers=[ref_inc, direct_inc],
             invariant=lambda s: s.counter == 2,
@@ -732,7 +732,7 @@ class TestCachedPropertyRace:
             seed = state.shared_seed
             holder.compute_count = count + seed
 
-        result = explore(
+        result = frontrun.explore(
             setup=_CachedPropertyState,
             workers=[compute_and_cache, compute_and_cache],
             invariant=lambda s: s.holder.compute_count == 2,
@@ -750,7 +750,7 @@ class TestArrayModuleRace:
             temp = state.data[0]
             state.data[0] = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ArrayModuleState,
             workers=[inc, inc],
             invariant=lambda s: s.data[0] == 2,
@@ -773,7 +773,7 @@ class TestStarUnpackingRace:
             state.shared_list[0] = 99
             state.shared_list.append(40)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_StarUnpackingState,
             workers=[unpack, mutate],
             invariant=lambda s: s.captured_head == 10 and len(s.captured_tail) == 2,
@@ -794,7 +794,7 @@ class TestWalrusOperatorRace:
         def writer(state: _WalrusState) -> None:
             state.value = 42
 
-        result = explore(
+        result = frontrun.explore(
             setup=_WalrusState,
             workers=[walrus_read, writer],
             invariant=lambda s: s.observed == 42,
@@ -815,7 +815,7 @@ class TestDictMergeOperatorRace:
             temp = state.d1["a"]
             state.d1["a"] = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DictMergeState,
             workers=[merge_update, direct_update],
             invariant=lambda s: s.d1["a"] == 2,
@@ -837,7 +837,7 @@ class TestMultipleReturnUnpackingRace:
             state.x = 100
             state.y = 200
 
-        result = explore(
+        result = frontrun.explore(
             setup=_MultipleReturnState,
             workers=[read_and_sum, swap_values],
             invariant=lambda s: s.sum in (3, 300),
@@ -857,7 +857,7 @@ class TestFStringEvaluationRace:
         def writer(state: _FStringState) -> None:
             state.value = 42
 
-        result = explore(
+        result = frontrun.explore(
             setup=_FStringState,
             workers=[fstring_capture, writer],
             invariant=lambda s: s.captured == "42",
@@ -877,7 +877,7 @@ class TestComprehensionVariableCaptureRace:
         def writer(state: _ComprehensionCaptureState) -> None:
             state.x = 99
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ComprehensionCaptureState,
             workers=[comprehension_read, writer],
             invariant=lambda s: s.captured == [99],
@@ -898,7 +898,7 @@ class TestTernaryExpressionRace:
             state.flag = False
             state.a_val = 999
 
-        result = explore(
+        result = frontrun.explore(
             setup=_TernaryState,
             workers=[ternary_read, toggler],
             invariant=lambda s: s.result in (10, 20),
@@ -918,7 +918,7 @@ class TestChainedComparisonRace:
         def writer(state: _ChainedComparisonState) -> None:
             state.x = 15
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ChainedComparisonState,
             workers=[chained_check, writer],
             invariant=lambda s: s.in_range == (0 < s.x < 10),
@@ -938,7 +938,7 @@ class TestDoubleCheckedLockingRace:
                 state.init_count = state.init_count + 1
                 _global_cache = 42
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DoubleCheckedLockingState,
             workers=[init_cache, init_cache],
             invariant=lambda s: s.init_count == 1,
@@ -956,7 +956,7 @@ class TestSlotAttributeRace:
             temp = state.value
             state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SlotState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -977,7 +977,7 @@ class TestSwapRace:
             state.observed_a = state.a
             state.observed_b = state.b
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SwapState,
             workers=[swap, reader],
             invariant=lambda s: (s.observed_a + s.observed_b) == 3,
@@ -991,7 +991,7 @@ class TestNestedClosureCellRace:
     """Doubly-nested closures: innermost closure modifies outermost scope variable."""
 
     def test_dpor_detects_nested_closure_cell_race(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_NestedClosureState,
             workers=[lambda s: s.inner(), lambda s: s.inner2()],
             invariant=lambda s: s.get() == 2,
@@ -1014,7 +1014,7 @@ class TestDequeCheckThenActRace:
                     return
                 state.pop_count += 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DequeState,
             workers=[check_and_pop, check_and_pop],
             invariant=lambda s: not s.error and s.pop_count <= 1,
@@ -1208,7 +1208,7 @@ class TestReduceAccumulateRace:
             state.items[0] = 10
             state.items[2] = 30
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ReduceAccumulateState,
             workers=[fold_sum, mutate_list],
             invariant=lambda s: s.accumulated in (6, 42),
@@ -1230,7 +1230,7 @@ class TestSysModulesCacheRace:
         def inject_module(state: _SysModuleCacheState) -> None:
             sys.modules[_SysModuleCacheState._sentinel_key] = object()  # pyright: ignore[reportArgumentType]
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SysModuleCacheState,
             workers=[snapshot_modules, inject_module],
             invariant=lambda s: (s.snapshot_count == 1) == (s.length_after > s.length_before),
@@ -1253,7 +1253,7 @@ class TestDictGetSetdefaultRace:
             temp = state.data["key"]
             state.data["key"] = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DictGetSetdefaultState,
             workers=[reader, writer],
             invariant=lambda s: s.value == 1,
@@ -1276,7 +1276,7 @@ class TestBytearraySliceRace:
             state.buf[2] = 0xFF
             state.buf[3] = 0xFF
 
-        result = explore(
+        result = frontrun.explore(
             setup=_BytearraySliceState,
             workers=[slicer, writer],
             invariant=lambda s: s.snapshot in (b"\x00\x00\x00\x00", b"\xff\xff\xff\xff"),
@@ -1297,7 +1297,7 @@ class TestListSortReverseRace:
         def reverser(state: _ListSortReverseState) -> None:
             state.data.reverse()
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ListSortReverseState,
             workers=[sort_and_capture, reverser],
             invariant=lambda s: s.result == [1, 2, 3],
@@ -1321,7 +1321,7 @@ class TestGeneratorSendRace:
             result = state.gen.send(1)
             state.accumulated = result
 
-        result = explore(
+        result = frontrun.explore(
             setup=_GeneratorSendState,
             workers=[sender, sender],
             invariant=lambda s: s.accumulated == 2,
@@ -1341,7 +1341,7 @@ class TestShallowCopyRace:
         def mutator(state: _ShallowCopyState) -> None:
             state.original["nums"].append(4)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ShallowCopyState,
             workers=[copier, mutator],
             invariant=lambda s: len(s.copied.get("nums", [])) == 3,
@@ -1362,7 +1362,7 @@ class TestBoolCoercionRace:
         def drain(state: _BoolCoercionState) -> None:
             state.items.clear()
 
-        result = explore(
+        result = frontrun.explore(
             setup=_BoolCoercionState,
             workers=[check_truthy, drain],
             invariant=lambda s: s.was_truthy == (s.length_at_check > 0),
@@ -1387,7 +1387,7 @@ class TestInOperatorRace:
         def deleter(state: _InOperatorState) -> None:
             del state.data["key"]
 
-        result = explore(
+        result = frontrun.explore(
             setup=_InOperatorState,
             workers=[check_and_read, deleter],
             invariant=lambda s: not s.error and (s.found == ("key" in s.data) or s.value == 1),
@@ -1413,7 +1413,7 @@ class TestEnumerateIterationRace:
         def inserter(state: _EnumerateState) -> None:
             state.items.insert(0, 99)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_EnumerateState,
             workers=[iterate, inserter],
             invariant=lambda s: s.value_sum == 60 or s.value_sum == 159,
@@ -1433,7 +1433,7 @@ class TestReprRace:
         def writer(state: _ReprState) -> None:
             state.value = 42
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ReprState,
             workers=[capture_repr, writer],
             invariant=lambda s: s.repr_result == "42",
@@ -1455,7 +1455,7 @@ class TestMinMaxRace:
             state.values[0] = 0
             state.values[4] = 100
 
-        result = explore(
+        result = frontrun.explore(
             setup=_MinMaxState,
             workers=[find_extremes, mutator],
             invariant=lambda s: s.minimum <= s.maximum and s.minimum == min(s.values),
@@ -1476,7 +1476,7 @@ class TestDictPopUpdateRace:
             state.data["a"] = 10
             state.data["c"] = 30
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DictPopUpdateState,
             workers=[sum_values, mutate_values],
             invariant=lambda s: s.value_sum in (6, 42),
@@ -1497,7 +1497,7 @@ class TestPartialApplicationRace:
         def mutator(state: _PartialApplicationState) -> None:
             state.base = 100
 
-        result = explore(
+        result = frontrun.explore(
             setup=_PartialApplicationState,
             workers=[apply_partial, mutator],
             invariant=lambda s: s.result == 105,
@@ -1515,7 +1515,7 @@ class TestTwoPhaseUpdateRace:
             state.counter_a = state.counter_a + 1
             state.counter_b = state.counter_a
 
-        result = explore(
+        result = frontrun.explore(
             setup=_TwoPhaseUpdateState,
             workers=[phase_update, phase_update],
             invariant=lambda s: s.counter_a == s.counter_b,
@@ -1536,7 +1536,7 @@ class TestSetAddDiscardRace:
         def discarder(state: _SetAddDiscardState) -> None:
             state.data.discard(1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SetAddDiscardState,
             workers=[adder, discarder],
             invariant=lambda s: (1 in s.data) == (s.size_after_add == 1),
@@ -1557,7 +1557,7 @@ class TestMapFilterRace:
             state.source[1] = 7
             state.source[3] = 11
 
-        result = explore(
+        result = frontrun.explore(
             setup=_MapFilterState,
             workers=[map_filter, mutator],
             invariant=lambda s: s.even_doubled == [4, 8] or s.even_doubled == [],
@@ -1578,7 +1578,7 @@ class TestZipRace:
             state.keys[0] = "z"
             state.values[0] = 99
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ZipInterleaveState,
             workers=[zip_to_dict, mutator],
             invariant=lambda s: s.result.get("a") == 1 or s.result.get("z") == 99,
@@ -1599,7 +1599,7 @@ class TestStrJoinRace:
             state.parts[0] = "goodbye"
             state.parts.append("!")
 
-        result = explore(
+        result = frontrun.explore(
             setup=_StrJoinState,
             workers=[joiner, mutator],
             invariant=lambda s: s.joined in ("hello world", "goodbye world !"),
@@ -1628,7 +1628,7 @@ class TestOrderedDictMoveToEndRace:
         def reorder(state: _OrderedDictMoveState) -> None:
             state.od.move_to_end("a")
 
-        result = explore(
+        result = frontrun.explore(
             setup=_OrderedDictMoveState,
             workers=[read_order, reorder],
             invariant=lambda s: (
@@ -1654,7 +1654,7 @@ class TestSharedStringIORace:
             state.buf.write("overwritten")
             state.buf.truncate()
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SharedStringIOState,
             workers=[reader, writer],
             invariant=lambda s: s.snapshot in ("initial", "overwritten"),
@@ -1678,7 +1678,7 @@ class TestSharedBytesIORace:
             state.buf.write(b"overwritten")
             state.buf.truncate()
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SharedBytesIOState,
             workers=[reader, writer],
             invariant=lambda s: s.snapshot in (b"initial", b"overwritten"),
@@ -1703,7 +1703,7 @@ class TestSharedBinaryFileRace:
             with open(state.path, "rb") as f:
                 state.final_value = int(f.read())
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SharedBinaryFileState,
             workers=[incrementer, incrementer],
             invariant=lambda s: int(open(s.path, "rb").read()) == 2,  # noqa: SIM115

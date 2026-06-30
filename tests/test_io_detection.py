@@ -466,7 +466,7 @@ def test_bytecode_shuffler_with_socket_io():
 
 def test_explore_random_with_io():
     """explore_random works with detect_io enabled."""
-    from frontrun import explore_random
+    import frontrun
 
     class SharedState:
         def __init__(self):
@@ -478,7 +478,7 @@ def test_explore_random_with_io():
     def thread_b(state: SharedState):
         state.data.append("b")
 
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=SharedState,
         threads=[thread_a, thread_b],
         invariant=lambda s: len(s.data) == 2,

@@ -12,6 +12,7 @@ import threading
 from types import SimpleNamespace
 from typing import Generic, TypeVar
 
+import frontrun
 from frontrun._cooperative import CooperativeQueue  # noqa: I001
 
 # ---------------------------------------------------------------------------
@@ -146,9 +147,7 @@ def test_dpor_setattr_getattr_no_crash() -> None:
     Exercises the full DPOR pipeline with setattr/getattr to verify the
     bounds-checking fix works end-to-end.
     """
-    from frontrun import explore
-
-    result = explore(
+    result = frontrun.explore(
         setup=SharedObj,
         workers=[
             lambda obj: setattr(obj, "is_active", True),
@@ -168,9 +167,7 @@ def test_dpor_getattr_with_default_no_crash() -> None:
     Reproduces the pattern from django-two-factor-auth where
     getattr(settings, 'OTP_TOTP_SYNC', True) crashed.
     """
-    from frontrun import explore
-
-    result = explore(
+    result = frontrun.explore(
         setup=SharedObj,
         workers=[
             lambda obj: setattr(obj, "value", 1),
@@ -190,7 +187,6 @@ def test_dpor_nested_setattr_getattr_no_crash() -> None:
     Uses keyword-style patterns similar to Django metaclass operations
     that triggered the original shadow stack underflow.
     """
-    from frontrun import explore
 
     class Model:
         _meta: dict[str, bool] = {}
@@ -206,7 +202,7 @@ def test_dpor_nested_setattr_getattr_no_crash() -> None:
         m._meta = {}
         return m
 
-    result = explore(
+    result = frontrun.explore(
         setup=setup,
         workers=[
             lambda m: m.save(update_fields=["_meta"]),

@@ -206,7 +206,7 @@ Prefer ``assert_holds()`` over manual asserts
 Instead of writing ``assert result.property_holds, result.explanation`` after
 every exploration call, use the convenience helper :meth:`InterleavingResult.assert_holds`::
 
-   result = explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
+   result = frontrun.explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
    result.assert_holds()  # raises AssertionError with explanation on failure
 
 An optional ``msg_prefix`` is prepended to the explanation, which is handy

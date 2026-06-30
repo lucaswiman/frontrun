@@ -28,7 +28,7 @@ from uuid import uuid4
 
 import pytest
 
-from frontrun import explore
+import frontrun
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ class TestDporUpdateInsertPhantomRace:
                 conn.close()
                 return count <= 1
 
-            result = explore(
+            result = frontrun.explore(
                 setup=setup,
                 workers=[make_thread_fn("domain_a"), make_thread_fn("domain_b")],
                 invariant=invariant,
@@ -295,7 +295,7 @@ class TestPgAutocommitPhantomRace:
         """With autocommit=True, row-lock arbitration is disabled, so DPOR
         can freely interleave both UPDATEs before either INSERT.
         """
-        result = explore(
+        result = frontrun.explore(
             setup=_PgState,
             workers=[
                 _make_pg_autocommit_thread_fn(0, "domain_a"),
@@ -328,7 +328,7 @@ class TestPgTransactionalPhantomRace:
         UPDATE-INSERT phantom race. 0-row UPDATEs should not acquire row
         locks (matching PostgreSQL semantics).
         """
-        result = explore(
+        result = frontrun.explore(
             setup=_PgState,
             workers=[
                 _make_pg_transactional_thread_fn(0, "domain_a"),

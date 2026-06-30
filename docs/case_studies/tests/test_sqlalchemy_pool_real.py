@@ -41,7 +41,7 @@ from case_study_helpers import (  # noqa: E402
 )
 from sqlalchemy.pool import QueuePool  # noqa: E402
 
-from frontrun import explore_random  # noqa: E402
+import frontrun  # noqa: E402
 from frontrun.bytecode import run_with_schedule  # noqa: E402
 
 
@@ -71,7 +71,7 @@ def _invariant(s: SQLAlchemyPoolState) -> bool:
 def test_real_sqlalchemy_overflow_lost_update():
     """Find the _overflow lost update in real QueuePool._inc_overflow()."""
     with timeout_minutes(10):
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=lambda: SQLAlchemyPoolState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_invariant,
@@ -89,7 +89,7 @@ def test_real_sqlalchemy_overflow_sweep():
     total_explored = 0
     for seed in range(20):
         with timeout_minutes(10):
-            result = explore_random(
+            result = frontrun.explore_random(
                 setup=lambda: SQLAlchemyPoolState(),
                 threads=[lambda s: s.thread1(), lambda s: s.thread2()],
                 invariant=_invariant,
@@ -107,7 +107,7 @@ def test_real_sqlalchemy_overflow_sweep():
 def test_real_sqlalchemy_reproduce():
     """Find a counterexample then reproduce it deterministically 10 times."""
     with timeout_minutes(10):
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=lambda: SQLAlchemyPoolState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_invariant,

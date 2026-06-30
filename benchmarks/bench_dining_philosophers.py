@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 
-from frontrun import explore
+import frontrun
 
 
 def bench_dining_philosophers_four() -> dict[str, object]:
@@ -27,7 +27,7 @@ def bench_dining_philosophers_four() -> dict[str, object]:
         return philosopher
 
     start = time.perf_counter()
-    result = explore(
+    result = frontrun.explore(
         setup=State,
         workers=[make_philosopher(i) for i in range(num_philosophers)],
         invariant=lambda s: True,

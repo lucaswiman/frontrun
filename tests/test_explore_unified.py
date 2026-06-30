@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from frontrun import explore, explore_async_random, explore_random
+import frontrun
 from frontrun.common import InterleavingResult
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ def counter_invariant(c: Counter) -> bool:
 
 def test_explore_sync_dpor_finds_race():
     """explore() with sync workers uses DPOR and finds the lost-update race."""
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -70,7 +70,7 @@ def test_explore_sync_dpor_passes_for_correct_code():
             with self._lock:  # type: ignore[attr-defined]
                 self.value += 1
 
-    result = explore(
+    result = frontrun.explore(
         setup=LockedCounter,
         workers=LockedCounter.increment,
         count=2,
@@ -82,7 +82,7 @@ def test_explore_sync_dpor_passes_for_correct_code():
 
 def test_explore_sync_random_strategy():
     """explore(strategy='random') finds the lost-update race."""
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=[Counter.increment, Counter.increment],
         invariant=counter_invariant,
@@ -97,7 +97,7 @@ def test_explore_sync_random_strategy():
 def test_explore_unknown_strategy_raises():
     """Unknown strategy value raises ValueError."""
     with pytest.raises(ValueError, match="unknown strategy"):
-        explore(
+        frontrun.explore(
             setup=Counter,
             workers=[Counter.increment],
             invariant=counter_invariant,
@@ -117,7 +117,7 @@ def test_explore_preemption_bound_none_passthrough(monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(explore_mod, "_explore_dpor", spy)
-    explore(
+    frontrun.explore(
         setup=Counter,
         workers=[Counter.increment, Counter.increment],
         invariant=counter_invariant,
@@ -146,7 +146,7 @@ def test_explore_async_returns_coroutine():
     """explore() with async workers returns a coroutine (not an InterleavingResult)."""
     import inspect
 
-    coro = explore(
+    coro = frontrun.explore(
         setup=AsyncCounter,
         workers=AsyncCounter.increment,
         count=2,
@@ -160,7 +160,7 @@ def test_explore_async_returns_coroutine():
 def test_explore_async_dpor_finds_race():
     """explore() with async workers (DPOR) finds the lost-update race."""
     result = asyncio.run(
-        explore(
+        frontrun.explore(
             setup=AsyncCounter,
             workers=AsyncCounter.increment,
             count=2,
@@ -174,7 +174,7 @@ def test_explore_async_dpor_finds_race():
 def test_explore_async_random_finds_race():
     """explore() with async workers (random) finds the lost-update race."""
     result = asyncio.run(
-        explore(
+        frontrun.explore(
             setup=AsyncCounter,
             workers=AsyncCounter.increment,
             count=2,
@@ -194,7 +194,7 @@ def test_explore_async_random_finds_race():
 
 def test_count_shorthand_expands_workers():
     """workers=fn + count=N is equivalent to workers=[fn, fn, ..., fn]."""
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -207,7 +207,7 @@ def test_count_shorthand_expands_workers():
 
 def test_count_shorthand_count_one():
     """count=1 with a single callable works (trivial, no races)."""
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=1,
@@ -219,7 +219,7 @@ def test_count_shorthand_count_one():
 def test_count_with_list_raises():
     """Providing count AND a list raises ValueError."""
     with pytest.raises(ValueError, match="'count' cannot be used"):
-        explore(
+        frontrun.explore(
             setup=Counter,
             workers=[Counter.increment, Counter.increment],
             invariant=counter_invariant,
@@ -230,7 +230,7 @@ def test_count_with_list_raises():
 def test_count_zero_raises():
     """count=0 raises ValueError."""
     with pytest.raises(ValueError, match="count must be a positive integer"):
-        explore(
+        frontrun.explore(
             setup=Counter,
             workers=Counter.increment,
             invariant=counter_invariant,
@@ -241,7 +241,7 @@ def test_count_zero_raises():
 def test_count_negative_raises():
     """count=-1 raises ValueError."""
     with pytest.raises(ValueError, match="count must be a positive integer"):
-        explore(
+        frontrun.explore(
             setup=Counter,
             workers=Counter.increment,
             invariant=counter_invariant,
@@ -251,7 +251,7 @@ def test_count_negative_raises():
 
 def test_workers_list_without_count():
     """workers as a plain list works (no count needed)."""
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=[Counter.increment, Counter.increment],
         invariant=counter_invariant,
@@ -261,7 +261,7 @@ def test_workers_list_without_count():
 
 def test_workers_tuple_without_count():
     """workers as a tuple works (no count needed)."""
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=(Counter.increment, Counter.increment),
         invariant=counter_invariant,
@@ -281,7 +281,7 @@ def assert_invariant_with_message(c: Counter) -> bool:
 
 def test_assertion_error_in_invariant_dpor():
     """AssertionError in invariant is treated as failure; message in explanation."""
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -295,7 +295,7 @@ def test_assertion_error_in_invariant_dpor():
 
 def test_assertion_error_in_invariant_random():
     """AssertionError in invariant (random strategy) is treated as failure."""
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -317,7 +317,7 @@ def test_assertion_error_async_dpor():
         return True
 
     result = asyncio.run(
-        explore(
+        frontrun.explore(
             setup=AsyncCounter,
             workers=AsyncCounter.increment,
             count=2,
@@ -338,7 +338,7 @@ def test_assertion_error_async_random():
         return True
 
     result = asyncio.run(
-        explore(
+        frontrun.explore(
             setup=AsyncCounter,
             workers=AsyncCounter.increment,
             count=2,
@@ -360,7 +360,7 @@ def test_assertion_error_async_random():
 
 def test_explore_random_works():
     """explore_random (canonical name) works without warning."""
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=Counter,
         threads=[Counter.increment, Counter.increment],
         invariant=counter_invariant,
@@ -374,7 +374,7 @@ def test_explore_random_works():
 def test_explore_async_random_works():
     """explore_async_random (canonical name) works without warning."""
     result = asyncio.run(
-        explore_async_random(
+        frontrun.explore_async_random(
             setup=AsyncCounter,
             tasks=[AsyncCounter.increment, AsyncCounter.increment],
             invariant=lambda c: c.value == 2,
@@ -409,7 +409,7 @@ def test_explore_async_random_detect_io_propagates_to_detect_sql(monkeypatch):
     monkeypatch.setattr(_shuffler_mod, "explore_async_random", _spy)
 
     asyncio.run(
-        explore(
+        frontrun.explore(
             setup=AsyncCounter,
             workers=AsyncCounter.increment,
             count=2,
@@ -427,7 +427,7 @@ def test_explore_async_random_detect_io_propagates_to_detect_sql(monkeypatch):
 def test_explore_unified_detect_io_async_dpor():
     """frontrun.explore(detect_io=True) with async workers doesn't raise."""
     result = asyncio.run(
-        explore(
+        frontrun.explore(
             setup=AsyncCounter,
             workers=AsyncCounter.increment,
             count=2,
@@ -485,7 +485,7 @@ def test_explore_unknown_strategy_error_message_reflects_registry():
     STRATEGIES["experimental"] = _FakeStrategy()
     try:
         with pytest.raises(ValueError) as exc_info:
-            explore(
+            frontrun.explore(
                 setup=Counter,
                 workers=[Counter.increment],
                 invariant=counter_invariant,
@@ -525,7 +525,7 @@ def test_explore_validates_strategy_against_async_registry():
     ASYNC_STRATEGIES["async_only"] = _FakeAsyncStrategy()  # type: ignore[assignment]
     try:
         # This should NOT raise — "async_only" is a valid async strategy
-        coro = explore(
+        coro = frontrun.explore(
             setup=AsyncCounter,
             workers=AsyncCounter.increment,
             count=2,
@@ -555,7 +555,7 @@ def test_explore_async_random_respects_total_timeout():
         c.value = v + 1
 
     result = asyncio.run(
-        explore_async_random(
+        frontrun.explore_async_random(
             setup=SlowCounter,
             tasks=[slow_increment, slow_increment],
             invariant=lambda c: c.value == 2,

@@ -18,7 +18,7 @@ from frontrun.common import InterleavingResult
 def _expand_async_io_kwargs(kwargs: dict[str, Any]) -> tuple[bool, bool]:
     """Pop ``detect_io`` / ``detect_sql`` and return ``(detect_sql, detect_io)``.
 
-    The unified ``explore()`` API exposes a single ``detect_io`` flag, but the
+    The unified ``frontrun.explore()`` API exposes a single ``detect_io`` flag, but the
     async implementations split it into ``detect_sql`` (+ ``detect_redis`` for
     DPOR).  Both async adapters use this; sync adapters pass ``detect_io``
     through unchanged.

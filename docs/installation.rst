@@ -49,6 +49,6 @@ explicitly requested:
    pytest --frontrun-patch-locks      # explicitly enable without CLI
    pytest --no-frontrun-patch-locks   # explicitly disable even under CLI
 
-Tests that use ``explore()`` or ``explore_random()`` will be
+Tests that use ``frontrun.explore()`` or ``frontrun.explore_random()`` will be
 automatically skipped when run without the frontrun CLI, preventing
 confusing failures when the environment isn't properly set up.

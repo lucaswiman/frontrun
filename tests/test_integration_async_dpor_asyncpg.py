@@ -21,7 +21,7 @@ try:
 except ImportError:
     pytest.skip("asyncpg not installed", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 from frontrun.async_dpor import await_point
 
 pytestmark = pytest.mark.integration
@@ -88,7 +88,7 @@ class TestAsyncDporAsyncpg:
                 finally:
                     await conn.close()
 
-            result = await explore(
+            result = await frontrun.explore(
                 setup=object,
                 workers=[increment, increment],
                 invariant=lambda s: True,  # We verify race via DB value
@@ -114,7 +114,7 @@ class TestAsyncDporAsyncpg:
                 finally:
                     await conn.close()
 
-            result = await explore(
+            result = await frontrun.explore(
                 setup=object,
                 workers=[read_only, read_only],
                 invariant=lambda s: True,
@@ -148,7 +148,7 @@ class TestAsyncDporAsyncpg:
                 finally:
                     await conn.close()
 
-            result = await explore(
+            result = await frontrun.explore(
                 setup=object,
                 workers=[task_with_query],
                 invariant=lambda s: True,

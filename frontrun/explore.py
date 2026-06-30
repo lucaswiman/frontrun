@@ -5,10 +5,10 @@ appropriate underlying implementation based on worker type and strategy.
 
 Examples::
 
-    from frontrun import explore
+    import frontrun
 
     # Sync DPOR (default)
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -18,11 +18,11 @@ Examples::
 
     # Async — detected automatically from coroutine function
     async def worker(state): ...
-    result = await explore(setup=make_state, workers=worker, count=2, invariant=...)
+    result = await frontrun.explore(setup=make_state, workers=worker, count=2, invariant=...)
 
     # Strategy selection
-    result = explore(..., strategy="dpor")    # default
-    result = explore(..., strategy="random")  # random schedule sampling
+    result = frontrun.explore(..., strategy="dpor")    # default
+    result = frontrun.explore(..., strategy="random")  # random schedule sampling
 """
 
 from __future__ import annotations

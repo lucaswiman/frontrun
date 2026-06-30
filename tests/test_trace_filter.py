@@ -288,14 +288,14 @@ class TestTraceFilterCleanupOnException:
 
     def test_bytecode_explore_cleans_filter_on_setup_error(self) -> None:
         """If serializable_invariant setup raises, trace filter is cleaned up."""
-        from frontrun import explore_random
+        import frontrun
 
         def bad_setup():
             raise RuntimeError("setup failed!")
 
         old_filter = get_active_trace_filter()
         with pytest.raises(RuntimeError, match="setup failed"):
-            explore_random(
+            frontrun.explore_random(
                 setup=bad_setup,
                 threads=[lambda s: None],
                 invariant=lambda s: True,
@@ -309,14 +309,14 @@ class TestTraceFilterCleanupOnException:
 
     def test_dpor_explore_cleans_filter_on_setup_error(self) -> None:
         """If serializable_invariant setup raises, trace filter is cleaned up."""
-        from frontrun import explore
+        import frontrun
 
         def bad_setup():
             raise RuntimeError("setup failed!")
 
         old_filter = get_active_trace_filter()
         with pytest.raises(RuntimeError, match="setup failed"):
-            explore(
+            frontrun.explore(
                 setup=bad_setup,
                 workers=[lambda s: None],
                 invariant=lambda s: True,

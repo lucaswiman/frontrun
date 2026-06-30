@@ -39,8 +39,8 @@ Even a single-page site at a custom domain (e.g. `frontrun.dev` or similar) help
 
 Screen-record a terminal session:
 - Start with a racy bank account class (no synchronization)
-- Run `explore_random` — show it finding the bug in seconds
-- Run `explore` — show the richer output with conflict analysis
+- Run `frontrun.explore_random` — show it finding the bug in seconds
+- Run `frontrun.explore` — show the richer output with conflict analysis
 - Show the fix (add a lock), re-run, all interleavings pass
 
 Host on YouTube. Embed in the README and landing page. Developers trust demos more than docs.

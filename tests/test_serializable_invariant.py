@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-from frontrun import explore, explore_async_random, explore_random
+import frontrun
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -85,7 +85,7 @@ class TestSerializableInvariantDpor:
         Only valid final state: Counter(value=2).
         Interleaved can produce Counter(value=1) — not serializable.
         """
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[increment, increment],
             invariant=lambda s: True,  # trivially passing — bug should come from serializability
@@ -100,7 +100,7 @@ class TestSerializableInvariantDpor:
 
     def test_locked_counter_is_serializable(self):
         """Properly locked counter is always serializable."""
-        result = explore(
+        result = frontrun.explore(
             setup=LockedCounter,
             workers=[locked_increment, locked_increment],
             invariant=lambda s: True,
@@ -113,7 +113,7 @@ class TestSerializableInvariantDpor:
 
     def test_custom_hash_function(self):
         """serializable_invariant accepts a callable for custom state hashing."""
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[increment, increment],
             invariant=lambda s: True,
@@ -126,7 +126,7 @@ class TestSerializableInvariantDpor:
 
     def test_two_counters_atomicity(self):
         """Two counters incremented non-atomically — interleaving can desync them."""
-        result = explore(
+        result = frontrun.explore(
             setup=TwoCounters,
             workers=[increment_both, increment_both],
             invariant=lambda s: True,
@@ -144,7 +144,7 @@ class TestSerializableInvariantBytecode:
     """Test serializable_invariant with bytecode explore_random."""
 
     def test_lost_update_detected(self):
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[increment, increment],
             invariant=lambda s: True,
@@ -173,7 +173,7 @@ class TestSerializableInvariantAsyncDpor:
             state.value = temp + 1
 
         async def run():
-            return await explore(
+            return await frontrun.explore(
                 setup=AsyncCounter,
                 workers=[async_increment, async_increment],
                 invariant=lambda s: True,
@@ -204,7 +204,7 @@ class TestSerializableInvariantAsyncShuffler:
             state.value = temp + 1
 
         async def run():
-            return await explore_async_random(
+            return await frontrun.explore_async_random(
                 setup=AsyncCounter,
                 tasks=[async_increment, async_increment],
                 invariant=lambda s: True,
@@ -231,7 +231,7 @@ class TestErrorOnAnyRaceDpor:
         The invariant `True` passes trivially, but the unsynchronized write
         should be flagged as a race.
         """
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[increment, increment],
             invariant=lambda s: True,
@@ -244,7 +244,7 @@ class TestErrorOnAnyRaceDpor:
 
     def test_locked_counter_no_race(self):
         """Properly locked counter has no races."""
-        result = explore(
+        result = frontrun.explore(
             setup=LockedCounter,
             workers=[locked_increment, locked_increment],
             invariant=lambda s: True,
@@ -268,7 +268,7 @@ class TestErrorOnAnyRaceDpor:
         def reader(state: SharedState) -> None:
             _ = state.value
 
-        result = explore(
+        result = frontrun.explore(
             setup=SharedState,
             workers=[writer, reader],
             invariant=lambda s: True,
@@ -294,7 +294,7 @@ class TestErrorOnAnyRaceAsyncDpor:
             state.value = temp + 1
 
         async def run():
-            return await explore(
+            return await frontrun.explore(
                 setup=AsyncCounter,
                 workers=[async_increment, async_increment],
                 invariant=lambda s: True,
@@ -317,7 +317,7 @@ class TestErrorOnAnyRaceBytecode:
 
     def test_raises_valueerror(self):
         with pytest.raises(ValueError, match="error_on_any_race.*DPOR"):
-            explore_random(
+            frontrun.explore_random(
                 setup=Counter,
                 threads=[increment, increment],
                 invariant=lambda s: True,
@@ -339,7 +339,7 @@ class TestErrorOnAnyRaceAsyncShuffler:
             pass
 
         async def run():
-            return await explore_async_random(
+            return await frontrun.explore_async_random(
                 setup=Counter,
                 tasks=[async_noop, async_noop],
                 invariant=lambda s: True,
@@ -361,7 +361,7 @@ class TestCombinedOptions:
 
     def test_both_enabled_dpor(self):
         """Both options enabled — both should report failure."""
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[increment, increment],
             invariant=lambda s: True,
@@ -421,7 +421,7 @@ class TestSerializableInvariantDeadlockInteraction:
         result.failures (from the deadlock detection), not a second time
         from the serializable_invariant check on partial state.
         """
-        result = explore(
+        result = frontrun.explore(
             setup=_DeadlockState,
             workers=[_deadlock_thread0, _deadlock_thread1],
             invariant=lambda s: True,
@@ -453,7 +453,7 @@ class TestErrorOnAnyRaceDeadlockInteraction:
 
     def test_no_spurious_race_detection_on_deadlock(self):
         """Deadlock + error_on_any_race should not add duplicate failures."""
-        result = explore(
+        result = frontrun.explore(
             setup=_DeadlockState,
             workers=[_deadlock_thread0, _deadlock_thread1],
             invariant=lambda s: True,

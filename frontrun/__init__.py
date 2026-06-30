@@ -15,10 +15,10 @@ Async trace markers (pass a dict of task names to coroutines)::
 
 Unified exploration entry point (recommended)::
 
-    from frontrun import explore
+    import frontrun
 
     # Sync DPOR (default)
-    result = explore(
+    result = frontrun.explore(
         setup=Counter,
         workers=Counter.increment,
         count=2,
@@ -28,19 +28,21 @@ Unified exploration entry point (recommended)::
 
     # Async — detected automatically
     async def worker(state): ...
-    result = await explore(setup=make_state, workers=worker, count=2, invariant=...)
+    result = await frontrun.explore(setup=make_state, workers=worker, count=2, invariant=...)
 
     # Strategy selection
-    result = explore(..., strategy="dpor")    # default
-    result = explore(..., strategy="random")
+    result = frontrun.explore(..., strategy="dpor")    # default
+    result = frontrun.explore(..., strategy="random")
 
 Bytecode (random) exploration::
 
-    from frontrun import explore_random
+    import frontrun
+    frontrun.explore_random(...)
 
 Async shuffler (random) exploration::
 
-    from frontrun import explore_async_random
+    import frontrun
+    await frontrun.explore_async_random(...)
 
 Contrib helpers (use threads= for sync, tasks= for async)::
 

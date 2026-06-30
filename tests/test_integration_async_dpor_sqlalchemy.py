@@ -30,7 +30,7 @@ try:
 except ImportError:
     pytest.skip("asyncpg not installed (needed for async postgres driver)", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 from frontrun.async_dpor import await_point
 
 _DB_NAME = os.environ.get("FRONTRUN_TEST_DB", "frontrun_test")
@@ -128,7 +128,7 @@ class TestAsyncDporSQLAlchemy:
                         )
                         await conn.commit()
 
-                return await explore(
+                return await frontrun.explore(
                     setup=object,
                     workers=[increment, increment],
                     invariant=lambda s: True,
@@ -164,7 +164,7 @@ class TestAsyncDporSQLAlchemy:
                         counter.value = current + 1
                         await session.commit()
 
-                return await explore(
+                return await frontrun.explore(
                     setup=object,
                     workers=[increment, increment],
                     invariant=lambda s: True,
@@ -190,7 +190,7 @@ class TestAsyncDporSQLAlchemy:
                         await conn.execute(text("SELECT value FROM async_sa_counter WHERE id = 1"))
                         await await_point()
 
-                return await explore(
+                return await frontrun.explore(
                     setup=object,
                     workers=[read_only, read_only],
                     invariant=lambda s: True,

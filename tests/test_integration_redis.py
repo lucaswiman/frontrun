@@ -36,7 +36,7 @@ try:
 except ImportError:
     pytest.skip("redis package not installed", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 
 pytestmark = pytest.mark.integration
 
@@ -74,7 +74,7 @@ class TestRedisCounterRace:
             r.close()
             return result == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=invariant,
@@ -110,7 +110,7 @@ class TestRedisCounterRace:
             r.close()
             return result == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=invariant,
@@ -158,7 +158,7 @@ class TestRedisCheckThenAct:
             r.close()
             return result == 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[maybe_init, maybe_init],
             invariant=invariant,
@@ -198,7 +198,7 @@ class TestRedisCheckThenAct:
             r.close()
             return result == 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[maybe_init, maybe_init],
             invariant=invariant,
@@ -248,7 +248,7 @@ class TestRedisInventoryRace:
             # Only 1 item was available — at most 1 should be sold
             return stock >= 0 and sold <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[buy, buy],
             invariant=invariant,
@@ -289,7 +289,7 @@ class TestRedisInventoryRace:
             r.close()
             return stock >= 0 and sold <= 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[buy, buy],
             invariant=invariant,
@@ -347,7 +347,7 @@ class TestRedisTransferRace:
             # Total balance must be conserved: 100 + 100 = 200
             return bal_a + bal_b == 200
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[transfer_a_to_b, transfer_a_to_b_also],
             invariant=invariant,
@@ -387,7 +387,7 @@ class TestRedisTransferRace:
             r.close()
             return bal_a + bal_b == 200
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[
                 lambda s: transfer(s, 10),

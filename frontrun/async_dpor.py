@@ -22,7 +22,7 @@ The approach:
 Usage::
 
     import asyncio
-    from frontrun import explore
+    import frontrun
 
     class Counter:
         def __init__(self):
@@ -33,7 +33,7 @@ Usage::
             await asyncio.sleep(0)  # any natural await works
             self.value = temp + 1
 
-    result = await explore(
+    result = await frontrun.explore(
         setup=lambda: Counter(),
         workers=Counter.increment,
         count=2,

@@ -97,7 +97,9 @@ and the virtual clock proves it by construction instead of by wall-clock escape.
 ## API sketch
 
 ```python
-result = explore(
+import frontrun
+
+result = frontrun.explore(
     strategy="dpor",
     threads={...},
     invariant=...,

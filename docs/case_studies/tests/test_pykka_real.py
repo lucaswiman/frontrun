@@ -47,7 +47,7 @@ from case_study_helpers import (  # noqa: E402
 )
 from pykka import ActorDeadError  # noqa: E402
 
-from frontrun import explore_random  # noqa: E402
+import frontrun  # noqa: E402
 from frontrun.bytecode import run_with_schedule  # noqa: E402
 
 
@@ -105,7 +105,7 @@ def _no_ghost_messages(s: PykkaGhostMessageState) -> bool:
 def test_real_pykka_tell_toctou():
     """Find the tell() ghost-message TOCTOU in real pykka ActorRef."""
     with timeout_minutes(10):
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=lambda: PykkaGhostMessageState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_no_ghost_messages,
@@ -123,7 +123,7 @@ def test_real_pykka_tell_toctou_sweep():
     total_explored = 0
     for seed in range(20):
         with timeout_minutes(10):
-            result = explore_random(
+            result = frontrun.explore_random(
                 setup=lambda: PykkaGhostMessageState(),
                 threads=[lambda s: s.thread1(), lambda s: s.thread2()],
                 invariant=_no_ghost_messages,
@@ -141,7 +141,7 @@ def test_real_pykka_tell_toctou_sweep():
 def test_real_pykka_reproduce():
     """Find a counterexample then reproduce it deterministically 10 times."""
     with timeout_minutes(10):
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=lambda: PykkaGhostMessageState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_no_ghost_messages,

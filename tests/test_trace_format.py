@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import frontrun
 from frontrun._trace_format import (
     SourceLineEvent,
     TraceEvent,
@@ -681,7 +682,6 @@ class TestInterleavingResultRepr:
 class TestBytecodeIntegration:
     def test_explore_counter_has_explanation(self) -> None:
         """explore_random should produce an explanation for a counter race."""
-        from frontrun import explore_random
 
         class Counter:
             def __init__(self) -> None:
@@ -691,7 +691,7 @@ class TestBytecodeIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -708,7 +708,6 @@ class TestBytecodeIntegration:
 
     def test_explore_counter_reproduction_stats(self) -> None:
         """explore_random should report reproduction stats."""
-        from frontrun import explore_random
 
         class Counter:
             def __init__(self) -> None:
@@ -718,7 +717,7 @@ class TestBytecodeIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -737,7 +736,6 @@ class TestBytecodeIntegration:
 
     def test_explore_counter_skip_reproduction(self) -> None:
         """reproduce_on_failure=0 skips reproduction testing."""
-        from frontrun import explore_random
 
         class Counter:
             def __init__(self) -> None:
@@ -747,7 +745,7 @@ class TestBytecodeIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -768,8 +766,6 @@ class TestBytecodeIntegration:
         """A flaky race (random.random()) should have reproduction rate well below 100%."""
         import random as stdlib_random
 
-        from frontrun import explore_random
-
         class Counter:
             def __init__(self) -> None:
                 self.value = 0
@@ -784,7 +780,7 @@ class TestBytecodeIntegration:
             # Bug present, but randomly ignore it ~50% of the time
             return stdlib_random.random() < 0.5
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=Counter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=flaky_invariant,
@@ -807,8 +803,6 @@ class TestBytecodeIntegration:
         """When no race is found, explanation should be None."""
         import threading
 
-        from frontrun import explore_random
-
         class SafeCounter:
             def __init__(self) -> None:
                 self.value = 0
@@ -819,7 +813,7 @@ class TestBytecodeIntegration:
                     temp = self.value
                     self.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=SafeCounter,
             threads=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -842,7 +836,6 @@ class TestBytecodeIntegration:
 class TestDporIntegration:
     def test_dpor_counter_has_explanation(self) -> None:
         """explore() should produce an explanation for a counter race."""
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -852,7 +845,7 @@ class TestDporIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -867,7 +860,6 @@ class TestDporIntegration:
 
     def test_dpor_counter_reproduction_stats(self) -> None:
         """explore() should report reproduction stats."""
-        from frontrun import explore
 
         class Counter:
             def __init__(self) -> None:
@@ -877,7 +869,7 @@ class TestDporIntegration:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -896,8 +888,6 @@ class TestDporIntegration:
         """When DPOR finds no race, explanation should be None."""
         import threading
 
-        from frontrun import explore
-
         class LockedCounter:
             def __init__(self) -> None:
                 self.value = 0
@@ -908,7 +898,7 @@ class TestDporIntegration:
                     temp = self.value
                     self.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=LockedCounter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,

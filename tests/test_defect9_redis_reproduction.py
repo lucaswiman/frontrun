@@ -22,7 +22,7 @@ try:
 except ImportError:
     pytest.skip("redis package not installed", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 
 
 class TestRedisReproductionFailure:
@@ -57,7 +57,7 @@ class TestRedisReproductionFailure:
             r.close()
             return result == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=invariant,

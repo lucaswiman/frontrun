@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from frontrun import explore
+import frontrun
 from frontrun._cooperative import CooperativeLock
 
 
@@ -48,7 +48,7 @@ def test_lock_ids_stable_across_executions(tmp_path: Path) -> None:
     old_path = _report_mod._global_report_path
     _report_mod._global_report_path = str(report_file)
     try:
-        result = explore(
+        result = frontrun.explore(
             setup=setup,
             workers=[philosopher_0, philosopher_1],
             invariant=invariant,
@@ -95,7 +95,7 @@ def test_lock_race_objects_have_readable_names(tmp_path: Path) -> None:
     old_path = _report_mod._global_report_path
     _report_mod._global_report_path = str(report_file)
     try:
-        result = explore(
+        result = frontrun.explore(
             setup=setup,
             workers=[philosopher_0, philosopher_1],
             invariant=invariant,

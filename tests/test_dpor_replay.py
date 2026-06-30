@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from frontrun import explore
+import frontrun
 
 
 class TestReplayHarness:
@@ -26,7 +26,7 @@ class TestReplayHarness:
             temp = state.value
             state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[thread_fn, thread_fn],
             invariant=lambda s: s.value == 2,
@@ -82,7 +82,7 @@ class TestReplayHarness:
             # Thread 0 must see its own value when inside its context
             return s.seen[0] is None or s.seen[0] == "v0"
 
-        result = explore(
+        result = frontrun.explore(
             setup=_State,
             workers=[_make_fn(0), _make_fn(1)],
             invariant=invariant,

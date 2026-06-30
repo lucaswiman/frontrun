@@ -54,10 +54,10 @@ Sync DPOR::
     result = explore_dpor(setup=Counter, threads=[Counter.increment, Counter.increment], invariant=inv)
 
     # After
-    from frontrun import explore
-    result = explore(setup=Counter, workers=[Counter.increment, Counter.increment], invariant=inv)
+    import frontrun
+    result = frontrun.explore(setup=Counter, workers=[Counter.increment, Counter.increment], invariant=inv)
     # ...or, with the count shorthand:
-    result = explore(setup=Counter, workers=Counter.increment, count=2, invariant=inv)
+    result = frontrun.explore(setup=Counter, workers=Counter.increment, count=2, invariant=inv)
 
 Async DPOR (with Redis I/O detection)::
 
@@ -66,8 +66,8 @@ Async DPOR (with Redis I/O detection)::
     result = await explore_async_dpor(setup=make_state, tasks=[worker, worker], invariant=inv, detect_redis=True)
 
     # After
-    from frontrun import explore
-    result = await explore(setup=make_state, workers=[worker, worker], invariant=inv, detect_io=True)
+    import frontrun
+    result = await frontrun.explore(setup=make_state, workers=[worker, worker], invariant=inv, detect_io=True)
 
 Sync random/bytecode exploration::
 
@@ -76,11 +76,10 @@ Sync random/bytecode exploration::
     result = explore_interleavings(setup=Counter, threads=[Counter.increment, Counter.increment], invariant=inv)
 
     # After (option A — preferred, single import)
-    from frontrun import explore_random
-    result = explore_random(setup=Counter, threads=[Counter.increment, Counter.increment], invariant=inv)
+    import frontrun
+    result = frontrun.explore_random(setup=Counter, threads=[Counter.increment, Counter.increment], invariant=inv)
     # (option B — uniform entry point)
-    from frontrun import explore
-    result = explore(setup=Counter, workers=[Counter.increment, Counter.increment], invariant=inv, strategy="random")
+    result = frontrun.explore(setup=Counter, workers=[Counter.increment, Counter.increment], invariant=inv, strategy="random")
 
 Async random/shuffler exploration::
 
@@ -89,8 +88,8 @@ Async random/shuffler exploration::
     result = await explore_interleavings(setup=make_state, tasks=[worker, worker], invariant=inv)
 
     # After
-    from frontrun import explore_async_random
-    result = await explore_async_random(setup=make_state, tasks=[worker, worker], invariant=inv)
+    import frontrun
+    result = await frontrun.explore_async_random(setup=make_state, tasks=[worker, worker], invariant=inv)
 
 ``TraceExecutor`` (sync trace-marker schedule)::
 
@@ -126,20 +125,20 @@ need any other context.
 
     1. Sync DPOR:
          - Replace `from frontrun.dpor import explore_dpor` (and `from frontrun
-           import explore_dpor`) with `from frontrun import explore`.
+           import explore_dpor`) with `import frontrun`.
          - Rewrite `explore_dpor(setup=..., threads=[a, b], invariant=..., **kw)`
-           to `explore(setup=..., workers=[a, b], invariant=..., **kw)`. Strategy
-           defaults to "dpor"; do NOT add `strategy="dpor"` unless the call site
-           also passes some other strategy in a sibling branch.
+           to `frontrun.explore(setup=..., workers=[a, b], invariant=..., **kw)`.
+           Strategy defaults to "dpor"; do NOT add `strategy="dpor"` unless the
+           call site also passes some other strategy in a sibling branch.
          - If the threads list is `[fn, fn, ..., fn]` of length N, prefer
            `workers=fn, count=N` for clarity.
 
     2. Async DPOR:
          - Replace `from frontrun.async_dpor import explore_async_dpor` with
-           `from frontrun import explore`.
+           `import frontrun`.
          - Rewrite `await explore_async_dpor(setup=..., tasks=[a, b],
            invariant=..., detect_sql=True, detect_redis=True, **kw)` to
-           `await explore(setup=..., workers=[a, b], invariant=...,
+           `await frontrun.explore(setup=..., workers=[a, b], invariant=...,
            detect_io=True, **kw)`. The new `detect_io=True` covers both SQL
            and Redis patching in async DPOR.
          - If the original call only set `detect_sql=True` (no Redis), keep
@@ -150,16 +149,16 @@ need any other context.
     3. Sync random / bytecode:
          - Replace `from frontrun.bytecode import explore_interleavings` (and
            `from frontrun import explore_interleavings` when used with
-           `threads=`) with `from frontrun import explore_random`.
-         - Rename `explore_interleavings(...)` to `explore_random(...)`. Keep
-           the `threads=` keyword as-is.
+           `threads=`) with `import frontrun`.
+         - Rename `explore_interleavings(...)` calls to
+           `frontrun.explore_random(...)`. Keep the `threads=` keyword as-is.
 
     4. Async random / shuffler:
          - Replace `from frontrun.async_shuffler import explore_interleavings`
            and `from frontrun import explore_async_interleavings` with
-           `from frontrun import explore_async_random`.
+           `import frontrun`.
          - Rename `explore_interleavings(...)` / `explore_async_interleavings(...)`
-           to `explore_async_random(...)`. Keep `tasks=` as-is.
+           calls to `frontrun.explore_async_random(...)`. Keep `tasks=` as-is.
 
     5. `frontrun import explore_interleavings` ambiguous dispatcher:
          - Inspect the call. If the kwarg is `threads=`, use rule 3 (sync).
@@ -184,8 +183,8 @@ need any other context.
 
     Finally, run the project's test suite and fix anything that imports
     the removed names indirectly (e.g. modules that re-exported them).
-    Confirm `python -c "from frontrun import explore, explore_random,
-    explore_async_random"` succeeds before considering the migration done.
+    Confirm `python -c "import frontrun; frontrun.explore; frontrun.explore_random;
+    frontrun.explore_async_random"` succeeds before considering the migration done.
 
 0.5.0 (2026-06-29)
 -----------------

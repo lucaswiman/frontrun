@@ -13,7 +13,7 @@ import tempfile
 import threading
 from functools import partial
 
-from frontrun import explore, explore_random
+import frontrun
 
 
 class DB:
@@ -53,7 +53,7 @@ _items2 = ["cat", "goat"]
 def test_dpor_detects_lost_update() -> None:
     """DPOR should detect the lost update in the unsynchronized JSON DB."""
     path = os.path.join(tempfile.mkdtemp(), "db.json")
-    result = explore(
+    result = frontrun.explore(
         setup=lambda: DB(path),
         workers=[partial(_do_incrs, items=_items1), partial(_do_incrs, items=_items2)],
         invariant=lambda db: db.dict() == {"goat": 2, "cat": 2},
@@ -65,7 +65,7 @@ def test_dpor_detects_lost_update() -> None:
 def test_bytecode_detects_lost_update() -> None:
     """Bytecode exploration should detect the lost update."""
     path = os.path.join(tempfile.mkdtemp(), "db.json")
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=lambda: DB(path),
         threads=[partial(_do_incrs, items=_items1), partial(_do_incrs, items=_items2)],
         invariant=lambda db: db.dict() == {"goat": 2, "cat": 2},

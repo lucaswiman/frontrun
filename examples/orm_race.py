@@ -52,7 +52,7 @@ import time
 from sqlalchemy import String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-from frontrun import explore, explore_random
+import frontrun
 from frontrun.common import Schedule, Step
 from frontrun.trace_markers import TraceExecutor
 
@@ -245,7 +245,7 @@ def demo_bytecode_exploration() -> None:
             assert user is not None
             return user.login_count == 2
 
-    result = explore_random(
+    result = frontrun.explore_random(
         setup=_State,
         threads=[_thread_fn, _thread_fn],
         invariant=_invariant,
@@ -326,7 +326,7 @@ def demo_dpor() -> None:
             assert user is not None
             return user.login_count == 2
 
-    result = explore(
+    result = frontrun.explore(
         setup=_State,
         workers=[_thread_fn, _thread_fn],
         invariant=_invariant,

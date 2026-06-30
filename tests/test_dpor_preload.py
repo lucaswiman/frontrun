@@ -13,7 +13,7 @@ import os
 import tempfile
 from typing import Any
 
-from frontrun import explore
+import frontrun
 from frontrun._preload_io import PreloadIOEvent
 from frontrun.dpor import _PreloadBridge
 
@@ -387,7 +387,7 @@ class TestPreloadDporIntegration:
             os.close(fd)
             return data != b"" and int(data) == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=check_invariant,
@@ -432,7 +432,7 @@ class TestPreloadDporIntegration:
             os.close(fd)
             return int(data) == 2
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[increment, increment],
             invariant=check_invariant,

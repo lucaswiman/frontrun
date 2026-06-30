@@ -6,7 +6,6 @@ import json
 import os
 import tempfile
 
-from frontrun import explore
 from frontrun._report import (
     ExecutionRecord,
     ExplorationReport,
@@ -164,7 +163,7 @@ def test_explore_dpor_with_report():
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=lambda: Counter(),
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -249,7 +248,7 @@ def test_report_generated_on_error_on_any_race_early_return():
             temp = c.value
             c.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[increment, increment],
             invariant=lambda c: True,  # invariant passes — race is the trigger
@@ -289,7 +288,7 @@ def test_report_generated_on_serializable_invariant_early_return():
             temp = c.value
             c.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[increment, increment],
             invariant=lambda c: True,

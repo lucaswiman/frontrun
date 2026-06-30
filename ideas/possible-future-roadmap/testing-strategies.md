@@ -44,7 +44,7 @@ def explore_hybrid_interleavings(
     """Explore marker schedules, then bytecode-level within each."""
 ```
 
-Register as a `Strategy` adapter in `frontrun/_strategy.py` so `explore(strategy=...)`
+Register as a `Strategy` adapter in `frontrun/_strategy.py` so `frontrun.explore(strategy=...)`
 picks it up.
 
 ### Value

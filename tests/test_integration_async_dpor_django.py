@@ -44,7 +44,7 @@ if not settings.configured:
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.db import connection, connections  # noqa: E402
 
-from frontrun import explore  # noqa: E402
+import frontrun  # noqa: E402
 from frontrun.async_dpor import await_point  # noqa: E402
 from frontrun.contrib.django import async_django_dpor  # noqa: E402
 
@@ -190,7 +190,7 @@ class TestAsyncDporDjango:
             return not (state.results[0] == "activated" and state.results[1] == "activated")
 
         async def run_test():
-            return await explore(
+            return await frontrun.explore(
                 setup=_State,
                 workers=[make_task(0), make_task(1)],
                 invariant=invariant,
@@ -219,7 +219,7 @@ class TestAsyncDporDjango:
             await await_point()
 
         async def run_test():
-            return await explore(
+            return await frontrun.explore(
                 setup=_State,
                 workers=[read_only, read_only],
                 invariant=lambda s: True,

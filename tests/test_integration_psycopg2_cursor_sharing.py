@@ -44,7 +44,7 @@ try:
 except ImportError:
     pytest.skip("psycopg2 not installed", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 
 pytestmark = pytest.mark.integration
 
@@ -147,7 +147,7 @@ class TestSharedCursorRace:
             return r0 == 100 and r1 == 200
 
         try:
-            result = explore(
+            result = frontrun.explore(
                 setup=State,
                 workers=[make_thread(0), make_thread(1)],
                 invariant=invariant,
@@ -209,7 +209,7 @@ class TestPerThreadCursorSafe:
             return r0 == 100 and r1 == 200
 
         try:
-            result = explore(
+            result = frontrun.explore(
                 setup=State,
                 workers=[make_thread(0), make_thread(1)],
                 invariant=invariant,

@@ -17,7 +17,7 @@ import os
 import tempfile
 import threading
 
-from frontrun import explore
+import frontrun
 
 
 class TestFileCounterRace:
@@ -55,7 +55,7 @@ class TestFileCounterRace:
             def value(self) -> int:
                 return self._read()
 
-        result = explore(
+        result = frontrun.explore(
             setup=FileCounter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
@@ -87,7 +87,7 @@ class TestFileCounterRace:
                     with open(path) as f:
                         return int(f.read())
 
-        result = explore(
+        result = frontrun.explore(
             setup=LockedFileCounter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
@@ -130,7 +130,7 @@ class TestFileFlagRace:
             def balance(self) -> int:
                 return self._read_balance()
 
-        result = explore(
+        result = frontrun.explore(
             setup=Ledger,
             workers=[
                 lambda s: s.withdraw(30),
@@ -163,7 +163,7 @@ class TestFileFlagRace:
                     with open(path) as f:
                         return int(f.read())
 
-        result = explore(
+        result = frontrun.explore(
             setup=SafeLedger,
             workers=[
                 lambda s: s.withdraw(30),
@@ -206,7 +206,7 @@ class TestReadModifyWrite:
             def get_data(self) -> dict[str, int]:
                 return self._load()
 
-        result = explore(
+        result = frontrun.explore(
             setup=JsonStore,
             workers=[
                 lambda s: s.update("a", 1),
@@ -240,7 +240,7 @@ class TestReadModifyWrite:
                     with open(path) as f:
                         return json.load(f)
 
-        result = explore(
+        result = frontrun.explore(
             setup=LockedJsonStore,
             workers=[
                 lambda s: s.update("a", 1),
@@ -282,7 +282,7 @@ class TestTraceCallChain:
             def value(self) -> int:
                 return self._read()
 
-        result = explore(
+        result = frontrun.explore(
             setup=FileVal,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
@@ -325,7 +325,7 @@ class TestTraceQuality:
             def value(self) -> int:
                 return self._read()
 
-        result = explore(
+        result = frontrun.explore(
             setup=FileVal,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
@@ -364,7 +364,7 @@ class TestTraceQuality:
             def value(self) -> int:
                 return self._read()
 
-        result = explore(
+        result = frontrun.explore(
             setup=FileVal,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,

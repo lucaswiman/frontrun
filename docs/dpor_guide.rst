@@ -18,7 +18,7 @@ DPOR and the invariant have separate jobs:
   runs only one representative from each equivalence class.
 
 - **The invariant decides whether a bug occurred.** After all workers finish,
-  ``explore()`` calls your invariant on the final state. DPOR has no
+  ``frontrun.explore()`` calls your invariant on the final state. DPOR has no
   built-in notion of "correct" --- it doesn't know that ``counter == 1`` is
   wrong and ``counter == 2`` is right. You supply that judgement via the
   invariant. Raising ``AssertionError`` in the invariant is treated as a failure
@@ -32,9 +32,9 @@ Putting the two together:
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
-   result = explore(
+   result = frontrun.explore(
        setup=MyState,                         # called fresh each execution
        workers=[worker_a, worker_b],          # each receives the state
        invariant=lambda s: s.is_consistent(), # checked after all workers finish
@@ -129,11 +129,11 @@ will interfere with the next.
 Basic usage
 -----------
 
-The ``explore()`` function is the main entry point:
+The ``frontrun.explore()`` function is the main entry point:
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
    class Counter:
        def __init__(self):
@@ -143,7 +143,7 @@ The ``explore()`` function is the main entry point:
            temp = self.value
            self.value = temp + 1
 
-   result = explore(
+   result = frontrun.explore(
        setup=Counter,
        workers=[lambda c: c.increment(), lambda c: c.increment()],
        invariant=lambda c: c.value == 2,
@@ -242,8 +242,8 @@ The ``explore()`` function is the main entry point:
 Interpreting results
 --------------------
 
-``explore()`` returns an ``InterleavingResult`` (the same type used by
-``explore_random``):
+``frontrun.explore()`` returns an ``InterleavingResult`` (the same type used by
+``frontrun.explore_random``):
 
 .. code-block:: python
 
@@ -265,8 +265,8 @@ ran for two steps, then thread 1 ran for two steps.
 
 When a race is found, ``explanation`` contains a formatted trace showing the
 interleaved source lines, the conflict pattern (lost update, write-write, etc.),
-and reproduction statistics. This is the same output for both ``explore``
-and ``explore_random``.
+and reproduction statistics. This is the same output for both ``frontrun.explore``
+and ``frontrun.explore_random``.
 
 If ``num_explored`` is 1, your threads probably don't share any
 state --- the engine saw no conflicts and skipped everything. This is a sign
@@ -283,7 +283,8 @@ a lock eliminates it:
 .. code-block:: python
 
    import threading
-   from frontrun import explore
+
+   import frontrun
 
    class UnsafeCounter:
        def __init__(self):
@@ -304,7 +305,7 @@ a lock eliminates it:
                self.value = temp + 1
 
    def test_unsafe_counter_has_race():
-       result = explore(
+       result = frontrun.explore(
            setup=UnsafeCounter,
            workers=[lambda c: c.increment(), lambda c: c.increment()],
            invariant=lambda c: c.value == 2,
@@ -312,7 +313,7 @@ a lock eliminates it:
        assert result.property_holds, result.explanation  # fails — has a race!
 
    def test_safe_counter_is_correct():
-       result = explore(
+       result = frontrun.explore(
            setup=SafeCounter,
            workers=[lambda c: c.increment(), lambda c: c.increment()],
            invariant=lambda c: c.value == 2,
@@ -328,7 +329,7 @@ detected separately:
 
 .. code-block:: python
 
-   from frontrun import explore
+   import frontrun
 
    class Bank:
        def __init__(self):
@@ -342,7 +343,7 @@ detected separately:
            self.b = temp_b + amount
 
    def test_concurrent_transfers_conserve_total():
-       result = explore(
+       result = frontrun.explore(
            setup=Bank,
            workers=[lambda b: b.transfer(50), lambda b: b.transfer(50)],
            invariant=lambda b: b.a + b.b == 200,
@@ -360,7 +361,7 @@ automatically when ``detect_io=True`` (the default).
 
 **How it works:**
 
-1. ``explore()`` starts an ``IOEventDispatcher`` that creates
+1. ``frontrun.explore()`` starts an ``IOEventDispatcher`` that creates
    an ``os.pipe()`` and passes the write-end FD to the Rust
    ``LD_PRELOAD`` library via the ``FRONTRUN_IO_FD`` environment
    variable. The Rust library writes event records to the pipe for
@@ -394,7 +395,7 @@ shared socket endpoint as a conflict point.
 ORM helpers: ``django_dpor`` and ``sqlalchemy_dpor``
 ------------------------------------------------------
 
-Writing correct ``explore()`` tests against a real database requires
+Writing correct ``frontrun.explore()`` tests against a real database requires
 boilerplate: each thread needs its own connection, stale connections from a
 previous execution must be closed, and optional lock timeouts must be injected
 before the thread runs. The ``frontrun.contrib`` package provides ready-made
@@ -415,7 +416,7 @@ wrappers that handle this automatically.
    )
    assert result.property_holds, result.explanation
 
-``django_dpor`` wraps ``explore`` and:
+``django_dpor`` wraps ``frontrun.explore`` and:
 
 * Calls ``connections.close_all()`` before each execution so threads open
   fresh connections (avoids sharing a stale connection across DPOR replays).
@@ -425,7 +426,7 @@ wrappers that handle this automatically.
   converting C-level row-lock blocking into a fast PostgreSQL error rather than
   a hang.
 
-All extra keyword arguments are forwarded to ``explore``.
+All extra keyword arguments are forwarded to ``frontrun.explore``.
 
 ``sqlalchemy_dpor``
 ~~~~~~~~~~~~~~~~~~~
@@ -443,7 +444,7 @@ All extra keyword arguments are forwarded to ``explore``.
    )
    assert result.property_holds, result.explanation
 
-``sqlalchemy_dpor`` wraps ``explore`` and:
+``sqlalchemy_dpor`` wraps ``frontrun.explore`` and:
 
 * Calls ``engine.dispose()`` before each execution to close pooled connections.
 * Opens a fresh ``engine.connect()`` connection for each thread and stores it
@@ -463,7 +464,7 @@ Inside a thread function, retrieve the per-thread connection with:
        ...
 
 Both helpers accept ``detect_io=True`` (the default) and all other
-``explore`` keyword arguments.
+``frontrun.explore`` keyword arguments.
 
 Async usage
 ~~~~~~~~~~~
@@ -513,7 +514,8 @@ Python-level attribute accesses.
 .. code-block:: python
 
    import redis
-   from frontrun import explore
+
+   import frontrun
 
    def test_redis_lost_update(redis_port):
        class State:
@@ -534,7 +536,7 @@ Python-level attribute accesses.
            r.close()
            return result == 2
 
-       result = explore(
+       result = frontrun.explore(
            setup=State,
            workers=[increment, increment],
            invariant=invariant,
@@ -549,7 +551,8 @@ Python-level attribute accesses.
    import asyncio
 
    import redis.asyncio as aioredis
-   from frontrun import explore
+
+   import frontrun
 
    def test_async_redis_check_then_act(redis_port):
        async def maybe_init(state):
@@ -558,7 +561,7 @@ Python-level attribute accesses.
                await r.set("resource", "initialized")
            await r.aclose()
 
-       asyncio.run(explore(
+       asyncio.run(frontrun.explore(
            setup=lambda: None,
            workers=maybe_init,
            count=2,
@@ -593,7 +596,7 @@ Prefer ``assert_holds()`` over manual asserts
 result in a test.  It raises ``AssertionError`` with the full race explanation
 when the invariant failed, and does nothing on success::
 
-   result = explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
+   result = frontrun.explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
    result.assert_holds()          # preferred
    # instead of: assert result.property_holds, result.explanation
 

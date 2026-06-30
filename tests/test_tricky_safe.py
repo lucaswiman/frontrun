@@ -21,7 +21,7 @@ import threading
 
 import pytest
 
-from frontrun import explore, explore_random
+import frontrun
 
 # ============================================================================
 # Category 1: Lock-based safe patterns
@@ -46,7 +46,7 @@ class TestLockProtectedCounter:
                 temp = state.value
                 state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_LockProtectedState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -61,7 +61,7 @@ class TestLockProtectedCounter:
                 temp = state.value
                 state.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_LockProtectedState,
             threads=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -94,7 +94,7 @@ class TestRLockReentrant:
                 temp = state.value
                 state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_RLockReentrantState,
             workers=[outer, outer],
             invariant=lambda s: s.value == 2,
@@ -110,7 +110,7 @@ class TestRLockReentrant:
                     temp = state.value
                     state.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_RLockReentrantState,
             threads=[outer, outer],
             invariant=lambda s: s.value == 2,
@@ -142,7 +142,7 @@ class TestSemaphoreProtected:
             finally:
                 state.sem.release()
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SemaphoreState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -160,7 +160,7 @@ class TestSemaphoreProtected:
             finally:
                 state.sem.release()
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_SemaphoreState,
             threads=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -198,7 +198,7 @@ class TestLockTryFinally:
             finally:
                 state.lock.release()
 
-        result = explore(
+        result = frontrun.explore(
             setup=_TryFinallyState,
             workers=[inc_with_exception, inc_with_exception],
             invariant=lambda s: s.value == 2,
@@ -217,7 +217,7 @@ class TestLockTryFinally:
                     state.error_count += 1
                 state.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_TryFinallyState,
             threads=[inc_with_exception, inc_with_exception],
             invariant=lambda s: s.value == 2,
@@ -249,7 +249,7 @@ class TestMultipleLocksCorrectOrder:
                     state.a += 1
                     state.b += 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_TwoLocksState,
             workers=[transfer, transfer],
             invariant=lambda s: s.a == 2 and s.b == 2,
@@ -265,7 +265,7 @@ class TestMultipleLocksCorrectOrder:
                     state.a += 1
                     state.b += 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_TwoLocksState,
             threads=[transfer, transfer],
             invariant=lambda s: s.a == 2 and s.b == 2,
@@ -301,7 +301,7 @@ class TestLockProtectedClosure:
     """nonlocal variable protected by lock in closure."""
 
     def test_dpor_safe(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_ClosureLockState,
             workers=[lambda s: s.inc(), lambda s: s.inc()],
             invariant=lambda s: s.get() == 2,
@@ -311,7 +311,7 @@ class TestLockProtectedClosure:
         assert result.property_holds, f"False positive on lock-protected closure: {result}"
 
     def test_bytecode_safe(self) -> None:
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_ClosureLockState,
             threads=[lambda s: s.inc(), lambda s: s.inc()],
             invariant=lambda s: s.get() == 2,
@@ -345,7 +345,7 @@ class TestThreadLocalStorage:
         def write_1(state: _ThreadLocalState) -> None:
             state.slots[1] = 99
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ThreadLocalState,
             workers=[write_0, write_1],
             invariant=lambda s: s.slots[0] == 42 and s.slots[1] == 99,
@@ -361,7 +361,7 @@ class TestThreadLocalStorage:
         def write_1(state: _ThreadLocalState) -> None:
             state.slots[1] = 99
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_ThreadLocalState,
             threads=[write_0, write_1],
             invariant=lambda s: s.slots[0] == 42 and s.slots[1] == 99,
@@ -385,7 +385,7 @@ class TestIndependentAttributes:
     """Thread 1 writes state.a, Thread 2 writes state.b — no conflict."""
 
     def test_dpor_safe(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_IndependentAttrsState,
             workers=[
                 lambda s: setattr(s, "a", 1),
@@ -398,7 +398,7 @@ class TestIndependentAttributes:
         assert result.property_holds, f"False positive on independent attrs: {result}"
 
     def test_bytecode_safe(self) -> None:
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_IndependentAttrsState,
             threads=[
                 lambda s: setattr(s, "a", 1),
@@ -433,7 +433,7 @@ class TestIndependentDicts:
             state.dict_b["x"] = 10
             state.dict_b["y"] = 20
 
-        result = explore(
+        result = frontrun.explore(
             setup=_IndependentDictsState,
             workers=[fill_a, fill_b],
             invariant=lambda s: s.dict_a.get("x") == 1 and s.dict_b.get("x") == 10,
@@ -451,7 +451,7 @@ class TestIndependentDicts:
             state.dict_b["x"] = 10
             state.dict_b["y"] = 20
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_IndependentDictsState,
             threads=[fill_a, fill_b],
             invariant=lambda s: s.dict_a.get("x") == 1 and s.dict_b.get("x") == 10,
@@ -487,7 +487,7 @@ class TestIndependentClosures:
                 accum += i
             state.result_b = accum
 
-        result = explore(
+        result = frontrun.explore(
             setup=_IndependentClosuresState,
             workers=[work_a, work_b],
             invariant=lambda s: s.result_a == 3 and s.result_b == 6,
@@ -521,7 +521,7 @@ class TestImmutableTypeOperations:
             t = t + (4, 5)
             state.result_b = t
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ImmutableOpsState,
             workers=[string_work, tuple_work],
             invariant=lambda s: s.result_a == "HELLO WORLD" and s.result_b == (1, 2, 3, 4, 5),
@@ -541,7 +541,7 @@ class TestImmutableTypeOperations:
             t = t + (3,)
             state.result_b = t
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_ImmutableOpsState,
             threads=[string_work, tuple_work],
             invariant=lambda s: s.result_a == "hello world" and s.result_b == (1, 2, 3),
@@ -585,7 +585,7 @@ class TestHappensBeforeEvent:
             state.event.wait()
             _ = state.value
 
-        result = explore(
+        result = frontrun.explore(
             setup=_EventSyncState,
             workers=[writer, reader],
             invariant=lambda s: s.value == 42,
@@ -603,7 +603,7 @@ class TestHappensBeforeEvent:
             state.event.wait()
             _ = state.value
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_EventSyncState,
             threads=[writer, reader],
             invariant=lambda s: s.value == 42,
@@ -633,7 +633,7 @@ class TestQueueCommunication:
         def consumer(state: _QueueCommState) -> None:
             state.received = state.q.get()
 
-        result = explore(
+        result = frontrun.explore(
             setup=_QueueCommState,
             workers=[producer, consumer],
             invariant=lambda s: s.received == 42,
@@ -649,7 +649,7 @@ class TestQueueCommunication:
         def consumer(state: _QueueCommState) -> None:
             state.received = state.q.get()
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_QueueCommState,
             threads=[producer, consumer],
             invariant=lambda s: s.received == 42,
@@ -681,7 +681,7 @@ class TestLockHandoff:
             with state.lock:
                 _ = state.value
 
-        result = explore(
+        result = frontrun.explore(
             setup=_LockHandoffState,
             workers=[writer, reader],
             invariant=lambda s: s.value == 42,
@@ -699,7 +699,7 @@ class TestLockHandoff:
             with state.lock:
                 _ = state.value
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_LockHandoffState,
             threads=[writer, reader],
             invariant=lambda s: s.value == 42,
@@ -736,7 +736,7 @@ class TestConditionVariableSignaling:
                     state.cond.wait()
                 _ = state.value
 
-        result = explore(
+        result = frontrun.explore(
             setup=_CondVarState,
             workers=[producer, consumer],
             invariant=lambda s: s.value == 42,
@@ -758,7 +758,7 @@ class TestConditionVariableSignaling:
                     state.cond.wait()
                 _ = state.value
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_CondVarState,
             threads=[producer, consumer],
             invariant=lambda s: s.value == 42,
@@ -796,7 +796,7 @@ class TestManyNestedLocks:
                         temp = state.value
                         state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_NestedLocksState,
             workers=[deep_inc, deep_inc],
             invariant=lambda s: s.value == 2,
@@ -813,7 +813,7 @@ class TestManyNestedLocks:
                         temp = state.value
                         state.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_NestedLocksState,
             threads=[deep_inc, deep_inc],
             invariant=lambda s: s.value == 2,
@@ -842,7 +842,7 @@ class TestLockAcquireReleaseLoop:
                 with state.lock:
                     state.value += 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_LockLoopState,
             workers=[loop_inc, loop_inc],
             invariant=lambda s: s.value == 6,
@@ -858,7 +858,7 @@ class TestLockAcquireReleaseLoop:
                 with state.lock:
                     state.value += 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_LockLoopState,
             threads=[loop_inc, loop_inc],
             invariant=lambda s: s.value == 6,
@@ -883,7 +883,7 @@ class TestManyThreadsIndependent:
     """Three threads all writing to independent state."""
 
     def test_dpor_safe(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_ManyThreadsState,
             workers=[
                 lambda s: setattr(s, "a", 1),
@@ -897,7 +897,7 @@ class TestManyThreadsIndependent:
         assert result.property_holds, f"False positive on many independent threads: {result}"
 
     def test_bytecode_safe(self) -> None:
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_ManyThreadsState,
             threads=[
                 lambda s: setattr(s, "a", 1),
@@ -940,7 +940,7 @@ class TestExceptionInThreadWithLock:
                 temp = state.value
                 state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ExceptionInLockState,
             workers=[safe_inc_with_error, normal_inc],
             invariant=lambda s: s.value == 2 and s.error_handled,
@@ -964,7 +964,7 @@ class TestExceptionInThreadWithLock:
                 temp = state.value
                 state.value = temp + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_ExceptionInLockState,
             threads=[safe_inc_with_error, normal_inc],
             invariant=lambda s: s.value == 2 and s.error_handled,
@@ -996,7 +996,7 @@ class TestLargeComputationBetweenLockOps:
                     total += i * i
                 state.value += total
 
-        result = explore(
+        result = frontrun.explore(
             setup=_HeavyComputeState,
             workers=[compute_and_store, compute_and_store],
             invariant=lambda s: s.value == 570,  # 2 * sum(i*i for i in range(10)) = 2 * 285
@@ -1033,7 +1033,7 @@ class TestMixedSyncPrimitives:
             with state.lock:
                 _ = val
 
-        result = explore(
+        result = frontrun.explore(
             setup=_MixedSyncState,
             workers=[producer, consumer],
             invariant=lambda s: s.value == 42,
@@ -1055,7 +1055,7 @@ class TestMixedSyncPrimitives:
             with state.lock:
                 _ = val
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_MixedSyncState,
             threads=[producer, consumer],
             invariant=lambda s: s.value == 42,
@@ -1094,7 +1094,7 @@ class TestCallingPureFunctions:
             val = math.ceil(val)
             state.result_b = float(val)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_PureFunctionState,
             workers=[compute_a, compute_b],
             invariant=lambda s: s.result_a == 12.0 and s.result_b == 16.0,
@@ -1112,7 +1112,7 @@ class TestCallingPureFunctions:
             val = math.sqrt(256.0)
             state.result_b = val
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_PureFunctionState,
             threads=[compute_a, compute_b],
             invariant=lambda s: s.result_a == 12.0 and s.result_b == 16.0,
@@ -1146,7 +1146,7 @@ class TestCreatingFreshObjects:
             local_dict["c"] = 3
             state.len_b = len(local_dict)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_FreshObjectsState,
             workers=[create_list, create_dict],
             invariant=lambda s: s.len_a == 4 and s.len_b == 3,
@@ -1166,7 +1166,7 @@ class TestCreatingFreshObjects:
             local_dict["c"] = 3
             state.len_b = len(local_dict)
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_FreshObjectsState,
             threads=[create_list, create_dict],
             invariant=lambda s: s.len_a == 4 and s.len_b == 3,
@@ -1194,7 +1194,7 @@ class TestLockProtectedAugmentedAssignment:
             with state.lock:
                 state.value += 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_AugAssignLockState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -1208,7 +1208,7 @@ class TestLockProtectedAugmentedAssignment:
             with state.lock:
                 state.value += 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_AugAssignLockState,
             threads=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -1236,7 +1236,7 @@ class TestLockProtectedDictSubscript:
             with state.lock:
                 state.data["count"] = state.data["count"] + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_DictSubscriptLockState,
             workers=[inc, inc],
             invariant=lambda s: s.data["count"] == 2,
@@ -1250,7 +1250,7 @@ class TestLockProtectedDictSubscript:
             with state.lock:
                 state.data["count"] = state.data["count"] + 1
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_DictSubscriptLockState,
             threads=[inc, inc],
             invariant=lambda s: s.data["count"] == 2,
@@ -1280,7 +1280,7 @@ class TestLockProtectedListAppend:
                 if len(state.items) < state.max_size:
                     state.items.append("item")
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ListAppendLockState,
             workers=[safe_append, safe_append],
             invariant=lambda s: len(s.items) <= s.max_size,
@@ -1295,7 +1295,7 @@ class TestLockProtectedListAppend:
                 if len(state.items) < state.max_size:
                     state.items.append("item")
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_ListAppendLockState,
             threads=[safe_append, safe_append],
             invariant=lambda s: len(s.items) <= s.max_size,
@@ -1332,7 +1332,7 @@ class TestLockProtectedProperty:
                 temp = state.value
                 state.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=_PropertyLockState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -1370,7 +1370,7 @@ class TestLockProtectedGlobal:
     """Module-level global protected by a lock — safe."""
 
     def test_dpor_safe(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_SafeGlobalState,
             workers=[_safe_global_inc, _safe_global_inc],
             invariant=_safe_global_check,
@@ -1398,7 +1398,7 @@ class TestSingleWriterMultipleValues:
         def noop(state: _SingleWriterState) -> None:
             pass
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SingleWriterState,
             workers=[writer, noop],
             invariant=lambda s: s.value == 42,
@@ -1414,7 +1414,7 @@ class TestSingleWriterMultipleValues:
         def noop(state: _SingleWriterState) -> None:
             pass
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_SingleWriterState,
             threads=[writer, noop],
             invariant=lambda s: s.value == 42,
@@ -1442,7 +1442,7 @@ class TestLockProtectedComplexMutation:
             with state.lock:
                 state.data["items"].append(1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_ComplexMutationState,
             workers=[append_and_sort, append_and_sort],
             invariant=lambda s: len(s.data["items"]) == 2,
@@ -1456,7 +1456,7 @@ class TestLockProtectedComplexMutation:
             with state.lock:
                 state.data["items"].append(1)
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_ComplexMutationState,
             threads=[append_and_sort, append_and_sort],
             invariant=lambda s: len(s.data["items"]) == 2,
@@ -1495,7 +1495,7 @@ class TestSemaphoreMultiPermit:
             finally:
                 state.sem.release()
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SemaphoreMultiState,
             workers=[work_a, work_b],
             invariant=lambda s: s.result_a == 42 and s.result_b == 99,
@@ -1527,7 +1527,7 @@ class TestLockProtectedSwap:
             with state.lock:
                 _ = state.a + state.b
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SwapLockState,
             workers=[swap, read],
             invariant=lambda s: s.a + s.b == 3,
@@ -1545,7 +1545,7 @@ class TestLockProtectedSwap:
             with state.lock:
                 _ = state.a + state.b
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_SwapLockState,
             threads=[swap, read],
             invariant=lambda s: s.a + s.b == 3,
@@ -1583,7 +1583,7 @@ class TestLocalOnlyComputation:
             _ = y + 1
             state.done_b = True
 
-        result = explore(
+        result = frontrun.explore(
             setup=_LocalOnlyState,
             workers=[work_a, work_b],
             invariant=lambda s: s.done_a and s.done_b,
@@ -1605,7 +1605,7 @@ class TestLocalOnlyComputation:
             _ = y
             state.done_b = True
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_LocalOnlyState,
             threads=[work_a, work_b],
             invariant=lambda s: s.done_a and s.done_b,
@@ -1644,7 +1644,7 @@ class TestLockProtectedClosureCell:
     """nonlocal variable (closure cell) protected by lock — safe."""
 
     def test_dpor_safe(self) -> None:
-        result = explore(
+        result = frontrun.explore(
             setup=_SafeClosureCellState,
             workers=[lambda s: s.increment(), lambda s: s.increment()],
             invariant=lambda s: s.get() == 2,
@@ -1654,7 +1654,7 @@ class TestLockProtectedClosureCell:
         assert result.property_holds, f"False positive on closure cell under lock: {result}"
 
     def test_bytecode_safe(self) -> None:
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_SafeClosureCellState,
             threads=[lambda s: s.increment(), lambda s: s.increment()],
             invariant=lambda s: s.get() == 2,
@@ -1683,7 +1683,7 @@ class TestLockProtectedSetattrGetattr:
                 temp = getattr(state, "value")
                 setattr(state, "value", temp + 1)
 
-        result = explore(
+        result = frontrun.explore(
             setup=_SetattrLockState,
             workers=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -1698,7 +1698,7 @@ class TestLockProtectedSetattrGetattr:
                 temp = getattr(state, "value")
                 setattr(state, "value", temp + 1)
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_SetattrLockState,
             threads=[inc, inc],
             invariant=lambda s: s.value == 2,
@@ -1733,7 +1733,7 @@ class TestMultiStepIndependent:
             state.sum_b += 100
             state.sum_b += 200
 
-        result = explore(
+        result = frontrun.explore(
             setup=_MultiStepIndependentState,
             workers=[compute_a, compute_b],
             invariant=lambda s: s.sum_a == 60 and s.sum_b == 300,
@@ -1754,7 +1754,7 @@ class TestMultiStepIndependent:
             state.sum_b += 100
             state.sum_b += 200
 
-        result = explore_random(
+        result = frontrun.explore_random(
             setup=_MultiStepIndependentState,
             threads=[compute_a, compute_b],
             invariant=lambda s: s.sum_a == 60 and s.sum_b == 300,

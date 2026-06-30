@@ -28,7 +28,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from frontrun import explore
+import frontrun
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 from frontrun._tracing import _FRONTRUN_DIR
 
@@ -192,7 +192,7 @@ class TestDporSqlSchedulingPoints:
             conn.close()
 
         # With SQL patching active: each cursor.execute creates a scheduling point
-        result_with_sql = explore(
+        result_with_sql = frontrun.explore(
             setup=State,
             workers=[thread_fn, thread_fn],
             invariant=lambda _s: True,
@@ -204,7 +204,7 @@ class TestDporSqlSchedulingPoints:
 
         # Without SQL patching: cursors go directly to C, no SQL events, fewer points
         # (detect_io=False also disables patch_sql, so _intercept_execute is never called)
-        result_without_sql = explore(
+        result_without_sql = frontrun.explore(
             setup=State,
             workers=[thread_fn, thread_fn],
             invariant=lambda _s: True,

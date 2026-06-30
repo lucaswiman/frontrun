@@ -20,7 +20,7 @@ import math
 
 import pytest
 
-from frontrun import explore
+import frontrun
 from frontrun.cli import require_active
 
 
@@ -61,7 +61,7 @@ class TestAsyncIndependentState:
             return task_fn
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[make_task(i) for i in range(n)],
                 invariant=lambda s: all(s.slots[i].value == i + 1 for i in range(len(s.slots))),
@@ -112,7 +112,7 @@ class TestAsyncTwoTasksSharedState:
 
         expected = 2**n
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[make_task(0), make_task(1)],
                 invariant=lambda s: True,
@@ -160,7 +160,7 @@ class TestAsyncNTasksWithLock:
 
         expected = math.factorial(n)
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[make_task(i) for i in range(n)],
                 invariant=lambda s: True,
@@ -208,7 +208,7 @@ class TestAsyncTwoTasksSharedStateWithLock:
             return task_fn
 
         result = asyncio.run(
-            explore(
+            frontrun.explore(
                 setup=State,
                 workers=[make_task(0), make_task(1)],
                 invariant=lambda s: True,

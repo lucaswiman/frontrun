@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from frontrun import explore_async_random as explore_async_random_api
+import frontrun
 from frontrun.async_shuffler import (
     AsyncShuffler,
     AwaitScheduler,
@@ -302,7 +302,7 @@ def test_top_level_explore_async_random_dispatches_to_async_shuffler():
     """The package-level explore_async_random wrapper should dispatch async tasks."""
 
     async def _test():
-        result = await explore_async_random_api(
+        result = await frontrun.explore_async_random(
             setup=lambda: NaturalCounter(value=0),
             tasks=[
                 lambda c: c.increment(),

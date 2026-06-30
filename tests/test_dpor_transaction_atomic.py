@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from frontrun import explore
+import frontrun
 
 # ---------------------------------------------------------------------------
 # Bug 1: DPOR must still schedule non-SQL opcodes inside transactions
@@ -77,7 +77,7 @@ class TestDporSchedulesInsideTransactions:
             cur.execute("COMMIT")
             conn.close()
 
-        result = explore(
+        result = frontrun.explore(
             setup=setup,
             workers=[thread_fn, thread_fn],
             invariant=lambda s: s.value == 2,
@@ -132,7 +132,7 @@ class TestDporSchedulesInsideTransactions:
 
             return _inner
 
-        result = explore(
+        result = frontrun.explore(
             setup=setup,
             workers=[thread_fn(State(), 0), thread_fn(State(), 1)],  # type: ignore[arg-type]
             invariant=lambda s: len(s.seen) < 2 or s.seen[0] != s.seen[1],
@@ -191,7 +191,7 @@ class TestDporTransactionReproduction:
             cur.execute("COMMIT")
             conn.close()
 
-        result = explore(
+        result = frontrun.explore(
             setup=setup,
             workers=[thread_fn, thread_fn],
             invariant=lambda s: s.value == 2,
@@ -276,7 +276,7 @@ class TestPropertyAccessDeadlock:
 
         call_count[0] = 0
 
-        result = explore(
+        result = frontrun.explore(
             setup=lambda: None,
             workers=[thread_fn],
             invariant=lambda _: True,

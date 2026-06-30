@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 
-from frontrun import explore
+import frontrun
 
 
 class TestSchedulingCoarsening:
@@ -42,7 +42,7 @@ class TestSchedulingCoarsening:
 
             return philosopher
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_philosopher(i) for i in range(num_philosophers)],
             invariant=lambda s: True,
@@ -82,7 +82,7 @@ class TestSchedulingCoarsening:
 
             return philosopher
 
-        result = explore(
+        result = frontrun.explore(
             setup=State,
             workers=[make_philosopher(i) for i in range(num_philosophers)],
             invariant=lambda s: True,
@@ -109,7 +109,7 @@ class TestSchedulingCoarsening:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -130,7 +130,7 @@ class TestSchedulingCoarsening:
             def increment(self) -> None:
                 self.value += 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=Counter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -153,7 +153,7 @@ class TestSchedulingCoarsening:
                     temp = self.value
                     self.value = temp + 1
 
-        result = explore(
+        result = frontrun.explore(
             setup=LockedCounter,
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
@@ -187,7 +187,7 @@ class TestSchedulingCoarsening:
 
             return philosopher
 
-        result = explore(
+        result = frontrun.explore(
             setup=Table,
             workers=[make_philosopher(i) for i in range(3)],
             invariant=lambda _: True,
@@ -235,7 +235,7 @@ class TestSchedulingCoarsening:
 
             return philosopher
 
-        result = explore(
+        result = frontrun.explore(
             setup=Table,
             workers=[make_philosopher(i) for i in range(4)],
             invariant=lambda _: True,

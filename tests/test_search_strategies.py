@@ -10,7 +10,7 @@ import threading
 
 import pytest
 
-from frontrun import explore
+import frontrun
 
 STRATEGIES = [
     "dfs",
@@ -250,7 +250,7 @@ SCENARIOS = [
 def test_search_strategy_accepted(strategy: str) -> None:
     """Each search strategy string is accepted without error."""
     setup, threads, invariant, _ = scenario_lost_update()
-    result = explore(
+    result = frontrun.explore(
         setup=setup,
         workers=threads,
         invariant=invariant,
@@ -268,7 +268,7 @@ def test_search_strategy_accepted(strategy: str) -> None:
 def test_all_strategies_find_bank_transfer_bug(strategy: str) -> None:
     """All strategies find the bank transfer race."""
     setup, threads, invariant, _ = scenario_bank_transfer()
-    result = explore(
+    result = frontrun.explore(
         setup=setup,
         workers=threads,
         invariant=invariant,
@@ -284,7 +284,7 @@ def test_all_strategies_find_bank_transfer_bug(strategy: str) -> None:
 def test_all_strategies_find_three_thread_bug(strategy: str) -> None:
     """All strategies find the three-thread counter race."""
     setup, threads, invariant, _ = scenario_three_thread_counter()
-    result = explore(
+    result = frontrun.explore(
         setup=setup,
         workers=threads,
         invariant=invariant,
@@ -300,7 +300,7 @@ def test_all_strategies_find_three_thread_bug(strategy: str) -> None:
 def test_all_strategies_find_dining_deadlock(strategy: str) -> None:
     """All strategies find the dining philosophers deadlock."""
     setup, threads, invariant, _ = scenario_dining_philosophers_3()
-    result = explore(
+    result = frontrun.explore(
         setup=setup,
         workers=threads,
         invariant=invariant,
@@ -318,7 +318,7 @@ def test_invalid_strategy_rejected() -> None:
     """Unknown strategy strings raise ValueError."""
     setup, threads, invariant, _ = scenario_lost_update()
     with pytest.raises(Exception, match="unknown search strategy"):
-        explore(
+        frontrun.explore(
             setup=setup,
             workers=threads,
             invariant=invariant,
@@ -358,7 +358,7 @@ def test_search_strategy_benchmark(capsys: pytest.CaptureFixture[str]) -> None:
                 kwargs["deadlock_timeout"] = 2.0
                 kwargs["preemption_bound"] = 2
 
-            result = explore(**kwargs)  # type: ignore[arg-type]
+            result = frontrun.explore(**kwargs)  # type: ignore[arg-type]
 
             key = f"{name}/{strategy}"
             if result.property_holds:

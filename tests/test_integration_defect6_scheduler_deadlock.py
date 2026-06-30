@@ -40,7 +40,7 @@ try:
 except ImportError:
     pytest.skip("psycopg2 not installed", allow_module_level=True)
 
-from frontrun import explore
+import frontrun
 
 pytestmark = pytest.mark.integration
 
@@ -146,7 +146,7 @@ def test_deadlock_without_lock_timeout(_pg_available) -> None:
        lock_timeout to prevent deadlocks in OpcodeScheduler (which lacks
        row lock arbitration).
     """
-    result = explore(
+    result = frontrun.explore(
         setup=_State,
         workers=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
         invariant=_invariant,
@@ -164,7 +164,7 @@ def test_workaround_with_lock_timeout(_pg_available) -> None:
 
     This test should PASS (detecting the race) without hanging.
     """
-    result = explore(
+    result = frontrun.explore(
         setup=_State,
         workers=[_make_thread_fn(0, use_lock_timeout=True), _make_thread_fn(1, use_lock_timeout=True)],
         invariant=_invariant,
@@ -191,7 +191,7 @@ def test_explore_lock_timeout_parameter(_pg_available) -> None:
     DPOR detects the race depends on conflict analysis; the lock_timeout
     parameter's job is to prevent the cooperative scheduler deadlock.
     """
-    result = explore(
+    result = frontrun.explore(
         setup=_State,
         workers=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
         invariant=_invariant,
@@ -224,7 +224,7 @@ def test_explore_dpor_lock_timeout_injects_on_connections(_pg_available) -> None
         finally:
             conn.close()
 
-    result = explore(
+    result = frontrun.explore(
         setup=_State,
         workers=[_check_thread_fn],
         invariant=lambda s: True,
@@ -247,7 +247,7 @@ def test_counterexample_replay_uses_dpor_row_lock_arbitration(_pg_available) -> 
     DPOR's PostgreSQL row-lock arbitration and therefore could not re-run the
     path reliably.
     """
-    result = explore(
+    result = frontrun.explore(
         setup=_State,
         workers=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
         invariant=_invariant,
