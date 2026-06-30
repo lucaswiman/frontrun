@@ -162,24 +162,23 @@ class WaitForGraph:
 
         Must be called with ``self._lock`` held.
         """
+        visited: set[tuple[str, int]] = {start}  # include start so loop-back is detected
+        path: list[tuple[str, int]] = []
+
+        def dfs(node: tuple[str, int]) -> bool:
+            if node in visited:
+                if node == start:
+                    return True
+                return False
+            visited.add(node)
+            path.append(node)
+            for neighbor in self._edges.get(node, ()):
+                if dfs(neighbor):
+                    return True
+            path.pop()
+            return False
 
         for neighbor in self._edges.get(start, ()):
-            visited: set[tuple[str, int]] = {start}
-            path: list[tuple[str, int]] = []
-
-            def dfs(node: tuple[str, int]) -> bool:
-                if node in visited:
-                    if node == start:
-                        return True
-                    return False
-                visited.add(node)
-                path.append(node)
-                for nbr in self._edges.get(node, ()):
-                    if dfs(nbr):
-                        return True
-                path.pop()
-                return False
-
             if dfs(neighbor):
                 return [start, *path, start]
         return None
