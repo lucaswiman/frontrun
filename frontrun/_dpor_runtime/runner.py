@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+from frontrun._dpor_core.worker import WorkerTarget
 from frontrun._opcode_observer import (
     OpcodeTraceHandle,
     install_thread_opcode_trace,
@@ -11,7 +12,7 @@ from frontrun._opcode_observer import (
     stop_opcode_trace,
     uninstall_thread_opcode_trace,
 )
-from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout, run_thread_group
+from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
 
 from ._shared import *
 from ._shared import (
@@ -22,6 +23,7 @@ from ._shared import (
 )
 from .preload_bridge import _PreloadBridge
 from .scheduler import DporScheduler
+from .worker_set import ThreadWorkerSet
 
 
 class DporBytecodeRunner:
@@ -422,28 +424,24 @@ class DporBytecodeRunner:
         self._start_opcode_trace()
         run_thread = self._run_thread
 
-        def make_thread_target(
-            thread_id: int,
-            func: Callable[..., None],
-            thread_args: tuple[Any, ...],
-        ) -> Callable[[], None]:
-            def target() -> None:
-                run_thread(thread_id, func, thread_args)
+        targets = [
+            WorkerTarget(worker_id=i, func=func, args=tuple(thread_args))
+            for i, (func, thread_args) in enumerate(zip(funcs, args))
+        ]
 
-            return target
+        def run_one(target: WorkerTarget) -> None:
+            run_thread(target.worker_id, target.func, target.args)
 
         def on_timeout(alive: list[threading.Thread]) -> None:
             notify_scheduler_timeout(self.scheduler, alive)
 
-        run_thread_group(
-            funcs=funcs,
-            args=args,
-            make_thread_target=make_thread_target,
-            name_prefix="dpor",
+        worker_set = ThreadWorkerSet(name_prefix="dpor", thread_store=self.threads)
+        worker_set.run(
+            targets,
+            run_one,
             timeout=timeout,
-            thread_store=self.threads,
-            teardown=self._stop_opcode_trace,
             on_timeout=on_timeout,
+            teardown=self._stop_opcode_trace,
         )
 
         self._raise_recorded_errors()
