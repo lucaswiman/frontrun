@@ -1,6 +1,6 @@
 """Integration tests: async DPOR with asyncpg against real Postgres.
 
-Tests that explore_async_dpor can detect SQL-level race conditions
+Tests that ``explore(strategy="dpor")`` can detect SQL-level race conditions
 using asyncpg as the database driver, with await_point() as the
 scheduling granularity.
 
@@ -21,7 +21,8 @@ try:
 except ImportError:
     pytest.skip("asyncpg not installed", allow_module_level=True)
 
-from frontrun.async_dpor import await_point, explore_async_dpor
+from frontrun import explore
+from frontrun.async_dpor import await_point
 
 pytestmark = pytest.mark.integration
 
@@ -87,11 +88,11 @@ class TestAsyncDporAsyncpg:
                 finally:
                     await conn.close()
 
-            result = await explore_async_dpor(
+            result = await explore(
                 setup=object,
-                tasks=[increment, increment],
+                workers=[increment, increment],
                 invariant=lambda s: True,  # We verify race via DB value
-                detect_sql=True,
+                detect_io=True,
                 deadlock_timeout=10.0,
                 timeout_per_run=15.0,
             )
@@ -113,11 +114,11 @@ class TestAsyncDporAsyncpg:
                 finally:
                     await conn.close()
 
-            result = await explore_async_dpor(
+            result = await explore(
                 setup=object,
-                tasks=[read_only, read_only],
+                workers=[read_only, read_only],
                 invariant=lambda s: True,
-                detect_sql=True,
+                detect_io=True,
                 deadlock_timeout=10.0,
             )
             return result
@@ -147,11 +148,11 @@ class TestAsyncDporAsyncpg:
                 finally:
                     await conn.close()
 
-            result = await explore_async_dpor(
+            result = await explore(
                 setup=object,
-                tasks=[task_with_query],
+                workers=[task_with_query],
                 invariant=lambda s: True,
-                detect_sql=True,
+                detect_io=True,
                 deadlock_timeout=10.0,
             )
             return result, queries_seen

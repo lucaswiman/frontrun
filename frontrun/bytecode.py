@@ -19,7 +19,7 @@ coverage).
 
 Example — find a race condition with random schedule exploration:
 
-    >>> from frontrun.bytecode import explore_interleavings
+    >>> from frontrun.bytecode import explore_random
     >>>
     >>> class Counter:
     ...     def __init__(self):
@@ -28,7 +28,7 @@ Example — find a race condition with random schedule exploration:
     ...         temp = self.value
     ...         self.value = temp + 1
     >>>
-    >>> result = explore_interleavings(
+    >>> result = explore_random(
     ...     setup=lambda: Counter(),
     ...     threads=[lambda c: c.increment(), lambda c: c.increment()],
     ...     invariant=lambda c: c.value == 2,
@@ -83,11 +83,9 @@ from frontrun._tracing import set_active_trace_filter as _set_active_trace_filte
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import (
-    DEPRECATION_MESSAGES,
     InterleavingResult,
     check_invariant,
     check_serializability_violation,
-    deprecate,
 )
 
 # Type variable for the shared state passed between setup and thread functions
@@ -655,7 +653,7 @@ def explore_random(
     """
     _require_frontrun_env("explore_random")
     if error_on_any_race:
-        raise ValueError("error_on_any_race requires DPOR (use explore_dpor instead)")
+        raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
     try:
@@ -774,15 +772,6 @@ def explore_random(
         return result
     finally:
         _set_active_trace_filter(None)
-
-
-explore_interleavings = deprecate(explore_random, DEPRECATION_MESSAGES["explore_interleavings"])
-explore_interleavings.__doc__ = (
-    "Deprecated alias for :func:`explore_random`.\n\n"
-    ".. deprecated:: 0.5\n"
-    "    ``explore_interleavings`` will be removed in 0.6. Use\n"
-    "    :func:`frontrun.explore` with ``strategy='random'`` instead."
-)
 
 
 def schedule_strategy(num_threads: int, max_ops: int = 300):

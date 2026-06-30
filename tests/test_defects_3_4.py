@@ -146,11 +146,11 @@ def test_dpor_setattr_getattr_no_crash() -> None:
     Exercises the full DPOR pipeline with setattr/getattr to verify the
     bounds-checking fix works end-to-end.
     """
-    from frontrun.dpor import explore_dpor
+    from frontrun import explore
 
-    result = explore_dpor(
+    result = explore(
         setup=SharedObj,
-        threads=[
+        workers=[
             lambda obj: setattr(obj, "is_active", True),
             lambda obj: getattr(obj, "is_active"),
         ],
@@ -168,11 +168,11 @@ def test_dpor_getattr_with_default_no_crash() -> None:
     Reproduces the pattern from django-two-factor-auth where
     getattr(settings, 'OTP_TOTP_SYNC', True) crashed.
     """
-    from frontrun.dpor import explore_dpor
+    from frontrun import explore
 
-    result = explore_dpor(
+    result = explore(
         setup=SharedObj,
-        threads=[
+        workers=[
             lambda obj: setattr(obj, "value", 1),
             lambda obj: getattr(obj, "value", None),
         ],
@@ -190,7 +190,7 @@ def test_dpor_nested_setattr_getattr_no_crash() -> None:
     Uses keyword-style patterns similar to Django metaclass operations
     that triggered the original shadow stack underflow.
     """
-    from frontrun.dpor import explore_dpor
+    from frontrun import explore
 
     class Model:
         _meta: dict[str, bool] = {}
@@ -206,9 +206,9 @@ def test_dpor_nested_setattr_getattr_no_crash() -> None:
         m._meta = {}
         return m
 
-    result = explore_dpor(
+    result = explore(
         setup=setup,
-        threads=[
+        workers=[
             lambda m: m.save(update_fields=["_meta"]),
             lambda m: m.save(update_fields=["_meta"]),
         ],

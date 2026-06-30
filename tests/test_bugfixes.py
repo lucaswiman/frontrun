@@ -12,10 +12,11 @@ from unittest.mock import patch as mock_patch
 import pytest
 from frontrun._dpor import PyDporEngine
 
+from frontrun import explore
 from frontrun._cooperative import CooperativeCondition
 from frontrun.bytecode import BytecodeShuffler, OpcodeScheduler
 from frontrun.common import Schedule, Step
-from frontrun.dpor import DporBytecodeRunner, DporScheduler, explore_dpor
+from frontrun.dpor import DporBytecodeRunner, DporScheduler
 from frontrun.trace_markers import TraceExecutor
 
 # ---------------------------------------------------------------------------
@@ -212,12 +213,12 @@ class TestCooperativeConditionWaitFor:
 
 
 # ---------------------------------------------------------------------------
-# Bug: explore_dpor doesn't stop on first failure
+# Bug: explore() (DPOR) doesn't stop on first failure
 # ---------------------------------------------------------------------------
 
 
 class TestDporStopOnFirst:
-    """explore_dpor used to continue exploring all interleavings after
+    """explore() (DPOR) used to continue exploring all interleavings after
     finding a violation.  The fix adds a stop_on_first parameter."""
 
     def test_stop_on_first_reduces_exploration(self):
@@ -232,9 +233,9 @@ class TestDporStopOnFirst:
                 temp = self.value
                 self.value = temp + 1
 
-        result_early = explore_dpor(
+        result_early = explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             stop_on_first=True,
         )
@@ -242,9 +243,9 @@ class TestDporStopOnFirst:
         assert result_early.counterexample is not None
         early_count = result_early.num_explored
 
-        result_full = explore_dpor(
+        result_full = explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             stop_on_first=False,
         )
@@ -265,9 +266,9 @@ class TestDporStopOnFirst:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             stop_on_first=False,
         )

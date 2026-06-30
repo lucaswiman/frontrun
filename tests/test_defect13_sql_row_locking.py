@@ -78,7 +78,7 @@ try:
 except ImportError:
     psycopg2 = None  # type: ignore[assignment]
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 _DB_NAME = os.environ.get("FRONTRUN_TEST_DB", "frontrun_test")
 _DB_URL = os.environ.get("DATABASE_URL", f"dbname={_DB_NAME}")
@@ -238,9 +238,9 @@ class TestForUpdateSkipLockedExecution:
             set_1 = set(state.dequeued[1])
             return len(set_0 & set_1) == 0
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_dequeue(0), make_dequeue(1)],
+            workers=[make_dequeue(0), make_dequeue(1)],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -289,9 +289,9 @@ class TestForUpdateSkipLockedExecution:
         def invariant(state: State) -> bool:
             return not (state.deleted_by[0] and state.deleted_by[1])
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_deleter(0), make_deleter(1)],
+            workers=[make_deleter(0), make_deleter(1)],
             invariant=invariant,
             detect_io=True,
             max_executions=50,

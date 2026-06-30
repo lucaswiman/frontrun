@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 
 class TestSchedulingCoarsening:
@@ -42,9 +42,9 @@ class TestSchedulingCoarsening:
 
             return philosopher
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_philosopher(i) for i in range(num_philosophers)],
+            workers=[make_philosopher(i) for i in range(num_philosophers)],
             invariant=lambda s: True,
             max_executions=5000,
             preemption_bound=2,
@@ -82,9 +82,9 @@ class TestSchedulingCoarsening:
 
             return philosopher
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[make_philosopher(i) for i in range(num_philosophers)],
+            workers=[make_philosopher(i) for i in range(num_philosophers)],
             invariant=lambda s: True,
             max_executions=5000,
             preemption_bound=2,
@@ -109,9 +109,9 @@ class TestSchedulingCoarsening:
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=500,
             preemption_bound=2,
@@ -130,9 +130,9 @@ class TestSchedulingCoarsening:
             def increment(self) -> None:
                 self.value += 1
 
-        result = explore_dpor(
+        result = explore(
             setup=Counter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=500,
             preemption_bound=2,
@@ -153,9 +153,9 @@ class TestSchedulingCoarsening:
                     temp = self.value
                     self.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=LockedCounter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             max_executions=50,
             preemption_bound=2,
@@ -187,9 +187,9 @@ class TestSchedulingCoarsening:
 
             return philosopher
 
-        result = explore_dpor(
+        result = explore(
             setup=Table,
-            threads=[make_philosopher(i) for i in range(3)],
+            workers=[make_philosopher(i) for i in range(3)],
             invariant=lambda _: True,
             max_executions=2000,
             preemption_bound=2,
@@ -235,9 +235,9 @@ class TestSchedulingCoarsening:
 
             return philosopher
 
-        result = explore_dpor(
+        result = explore(
             setup=Table,
-            threads=[make_philosopher(i) for i in range(4)],
+            workers=[make_philosopher(i) for i in range(4)],
             invariant=lambda _: True,
             max_executions=5000,
             preemption_bound=2,

@@ -1,15 +1,8 @@
 DPOR in Practice
 ================
 
-This is a practical guide to using ``explore()`` (or the old ``explore_dpor()``)
-for systematic concurrency testing. For the underlying algorithm and theory, see
-:doc:`dpor`.
-
-.. note::
-
-   **Prefer** :func:`frontrun.explore` **(0.5+).** The old ``explore_dpor()``
-   function is deprecated and will be removed in 0.6. Use
-   ``frontrun.explore(strategy='dpor')`` (the default) instead.
+This is a practical guide to using :func:`frontrun.explore` for systematic
+concurrency testing. For the underlying algorithm and theory, see :doc:`dpor`.
 
 
 What DPOR does
@@ -48,17 +41,6 @@ Putting the two together:
    )
    result.assert_holds()
 
-Old API (deprecated)::
-
-   from frontrun.dpor import explore_dpor
-
-   result = explore_dpor(
-       setup=MyState,
-       threads=[thread_a, thread_b],
-       invariant=lambda s: s.is_consistent(),
-   )
-   assert result.property_holds, result.explanation
-
 1. DPOR picks an interleaving (based on conflict analysis).
 2. ``setup()`` creates fresh state; the threads run under that interleaving.
 3. The invariant checks the final state.
@@ -79,11 +61,10 @@ detection mechanisms are layered from fine-grained to coarse:
 - Lock acquire and release (``threading.Lock``, ``threading.RLock``)
 - Thread spawn and join
 - **Redis commands** --- ``execute_command()`` is intercepted on redis-py
-  clients when ``detect_io=True``, which now covers Redis in both sync
-  and async contexts.  (The async-only ``detect_redis=True`` kwarg is
-  deprecated in 0.5 and will be removed in 0.6.)  Each command is
-  classified as a read or write on specific keys; two threads operating
-  on *different* keys are independent.  See :doc:`redis`.
+  clients when ``detect_io=True``, which covers Redis in both sync
+  and async contexts.  Each command is classified as a read or write on
+  specific keys; two threads operating on *different* keys are
+  independent.  See :doc:`redis`.
 - **SQL statements** --- ``cursor.execute()`` is intercepted at the DBAPI
   layer.  Statements are parsed to per-table (or per-row) resource IDs; two
   threads touching *different* tables or rows are independent.  See
@@ -123,7 +104,7 @@ detection mechanisms are layered from fine-grained to coarse:
 
 For cases where DPOR cannot see the shared state, two alternatives are available:
 
-- **Bytecode exploration** (``explore_interleavings()``) doesn't need to
+- **Bytecode exploration** (``frontrun.explore_random()``) doesn't need to
   *understand* why a schedule is bad --- it checks an invariant after each run
   and reports when the invariant fails.  If a C extension mutates shared state
   in a way that breaks your invariant, bytecode exploration will often find the
@@ -148,11 +129,11 @@ will interfere with the next.
 Basic usage
 -----------
 
-The ``explore_dpor()`` function is the main entry point:
+The ``explore()`` function is the main entry point:
 
 .. code-block:: python
 
-   from frontrun.dpor import explore_dpor
+   from frontrun import explore
 
    class Counter:
        def __init__(self):
@@ -162,9 +143,9 @@ The ``explore_dpor()`` function is the main entry point:
            temp = self.value
            self.value = temp + 1
 
-   result = explore_dpor(
+   result = explore(
        setup=Counter,
-       threads=[lambda c: c.increment(), lambda c: c.increment()],
+       workers=[lambda c: c.increment(), lambda c: c.increment()],
        invariant=lambda c: c.value == 2,
    )
 
@@ -176,9 +157,9 @@ The ``explore_dpor()`` function is the main entry point:
     A callable that creates fresh shared state. Called once per execution so
     that each interleaving starts from a clean slate.
 
-``threads``
+``workers``
     A list of callables, each receiving the state returned by ``setup``.
-    The length of this list determines the number of threads.
+    The length of this list determines the number of workers.
 
 ``invariant``
     A predicate over the shared state that defines what "correct" means.
@@ -261,8 +242,8 @@ The ``explore_dpor()`` function is the main entry point:
 Interpreting results
 --------------------
 
-``explore_dpor()`` returns an ``InterleavingResult`` (the same type used by
-``explore_interleavings``):
+``explore()`` returns an ``InterleavingResult`` (the same type used by
+``explore_random``):
 
 .. code-block:: python
 
@@ -284,8 +265,8 @@ ran for two steps, then thread 1 ran for two steps.
 
 When a race is found, ``explanation`` contains a formatted trace showing the
 interleaved source lines, the conflict pattern (lost update, write-write, etc.),
-and reproduction statistics. This is the same output for both ``explore_dpor``
-and ``explore_interleavings``.
+and reproduction statistics. This is the same output for both ``explore``
+and ``explore_random``.
 
 If ``num_explored`` is 1, your threads probably don't share any
 state --- the engine saw no conflicts and skipped everything. This is a sign
@@ -302,7 +283,7 @@ a lock eliminates it:
 .. code-block:: python
 
    import threading
-   from frontrun.dpor import explore_dpor
+   from frontrun import explore
 
    class UnsafeCounter:
        def __init__(self):
@@ -323,17 +304,17 @@ a lock eliminates it:
                self.value = temp + 1
 
    def test_unsafe_counter_has_race():
-       result = explore_dpor(
+       result = explore(
            setup=UnsafeCounter,
-           threads=[lambda c: c.increment(), lambda c: c.increment()],
+           workers=[lambda c: c.increment(), lambda c: c.increment()],
            invariant=lambda c: c.value == 2,
        )
        assert result.property_holds, result.explanation  # fails — has a race!
 
    def test_safe_counter_is_correct():
-       result = explore_dpor(
+       result = explore(
            setup=SafeCounter,
-           threads=[lambda c: c.increment(), lambda c: c.increment()],
+           workers=[lambda c: c.increment(), lambda c: c.increment()],
            invariant=lambda c: c.value == 2,
        )
        assert result.property_holds, result.explanation
@@ -347,7 +328,7 @@ detected separately:
 
 .. code-block:: python
 
-   from frontrun.dpor import explore_dpor
+   from frontrun import explore
 
    class Bank:
        def __init__(self):
@@ -361,9 +342,9 @@ detected separately:
            self.b = temp_b + amount
 
    def test_concurrent_transfers_conserve_total():
-       result = explore_dpor(
+       result = explore(
            setup=Bank,
-           threads=[lambda b: b.transfer(50), lambda b: b.transfer(50)],
+           workers=[lambda b: b.transfer(50), lambda b: b.transfer(50)],
            invariant=lambda b: b.a + b.b == 200,
        )
        assert result.property_holds, result.explanation  # fails — total is not conserved
@@ -379,7 +360,7 @@ automatically when ``detect_io=True`` (the default).
 
 **How it works:**
 
-1. ``explore_dpor()`` starts an ``IOEventDispatcher`` that creates
+1. ``explore()`` starts an ``IOEventDispatcher`` that creates
    an ``os.pipe()`` and passes the write-end FD to the Rust
    ``LD_PRELOAD`` library via the ``FRONTRUN_IO_FD`` environment
    variable. The Rust library writes event records to the pipe for
@@ -413,7 +394,7 @@ shared socket endpoint as a conflict point.
 ORM helpers: ``django_dpor`` and ``sqlalchemy_dpor``
 ------------------------------------------------------
 
-Writing correct ``explore_dpor()`` tests against a real database requires
+Writing correct ``explore()`` tests against a real database requires
 boilerplate: each thread needs its own connection, stale connections from a
 previous execution must be closed, and optional lock timeouts must be injected
 before the thread runs. The ``frontrun.contrib`` package provides ready-made
@@ -434,7 +415,7 @@ wrappers that handle this automatically.
    )
    assert result.property_holds, result.explanation
 
-``django_dpor`` wraps ``explore_dpor`` and:
+``django_dpor`` wraps ``explore`` and:
 
 * Calls ``connections.close_all()`` before each execution so threads open
   fresh connections (avoids sharing a stale connection across DPOR replays).
@@ -444,7 +425,7 @@ wrappers that handle this automatically.
   converting C-level row-lock blocking into a fast PostgreSQL error rather than
   a hang.
 
-All extra keyword arguments are forwarded to ``explore_dpor``.
+All extra keyword arguments are forwarded to ``explore``.
 
 ``sqlalchemy_dpor``
 ~~~~~~~~~~~~~~~~~~~
@@ -462,7 +443,7 @@ All extra keyword arguments are forwarded to ``explore_dpor``.
    )
    assert result.property_holds, result.explanation
 
-``sqlalchemy_dpor`` wraps ``explore_dpor`` and:
+``sqlalchemy_dpor`` wraps ``explore`` and:
 
 * Calls ``engine.dispose()`` before each execution to close pooled connections.
 * Opens a fresh ``engine.connect()`` connection for each thread and stores it
@@ -482,7 +463,7 @@ Inside a thread function, retrieve the per-thread connection with:
        ...
 
 Both helpers accept ``detect_io=True`` (the default) and all other
-``explore_dpor`` keyword arguments.
+``explore`` keyword arguments.
 
 Async usage
 ~~~~~~~~~~~
@@ -532,7 +513,7 @@ Python-level attribute accesses.
 .. code-block:: python
 
    import redis
-   from frontrun.dpor import explore_dpor
+   from frontrun import explore
 
    def test_redis_lost_update(redis_port):
        class State:
@@ -553,15 +534,15 @@ Python-level attribute accesses.
            r.close()
            return result == 2
 
-       result = explore_dpor(
+       result = explore(
            setup=State,
-           threads=[increment, increment],
+           workers=[increment, increment],
            invariant=invariant,
            detect_io=True,          # enables Redis key-level patching (default)
        )
        assert not result.property_holds   # race detected!
 
-**Async usage** (``detect_io=True`` covers Redis from 0.5):
+**Async usage** (``detect_io=True`` covers Redis):
 
 .. code-block:: python
 
@@ -612,7 +593,7 @@ Prefer ``assert_holds()`` over manual asserts
 result in a test.  It raises ``AssertionError`` with the full race explanation
 when the invariant failed, and does nothing on success::
 
-   result = explore_dpor(setup, [thread1, thread2], invariant)
+   result = explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
    result.assert_holds()          # preferred
    # instead of: assert result.property_holds, result.explanation
 

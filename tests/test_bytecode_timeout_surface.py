@@ -13,7 +13,8 @@ import time
 
 import pytest
 
-from frontrun.bytecode import explore_interleavings, run_with_schedule
+from frontrun import explore_random
+from frontrun.bytecode import run_with_schedule
 
 
 class _State:
@@ -44,7 +45,7 @@ def test_run_with_schedule_raises_on_timeout():
 
 def test_explore_random_skips_invariant_on_timeout():
     """explore_random must not flag a violation purely from a timed-out run."""
-    result = explore_interleavings(
+    result = explore_random(
         setup=_State,
         threads=[_slow_blocker],
         # Invariant that the half-finished state (value==0) would violate.

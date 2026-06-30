@@ -1,6 +1,6 @@
 """Integration tests: async DPOR with SQLAlchemy async against real Postgres.
 
-Tests that explore_async_dpor can detect SQL-level race conditions
+Tests that ``explore(strategy="dpor")`` can detect SQL-level race conditions
 using SQLAlchemy's async engine, with await_point() as the scheduling
 granularity.
 
@@ -30,7 +30,8 @@ try:
 except ImportError:
     pytest.skip("asyncpg not installed (needed for async postgres driver)", allow_module_level=True)
 
-from frontrun.async_dpor import await_point, explore_async_dpor
+from frontrun import explore
+from frontrun.async_dpor import await_point
 
 _DB_NAME = os.environ.get("FRONTRUN_TEST_DB", "frontrun_test")
 _SYNC_DSN = os.environ.get("DATABASE_URL", f"postgresql:///{_DB_NAME}")
@@ -127,11 +128,11 @@ class TestAsyncDporSQLAlchemy:
                         )
                         await conn.commit()
 
-                return await explore_async_dpor(
+                return await explore(
                     setup=object,
-                    tasks=[increment, increment],
+                    workers=[increment, increment],
                     invariant=lambda s: True,
-                    detect_sql=True,
+                    detect_io=True,
                     deadlock_timeout=10.0,
                     timeout_per_run=15.0,
                 )
@@ -163,11 +164,11 @@ class TestAsyncDporSQLAlchemy:
                         counter.value = current + 1
                         await session.commit()
 
-                return await explore_async_dpor(
+                return await explore(
                     setup=object,
-                    tasks=[increment, increment],
+                    workers=[increment, increment],
                     invariant=lambda s: True,
-                    detect_sql=True,
+                    detect_io=True,
                     deadlock_timeout=10.0,
                     timeout_per_run=15.0,
                 )
@@ -189,11 +190,11 @@ class TestAsyncDporSQLAlchemy:
                         await conn.execute(text("SELECT value FROM async_sa_counter WHERE id = 1"))
                         await await_point()
 
-                return await explore_async_dpor(
+                return await explore(
                     setup=object,
-                    tasks=[read_only, read_only],
+                    workers=[read_only, read_only],
                     invariant=lambda s: True,
-                    detect_sql=True,
+                    detect_io=True,
                     deadlock_timeout=10.0,
                 )
             finally:

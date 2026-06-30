@@ -120,10 +120,6 @@ DPOR (Dynamic Partial Order Reduction) *systematically* explores every meaningfu
 
 When a race is found, the error trace shows the exact sequence of conflicting accesses and which threads were involved:
 
-> **Prefer `frontrun.explore()`** — the new unified entry point (0.5+). The old
-> per-strategy functions (`explore_dpor`, `explore_interleavings`, etc.) are
-> deprecated and scheduled for removal in 0.6.
-
 ```python
 from frontrun import explore
 
@@ -144,22 +140,6 @@ def test_counter_is_atomic():
     )
     result.assert_holds()
 ```
-
-<details>
-<summary>Old API (deprecated, will be removed in 0.6)</summary>
-
-```python
-from frontrun.dpor import explore_dpor
-
-def test_counter_is_atomic():
-    result = explore_dpor(
-        setup=Counter,
-        threads=[lambda c: c.increment(), lambda c: c.increment()],
-        invariant=lambda c: c.value == 2,
-    )
-    assert result.property_holds, result.explanation
-```
-</details>
 
 This test fails because `Counter.increment` is not atomic. The `result.explanation` shows the conflict:
 
@@ -194,28 +174,8 @@ The random strategy often finds races very quickly — sometimes on the first at
 
 The trade-off: error traces are less interpretable. You get the specific opcode schedule that broke the invariant and a best-effort interleaved source trace, but not the causal conflict analysis that DPOR provides.
 
-> **Prefer `frontrun.explore(strategy='random')`** — the new unified entry point
-> (0.5+). The old `explore_interleavings` is deprecated and will be removed in 0.6.
-
 ```python
 from frontrun import explore
-
-def test_counter_is_atomic():
-    result = explore(
-        setup=lambda: Counter(value=0),
-        workers=Counter.increment,
-        count=2,
-        invariant=lambda c: c.value == 2,
-        strategy="random",
-    )
-    result.assert_holds()
-```
-
-<details>
-<summary>Old API (deprecated, will be removed in 0.6)</summary>
-
-```python
-from frontrun.bytecode import explore_interleavings
 
 class Counter:
     def __init__(self, value=0):
@@ -226,21 +186,18 @@ class Counter:
         self.value = temp + 1
 
 def test_counter_is_atomic():
-    result = explore_interleavings(
+    result = explore(
         setup=lambda: Counter(value=0),
-        threads=[
-            lambda c: c.increment(),
-            lambda c: c.increment(),
-        ],
+        workers=Counter.increment,
+        count=2,
         invariant=lambda c: c.value == 2,
+        strategy="random",
         max_attempts=200,
         max_ops=200,
         seed=42,
     )
-
-    assert result.property_holds, result.explanation
+    result.assert_holds()
 ```
-</details>
 
 This fails with output like:
 
@@ -282,7 +239,7 @@ DPOR goes beyond coarse socket-level detection for Redis: it intercepts `execute
 **Sync DPOR** — Redis patching is active automatically when `detect_io=True` (the default):
 
 ```python
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 import redis
 
 def test_redis_counter_race(redis_port):
@@ -298,16 +255,16 @@ def test_redis_counter_race(redis_port):
         r.set("counter", str(val + 1))
         r.close()
 
-    result = explore_dpor(
+    result = explore(
         setup=State,
-        threads=[increment, increment],
+        workers=[increment, increment],
         invariant=lambda s: int(redis.Redis(port=redis_port).get("counter")) == 2,
         detect_io=True,   # default — activates Redis key-level patching
     )
     assert not result.property_holds  # DPOR finds the lost-update race
 ```
 
-**Async DPOR** — `detect_io=True` covers Redis in async too (from 0.5):
+**Async DPOR** — `detect_io=True` covers Redis in async too:
 
 ```python
 from frontrun import explore
@@ -328,10 +285,6 @@ async def test_async_redis_race(redis_port):
         detect_io=True,
     )
 ```
-
-> In 0.5 the async-only `detect_redis=True` kwarg was folded into `detect_io=True`
-> so sync and async behave the same. `detect_redis=True` still works through
-> 0.5 with a `DeprecationWarning`; it is removed in 0.6.
 
 The same key-level precision applies to hashes (`HGET`/`HSET`), lists, sets, sorted sets, and all other Redis data structures — 160+ commands are classified. See the [Redis technical details](docs/redis.rst) for a full walkthrough.
 
@@ -379,7 +332,7 @@ result = explore(
 )
 ```
 
-Patterns use [`fnmatch`](https://docs.python.org/3/library/fnmatch.html) syntax and are matched against dotted module names (e.g. `django_filters.views`). All exploration entry points (`explore_dpor`, `explore_interleavings`, and their async variants) accept this parameter. See [trace filtering docs](docs/trace_filtering.rst) for details.
+Patterns use [`fnmatch`](https://docs.python.org/3/library/fnmatch.html) syntax and are matched against dotted module names (e.g. `django_filters.views`). All exploration entry points (`explore`, `explore_random`, and their async variants) accept this parameter. See [trace filtering docs](docs/trace_filtering.rst) for details.
 
 ## Async Support
 
@@ -430,10 +383,6 @@ def test_async_counter_lost_update():
 
 Async exploration works at natural ``await`` boundaries instead of opcodes, making schedules stable across Python versions. ``frontrun.explore()`` detects async workers automatically:
 
-> **Prefer `frontrun.explore()`** — the new unified entry point (0.5+). The old
-> `explore_interleavings` (async form) and `explore_async_dpor` are deprecated
-> and will be removed in 0.6.
-
 ```python
 import asyncio
 from frontrun import explore
@@ -469,23 +418,6 @@ async def test_async_counter_random():
     )
     result.assert_holds()
 ```
-
-<details>
-<summary>Old async API (deprecated, will be removed in 0.6)</summary>
-
-```python
-from frontrun import explore_interleavings
-
-async def test_async_counter_race():
-    result = await explore_interleavings(
-        setup=lambda: Counter(),
-        tasks=[lambda c: c.increment(), lambda c: c.increment()],
-        invariant=lambda c: c.value == 2,
-        max_attempts=200,
-    )
-    assert result.property_holds, result.explanation
-```
-</details>
 
 ## CLI
 
@@ -523,7 +455,7 @@ pytest --frontrun-patch-locks      # explicitly enable without CLI
 pytest --no-frontrun-patch-locks   # explicitly disable even under CLI
 ```
 
-Tests that use `explore_interleavings()` or `explore_dpor()` will be
+Tests that use `frontrun.explore()` or `frontrun.explore_random()` will be
 **automatically skipped** when run without the frontrun CLI, preventing
 confusing failures when the environment isn't properly set up.
 
@@ -550,7 +482,7 @@ confusing failures when the environment isn't properly set up.
 with the race explanation on failure and returns `None` silently on success:
 
 ```python
-result = explore_dpor(setup, [thread1, thread2], invariant)
+result = explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
 result.assert_holds()  # preferred over: assert result.property_holds, result.explanation
 ```
 

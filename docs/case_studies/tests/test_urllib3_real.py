@@ -36,7 +36,8 @@ from case_study_helpers import (  # noqa: E402
 )
 from urllib3.connectionpool import HTTPConnectionPool  # noqa: E402
 
-from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun import explore_random  # noqa: E402
+from frontrun.bytecode import run_with_schedule  # noqa: E402
 
 
 class Urllib3State:
@@ -63,7 +64,7 @@ def _invariant(s: Urllib3State) -> bool:
 def test_real_urllib3_num_connections_lost_update():
     """Find the num_connections lost update in real HTTPConnectionPool._new_conn()."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: Urllib3State(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_invariant,
@@ -81,7 +82,7 @@ def test_real_urllib3_num_connections_sweep():
     total_explored = 0
     for seed in range(20):
         with timeout_minutes(10):
-            result = explore_interleavings(
+            result = explore_random(
                 setup=lambda: Urllib3State(),
                 threads=[lambda s: s.thread1(), lambda s: s.thread2()],
                 invariant=_invariant,
@@ -99,7 +100,7 @@ def test_real_urllib3_num_connections_sweep():
 def test_real_urllib3_reproduce():
     """Find a counterexample then reproduce it deterministically 10 times."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: Urllib3State(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_invariant,

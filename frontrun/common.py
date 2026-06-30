@@ -2,75 +2,14 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
-import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from itertools import permutations
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from frontrun._sql_anomaly import SqlAnomaly
-
-
-_F = TypeVar("_F", bound=Callable[..., Any])
-
-
-# ---------------------------------------------------------------------------
-# Deprecation messages for the 0.5 → 0.6 shim layer.
-# Centralised so the module-level __getattr__ in ``frontrun/__init__.py`` and
-# the wrappers in ``bytecode.py`` / ``async_shuffler.py`` / ``async_dpor.py`` /
-# ``_dpor_runtime/explore.py`` stay in sync.  Each message must include a
-# concrete removal version (``removed in X.Y``); ``test_explore_unified``
-# enforces this so future entries can't slip in without a deadline.
-# ---------------------------------------------------------------------------
-
-DEPRECATION_MESSAGES = {
-    "explore_dpor": (
-        "explore_dpor is deprecated; use frontrun.explore(strategy='dpor') "
-        "(or frontrun.explore(...)) instead. The old API will be removed in 0.6."
-    ),
-    "explore_async_dpor": (
-        "explore_async_dpor is deprecated; use frontrun.explore(strategy='dpor') "
-        "with async workers instead. The old API will be removed in 0.6."
-    ),
-    "explore_interleavings": (
-        "explore_interleavings is deprecated; use frontrun.explore(strategy='random') "
-        "(or frontrun.explore_random(...)) instead. The old API will be removed in 0.6."
-    ),
-    "explore_async_interleavings": (
-        "explore_async_interleavings (also accessed as async `explore_interleavings`) is deprecated; "
-        "use frontrun.explore(strategy='random') (or frontrun.explore_async_random(...)) instead. "
-        "The old API will be removed in 0.6."
-    ),
-    "trace_executor_run_legacy_form": (
-        "Calling TraceExecutor.run() with individual thread names is deprecated; "
-        "pass a dict {name: callable} instead, e.g. "
-        "executor.run({'thread1': fn1, 'thread2': fn2}, timeout=5.0). "
-        "Will be removed in 0.6."
-    ),
-    "detect_redis_param": (
-        "detect_redis=True is deprecated; use detect_io=True instead "
-        "(now covers Redis in both sync and async). "
-        "The old parameter will be removed in 0.6."
-    ),
-}
-
-
-def deprecate(fn: _F, message: str) -> _F:
-    """Wrap *fn* in a :class:`DeprecationWarning`-emitting shim.
-
-    The wrapper is :func:`functools.wraps`-preserving so ``help()`` and
-    the inspectable signature still reflect *fn*.
-    """
-
-    @functools.wraps(fn)
-    def _wrapper(*args: Any, **kwargs: Any) -> Any:
-        warnings.warn(message, DeprecationWarning, stacklevel=2)
-        return fn(*args, **kwargs)
-
-    return _wrapper  # type: ignore[return-value]
 
 
 def any_async(fns: Iterable[Any]) -> bool:
@@ -153,9 +92,7 @@ class Schedule:
 class InterleavingResult:
     """Result of exploring interleavings.
 
-    Returned by :func:`~frontrun.bytecode.explore_interleavings`,
-    :func:`~frontrun.async_shuffler.explore_interleavings`, and
-    :func:`~frontrun.dpor.explore_dpor`.
+    Returned by :func:`frontrun.explore`.
 
     Attributes:
         property_holds: True if the invariant held under all tested interleavings.

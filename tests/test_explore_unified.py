@@ -5,14 +5,12 @@ Covers:
   (b) explore() dispatcher — async path
   (c) workers=fn, count=N shorthand
   (d) AssertionError in invariant → explanation
-  (e) Deprecation shims warn and still work
   (f) detect_io in async DPOR covers Redis (detect_redis)
 """
 
 from __future__ import annotations
 
 import asyncio
-import warnings
 from dataclasses import dataclass, field
 
 import pytest
@@ -356,74 +354,8 @@ def test_assertion_error_async_random():
 
 
 # ---------------------------------------------------------------------------
-# (e) Deprecation shims warn and still work
+# (e) Canonical random APIs work
 # ---------------------------------------------------------------------------
-
-
-def test_explore_dpor_deprecated_warns():
-    """Importing explore_dpor from frontrun emits DeprecationWarning."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        import frontrun
-
-        _ = frontrun.explore_dpor  # noqa: F841 — triggers __getattr__
-    assert any(issubclass(w.category, DeprecationWarning) and "explore_dpor" in str(w.message) for w in caught)
-
-
-def test_explore_interleavings_deprecated_warns():
-    """Calling explore_interleavings from bytecode emits DeprecationWarning."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        from frontrun.bytecode import explore_interleavings
-
-        explore_interleavings(
-            setup=Counter,
-            threads=[Counter.increment, Counter.increment],
-            invariant=counter_invariant,
-            max_attempts=5,
-            seed=42,
-        )
-    assert any(issubclass(w.category, DeprecationWarning) and "explore_interleavings" in str(w.message) for w in caught)
-
-
-def test_explore_async_interleavings_deprecated_warns():
-    """Calling explore_interleavings from async_shuffler emits DeprecationWarning."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        from frontrun.async_shuffler import explore_interleavings as _deprecated
-
-        asyncio.run(
-            _deprecated(
-                setup=AsyncCounter,
-                tasks=[AsyncCounter.increment, AsyncCounter.increment],
-                invariant=lambda c: c.value == 2,
-                max_attempts=5,
-                seed=42,
-            )
-        )
-    assert any(issubclass(w.category, DeprecationWarning) and "explore_interleavings" in str(w.message) for w in caught)
-
-
-def test_frontrun_explore_interleavings_getattr_warns():
-    """frontrun.explore_interleavings via __getattr__ emits DeprecationWarning."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        import frontrun
-
-        _ = frontrun.explore_interleavings  # noqa: F841
-    assert any(issubclass(w.category, DeprecationWarning) and "explore_interleavings" in str(w.message) for w in caught)
-
-
-def test_frontrun_explore_async_interleavings_getattr_warns():
-    """frontrun.explore_async_interleavings via __getattr__ emits DeprecationWarning."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        import frontrun
-
-        _ = frontrun.explore_async_interleavings  # noqa: F841
-    assert any(
-        issubclass(w.category, DeprecationWarning) and "explore_async_interleavings" in str(w.message) for w in caught
-    )
 
 
 def test_explore_random_works():
@@ -454,64 +386,9 @@ def test_explore_async_random_works():
     assert not result.property_holds
 
 
-def test_explore_async_dpor_deprecated_warns():
-    """explore_async_dpor emits DeprecationWarning (called directly)."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        from frontrun.async_dpor import explore_async_dpor
-
-        asyncio.run(
-            explore_async_dpor(
-                setup=AsyncCounter,
-                tasks=[AsyncCounter.increment, AsyncCounter.increment],
-                invariant=lambda c: c.value == 2,
-            )
-        )
-    assert any(issubclass(w.category, DeprecationWarning) and "explore_async_dpor" in str(w.message) for w in caught)
-
-
 # ---------------------------------------------------------------------------
 # (f) detect_io in async DPOR covers Redis
 # ---------------------------------------------------------------------------
-
-
-def test_detect_io_in_async_dpor_deprecated_wrapper_implies_detect_redis():
-    """explore_async_dpor(detect_io=True) does NOT separately require detect_redis=True."""
-    # We test this at the API level: the deprecated wrapper should accept detect_io
-    # and pass detect_redis=True to _explore_async_dpor without raising.
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter("always")
-        from frontrun.async_dpor import explore_async_dpor
-
-        # Just verify it runs without error; Redis isn't actually in scope in unit tests
-        result = asyncio.run(
-            explore_async_dpor(
-                setup=AsyncCounter,
-                tasks=[AsyncCounter.increment, AsyncCounter.increment],
-                invariant=lambda c: c.value == 2,
-                detect_io=True,  # should imply detect_redis=True internally
-            )
-        )
-    assert isinstance(result, InterleavingResult)
-
-
-def test_detect_redis_deprecated_warns():
-    """explore_async_dpor(detect_redis=True) emits additional DeprecationWarning."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        from frontrun.async_dpor import explore_async_dpor
-
-        asyncio.run(
-            explore_async_dpor(
-                setup=AsyncCounter,
-                tasks=[AsyncCounter.increment, AsyncCounter.increment],
-                invariant=lambda c: c.value == 2,
-                detect_redis=True,
-            )
-        )
-    messages = [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)]
-    assert any("detect_redis" in m for m in messages)
-    assert any("detect_io=True" in m for m in messages)
 
 
 def test_explore_async_random_detect_io_propagates_to_detect_sql(monkeypatch):
@@ -560,82 +437,6 @@ def test_explore_unified_detect_io_async_dpor():
         )
     )
     assert isinstance(result, InterleavingResult)
-
-
-# ---------------------------------------------------------------------------
-# (g) Every deprecation message pins a removal version
-# ---------------------------------------------------------------------------
-
-
-def test_every_deprecation_message_pins_a_removal_version():
-    """Each entry in DEPRECATION_MESSAGES must announce when the API is removed.
-
-    Guards against future entries being added without a planned removal version
-    so users always have a concrete deadline for migrating off deprecated APIs.
-    """
-    import re
-
-    from frontrun.common import DEPRECATION_MESSAGES
-
-    # Match phrases like "removed in 0.6", "Will be removed in 1.0", etc.
-    pattern = re.compile(r"removed in \d+\.\d+", re.IGNORECASE)
-    missing = [name for name, msg in DEPRECATION_MESSAGES.items() if not pattern.search(msg)]
-    assert not missing, (
-        f"DEPRECATION_MESSAGES entries without a 'removed in X.Y' note: {missing}. "
-        "Every deprecation must pin a concrete removal version."
-    )
-
-
-# ---------------------------------------------------------------------------
-# (h) Straggler deprecations are in DEPRECATION_MESSAGES
-# ---------------------------------------------------------------------------
-
-
-def test_trace_executor_run_legacy_form_in_registry():
-    """TraceExecutor.run() legacy single-call warning must come from DEPRECATION_MESSAGES.
-
-    Ensures the inline warning in trace_markers.py is centralised so the
-    removal-version enforcement in test_every_deprecation_message_pins_a_removal_version
-    covers it automatically.
-    """
-    import warnings
-
-    from frontrun import TraceExecutor
-    from frontrun.common import DEPRECATION_MESSAGES, Schedule, Step
-
-    assert "trace_executor_run_legacy_form" in DEPRECATION_MESSAGES, (
-        "DEPRECATION_MESSAGES is missing 'trace_executor_run_legacy_form'. "
-        "Add it so the removal-version enforcement test covers this deprecation."
-    )
-
-    schedule = Schedule([Step("t1", "m")])
-    executor = TraceExecutor(schedule)
-
-    def worker():
-        x = 1  # frontrun: m
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        executor.run("t1", worker)
-    executor.wait(timeout=5.0)
-
-    dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-    assert dep_warnings, "Expected a DeprecationWarning from legacy run() form"
-    # The warning text must match the registry entry exactly.
-    assert dep_warnings[0].message.args[0] == DEPRECATION_MESSAGES["trace_executor_run_legacy_form"]
-
-
-def test_detect_redis_param_in_registry():
-    """detect_redis= deprecation warning must come from DEPRECATION_MESSAGES.
-
-    Ensures the inline warning in async_dpor.py is centralised.
-    """
-    from frontrun.common import DEPRECATION_MESSAGES
-
-    assert "detect_redis_param" in DEPRECATION_MESSAGES, (
-        "DEPRECATION_MESSAGES is missing 'detect_redis_param'. "
-        "Add it so the removal-version enforcement test covers this deprecation."
-    )
 
 
 # ---------------------------------------------------------------------------

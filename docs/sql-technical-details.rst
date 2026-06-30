@@ -356,8 +356,8 @@ Each INSERT also reports a write to a shared **sequence resource**
 INSERTs to the same table.
 
 **Fallback:** When ``lastrowid`` capture fails (e.g. psycopg2 without a
-``RETURNING`` clause), ``explore_dpor()`` and ``explore_interleavings()``
-raise ``NondeterministicSQLError`` by default.  Suppress this with
+``RETURNING`` clause), ``explore()`` and ``explore_random()`` raise
+``NondeterministicSQLError`` by default.  Suppress this with
 ``warn_nondeterministic_sql=False`` if you understand the implications,
 or add a ``RETURNING`` clause to your INSERTs.
 

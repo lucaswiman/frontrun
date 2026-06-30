@@ -33,11 +33,11 @@ try:
 except ImportError:
     pytest.skip("sqlalchemy not installed", allow_module_level=True)
 
-from frontrun.bytecode import explore_interleavings
+from frontrun import explore_random
 
 pytestmark = pytest.mark.integration
+from frontrun import explore
 from frontrun.common import Schedule, Step
-from frontrun.dpor import explore_dpor
 from frontrun.trace_markers import TraceExecutor
 
 _DB_NAME = os.environ.get("FRONTRUN_TEST_DB", "frontrun_test")
@@ -182,7 +182,7 @@ class TestOrmBytecodeExploration:
         def _invariant(_state: _State) -> bool:
             return _read_count(engine) == 2
 
-        result = explore_interleavings(
+        result = explore_random(
             setup=_State,
             threads=[_thread_fn, _thread_fn],
             invariant=_invariant,
@@ -209,7 +209,7 @@ class TestOrmDpor:
             def __init__(self) -> None:
                 # Dispose the pool so new connections go through the patched
                 # psycopg2.connect (which injects the TracedCursor factory).
-                # explore_dpor() calls patch_sql() before setup(), but the
+                # explore() calls patch_sql() before setup(), but the
                 # engine may have pooled connections from before patching.
                 engine.dispose()
                 _reset_row(engine)
@@ -224,9 +224,9 @@ class TestOrmDpor:
         def _invariant(_state: _State) -> bool:
             return _read_count(engine) == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[_thread_fn, _thread_fn],
+            workers=[_thread_fn, _thread_fn],
             invariant=_invariant,
             detect_io=True,
             deadlock_timeout=15.0,
@@ -264,7 +264,7 @@ class TestOrmRowLockDeadlock:
         return engine
 
     def test_row_lock_deadlock_is_invariant_violation(self, deadlock_engine) -> None:  # type: ignore[no-untyped-def]
-        """explore_dpor reports property_holds=False when a SELECT FOR UPDATE deadlock is found."""
+        """explore() reports property_holds=False when a SELECT FOR UPDATE deadlock is found."""
         engine = deadlock_engine
 
         class _State:
@@ -288,9 +288,9 @@ class TestOrmRowLockDeadlock:
         def _invariant(_state: _State) -> bool:
             return True  # deadlock fires before invariant check
 
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[thread_a, thread_b],
+            workers=[thread_a, thread_b],
             invariant=_invariant,
             detect_io=True,
             deadlock_timeout=15.0,
@@ -336,9 +336,9 @@ class TestOrmRowLockDeadlock:
         def _invariant(_state: _State) -> bool:
             return True
 
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[thread_a, thread_b],
+            workers=[thread_a, thread_b],
             invariant=_invariant,
             detect_io=True,
             deadlock_timeout=15.0,

@@ -1,8 +1,8 @@
 """Minimal reproduction of frontrun defect #6: DPOR cooperative scheduler
 deadlocks with PostgreSQL row locks.
 
-This is a general explore_dpor bug, NOT Django-specific. Any explore_dpor test
-where two threads contend on the same PostgreSQL row lock will deadlock.
+This is a general explore() (DPOR) bug, NOT Django-specific. Any explore()
+test where two threads contend on the same PostgreSQL row lock will deadlock.
 
 The scenario:
 1. Thread A INSERTs a row (acquires PG row lock via UNIQUE constraint)
@@ -40,7 +40,7 @@ try:
 except ImportError:
     pytest.skip("psycopg2 not installed", allow_module_level=True)
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 pytestmark = pytest.mark.integration
 
@@ -146,9 +146,9 @@ def test_deadlock_without_lock_timeout(_pg_available) -> None:
        lock_timeout to prevent deadlocks in OpcodeScheduler (which lacks
        row lock arbitration).
     """
-    result = explore_dpor(
+    result = explore(
         setup=_State,
-        threads=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
+        workers=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
         invariant=_invariant,
         deadlock_timeout=10.0,
         timeout_per_run=15.0,
@@ -164,9 +164,9 @@ def test_workaround_with_lock_timeout(_pg_available) -> None:
 
     This test should PASS (detecting the race) without hanging.
     """
-    result = explore_dpor(
+    result = explore(
         setup=_State,
-        threads=[_make_thread_fn(0, use_lock_timeout=True), _make_thread_fn(1, use_lock_timeout=True)],
+        workers=[_make_thread_fn(0, use_lock_timeout=True), _make_thread_fn(1, use_lock_timeout=True)],
         invariant=_invariant,
         deadlock_timeout=10.0,
         timeout_per_run=15.0,
@@ -178,22 +178,22 @@ def test_workaround_with_lock_timeout(_pg_available) -> None:
     )
 
 
-def test_explore_dpor_lock_timeout_parameter(_pg_available) -> None:
-    """Test that explore_dpor's lock_timeout parameter automatically injects
+def test_explore_lock_timeout_parameter(_pg_available) -> None:
+    """Test that explore()'s lock_timeout parameter automatically injects
     SET lock_timeout on PostgreSQL connections, preventing the DPOR/PG deadlock.
 
-    Threads do NOT set lock_timeout themselves — explore_dpor handles it.
+    Threads do NOT set lock_timeout themselves — explore() handles it.
     Without the lock_timeout parameter, this scenario hangs (see
     test_deadlock_without_lock_timeout). With lock_timeout, PG raises an error
     on blocked threads, allowing them to return to a DPOR scheduling point.
 
-    The key assertion is that explore_dpor completes without hanging. Whether
+    The key assertion is that explore() completes without hanging. Whether
     DPOR detects the race depends on conflict analysis; the lock_timeout
     parameter's job is to prevent the cooperative scheduler deadlock.
     """
-    result = explore_dpor(
+    result = explore(
         setup=_State,
-        threads=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
+        workers=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
         invariant=_invariant,
         deadlock_timeout=10.0,
         timeout_per_run=15.0,
@@ -224,9 +224,9 @@ def test_explore_dpor_lock_timeout_injects_on_connections(_pg_available) -> None
         finally:
             conn.close()
 
-    result = explore_dpor(
+    result = explore(
         setup=_State,
-        threads=[_check_thread_fn],
+        workers=[_check_thread_fn],
         invariant=lambda s: True,
         deadlock_timeout=5.0,
         timeout_per_run=10.0,
@@ -247,9 +247,9 @@ def test_counterexample_replay_uses_dpor_row_lock_arbitration(_pg_available) -> 
     DPOR's PostgreSQL row-lock arbitration and therefore could not re-run the
     path reliably.
     """
-    result = explore_dpor(
+    result = explore(
         setup=_State,
-        threads=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
+        workers=[_make_thread_fn(0, use_lock_timeout=False), _make_thread_fn(1, use_lock_timeout=False)],
         invariant=_invariant,
         deadlock_timeout=10.0,
         timeout_per_run=15.0,

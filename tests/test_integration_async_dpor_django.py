@@ -1,7 +1,7 @@
 """Integration tests: async DPOR with Django async ORM against real Postgres.
 
-Tests that explore_async_dpor can detect race conditions using Django's
-async ORM, with await_point() as the scheduling granularity.
+Tests that ``explore(strategy="dpor")`` can detect race conditions using
+Django's async ORM, with await_point() as the scheduling granularity.
 
 Requires a running Postgres with a ``frontrun_test`` database::
 
@@ -44,7 +44,8 @@ if not settings.configured:
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.db import connection, connections  # noqa: E402
 
-from frontrun.async_dpor import await_point, explore_async_dpor  # noqa: E402
+from frontrun import explore  # noqa: E402
+from frontrun.async_dpor import await_point  # noqa: E402
 from frontrun.contrib.django import async_django_dpor  # noqa: E402
 
 User = get_user_model()
@@ -189,11 +190,11 @@ class TestAsyncDporDjango:
             return not (state.results[0] == "activated" and state.results[1] == "activated")
 
         async def run_test():
-            return await explore_async_dpor(
+            return await explore(
                 setup=_State,
-                tasks=[make_task(0), make_task(1)],
+                workers=[make_task(0), make_task(1)],
                 invariant=invariant,
-                detect_sql=True,
+                detect_io=True,
                 deadlock_timeout=10.0,
                 timeout_per_run=15.0,
             )
@@ -218,11 +219,11 @@ class TestAsyncDporDjango:
             await await_point()
 
         async def run_test():
-            return await explore_async_dpor(
+            return await explore(
                 setup=_State,
-                tasks=[read_only, read_only],
+                workers=[read_only, read_only],
                 invariant=lambda s: True,
-                detect_sql=True,
+                detect_io=True,
                 deadlock_timeout=10.0,
             )
 

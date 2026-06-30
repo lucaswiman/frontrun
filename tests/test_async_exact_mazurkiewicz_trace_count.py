@@ -1,9 +1,10 @@
 """Async DPOR Mazurkiewicz trace counts for simple concurrent programs.
 
 Async counterpart of ``test_exact_mazurkiewicz_trace_count.py``.  Verifies
-that ``explore_async_dpor`` explores exactly the theoretically predicted
-number of Mazurkiewicz traces for the same families of concurrent programs,
-translated to async tasks with ``await asyncio.sleep(0)`` as yield points.
+that ``explore(strategy="dpor")`` on async tasks explores exactly the
+theoretically predicted number of Mazurkiewicz traces for the same families
+of concurrent programs, translated to async tasks with
+``await asyncio.sleep(0)`` as yield points.
 
 Categories (mirroring the sync tests):
 1. N tasks mutating independent state   → 1 trace
@@ -19,6 +20,7 @@ import math
 
 import pytest
 
+from frontrun import explore
 from frontrun.cli import require_active
 
 
@@ -45,7 +47,6 @@ class TestAsyncIndependentState:
     @pytest.mark.parametrize("n", [1, 2, 3, 4, 5])
     def test_independent_writes(self, n: int) -> None:
         require_active("test_async_exact_independent_writes")
-        from frontrun.async_dpor import explore_async_dpor
 
         class State:
             def __init__(self) -> None:
@@ -60,15 +61,16 @@ class TestAsyncIndependentState:
             return task_fn
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[make_task(i) for i in range(n)],
+                workers=[make_task(i) for i in range(n)],
                 invariant=lambda s: all(s.slots[i].value == i + 1 for i in range(len(s.slots))),
                 max_executions=1000,
                 preemption_bound=None,
                 stop_on_first=False,
                 deadlock_timeout=5.0,
                 total_timeout=60.0,
+                strategy="dpor",
             )
         )
 
@@ -94,7 +96,6 @@ class TestAsyncTwoTasksSharedState:
     def test_two_tasks_n_shared_vars(self, n: int) -> None:
         """Two tasks writing to N shared variables → 2^N Mazurkiewicz traces."""
         require_active("test_async_exact_two_tasks_shared")
-        from frontrun.async_dpor import explore_async_dpor
 
         class State:
             def __init__(self) -> None:
@@ -110,15 +111,16 @@ class TestAsyncTwoTasksSharedState:
 
         expected = 2**n
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[make_task(0), make_task(1)],
+                workers=[make_task(0), make_task(1)],
                 invariant=lambda s: True,
                 max_executions=max(expected * 10, 1000),
                 preemption_bound=None,
                 stop_on_first=False,
                 deadlock_timeout=5.0,
                 total_timeout=60.0,
+                strategy="dpor",
             )
         )
 
@@ -141,7 +143,6 @@ class TestAsyncNTasksWithLock:
     def test_n_tasks_single_lock(self, n: int) -> None:
         """N tasks with single asyncio.Lock → N! Mazurkiewicz traces."""
         require_active("test_async_exact_n_tasks_lock")
-        from frontrun.async_dpor import explore_async_dpor
 
         class State:
             def __init__(self) -> None:
@@ -157,15 +158,16 @@ class TestAsyncNTasksWithLock:
 
         expected = math.factorial(n)
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[make_task(i) for i in range(n)],
+                workers=[make_task(i) for i in range(n)],
                 invariant=lambda s: True,
                 max_executions=max(expected * 10, 1000),
                 preemption_bound=None,
                 stop_on_first=False,
                 deadlock_timeout=5.0,
                 total_timeout=60.0,
+                strategy="dpor",
             )
         )
 
@@ -188,7 +190,6 @@ class TestAsyncTwoTasksSharedStateWithLock:
     def test_two_tasks_locked_n_vars(self, n: int) -> None:
         """Two tasks with single lock over N var writes → 2 traces."""
         require_active("test_async_exact_two_tasks_locked")
-        from frontrun.async_dpor import explore_async_dpor
 
         class State:
             def __init__(self) -> None:
@@ -204,15 +205,16 @@ class TestAsyncTwoTasksSharedStateWithLock:
             return task_fn
 
         result = asyncio.run(
-            explore_async_dpor(
+            explore(
                 setup=State,
-                tasks=[make_task(0), make_task(1)],
+                workers=[make_task(0), make_task(1)],
                 invariant=lambda s: True,
                 max_executions=100,
                 preemption_bound=None,
                 stop_on_first=False,
                 deadlock_timeout=5.0,
                 total_timeout=60.0,
+                strategy="dpor",
             )
         )
 

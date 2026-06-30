@@ -39,8 +39,8 @@ Even a single-page site at a custom domain (e.g. `frontrun.dev` or similar) help
 
 Screen-record a terminal session:
 - Start with a racy bank account class (no synchronization)
-- Run `explore_interleavings` — show it finding the bug in seconds
-- Run `explore_dpor` — show the richer output with conflict analysis
+- Run `explore_random` — show it finding the bug in seconds
+- Run `explore` — show the richer output with conflict analysis
 - Show the fix (add a lock), re-run, all interleavings pass
 
 Host on YouTube. Embed in the README and landing page. Developers trust demos more than docs.
@@ -132,7 +132,7 @@ A local meetup talk is low-stakes practice for a conference talk. You get direct
 
 Don't do one launch post and go silent. Plan 3-5 posts over the next few months:
 
-1. **"How `explore_interleavings` Works Under the Hood"** — the `sys.settrace` + `f_trace_opcodes` mechanism is genuinely interesting. PL/compilers nerds will love this.
+1. **"How `explore_random` Works Under the Hood"** — the `sys.settrace` + `f_trace_opcodes` mechanism is genuinely interesting. PL/compilers nerds will love this.
 2. **"Testing Async Race Conditions in FastAPI"** — practical tutorial. FastAPI is the hot framework; tie frontrun to something people are already using.
 3. **"What I Learned from 46 Concurrency Bugs"** — synthesize the case studies into patterns. "5 categories of race condition in Python library code." This is linkbait in the best sense — genuinely useful.
 4. **"DPOR for Python: How We Ported a Formal Methods Technique to Dynamic Languages"** — targets the academic/PL audience. Could also be a workshop paper.

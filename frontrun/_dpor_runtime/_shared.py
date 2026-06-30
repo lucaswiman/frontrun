@@ -61,18 +61,16 @@ from frontrun._tracing import set_active_trace_filter as _set_active_trace_filte
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import (
-    DEPRECATION_MESSAGES,
     InterleavingResult,
     check_invariant,
     check_serializability_violation,
-    deprecate,
 )
 
 try:
     from frontrun._dpor import PyDporEngine, PyExecution  # type: ignore[reportAttributeAccessIssue]
 except ModuleNotFoundError as _err:
     raise ModuleNotFoundError(
-        "explore_dpor requires the frontrun._dpor Rust extension.\n"
+        "frontrun.explore requires the frontrun._dpor Rust extension.\n"
         "Build it with:  make build-dpor-3.14t   (or build-dpor-3.10 / build-dpor-3.14)\n"
         "Or install from source:  pip install -e ."
     ) from _err

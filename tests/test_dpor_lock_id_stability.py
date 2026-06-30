@@ -12,8 +12,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from frontrun import explore
 from frontrun._cooperative import CooperativeLock
-from frontrun.dpor import explore_dpor
 
 
 class DiningState:
@@ -48,9 +48,9 @@ def test_lock_ids_stable_across_executions(tmp_path: Path) -> None:
     old_path = _report_mod._global_report_path
     _report_mod._global_report_path = str(report_file)
     try:
-        result = explore_dpor(
+        result = explore(
             setup=setup,
-            threads=[philosopher_0, philosopher_1],
+            workers=[philosopher_0, philosopher_1],
             invariant=invariant,
         )
     finally:
@@ -95,9 +95,9 @@ def test_lock_race_objects_have_readable_names(tmp_path: Path) -> None:
     old_path = _report_mod._global_report_path
     _report_mod._global_report_path = str(report_file)
     try:
-        result = explore_dpor(
+        result = explore(
             setup=setup,
-            threads=[philosopher_0, philosopher_1],
+            workers=[philosopher_0, philosopher_1],
             invariant=invariant,
         )
     finally:

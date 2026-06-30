@@ -49,13 +49,13 @@ def transfer_b_to_c(accounts: Accounts) -> None:
 def run_exploration(report_path: str | None = None) -> None:
     """Run DPOR exploration, optionally writing an HTML report to *report_path*."""
     import frontrun._report
-    from frontrun.dpor import explore_dpor
+    from frontrun import explore
 
     frontrun._report._global_report_path = report_path
     try:
-        result = explore_dpor(
+        result = explore(
             setup=Accounts,
-            threads=[transfer_a_to_b, transfer_b_to_c],
+            workers=[transfer_a_to_b, transfer_b_to_c],
             invariant=lambda accs: accs.a + accs.b + accs.c == 300,
             preemption_bound=2,
             stop_on_first=False,

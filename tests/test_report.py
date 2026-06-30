@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 
+from frontrun import explore
 from frontrun._report import (
     ExecutionRecord,
     ExplorationReport,
@@ -14,7 +15,7 @@ from frontrun._report import (
     _safe_repr,
     generate_html_report,
 )
-from frontrun.dpor import _append_unique_lock_event, explore_dpor
+from frontrun.dpor import _append_unique_lock_event
 
 
 def test_safe_repr_truncation():
@@ -146,7 +147,7 @@ def test_generate_html_report():
 
 
 def test_explore_dpor_with_report():
-    """explore_dpor generates a report when _global_report_path is set."""
+    """explore() generates a report when _global_report_path is set."""
     import frontrun._report
 
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
@@ -163,9 +164,9 @@ def test_explore_dpor_with_report():
                 temp = self.value
                 self.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=lambda: Counter(),
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             preemption_bound=2,
         )
@@ -248,9 +249,9 @@ def test_report_generated_on_error_on_any_race_early_return():
             temp = c.value
             c.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=Counter,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=lambda c: True,  # invariant passes — race is the trigger
             error_on_any_race=True,
             preemption_bound=2,
@@ -288,9 +289,9 @@ def test_report_generated_on_serializable_invariant_early_return():
             temp = c.value
             c.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=Counter,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=lambda c: True,
             serializable_invariant=True,
             preemption_bound=2,

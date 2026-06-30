@@ -12,7 +12,7 @@ This document investigates two questions:
 
 ### 1.1 The problem: wasted exploration
 
-Both `explore_dpor()` and `explore_interleavings()` can spend many executions
+Both `explore(strategy="dpor")` and `explore_random()` can spend many executions
 exploring interleavings that exercise the same program behavior. DPOR already
 deduplicates at the Mazurkiewicz trace level (same partial order = same trace),
 but two *distinct* traces can still produce identical program states if the
@@ -204,7 +204,7 @@ bugs lurk).
 
 ### 1.4 Coverage-guided bytecode fuzzing
 
-The random bytecode explorer (`explore_interleavings()` in `bytecode.py`) uses
+The random bytecode explorer (`explore_random()` in `bytecode.py`) uses
 Hypothesis to generate random round-robin schedules. Currently, schedule
 generation is blind — Hypothesis has no feedback about which schedules are
 "interesting."
@@ -214,7 +214,7 @@ generation is blind — Hypothesis has no feedback about which schedules are
 ```python
 from hypothesis import target
 
-# Inside explore_interleavings, after each execution:
+# Inside explore_random, after each execution:
 fingerprint = compute_reads_from_fingerprint(execution_trace)
 if fingerprint not in seen_fingerprints:
     seen_fingerprints.add(fingerprint)
@@ -316,9 +316,9 @@ data structure, records method calls via `__getattr__` interception, and
 checks at the end of each execution. This would be an opt-in invariant:
 
 ```python
-result = explore_dpor(
+result = explore(
     setup=lambda: LinearizabilityChecker(ConcurrentQueue()),
-    threads=[lambda q: q.push(1), lambda q: q.push(2)],
+    workers=[lambda q: q.push(1), lambda q: q.push(2)],
     invariant=lambda q: q.is_linearizable(),
 )
 ```
@@ -356,7 +356,7 @@ bugs. Many codebases treat *any* unsynchronized shared access as a defect
 (the C/C++ memory model makes data races undefined behavior; Python is more
 forgiving but races still indicate logic errors).
 
-**Proposal:** Add a `detect_races=True` option to `explore_dpor()` that
+**Proposal:** Add a `detect_races=True` option to `explore(strategy="dpor")` that
 reports all detected races as findings, even if the user-supplied invariant
 passes. Each race would include:
 - The two conflicting accesses (thread, object, attribute, read/write)
@@ -407,9 +407,9 @@ Example: in a bank transfer, the total balance across all accounts must remain
 constant. The user specifies a `conserved_quantity` function:
 
 ```python
-result = explore_dpor(
+result = explore(
     setup=lambda: BankAccounts(a=100, b=100),
-    threads=[
+    workers=[
         lambda s: transfer(s, from_='a', to='b', amount=50),
         lambda s: transfer(s, from_='b', to='a', amount=30),
     ],
@@ -432,9 +432,9 @@ counters. Detectable by instrumenting attribute writes and checking that the
 new value compares correctly to the old value.
 
 ```python
-result = explore_dpor(
+result = explore(
     setup=lambda: VersionedStore(),
-    threads=[...],
+    workers=[...],
     invariant=monotonic(lambda s: s.version, direction="increasing"),
 )
 ```
@@ -627,14 +627,15 @@ better bug-finding ROI.
 
 ### Implemented
 
-**Serializability checking (§2.1.1)** — `serializable_invariant` parameter added to all four
-exploration functions (`explore_dpor`, `explore_async_dpor`, `explore_interleavings` sync
-and async). When enabled, all N! sequential orderings are run before exploration to compute
-valid final states. Each interleaved execution's final state is checked against this set.
-Accepts `True` (uses `repr()` as hash) or a callable `state_hash` function. Default off.
+**Serializability checking (§2.1.1)** — `serializable_invariant` parameter added to all
+exploration entry points (`explore` for both sync and async DPOR, `explore_random` and
+`explore_async_random` for the bytecode shufflers). When enabled, all N! sequential
+orderings are run before exploration to compute valid final states. Each interleaved
+execution's final state is checked against this set. Accepts `True` (uses `repr()` as
+hash) or a callable `state_hash` function. Default off.
 
 **Race reporting / error_on_any_race (§2.1.4)** — `error_on_any_race` parameter added to
-DPOR exploration functions (`explore_dpor`, `explore_async_dpor`). When enabled, any
+the DPOR exploration paths (`explore(strategy="dpor")`, sync and async). When enabled, any
 unsynchronized data race detected by the DPOR vector clock engine is treated as a test
 failure, even if the user-supplied invariant passes. Filters out container-level
 (`report_first_access`) and lock-synthetic races to avoid false positives — only

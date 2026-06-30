@@ -47,7 +47,8 @@ from case_study_helpers import (  # noqa: E402
     timeout_minutes,
 )
 
-from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun import explore_random  # noqa: E402
+from frontrun.bytecode import run_with_schedule  # noqa: E402
 
 
 class AmqttSessionState:
@@ -73,7 +74,7 @@ def _ids_unique(s: AmqttSessionState) -> bool:
 def test_real_amqtt_duplicate_packet_id():
     """Find the duplicate packet ID race in real Session.next_packet_id."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: AmqttSessionState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_ids_unique,
@@ -91,7 +92,7 @@ def test_real_amqtt_duplicate_packet_id_sweep():
     total_explored = 0
     for seed in range(20):
         with timeout_minutes(10):
-            result = explore_interleavings(
+            result = explore_random(
                 setup=lambda: AmqttSessionState(),
                 threads=[lambda s: s.thread1(), lambda s: s.thread2()],
                 invariant=_ids_unique,
@@ -109,7 +110,7 @@ def test_real_amqtt_duplicate_packet_id_sweep():
 def test_real_amqtt_reproduce():
     """Find a counterexample then reproduce it deterministically 10 times."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: AmqttSessionState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_ids_unique,

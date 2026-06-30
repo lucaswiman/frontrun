@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 # ---------------------------------------------------------------------------
 # Embedded HTTP key-value server
@@ -183,9 +183,9 @@ class TestHttpCounterRace:
         def invariant(state: State) -> bool:
             return int(_http_get(base_url, "counter")) == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -214,9 +214,9 @@ class TestHttpCounterRace:
         def invariant(state: State) -> bool:
             return int(_http_get(base_url, "counter")) == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -261,9 +261,9 @@ class TestHttpConfigRace:
             config = json.loads(_http_get(base_url, "config"))
             return config.get("feature_a") is True and config.get("feature_b") is True
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[update_field_a, update_field_b],
+            workers=[update_field_a, update_field_b],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -294,9 +294,9 @@ class TestHttpConfigRace:
             config = json.loads(_http_get(base_url, "config"))
             return config.get("feature_a") is True and config.get("feature_b") is True
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[
+            workers=[
                 lambda s: update_field(s, "feature_a"),
                 lambda s: update_field(s, "feature_b"),
             ],
@@ -350,9 +350,9 @@ class TestHttpTransferRace:
             # Total must be conserved: 100 + 100 = 200
             return bal_a + bal_b == 200
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[transfer_10, transfer_30],
+            workers=[transfer_10, transfer_30],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -386,9 +386,9 @@ class TestHttpTransferRace:
             bal_b = int(_http_get(base_url, "balance_b"))
             return bal_a + bal_b == 200
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[
+            workers=[
                 lambda s: transfer(s, 10),
                 lambda s: transfer(s, 30),
             ],
@@ -435,9 +435,9 @@ class TestHttpInventoryRace:
             sold = int(_http_get(base_url, "sold"))
             return stock >= 0 and sold <= 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[buy, buy],
+            workers=[buy, buy],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -472,9 +472,9 @@ class TestHttpInventoryRace:
             sold = int(_http_get(base_url, "sold"))
             return stock >= 0 and sold <= 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[buy, buy],
+            workers=[buy, buy],
             invariant=invariant,
             detect_io=True,
             max_executions=50,

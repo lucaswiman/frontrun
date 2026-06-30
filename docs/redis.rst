@@ -149,24 +149,24 @@ This mirrors the SQL transaction grouping behaviour (``BEGIN``/``COMMIT``).
 Activation
 -----------
 
-**Sync** ``explore_dpor``:
+**Sync** ``frontrun.explore``:
 Redis patching is active whenever ``detect_io=True`` (the default).  No extra
 parameter is needed.
 
 .. code-block:: python
 
-   from frontrun.dpor import explore_dpor
+   from frontrun import explore
 
-   result = explore_dpor(
+   result = explore(
        setup=State,
-       threads=[thread_a, thread_b],
+       workers=[thread_a, thread_b],
        invariant=check_invariant,
        detect_io=True,    # default; activates Redis key-level patching
    )
 
 **Async** ``frontrun.explore`` with async workers:
-``detect_io=True`` also activates patching for ``redis.asyncio`` and
-``coredis`` clients from 0.5 onwards.
+``detect_io=True`` activates patching for ``redis.asyncio`` and
+``coredis`` clients.
 
 .. code-block:: python
 
@@ -181,11 +181,6 @@ parameter is needed.
 
 When ``detect_io=True`` is set (sync or async), the coarse endpoint-level
 socket I/O reports for Redis connections are automatically suppressed.
-
-.. note::
-
-   The async-only ``detect_redis=True`` kwarg is deprecated in 0.5 and
-   will be removed in 0.6.  Use ``detect_io=True`` instead.
 
 Without suppression, every ``send()`` (classified as a write on
 ``socket:<host>:<port>``) and every ``recv()`` (a read on the same resource)

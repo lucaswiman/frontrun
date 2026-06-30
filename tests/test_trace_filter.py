@@ -215,14 +215,14 @@ class TestTraceFilterFinalization:
                                 )
 
     def test_sync_dpor_finally_is_conditional(self) -> None:
-        from frontrun import dpor
+        from frontrun._dpor_runtime.explore import _explore_dpor
 
-        self._assert_no_unconditional_clear(inspect.getsource(dpor.explore_dpor))
+        self._assert_no_unconditional_clear(inspect.getsource(_explore_dpor))
 
     def test_async_dpor_finally_is_conditional(self) -> None:
-        from frontrun import async_dpor
+        from frontrun.async_dpor import _explore_async_dpor
 
-        self._assert_no_unconditional_clear(inspect.getsource(async_dpor.explore_async_dpor))
+        self._assert_no_unconditional_clear(inspect.getsource(_explore_async_dpor))
 
 
 # ---------------------------------------------------------------------------
@@ -288,14 +288,14 @@ class TestTraceFilterCleanupOnException:
 
     def test_bytecode_explore_cleans_filter_on_setup_error(self) -> None:
         """If serializable_invariant setup raises, trace filter is cleaned up."""
-        from frontrun.bytecode import explore_interleavings
+        from frontrun import explore_random
 
         def bad_setup():
             raise RuntimeError("setup failed!")
 
         old_filter = get_active_trace_filter()
         with pytest.raises(RuntimeError, match="setup failed"):
-            explore_interleavings(
+            explore_random(
                 setup=bad_setup,
                 threads=[lambda s: None],
                 invariant=lambda s: True,
@@ -305,25 +305,23 @@ class TestTraceFilterCleanupOnException:
                 reproduce_on_failure=0,
             )
         # The trace filter must be restored, not leaked
-        assert get_active_trace_filter() == old_filter, (
-            "Trace filter leaked after exception in explore_interleavings setup"
-        )
+        assert get_active_trace_filter() == old_filter, "Trace filter leaked after exception in explore_random setup"
 
     def test_dpor_explore_cleans_filter_on_setup_error(self) -> None:
         """If serializable_invariant setup raises, trace filter is cleaned up."""
-        from frontrun.dpor import explore_dpor
+        from frontrun import explore
 
         def bad_setup():
             raise RuntimeError("setup failed!")
 
         old_filter = get_active_trace_filter()
         with pytest.raises(RuntimeError, match="setup failed"):
-            explore_dpor(
+            explore(
                 setup=bad_setup,
-                threads=[lambda s: None],
+                workers=[lambda s: None],
                 invariant=lambda s: True,
                 serializable_invariant=True,
                 trace_packages=["my_package"],
                 reproduce_on_failure=0,
             )
-        assert get_active_trace_filter() == old_filter, "Trace filter leaked after exception in explore_dpor setup"
+        assert get_active_trace_filter() == old_filter, "Trace filter leaked after exception in explore setup"

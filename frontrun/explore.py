@@ -22,7 +22,7 @@ Examples::
 
     # Strategy selection
     result = explore(..., strategy="dpor")    # default
-    result = explore(..., strategy="random")  # formerly explore_interleavings
+    result = explore(..., strategy="random")  # random schedule sampling
 """
 
 from __future__ import annotations
@@ -85,8 +85,7 @@ def explore(
             times. Must be positive. Cannot be used when ``workers`` is a
             list/tuple.
         strategy: ``"dpor"`` (default) for systematic DPOR exploration, or
-            ``"random"`` for random schedule sampling (formerly
-            ``explore_interleavings``).
+            ``"random"`` for random schedule sampling.
         max_executions: Safety limit on total executions (DPOR only).
         preemption_bound: Limit on preemptions per execution (DPOR only).
         max_branches: Maximum scheduling points per execution (DPOR only).

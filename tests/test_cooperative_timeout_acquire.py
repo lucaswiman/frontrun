@@ -17,7 +17,7 @@ After the fix:
 
 import threading
 
-from frontrun.bytecode import explore_interleavings
+from frontrun import explore_random
 
 
 class _TwoLocks:
@@ -44,7 +44,7 @@ def _worker(state: _TwoLocks, first, second) -> None:
 
 def test_timeout_acquire_does_not_falsely_deadlock():
     """The retry-with-timeout pattern must not be reported as a deadlock."""
-    result = explore_interleavings(
+    result = explore_random(
         setup=_TwoLocks,
         threads=[
             lambda s: _worker(s, s.lock_a, s.lock_b),

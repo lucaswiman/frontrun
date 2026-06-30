@@ -12,7 +12,7 @@ Register via the ``pytest11`` entry point.  Two key behaviors:
    without the CLI wrapper, patching is **off** unless explicitly
    requested with ``--frontrun-patch-locks``.
 
-2. **Skip guard** — ``explore_interleavings`` and ``explore_dpor``
+2. **Skip guard** — ``frontrun.explore`` and related entry points
    raise ``pytest.skip`` when called outside the ``frontrun`` CLI
    environment.  This prevents confusing failures when tests are run
    without the required monkey-patching and LD_PRELOAD setup.

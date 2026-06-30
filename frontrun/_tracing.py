@@ -122,7 +122,7 @@ _DEFAULT_FILTER = TraceFilter()
 # ---- active filter (process-wide) ----
 #
 # The filter is a plain module-level global, NOT a threading.local.
-# Worker threads spawned by explore_dpor/explore_interleavings call
+# Worker threads spawned by frontrun.explore call
 # should_trace_file() from their sys.settrace/sys.monitoring callbacks
 # and must see the filter installed by the main thread.  The main thread
 # always sets and clears the filter outside the worker-thread window, so

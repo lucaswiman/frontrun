@@ -13,7 +13,7 @@ counter advance by >= 2 between A's two samples requires B to complete a whole
 under +/-1 lockstep round-robin, reachable with variable-length bursts.
 """
 
-from frontrun.bytecode import explore_interleavings
+from frontrun import explore_random
 
 
 class _State:
@@ -36,7 +36,7 @@ def _thread_b(state: _State) -> None:
 
 def test_random_exploration_finds_drift_requiring_race():
     """explore_random must reach a B-burst-inside-A-window interleaving."""
-    result = explore_interleavings(
+    result = explore_random(
         setup=_State,
         threads=[_thread_a, _thread_b],
         invariant=lambda s: not s.raced,

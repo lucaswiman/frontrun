@@ -22,14 +22,11 @@ Example usage:
     ])
 
     executor = TraceExecutor(schedule)
-    executor.run("thread1", worker_function)
-    executor.run("thread2", worker_function)
-    executor.wait()
+    executor.run({"thread1": worker_function, "thread2": worker_function})
     ```
 """
 
 import threading
-import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -40,7 +37,7 @@ from frontrun._marker_coordination import (
     finalize_marker_executor_run,
 )
 from frontrun._trace_marker_runtime import build_trace_function, run_traced_callable
-from frontrun.common import DEPRECATION_MESSAGES, InterleavingResult, Schedule, Step, any_async, check_invariant
+from frontrun.common import InterleavingResult, Schedule, Step, any_async, check_invariant
 
 __all__ = [
     "MARKER_PATTERN",
@@ -170,16 +167,15 @@ _DEFAULT_ASYNC_TIMEOUT = 10.0
 class TraceExecutor:
     """Facade over sync and async marker-based schedule execution.
 
-    Sync usage matches the historical ``TraceExecutor`` API:
+    Pass a dict mapping thread/task names to zero-argument callables (sync
+    or async).  ``run`` starts every worker and waits for them in one call:
 
     .. code-block:: python
 
        executor = TraceExecutor(schedule)
-       executor.run("t1", worker1)
-       executor.run("t2", worker2)
-       executor.wait()
+       executor.run({"t1": worker1, "t2": worker2})
 
-    Async usage accepts the async-task mapping directly:
+    Async usage accepts the async-task mapping the same way:
 
     .. code-block:: python
 
@@ -220,81 +216,33 @@ class TraceExecutor:
             self._sync.run(name, fn)
         self._sync.wait(timeout=timeout)
 
-    def _run_individual(
-        self,
-        execution_name: str,
-        target: Callable[..., None],
-        args: tuple[Any, ...] = (),
-        kwargs: dict[str, Any] | None = None,
-    ) -> None:
-        """Start a single named thread (legacy individual-call form)."""
-        if self._mode == "async":
-            raise TypeError("TraceExecutor is already running in async mode")
-        self._mode = "sync"
-        self._sync.run(execution_name, target, args, kwargs)
+    def run(self, tasks: dict[str, Callable[..., Any]], *, timeout: float | None = None) -> None:
+        """Run all named workers under schedule control and wait for completion.
 
-    def run(
-        self,
-        execution_name: str | dict[str, Callable[..., Any]],
-        target: Callable[..., None] | None = None,
-        args: tuple[Any, ...] = (),
-        kwargs: dict[str, Any] | None = None,
-        timeout: float | None = None,
-    ) -> None:
-        """Run one or more threads under schedule control.
-
-        **New (preferred) form** — pass a dict mapping thread names to callables.
-        This starts all threads and waits for them in a single call::
+        Pass a dict mapping thread/task names to zero-argument callables.
+        ``run`` starts every worker and joins them in a single call::
 
             executor.run({"thread1": fn1, "thread2": fn2}, timeout=5.0)
 
-        **Legacy form** — pass a name and a callable separately.
-        The caller must then call :meth:`wait` explicitly.
-        This form is *deprecated* and will be removed in 0.6::
-
-            executor.run("thread1", fn1)
-            executor.run("thread2", fn2)
-            executor.wait(timeout=5.0)
+        Async coroutines in the dict are dispatched to the async executor.
 
         Args:
-            execution_name: Either a ``{name: callable}`` dict (new form) or a
-                string thread name (deprecated legacy form).
-            target: Target callable for the legacy individual-call form.
-            args: Positional arguments forwarded to *target* (legacy form only).
-            kwargs: Keyword arguments forwarded to *target* (legacy form only).
-            timeout: Total wait timeout in seconds (dict form only; for the
-                legacy form pass *timeout* to :meth:`wait` instead).
+            tasks: Mapping of execution-unit name to a zero-argument callable.
+            timeout: Total wait timeout in seconds.
         """
-        if isinstance(execution_name, dict):
-            if target is not None:
-                raise TypeError(
-                    "TraceExecutor.run(): cannot mix the dict form and the legacy positional form. "
-                    "Pass either run({'name': fn, ...}) or run('name', fn), not both."
-                )
-            if any_async(execution_name.values()):
-                if self._mode == "sync":
-                    raise TypeError("TraceExecutor is already running in sync mode")
-                self._mode = "async"
-                if self._async is None:
-                    from frontrun.async_trace_markers import AsyncTraceExecutor
+        if any_async(tasks.values()):
+            if self._mode == "sync":
+                raise TypeError("TraceExecutor is already running in sync mode")
+            self._mode = "async"
+            if self._async is None:
+                from frontrun.async_trace_markers import AsyncTraceExecutor
 
-                    self._async = AsyncTraceExecutor(self.schedule, deadlock_timeout=self.deadlock_timeout)
-                self._async.run(execution_name, timeout=_DEFAULT_ASYNC_TIMEOUT if timeout is None else timeout)
-                return
-
-            # All values are sync callables → use the new sync dict form.
-            self._run_dict(execution_name, timeout=timeout)
+                self._async = AsyncTraceExecutor(self.schedule, deadlock_timeout=self.deadlock_timeout)
+            self._async.run(tasks, timeout=_DEFAULT_ASYNC_TIMEOUT if timeout is None else timeout)
             return
 
-        if target is None:
-            raise TypeError("TraceExecutor.run() missing target for sync execution")
-
-        warnings.warn(
-            DEPRECATION_MESSAGES["trace_executor_run_legacy_form"],
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._run_individual(execution_name, target, args, kwargs)
+        # All values are sync callables → use the sync dict form.
+        self._run_dict(tasks, timeout=timeout)
 
     def wait(self, timeout: float | None = None) -> None:
         if self._mode in (None, "async"):

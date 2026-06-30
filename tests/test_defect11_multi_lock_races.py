@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import threading
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 
 class TestMultiLockRaces:
@@ -121,9 +121,9 @@ class TestMultiLockRaces:
             # total should also be updated.
             return state.observed_total == state.observed_count * 10
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[writer, reader],
+            workers=[writer, reader],
             invariant=invariant,
             detect_io=False,
             max_executions=200,
@@ -177,9 +177,9 @@ class TestMultiLockRaces:
             # Total should always be 200 (conservation of money).
             return state.observed_total == 200
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[transfer, auditor],
+            workers=[transfer, auditor],
             invariant=invariant,
             detect_io=False,
             max_executions=200,

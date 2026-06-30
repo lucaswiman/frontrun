@@ -28,8 +28,8 @@ from uuid import uuid4
 
 import pytest
 
+from frontrun import explore
 from frontrun._sql_cursor import patch_sql, unpatch_sql
-from frontrun.dpor import explore_dpor
 
 # ---------------------------------------------------------------------------
 # Unit test: UPDATE reports READ on :seq resource
@@ -141,9 +141,9 @@ class TestDporUpdateInsertPhantomRace:
                 conn.close()
                 return count <= 1
 
-            result = explore_dpor(
+            result = explore(
                 setup=setup,
-                threads=[make_thread_fn("domain_a"), make_thread_fn("domain_b")],
+                workers=[make_thread_fn("domain_a"), make_thread_fn("domain_b")],
                 invariant=invariant,
                 detect_io=True,
                 reproduce_on_failure=0,
@@ -295,9 +295,9 @@ class TestPgAutocommitPhantomRace:
         """With autocommit=True, row-lock arbitration is disabled, so DPOR
         can freely interleave both UPDATEs before either INSERT.
         """
-        result = explore_dpor(
+        result = explore(
             setup=_PgState,
-            threads=[
+            workers=[
                 _make_pg_autocommit_thread_fn(0, "domain_a"),
                 _make_pg_autocommit_thread_fn(1, "domain_b"),
             ],
@@ -328,9 +328,9 @@ class TestPgTransactionalPhantomRace:
         UPDATE-INSERT phantom race. 0-row UPDATEs should not acquire row
         locks (matching PostgreSQL semantics).
         """
-        result = explore_dpor(
+        result = explore(
             setup=_PgState,
-            threads=[
+            workers=[
                 _make_pg_transactional_thread_fn(0, "domain_a"),
                 _make_pg_transactional_thread_fn(1, "domain_b"),
             ],

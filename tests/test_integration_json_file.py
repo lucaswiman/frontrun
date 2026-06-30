@@ -13,8 +13,7 @@ import tempfile
 import threading
 from functools import partial
 
-from frontrun.bytecode import explore_interleavings
-from frontrun.dpor import explore_dpor
+from frontrun import explore, explore_random
 
 
 class DB:
@@ -54,9 +53,9 @@ _items2 = ["cat", "goat"]
 def test_dpor_detects_lost_update() -> None:
     """DPOR should detect the lost update in the unsynchronized JSON DB."""
     path = os.path.join(tempfile.mkdtemp(), "db.json")
-    result = explore_dpor(
+    result = explore(
         setup=lambda: DB(path),
-        threads=[partial(_do_incrs, items=_items1), partial(_do_incrs, items=_items2)],
+        workers=[partial(_do_incrs, items=_items1), partial(_do_incrs, items=_items2)],
         invariant=lambda db: db.dict() == {"goat": 2, "cat": 2},
     )
     assert not result.property_holds, "DPOR should find the lost-update race on the JSON file DB"
@@ -66,7 +65,7 @@ def test_dpor_detects_lost_update() -> None:
 def test_bytecode_detects_lost_update() -> None:
     """Bytecode exploration should detect the lost update."""
     path = os.path.join(tempfile.mkdtemp(), "db.json")
-    result = explore_interleavings(
+    result = explore_random(
         setup=lambda: DB(path),
         threads=[partial(_do_incrs, items=_items1), partial(_do_incrs, items=_items2)],
         invariant=lambda db: db.dict() == {"goat": 2, "cat": 2},

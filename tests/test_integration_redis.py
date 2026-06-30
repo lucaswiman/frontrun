@@ -36,7 +36,7 @@ try:
 except ImportError:
     pytest.skip("redis package not installed", allow_module_level=True)
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 pytestmark = pytest.mark.integration
 
@@ -74,9 +74,9 @@ class TestRedisCounterRace:
             r.close()
             return result == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -110,9 +110,9 @@ class TestRedisCounterRace:
             r.close()
             return result == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -158,9 +158,9 @@ class TestRedisCheckThenAct:
             r.close()
             return result == 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[maybe_init, maybe_init],
+            workers=[maybe_init, maybe_init],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -198,9 +198,9 @@ class TestRedisCheckThenAct:
             r.close()
             return result == 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[maybe_init, maybe_init],
+            workers=[maybe_init, maybe_init],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -248,9 +248,9 @@ class TestRedisInventoryRace:
             # Only 1 item was available — at most 1 should be sold
             return stock >= 0 and sold <= 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[buy, buy],
+            workers=[buy, buy],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -289,9 +289,9 @@ class TestRedisInventoryRace:
             r.close()
             return stock >= 0 and sold <= 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[buy, buy],
+            workers=[buy, buy],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -347,9 +347,9 @@ class TestRedisTransferRace:
             # Total balance must be conserved: 100 + 100 = 200
             return bal_a + bal_b == 200
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[transfer_a_to_b, transfer_a_to_b_also],
+            workers=[transfer_a_to_b, transfer_a_to_b_also],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -387,9 +387,9 @@ class TestRedisTransferRace:
             r.close()
             return bal_a + bal_b == 200
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[
+            workers=[
                 lambda s: transfer(s, 10),
                 lambda s: transfer(s, 30),
             ],

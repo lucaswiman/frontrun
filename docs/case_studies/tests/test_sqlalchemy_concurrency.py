@@ -31,7 +31,8 @@ _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_lib = os.path.join(_test_dir, "..", "external_repos", "sqlalchemy", "lib")
 sys.path.insert(0, os.path.abspath(_repo_lib))
 
-from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun import explore_random  # noqa: E402
+from frontrun.bytecode import run_with_schedule  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +67,7 @@ def run_sweep(name, setup, threads, invariant, num_seeds=10, max_attempts=200,
     total_explored = 0
     for seed in range(num_seeds):
         with timeout_minutes(timeout):
-            result = explore_interleavings(
+            result = explore_random(
                 setup=setup,
                 threads=threads,
                 invariant=invariant,
@@ -84,7 +85,7 @@ def run_reproduce(name, setup, threads, invariant, max_attempts=500, max_ops=200
                   timeout=10, repro_count=10):
     """Find a counterexample and reproduce it deterministically."""
     with timeout_minutes(timeout):
-        result = explore_interleavings(
+        result = explore_random(
             setup=setup,
             threads=threads,
             invariant=invariant,
@@ -140,7 +141,7 @@ def _lru_counter_invariant(s):
 def test_lru_cache_counter_lost_update():
     """LRUCache._inc_counter: self._counter += 1 without lock."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: LRUCacheCounterState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_lru_counter_invariant,
@@ -209,7 +210,7 @@ def _lru_setget_invariant(s):
 def test_lru_cache_setitem_race():
     """LRUCache.__setitem__: concurrent inserts corrupt counter."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: LRUCacheSetGetState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_lru_setget_invariant,
@@ -327,7 +328,7 @@ def _event_registry_invariant(s):
 def test_event_registry_stored_in_collection():
     """Event registry: remove + add race deletes new registration."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: EventRegistryState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_event_registry_invariant,
@@ -388,7 +389,7 @@ def _queuepool_finite_invariant(s):
 def test_queuepool_finite_overflow():
     """QueuePool._inc_overflow with finite max_overflow: verify lock works."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: QueuePoolFiniteOverflowState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_queuepool_finite_invariant,
@@ -475,7 +476,7 @@ def _singleton_dispose_invariant(s):
 def test_singleton_threadpool_all_conns():
     """SingletonThreadPool: dispose + add race on _all_conns."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: SingletonThreadPoolDisposeState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_singleton_dispose_invariant,
@@ -528,7 +529,7 @@ def _memoized_property_invariant(s):
 def test_memoized_property_double_eval():
     """_memoized_property: TOCTOU double-evaluation of fget."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: MemoizedPropertyState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_memoized_property_invariant,
@@ -598,7 +599,7 @@ def _scoped_registry_invariant(s):
 def test_scoped_registry_double_create():
     """ScopedRegistry: TOCTOU double-creation of scoped object."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: ScopedRegistryState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_scoped_registry_invariant,
@@ -676,7 +677,7 @@ def _dialect_info_invariant(s):
 def test_dialect_info_toctou():
     """TypeEngine._dialect_info: TOCTOU double-creation of type memo."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: DialectInfoState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_dialect_info_invariant,
@@ -747,7 +748,7 @@ def _lru_eviction_invariant(s):
 def test_lru_cache_eviction_race():
     """LRUCache: concurrent inserts triggering eviction."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: LRUCacheEvictionState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_lru_eviction_invariant,
@@ -803,7 +804,7 @@ def _overflow_inc_dec_invariant(s):
 def test_queuepool_overflow_inc_dec():
     """QueuePool: concurrent _inc/_dec_overflow with unlimited mode."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: QueuePoolOverflowDecState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_overflow_inc_dec_invariant,
@@ -856,7 +857,7 @@ def _lru_get_set_counter_invariant(s):
 def test_lru_cache_get_set_counter():
     """LRUCache: concurrent get + set racing on _inc_counter."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: LRUCacheGetSetCounterState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_lru_get_set_counter_invariant,
@@ -914,7 +915,7 @@ def _scoped_clear_invariant(s):
 def test_scoped_registry_clear_call():
     """ScopedRegistry: clear() + __call__() TOCTOU race."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: ScopedRegistryClearState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_scoped_clear_invariant,
@@ -967,7 +968,7 @@ def _memoized_consistency_invariant(s):
 def test_memoized_property_consistency():
     """_memoized_property: both threads should see same cached result."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: MemoizedPropertyConsistencyState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_memoized_consistency_invariant,
@@ -1032,7 +1033,7 @@ def _dispose_overflow_invariant(s):
 def test_queuepool_dispose_inc():
     """QueuePool: dispose() + _inc_overflow race on _overflow."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: QueuePoolDisposeState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_dispose_overflow_invariant,

@@ -16,7 +16,7 @@ _test_dir = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.join(_test_dir, "..", "external_repos", "tenacity")
 sys.path.insert(0, os.path.abspath(_repo_root))
 
-from frontrun.bytecode import explore_interleavings  # noqa: E402
+from frontrun import explore_random  # noqa: E402
 
 
 @contextmanager
@@ -72,7 +72,7 @@ def _idle_for_invariant(s):
 def test_b1_stats_idle_for(max_attempts=500, max_ops=200):
     """statistics['idle_for'] += sleep: lost update race."""
     with timeout_minutes(5):
-        return print_result("stats idle_for", explore_interleavings(
+        return print_result("stats idle_for", explore_random(
             setup=lambda: StatsIdleForState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_idle_for_invariant,
@@ -104,7 +104,7 @@ def _attempt_number_invariant(s):
 def test_b2_stats_attempt_number(max_attempts=500, max_ops=200):
     """statistics['attempt_number'] += 1: lost update race."""
     with timeout_minutes(5):
-        return print_result("stats attempt_number", explore_interleavings(
+        return print_result("stats attempt_number", explore_random(
             setup=lambda: StatsAttemptNumberState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_attempt_number_invariant,
@@ -157,7 +157,7 @@ def _wrapped_f_stats_race_invariant(s):
 def test_b3_wrapped_f_stats(max_attempts=500, max_ops=300):
     """wrapped_f.statistics: concurrent calls produce orphaned references."""
     with timeout_minutes(5):
-        return print_result("wrapped_f.statistics race", explore_interleavings(
+        return print_result("wrapped_f.statistics race", explore_random(
             setup=lambda: WrappedFStatsRaceState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_wrapped_f_stats_race_invariant,
@@ -207,7 +207,7 @@ def _shared_copy_invariant(s):
 def test_b4_shared_copy_stats(max_attempts=500, max_ops=300):
     """Shared Retrying copy: statistics corruption from concurrent __call__."""
     with timeout_minutes(5):
-        return print_result("shared copy stats", explore_interleavings(
+        return print_result("shared copy stats", explore_random(
             setup=lambda: SharedCopyStatsState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_shared_copy_invariant,
@@ -249,7 +249,7 @@ def _idle_for_lost_update_invariant(s):
 def test_b5_idle_for_lost_update(max_attempts=500, max_ops=200):
     """RetryCallState.idle_for += sleep: lost update."""
     with timeout_minutes(5):
-        return print_result("idle_for lost update", explore_interleavings(
+        return print_result("idle_for lost update", explore_random(
             setup=lambda: IdleForLostUpdateState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_idle_for_lost_update_invariant,
@@ -289,7 +289,7 @@ def _attempt_number_lost_update_invariant(s):
 def test_b6_attempt_number_lost_update(max_attempts=500, max_ops=200):
     """RetryCallState.attempt_number += 1: lost update."""
     with timeout_minutes(5):
-        return print_result("attempt_number lost update", explore_interleavings(
+        return print_result("attempt_number lost update", explore_random(
             setup=lambda: AttemptNumberLostUpdateState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_attempt_number_lost_update_invariant,
@@ -343,7 +343,7 @@ def _thread_local_stats_invariant(s):
 def test_s1_thread_local_stats(max_attempts=20000, max_ops=400):
     """threading.local: statistics are isolated per thread."""
     with timeout_minutes(5):
-        return print_result("thread_local stats", explore_interleavings(
+        return print_result("thread_local stats", explore_random(
             setup=lambda: ThreadLocalStatsState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_thread_local_stats_invariant,
@@ -383,7 +383,7 @@ def _per_call_state_invariant(s):
 def test_s2_per_call_state(max_attempts=20000, max_ops=500):
     """Per-call RetryCallState: each call is isolated."""
     with timeout_minutes(5):
-        return print_result("per-call state", explore_interleavings(
+        return print_result("per-call state", explore_random(
             setup=lambda: PerCallStateState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_per_call_state_invariant,
@@ -430,7 +430,7 @@ def _immutable_strategy_invariant(s):
 def test_s3_immutable_strategy(max_attempts=20000, max_ops=400):
     """Immutable strategies: concurrent evaluation is safe."""
     with timeout_minutes(5):
-        return print_result("immutable strategy", explore_interleavings(
+        return print_result("immutable strategy", explore_random(
             setup=lambda: ImmutableStrategyState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_immutable_strategy_invariant,
@@ -468,7 +468,7 @@ def _copy_isolation_invariant(s):
 def test_s4_copy_isolation(max_attempts=20000, max_ops=500):
     """copy(): independent instances don't interfere."""
     with timeout_minutes(5):
-        return print_result("copy isolation", explore_interleavings(
+        return print_result("copy isolation", explore_random(
             setup=lambda: CopyIsolationState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_copy_isolation_invariant,

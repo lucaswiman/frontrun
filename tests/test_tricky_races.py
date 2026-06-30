@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -156,9 +156,9 @@ class TestClosureCellRace:
     """LOAD_DEREF / STORE_DEREF on nonlocal (cell) variables."""
 
     def test_dpor_detects_closure_cell_race(self) -> None:
-        result = explore_dpor(
+        result = explore(
             setup=_ClosureCounterState,
-            threads=[lambda s: s.increment(), lambda s: s.increment()],
+            workers=[lambda s: s.increment(), lambda s: s.increment()],
             invariant=lambda s: s.get() == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -174,9 +174,9 @@ class TestSetattrRace:
             temp = getattr(state, "value")
             setattr(state, "value", temp + 1)
 
-        result = explore_dpor(
+        result = explore(
             setup=_SetattrCounterState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -192,9 +192,9 @@ class TestObjectDunderSetattrRace:
             temp = object.__getattribute__(state, "value")
             object.__setattr__(state, "value", temp + 1)
 
-        result = explore_dpor(
+        result = explore(
             setup=_DunderSetattrState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -215,9 +215,9 @@ class TestDictDirectAccessRace:
             temp = d["value"]
             d["value"] = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_DictAccessState,
-            threads=[attr_inc, dict_inc],
+            workers=[attr_inc, dict_inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -233,9 +233,9 @@ class TestExecEvalRace:
         def inc(state: _ExecCounterState) -> None:
             exec("state.value = state.value + 1", {"state": state})  # noqa: S102
 
-        result = explore_dpor(
+        result = explore(
             setup=_ExecCounterState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -247,9 +247,9 @@ class TestExecEvalRace:
             temp = eval("state.value", {"state": state})  # noqa: S307
             exec("state.value = temp + 1", {"state": state, "temp": temp})  # noqa: S102
 
-        result = explore_dpor(
+        result = explore(
             setup=_ExecCounterState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -271,9 +271,9 @@ class TestGlobalSubscriptRace:
             tmp = g["_global_via_subscript"]
             g["_global_via_subscript"] = tmp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_GlobalSubscriptState,
-            threads=[store_global_inc, subscript_inc],
+            workers=[store_global_inc, subscript_inc],
             invariant=lambda _s: _global_via_subscript == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -289,9 +289,9 @@ class TestOperatorModuleRace:
             temp = operator.getitem(state.data, "count")
             operator.setitem(state.data, "count", temp + 1)
 
-        result = explore_dpor(
+        result = explore(
             setup=_OperatorModuleState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.data["count"] == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -303,9 +303,9 @@ class TestClosureListCompoundRace:
     """Closure cell + len() + list mutation (compound)."""
 
     def test_dpor_detects_closure_list_race(self) -> None:
-        result = explore_dpor(
+        result = explore(
             setup=_ClosureListState,
-            threads=[lambda s: s.append_and_count(), lambda s: s.append_and_count()],
+            workers=[lambda s: s.append_and_count(), lambda s: s.append_and_count()],
             invariant=lambda s: s.get_count() == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -322,9 +322,9 @@ class TestTypeSetattrCompoundRace:
             temp = getattr(cls, "class_counter")
             setattr(cls, "class_counter", temp + 1)
 
-        result = explore_dpor(
+        result = explore(
             setup=_TypeSetattrState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: type(s).class_counter == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -345,9 +345,9 @@ class TestVarsAliasRace:
             temp = d["value"]
             d["value"] = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_VarsAliasState,
-            threads=[attr_inc, vars_inc],
+            workers=[attr_inc, vars_inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -364,9 +364,9 @@ class TestCompileExecRace:
             code = compile("state.value = state.value + 1", "<generated>", "exec")
             exec(code, {"state": state})  # noqa: S102
 
-        result = explore_dpor(
+        result = explore(
             setup=_CompileExecState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -383,9 +383,9 @@ class TestDictOperatorRace:
             temp = operator.getitem(d, "a")
             operator.setitem(d, "a", temp + 1)
 
-        result = explore_dpor(
+        result = explore(
             setup=_DictUpdateState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.counts["a"] == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -408,9 +408,9 @@ class TestExecGlobalMixedRace:
                 globals(),
             )
 
-        result = explore_dpor(
+        result = explore(
             setup=_ExecGlobalState,
-            threads=[normal_inc, exec_inc],
+            workers=[normal_inc, exec_inc],
             invariant=lambda _s: _exec_global_counter == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -422,9 +422,9 @@ class TestAugmentedClosureRace:
     """nonlocal x; x += 1 (augmented assignment on closure cell)."""
 
     def test_dpor_detects_augmented_closure_race(self) -> None:
-        result = explore_dpor(
+        result = explore(
             setup=_AugmentedClosureState,
-            threads=[lambda s: s.increment(), lambda s: s.increment()],
+            workers=[lambda s: s.increment(), lambda s: s.increment()],
             invariant=lambda s: s.get() == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -440,9 +440,9 @@ class TestWrapperDescriptorRace:
             temp = dict.__getitem__(state.data, "count")
             dict.__setitem__(state.data, "count", temp + 1)
 
-        result = explore_dpor(
+        result = explore(
             setup=_WrapperDescriptorState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.data["count"] == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -631,9 +631,9 @@ class TestDefaultdictFactoryRace:
             temp = state.data["counter"]
             state.data["counter"] = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_DefaultdictFactoryState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.data["counter"] == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -649,9 +649,9 @@ class TestPropertyDescriptorRace:
             temp = state.value
             state.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_PropertyDescriptorState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -667,9 +667,9 @@ class TestChainMapLayeredRace:
             temp = state.child["count"]
             state.child["count"] = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_ChainMapState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.child["count"] == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -689,9 +689,9 @@ class TestClassAssignmentRace:
             temp = state.value
             state.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_ClassAssignmentState,
-            threads=[mutate_class, read_and_inc],
+            workers=[mutate_class, read_and_inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -712,9 +712,9 @@ class TestWeakrefCallbackRace:
             temp = state.counter
             state.counter = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_WeakrefCallbackState,
-            threads=[ref_inc, direct_inc],
+            workers=[ref_inc, direct_inc],
             invariant=lambda s: s.counter == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -732,9 +732,9 @@ class TestCachedPropertyRace:
             seed = state.shared_seed
             holder.compute_count = count + seed
 
-        result = explore_dpor(
+        result = explore(
             setup=_CachedPropertyState,
-            threads=[compute_and_cache, compute_and_cache],
+            workers=[compute_and_cache, compute_and_cache],
             invariant=lambda s: s.holder.compute_count == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -750,9 +750,9 @@ class TestArrayModuleRace:
             temp = state.data[0]
             state.data[0] = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_ArrayModuleState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.data[0] == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -773,9 +773,9 @@ class TestStarUnpackingRace:
             state.shared_list[0] = 99
             state.shared_list.append(40)
 
-        result = explore_dpor(
+        result = explore(
             setup=_StarUnpackingState,
-            threads=[unpack, mutate],
+            workers=[unpack, mutate],
             invariant=lambda s: s.captured_head == 10 and len(s.captured_tail) == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -794,9 +794,9 @@ class TestWalrusOperatorRace:
         def writer(state: _WalrusState) -> None:
             state.value = 42
 
-        result = explore_dpor(
+        result = explore(
             setup=_WalrusState,
-            threads=[walrus_read, writer],
+            workers=[walrus_read, writer],
             invariant=lambda s: s.observed == 42,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -815,9 +815,9 @@ class TestDictMergeOperatorRace:
             temp = state.d1["a"]
             state.d1["a"] = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_DictMergeState,
-            threads=[merge_update, direct_update],
+            workers=[merge_update, direct_update],
             invariant=lambda s: s.d1["a"] == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -837,9 +837,9 @@ class TestMultipleReturnUnpackingRace:
             state.x = 100
             state.y = 200
 
-        result = explore_dpor(
+        result = explore(
             setup=_MultipleReturnState,
-            threads=[read_and_sum, swap_values],
+            workers=[read_and_sum, swap_values],
             invariant=lambda s: s.sum in (3, 300),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -857,9 +857,9 @@ class TestFStringEvaluationRace:
         def writer(state: _FStringState) -> None:
             state.value = 42
 
-        result = explore_dpor(
+        result = explore(
             setup=_FStringState,
-            threads=[fstring_capture, writer],
+            workers=[fstring_capture, writer],
             invariant=lambda s: s.captured == "42",
             detect_io=False,
             deadlock_timeout=5.0,
@@ -877,9 +877,9 @@ class TestComprehensionVariableCaptureRace:
         def writer(state: _ComprehensionCaptureState) -> None:
             state.x = 99
 
-        result = explore_dpor(
+        result = explore(
             setup=_ComprehensionCaptureState,
-            threads=[comprehension_read, writer],
+            workers=[comprehension_read, writer],
             invariant=lambda s: s.captured == [99],
             detect_io=False,
             deadlock_timeout=5.0,
@@ -898,9 +898,9 @@ class TestTernaryExpressionRace:
             state.flag = False
             state.a_val = 999
 
-        result = explore_dpor(
+        result = explore(
             setup=_TernaryState,
-            threads=[ternary_read, toggler],
+            workers=[ternary_read, toggler],
             invariant=lambda s: s.result in (10, 20),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -918,9 +918,9 @@ class TestChainedComparisonRace:
         def writer(state: _ChainedComparisonState) -> None:
             state.x = 15
 
-        result = explore_dpor(
+        result = explore(
             setup=_ChainedComparisonState,
-            threads=[chained_check, writer],
+            workers=[chained_check, writer],
             invariant=lambda s: s.in_range == (0 < s.x < 10),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -938,9 +938,9 @@ class TestDoubleCheckedLockingRace:
                 state.init_count = state.init_count + 1
                 _global_cache = 42
 
-        result = explore_dpor(
+        result = explore(
             setup=_DoubleCheckedLockingState,
-            threads=[init_cache, init_cache],
+            workers=[init_cache, init_cache],
             invariant=lambda s: s.init_count == 1,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -956,9 +956,9 @@ class TestSlotAttributeRace:
             temp = state.value
             state.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_SlotState,
-            threads=[inc, inc],
+            workers=[inc, inc],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -977,9 +977,9 @@ class TestSwapRace:
             state.observed_a = state.a
             state.observed_b = state.b
 
-        result = explore_dpor(
+        result = explore(
             setup=_SwapState,
-            threads=[swap, reader],
+            workers=[swap, reader],
             invariant=lambda s: (s.observed_a + s.observed_b) == 3,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -991,9 +991,9 @@ class TestNestedClosureCellRace:
     """Doubly-nested closures: innermost closure modifies outermost scope variable."""
 
     def test_dpor_detects_nested_closure_cell_race(self) -> None:
-        result = explore_dpor(
+        result = explore(
             setup=_NestedClosureState,
-            threads=[lambda s: s.inner(), lambda s: s.inner2()],
+            workers=[lambda s: s.inner(), lambda s: s.inner2()],
             invariant=lambda s: s.get() == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1014,9 +1014,9 @@ class TestDequeCheckThenActRace:
                     return
                 state.pop_count += 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_DequeState,
-            threads=[check_and_pop, check_and_pop],
+            workers=[check_and_pop, check_and_pop],
             invariant=lambda s: not s.error and s.pop_count <= 1,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1208,9 +1208,9 @@ class TestReduceAccumulateRace:
             state.items[0] = 10
             state.items[2] = 30
 
-        result = explore_dpor(
+        result = explore(
             setup=_ReduceAccumulateState,
-            threads=[fold_sum, mutate_list],
+            workers=[fold_sum, mutate_list],
             invariant=lambda s: s.accumulated in (6, 42),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1230,9 +1230,9 @@ class TestSysModulesCacheRace:
         def inject_module(state: _SysModuleCacheState) -> None:
             sys.modules[_SysModuleCacheState._sentinel_key] = object()  # pyright: ignore[reportArgumentType]
 
-        result = explore_dpor(
+        result = explore(
             setup=_SysModuleCacheState,
-            threads=[snapshot_modules, inject_module],
+            workers=[snapshot_modules, inject_module],
             invariant=lambda s: (s.snapshot_count == 1) == (s.length_after > s.length_before),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1253,9 +1253,9 @@ class TestDictGetSetdefaultRace:
             temp = state.data["key"]
             state.data["key"] = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=_DictGetSetdefaultState,
-            threads=[reader, writer],
+            workers=[reader, writer],
             invariant=lambda s: s.value == 1,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1276,9 +1276,9 @@ class TestBytearraySliceRace:
             state.buf[2] = 0xFF
             state.buf[3] = 0xFF
 
-        result = explore_dpor(
+        result = explore(
             setup=_BytearraySliceState,
-            threads=[slicer, writer],
+            workers=[slicer, writer],
             invariant=lambda s: s.snapshot in (b"\x00\x00\x00\x00", b"\xff\xff\xff\xff"),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1297,9 +1297,9 @@ class TestListSortReverseRace:
         def reverser(state: _ListSortReverseState) -> None:
             state.data.reverse()
 
-        result = explore_dpor(
+        result = explore(
             setup=_ListSortReverseState,
-            threads=[sort_and_capture, reverser],
+            workers=[sort_and_capture, reverser],
             invariant=lambda s: s.result == [1, 2, 3],
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1321,9 +1321,9 @@ class TestGeneratorSendRace:
             result = state.gen.send(1)
             state.accumulated = result
 
-        result = explore_dpor(
+        result = explore(
             setup=_GeneratorSendState,
-            threads=[sender, sender],
+            workers=[sender, sender],
             invariant=lambda s: s.accumulated == 2,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1341,9 +1341,9 @@ class TestShallowCopyRace:
         def mutator(state: _ShallowCopyState) -> None:
             state.original["nums"].append(4)
 
-        result = explore_dpor(
+        result = explore(
             setup=_ShallowCopyState,
-            threads=[copier, mutator],
+            workers=[copier, mutator],
             invariant=lambda s: len(s.copied.get("nums", [])) == 3,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1362,9 +1362,9 @@ class TestBoolCoercionRace:
         def drain(state: _BoolCoercionState) -> None:
             state.items.clear()
 
-        result = explore_dpor(
+        result = explore(
             setup=_BoolCoercionState,
-            threads=[check_truthy, drain],
+            workers=[check_truthy, drain],
             invariant=lambda s: s.was_truthy == (s.length_at_check > 0),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1387,9 +1387,9 @@ class TestInOperatorRace:
         def deleter(state: _InOperatorState) -> None:
             del state.data["key"]
 
-        result = explore_dpor(
+        result = explore(
             setup=_InOperatorState,
-            threads=[check_and_read, deleter],
+            workers=[check_and_read, deleter],
             invariant=lambda s: not s.error and (s.found == ("key" in s.data) or s.value == 1),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1413,9 +1413,9 @@ class TestEnumerateIterationRace:
         def inserter(state: _EnumerateState) -> None:
             state.items.insert(0, 99)
 
-        result = explore_dpor(
+        result = explore(
             setup=_EnumerateState,
-            threads=[iterate, inserter],
+            workers=[iterate, inserter],
             invariant=lambda s: s.value_sum == 60 or s.value_sum == 159,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1433,9 +1433,9 @@ class TestReprRace:
         def writer(state: _ReprState) -> None:
             state.value = 42
 
-        result = explore_dpor(
+        result = explore(
             setup=_ReprState,
-            threads=[capture_repr, writer],
+            workers=[capture_repr, writer],
             invariant=lambda s: s.repr_result == "42",
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1455,9 +1455,9 @@ class TestMinMaxRace:
             state.values[0] = 0
             state.values[4] = 100
 
-        result = explore_dpor(
+        result = explore(
             setup=_MinMaxState,
-            threads=[find_extremes, mutator],
+            workers=[find_extremes, mutator],
             invariant=lambda s: s.minimum <= s.maximum and s.minimum == min(s.values),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1476,9 +1476,9 @@ class TestDictPopUpdateRace:
             state.data["a"] = 10
             state.data["c"] = 30
 
-        result = explore_dpor(
+        result = explore(
             setup=_DictPopUpdateState,
-            threads=[sum_values, mutate_values],
+            workers=[sum_values, mutate_values],
             invariant=lambda s: s.value_sum in (6, 42),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1497,9 +1497,9 @@ class TestPartialApplicationRace:
         def mutator(state: _PartialApplicationState) -> None:
             state.base = 100
 
-        result = explore_dpor(
+        result = explore(
             setup=_PartialApplicationState,
-            threads=[apply_partial, mutator],
+            workers=[apply_partial, mutator],
             invariant=lambda s: s.result == 105,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1515,9 +1515,9 @@ class TestTwoPhaseUpdateRace:
             state.counter_a = state.counter_a + 1
             state.counter_b = state.counter_a
 
-        result = explore_dpor(
+        result = explore(
             setup=_TwoPhaseUpdateState,
-            threads=[phase_update, phase_update],
+            workers=[phase_update, phase_update],
             invariant=lambda s: s.counter_a == s.counter_b,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1536,9 +1536,9 @@ class TestSetAddDiscardRace:
         def discarder(state: _SetAddDiscardState) -> None:
             state.data.discard(1)
 
-        result = explore_dpor(
+        result = explore(
             setup=_SetAddDiscardState,
-            threads=[adder, discarder],
+            workers=[adder, discarder],
             invariant=lambda s: (1 in s.data) == (s.size_after_add == 1),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1557,9 +1557,9 @@ class TestMapFilterRace:
             state.source[1] = 7
             state.source[3] = 11
 
-        result = explore_dpor(
+        result = explore(
             setup=_MapFilterState,
-            threads=[map_filter, mutator],
+            workers=[map_filter, mutator],
             invariant=lambda s: s.even_doubled == [4, 8] or s.even_doubled == [],
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1578,9 +1578,9 @@ class TestZipRace:
             state.keys[0] = "z"
             state.values[0] = 99
 
-        result = explore_dpor(
+        result = explore(
             setup=_ZipInterleaveState,
-            threads=[zip_to_dict, mutator],
+            workers=[zip_to_dict, mutator],
             invariant=lambda s: s.result.get("a") == 1 or s.result.get("z") == 99,
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1599,9 +1599,9 @@ class TestStrJoinRace:
             state.parts[0] = "goodbye"
             state.parts.append("!")
 
-        result = explore_dpor(
+        result = explore(
             setup=_StrJoinState,
-            threads=[joiner, mutator],
+            workers=[joiner, mutator],
             invariant=lambda s: s.joined in ("hello world", "goodbye world !"),
             detect_io=False,
             deadlock_timeout=5.0,
@@ -1628,9 +1628,9 @@ class TestOrderedDictMoveToEndRace:
         def reorder(state: _OrderedDictMoveState) -> None:
             state.od.move_to_end("a")
 
-        result = explore_dpor(
+        result = explore(
             setup=_OrderedDictMoveState,
-            threads=[read_order, reorder],
+            workers=[read_order, reorder],
             invariant=lambda s: (
                 (s.first_key == "a" and s.last_key == "c") or (s.first_key == "b" and s.last_key == "a")
             ),
@@ -1654,9 +1654,9 @@ class TestSharedStringIORace:
             state.buf.write("overwritten")
             state.buf.truncate()
 
-        result = explore_dpor(
+        result = explore(
             setup=_SharedStringIOState,
-            threads=[reader, writer],
+            workers=[reader, writer],
             invariant=lambda s: s.snapshot in ("initial", "overwritten"),
             detect_io=detect_io,
             deadlock_timeout=5.0,
@@ -1678,9 +1678,9 @@ class TestSharedBytesIORace:
             state.buf.write(b"overwritten")
             state.buf.truncate()
 
-        result = explore_dpor(
+        result = explore(
             setup=_SharedBytesIOState,
-            threads=[reader, writer],
+            workers=[reader, writer],
             invariant=lambda s: s.snapshot in (b"initial", b"overwritten"),
             detect_io=detect_io,
             deadlock_timeout=5.0,
@@ -1703,9 +1703,9 @@ class TestSharedBinaryFileRace:
             with open(state.path, "rb") as f:
                 state.final_value = int(f.read())
 
-        result = explore_dpor(
+        result = explore(
             setup=_SharedBinaryFileState,
-            threads=[incrementer, incrementer],
+            workers=[incrementer, incrementer],
             invariant=lambda s: int(open(s.path, "rb").read()) == 2,  # noqa: SIM115
             detect_io=True,
             deadlock_timeout=5.0,

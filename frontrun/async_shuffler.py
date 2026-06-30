@@ -17,7 +17,7 @@ and there are far fewer of them than in threaded code.
 Example — find a race condition with random schedule exploration:
 
     >>> import asyncio
-    >>> from frontrun import explore_interleavings
+    >>> from frontrun import explore_async_random
     >>>
     >>> class Counter:
     ...     def __init__(self):
@@ -27,7 +27,7 @@ Example — find a race condition with random schedule exploration:
     ...         await asyncio.sleep(0)  # any natural await is a scheduling point
     ...         self.value = temp + 1
     >>>
-    >>> result = asyncio.run(explore_interleavings(
+    >>> result = asyncio.run(explore_async_random(
     ...     setup=lambda: Counter(),
     ...     tasks=[lambda c: c.increment(), lambda c: c.increment()],
     ...     invariant=lambda c: c.value == 2,
@@ -58,11 +58,9 @@ from frontrun._threaded_runner import PatchScope
 from frontrun.async_dpor import _sql_async_available, patch_sql_async, unpatch_sql_async
 from frontrun.async_scheduler import InterleavedLoop
 from frontrun.common import (
-    DEPRECATION_MESSAGES,
     InterleavingResult,
     check_invariant,
     check_serializability_violation,
-    deprecate,
 )
 
 
@@ -385,7 +383,7 @@ async def explore_async_random(
         field reports how many distinct schedule orderings were observed.
     """
     if error_on_any_race:
-        raise ValueError("error_on_any_race requires DPOR (use explore_async_dpor instead)")
+        raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
 
     from frontrun._dpor_core import compute_serializable_baseline_async
 
@@ -455,16 +453,6 @@ async def explore_async_random(
 
         result.unique_interleavings = len(seen_schedule_hashes)
         return result
-
-
-explore_interleavings = deprecate(explore_async_random, DEPRECATION_MESSAGES["explore_async_interleavings"])
-explore_interleavings.__doc__ = (
-    "Deprecated alias for :func:`explore_async_random`.\n\n"
-    ".. deprecated:: 0.5\n"
-    "    ``explore_interleavings`` (async form) will be removed in 0.6. Use\n"
-    "    :func:`frontrun.explore` with ``strategy='random'`` and async worker\n"
-    "    functions instead."
-)
 
 
 def schedule_strategy(num_tasks: int, max_ops: int = 100) -> Any:  # type: ignore[name-defined]

@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+from frontrun import explore
 from frontrun._cooperative import patch_sleep, unpatch_sleep
-from frontrun.dpor import explore_dpor
 
 
 class TestSleepPatching:
@@ -58,7 +58,7 @@ class TestSleepPatching:
 
 
 class TestSleepInDpor:
-    """Test sleep patching integrated with explore_dpor."""
+    """Test sleep patching integrated with explore(strategy="dpor")."""
 
     def test_sleep_in_thread_does_not_delay(self) -> None:
         """time.sleep inside explored threads should not actually sleep."""
@@ -77,11 +77,12 @@ class TestSleepInDpor:
                 state.value += 1
 
         start = time.monotonic()
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[thread_with_sleep, thread_with_sleep],
+            workers=[thread_with_sleep, thread_with_sleep],
             invariant=lambda s: s.value == 4,
             max_executions=5,
+            strategy="dpor",
         )
         elapsed = time.monotonic() - start
         assert elapsed < 10.0, f"Exploration took {elapsed:.2f}s — sleep was not patched"
@@ -98,10 +99,11 @@ class TestSleepInDpor:
             time.sleep(0.1)  # Scheduling point — other thread can run here
             state.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[thread_a, thread_a],
+            workers=[thread_a, thread_a],
             invariant=lambda s: s.value == 2,
+            strategy="dpor",
         )
         # The classic lost-update bug: both threads read 0, then both write 1.
         # DPOR should find this because sleep is a scheduling point.
@@ -120,12 +122,13 @@ class TestSleepInDpor:
             if elapsed >= 0.01:
                 state.slept = True
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[thread_func],
+            workers=[thread_func],
             invariant=lambda s: s.slept,
             max_executions=1,
             patch_sleep=False,
+            strategy="dpor",
         )
         assert result.property_holds, "With patch_sleep=False, sleep should actually execute"
 
@@ -135,7 +138,6 @@ class TestAsyncSleepPatching:
 
     def test_async_sleep_does_not_delay(self) -> None:
         """asyncio.sleep inside explored tasks should not actually sleep."""
-        from frontrun.async_dpor import explore_async_dpor
 
         class State:
             value: int = 0
@@ -147,11 +149,12 @@ class TestAsyncSleepPatching:
 
         async def run() -> None:
             start = time.monotonic()
-            result = await explore_async_dpor(
+            result = await explore(
                 setup=State,
-                tasks=[task_with_sleep, task_with_sleep],
+                workers=[task_with_sleep, task_with_sleep],
                 invariant=lambda s: s.value == 4,
                 max_executions=5,
+                strategy="dpor",
             )
             elapsed = time.monotonic() - start
             assert elapsed < 10.0, f"Async exploration took {elapsed:.2f}s — sleep not patched"

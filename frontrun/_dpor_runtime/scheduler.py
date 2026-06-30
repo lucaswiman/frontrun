@@ -56,7 +56,7 @@ class DporScheduler:
         # On free-threaded Python, PyO3 &mut self borrows are non-blocking
         # (try-or-panic).  A single engine_lock serialises ALL calls to the
         # engine and execution objects across worker threads, the sync
-        # reporter, and the main explore_dpor loop.
+        # reporter, and the main frontrun.explore loop.
         self._engine_lock: threading.Lock = engine_lock if engine_lock is not None else real_lock()
         self._lock = real_lock()
         self._condition = real_condition(self._lock)

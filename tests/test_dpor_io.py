@@ -17,7 +17,7 @@ import os
 import tempfile
 import threading
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 
 class TestFileCounterRace:
@@ -55,9 +55,9 @@ class TestFileCounterRace:
             def value(self) -> int:
                 return self._read()
 
-        result = explore_dpor(
+        result = explore(
             setup=FileCounter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
         )
         assert not result.property_holds, "DPOR should detect the lost-update race on the file counter"
@@ -87,9 +87,9 @@ class TestFileCounterRace:
                     with open(path) as f:
                         return int(f.read())
 
-        result = explore_dpor(
+        result = explore(
             setup=LockedFileCounter,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
         )
         assert result.property_holds, result.explanation
@@ -130,9 +130,9 @@ class TestFileFlagRace:
             def balance(self) -> int:
                 return self._read_balance()
 
-        result = explore_dpor(
+        result = explore(
             setup=Ledger,
-            threads=[
+            workers=[
                 lambda s: s.withdraw(30),
                 lambda s: s.withdraw(20),
             ],
@@ -163,9 +163,9 @@ class TestFileFlagRace:
                     with open(path) as f:
                         return int(f.read())
 
-        result = explore_dpor(
+        result = explore(
             setup=SafeLedger,
-            threads=[
+            workers=[
                 lambda s: s.withdraw(30),
                 lambda s: s.withdraw(20),
             ],
@@ -206,9 +206,9 @@ class TestReadModifyWrite:
             def get_data(self) -> dict[str, int]:
                 return self._load()
 
-        result = explore_dpor(
+        result = explore(
             setup=JsonStore,
-            threads=[
+            workers=[
                 lambda s: s.update("a", 1),
                 lambda s: s.update("b", 2),
             ],
@@ -240,9 +240,9 @@ class TestReadModifyWrite:
                     with open(path) as f:
                         return json.load(f)
 
-        result = explore_dpor(
+        result = explore(
             setup=LockedJsonStore,
-            threads=[
+            workers=[
                 lambda s: s.update("a", 1),
                 lambda s: s.update("b", 2),
             ],
@@ -282,9 +282,9 @@ class TestTraceCallChain:
             def value(self) -> int:
                 return self._read()
 
-        result = explore_dpor(
+        result = explore(
             setup=FileVal,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
         )
         assert not result.property_holds
@@ -325,9 +325,9 @@ class TestTraceQuality:
             def value(self) -> int:
                 return self._read()
 
-        result = explore_dpor(
+        result = explore(
             setup=FileVal,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
         )
         assert not result.property_holds
@@ -364,9 +364,9 @@ class TestTraceQuality:
             def value(self) -> int:
                 return self._read()
 
-        result = explore_dpor(
+        result = explore(
             setup=FileVal,
-            threads=[lambda c: c.increment(), lambda c: c.increment()],
+            workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value() == 2,
         )
         assert not result.property_holds

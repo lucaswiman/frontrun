@@ -388,7 +388,7 @@ def set_object_key_reverse_map(rmap: dict[int, str] | None) -> None:
 class StableObjectIds:
     """Assign stable per-instance IDs to Python objects, consistent across executions.
 
-    Replaces ``id(obj)`` in object key generation.  Since ``explore_dpor``
+    Replaces ``id(obj)`` in object key generation.  Since ``frontrun.explore``
     creates fresh ``state = setup()`` each execution, ``id(obj)`` changes
     between executions for the same logical object, so a raw counter assigned
     in *first-touch order* is unsound: DPOR's whole purpose is to change the
@@ -414,7 +414,7 @@ class StableObjectIds:
     interleavings.  The dangerous direction — same object, different IDs — is
     what pre-registration eliminates.
 
-    The mapping is maintained per ``explore_dpor`` call and reset at the start
+    The mapping is maintained per ``frontrun.explore`` call and reset at the start
     of each execution via :meth:`reset_for_execution`.
     """
 
@@ -498,7 +498,7 @@ class StableObjectIds:
     def reset_for_execution(self) -> None:
         """Clear the mapping at the start of each execution.
 
-        Since ``explore_dpor`` creates fresh state objects each execution,
+        Since ``frontrun.explore`` creates fresh state objects each execution,
         old ``id(obj)`` values are stale.  The mapping is rebuilt by
         :meth:`pre_register` (and, for objects created mid-run, lazily during
         replay).

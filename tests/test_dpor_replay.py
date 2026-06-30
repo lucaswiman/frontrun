@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from frontrun.dpor import explore_dpor
+from frontrun import explore
 
 
 class TestReplayHarness:
@@ -14,7 +14,7 @@ class TestReplayHarness:
         import frontrun.bytecode as bytecode
 
         def _unexpected_bytecode_replay(*args: object, **kwargs: object) -> object:
-            raise AssertionError("explore_dpor replay should not call frontrun.bytecode.run_with_schedule")
+            raise AssertionError("DPOR replay should not call frontrun.bytecode.run_with_schedule")
 
         monkeypatch.setattr(bytecode, "run_with_schedule", _unexpected_bytecode_replay)
 
@@ -26,9 +26,9 @@ class TestReplayHarness:
             temp = state.value
             state.value = temp + 1
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[thread_fn, thread_fn],
+            workers=[thread_fn, thread_fn],
             invariant=lambda s: s.value == 2,
             detect_io=False,
             reproduce_on_failure=3,
@@ -82,9 +82,9 @@ class TestReplayHarness:
             # Thread 0 must see its own value when inside its context
             return s.seen[0] is None or s.seen[0] == "v0"
 
-        result = explore_dpor(
+        result = explore(
             setup=_State,
-            threads=[_make_fn(0), _make_fn(1)],
+            workers=[_make_fn(0), _make_fn(1)],
             invariant=invariant,
             detect_io=False,
             reproduce_on_failure=10,

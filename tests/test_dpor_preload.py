@@ -13,8 +13,9 @@ import os
 import tempfile
 from typing import Any
 
+from frontrun import explore
 from frontrun._preload_io import PreloadIOEvent
-from frontrun.dpor import _PreloadBridge, explore_dpor
+from frontrun.dpor import _PreloadBridge
 
 # ---------------------------------------------------------------------------
 # Unit tests for _PreloadBridge
@@ -386,9 +387,9 @@ class TestPreloadDporIntegration:
             os.close(fd)
             return data != b"" and int(data) == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=check_invariant,
             detect_io=True,
             max_executions=30,
@@ -431,9 +432,9 @@ class TestPreloadDporIntegration:
             os.close(fd)
             return int(data) == 2
 
-        result = explore_dpor(
+        result = explore(
             setup=State,
-            threads=[increment, increment],
+            workers=[increment, increment],
             invariant=check_invariant,
             detect_io=True,
             max_executions=30,

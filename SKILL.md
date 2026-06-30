@@ -16,7 +16,7 @@ Two approaches are available:
 
 | Approach | Use when | Stability |
 |----------|----------|-----------|
-| **Bytecode exploration** (`frontrun.bytecode`) | Testing unmodified third-party code; property-based search | Experimental but effective |
+| **Bytecode exploration** (`frontrun.explore_random`) | Testing unmodified third-party code; property-based search | Experimental but effective |
 | **Trace markers** (`frontrun.trace_markers`) | You can add `# frontrun: name` comments to source | Stable |
 
 For finding bugs in external libraries, **bytecode exploration** is the right
@@ -24,7 +24,7 @@ choice.
 
 ---
 
-## Workflow: Finding a Bug with `explore_interleavings`
+## Workflow: Finding a Bug with `explore_random`
 
 ### Step 1 — Identify a Target
 
@@ -109,12 +109,13 @@ The invariant must be a **callable that takes the state object** and returns
 | Ghost message | `lambda s: s.successes == len(s.received)` |
 | TOCTOU key insert | `lambda s: len(d.get(k, [])) == 2` |
 
-### Step 5 — Run `explore_interleavings`
+### Step 5 — Run `explore_random`
 
 ```python
 import signal
 from contextlib import contextmanager
-from frontrun.bytecode import explore_interleavings, run_with_schedule
+from frontrun import explore_random
+from frontrun.bytecode import run_with_schedule
 
 @contextmanager
 def timeout_minutes(n=10):
@@ -128,7 +129,7 @@ def timeout_minutes(n=10):
         signal.signal(signal.SIGALRM, old)
 
 with timeout_minutes(10):
-    result = explore_interleavings(
+    result = explore_random(
         setup=lambda: MyState(),
         threads=[
             lambda s: s.thread1(),
@@ -154,7 +155,7 @@ Run 20 seeds to measure how reliably the bug is found:
 found_seeds = []
 for seed in range(20):
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: MyState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=lambda s: s.obj.counter == 2,
@@ -320,7 +321,8 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_dir, "external_repos", "<library>", "src"))
 
 from <library> import <TheClass>
-from frontrun.bytecode import explore_interleavings, run_with_schedule
+from frontrun import explore_random
+from frontrun.bytecode import run_with_schedule
 
 
 @contextmanager
@@ -347,7 +349,7 @@ def _invariant(s): return <condition that should always hold>
 
 def test_single():
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: State(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_invariant,
@@ -364,7 +366,7 @@ def test_sweep():
     found = []
     for seed in range(20):
         with timeout_minutes(10):
-            r = explore_interleavings(
+            r = explore_random(
                 setup=lambda: State(),
                 threads=[lambda s: s.thread1(), lambda s: s.thread2()],
                 invariant=_invariant,
@@ -378,7 +380,7 @@ def test_sweep():
 
 def test_reproduce():
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: State(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_invariant,

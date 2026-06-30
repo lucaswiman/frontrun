@@ -31,7 +31,8 @@ from case_study_helpers import (  # noqa: E402
 )
 from pybreaker import STATE_CLOSED, CircuitMemoryStorage  # noqa: E402
 
-from frontrun.bytecode import explore_interleavings, run_with_schedule  # noqa: E402
+from frontrun import explore_random  # noqa: E402
+from frontrun.bytecode import run_with_schedule  # noqa: E402
 
 
 class PyBreakerState:
@@ -54,7 +55,7 @@ def _invariant(s: PyBreakerState) -> bool:
 def test_real_pybreaker_lost_update():
     """Find the increment_counter() lost update in real CircuitMemoryStorage."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: PyBreakerState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_invariant,
@@ -72,7 +73,7 @@ def test_real_pybreaker_lost_update_sweep():
     total_explored = 0
     for seed in range(20):
         with timeout_minutes(10):
-            result = explore_interleavings(
+            result = explore_random(
                 setup=lambda: PyBreakerState(),
                 threads=[lambda s: s.thread1(), lambda s: s.thread2()],
                 invariant=_invariant,
@@ -90,7 +91,7 @@ def test_real_pybreaker_lost_update_sweep():
 def test_real_pybreaker_reproduce():
     """Find a counterexample then reproduce it deterministically 10 times."""
     with timeout_minutes(10):
-        result = explore_interleavings(
+        result = explore_random(
             setup=lambda: PyBreakerState(),
             threads=[lambda s: s.thread1(), lambda s: s.thread2()],
             invariant=_invariant,
