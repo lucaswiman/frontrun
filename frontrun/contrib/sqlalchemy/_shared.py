@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import sys
 from collections.abc import Callable, Coroutine
 from contextlib import contextmanager
 from typing import Any, TypeVar
@@ -78,8 +79,6 @@ def wrap_sync_thread(
             if lock_timeout_sql is not None:
                 conn.exec_driver_sql(lock_timeout_sql)
         except BaseException:
-            import sys
-
             unsuppress_sync_reporting()
             suppress_sync_reporting()
             try:
@@ -115,8 +114,6 @@ def wrap_sync_thread(
             try:
                 fn(state)
             except BaseException:
-                import sys
-
                 exc_info = sys.exc_info()  # type: ignore[assignment]
                 raise
             finally:
