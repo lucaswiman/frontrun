@@ -438,9 +438,9 @@ class TestKeySpecInterpreterEdgeCases:
         assert result.write_keys == []
 
 
-def test_no_dead_code_in_command_key_specs() -> None:
-    """_COMMAND_KEY_SPECS must not contain commands handled by earlier checks."""
-    from frontrun._redis_command_data import _COMMAND_KEY_SPECS, _EVAL_CMDS, _TX_CONTROL_CMDS
+def test_command_key_specs_includes_fcall() -> None:
+    """_COMMAND_KEY_SPECS is the complete catalog — FCALL/FCALL_RO must be present even though _EVAL_CMDS shadows them."""
+    from frontrun._redis_command_data import _COMMAND_KEY_SPECS
 
-    dead = set(_COMMAND_KEY_SPECS) & (_EVAL_CMDS | _TX_CONTROL_CMDS)
-    assert not dead, f"Dead entries in _COMMAND_KEY_SPECS (shadowed by earlier checks): {dead}"
+    assert "FCALL" in _COMMAND_KEY_SPECS
+    assert "FCALL_RO" in _COMMAND_KEY_SPECS
