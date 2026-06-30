@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun._trace_format - Frontrun 0.4.1 documentation</title>
+        <title>frontrun._trace_format - Frontrun 0.5.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.4.1 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.4.1 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -258,14 +258,10 @@
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">dis</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">linecache</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">replace</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._cooperative</span><span class="w"> </span><span class="kn">import</span> <span class="n">real_lock</span>
-
-<span class="n">_PY_VERSION</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">version_info</span><span class="p">[:</span><span class="mi">2</span><span class="p">]</span>
-
 
 <span class="c1"># ---------------------------------------------------------------------------</span>
 <span class="c1"># Data structures</span>
@@ -517,11 +513,7 @@
     <span class="n">mapping</span> <span class="o">=</span> <span class="n">_instr_cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">code</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">mapping</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">mapping</span> <span class="o">=</span> <span class="p">{}</span>
-        <span class="k">if</span> <span class="n">_PY_VERSION</span> <span class="o">&gt;=</span> <span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">11</span><span class="p">):</span>
-            <span class="n">instructions</span> <span class="o">=</span> <span class="n">dis</span><span class="o">.</span><span class="n">get_instructions</span><span class="p">(</span><span class="n">code</span><span class="p">,</span> <span class="n">show_caches</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">instructions</span> <span class="o">=</span> <span class="n">dis</span><span class="o">.</span><span class="n">get_instructions</span><span class="p">(</span><span class="n">code</span><span class="p">)</span>
-        <span class="k">for</span> <span class="n">inst</span> <span class="ow">in</span> <span class="n">instructions</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">inst</span> <span class="ow">in</span> <span class="n">dis</span><span class="o">.</span><span class="n">get_instructions</span><span class="p">(</span><span class="n">code</span><span class="p">):</span>
             <span class="n">mapping</span><span class="p">[</span><span class="n">inst</span><span class="o">.</span><span class="n">offset</span><span class="p">]</span> <span class="o">=</span> <span class="n">inst</span>
         <span class="n">_instr_cache</span><span class="p">[</span><span class="n">code</span><span class="p">]</span> <span class="o">=</span> <span class="n">mapping</span>
     <span class="k">return</span> <span class="n">mapping</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">offset</span><span class="p">)</span>
@@ -642,10 +634,10 @@
 
     <span class="c1"># Track per-attribute access sequences across threads</span>
     <span class="c1"># Group by (obj_type, attr_name), look for cross-thread read-before-write patterns</span>
-    <span class="n">attr_accesses</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]]</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># attr -&gt; [(thread_id, access_type), ...]</span>
-    <span class="n">io_attrs</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>  <span class="c1"># attributes that come from I/O events</span>
+    <span class="n">attr_accesses</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">io_attrs</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">for</span> <span class="n">ev</span> <span class="ow">in</span> <span class="n">events</span><span class="p">:</span>
-        <span class="n">key</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">attr_name</span> <span class="ow">or</span> <span class="s2">&quot;(unknown)&quot;</span>
+        <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="n">ev</span><span class="o">.</span><span class="n">obj_type_name</span><span class="p">,</span> <span class="n">ev</span><span class="o">.</span><span class="n">attr_name</span> <span class="ow">or</span> <span class="s2">&quot;(unknown)&quot;</span><span class="p">)</span>
         <span class="n">attr_accesses</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">ev</span><span class="o">.</span><span class="n">thread_id</span><span class="p">,</span> <span class="n">ev</span><span class="o">.</span><span class="n">access_type</span> <span class="ow">or</span> <span class="s2">&quot;unknown&quot;</span><span class="p">))</span>
         <span class="k">if</span> <span class="n">ev</span><span class="o">.</span><span class="n">obj_type_name</span> <span class="o">==</span> <span class="s2">&quot;IO&quot;</span><span class="p">:</span>
             <span class="n">io_attrs</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
@@ -653,12 +645,14 @@
     <span class="c1"># Process non-I/O attributes first so Python-level conflicts take</span>
     <span class="c1"># priority over raw socket-level ones in the summary line.</span>
     <span class="n">io_fallback</span><span class="p">:</span> <span class="n">ConflictInfo</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
-    <span class="k">for</span> <span class="n">attr</span><span class="p">,</span> <span class="n">accesses</span> <span class="ow">in</span> <span class="n">attr_accesses</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="k">for</span> <span class="n">attr_key</span><span class="p">,</span> <span class="n">accesses</span> <span class="ow">in</span> <span class="n">attr_accesses</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="n">obj_type</span><span class="p">,</span> <span class="n">attr_name</span> <span class="o">=</span> <span class="n">attr_key</span>
+        <span class="n">attr_display</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">obj_type</span><span class="si">}</span><span class="s2">.</span><span class="si">{</span><span class="n">attr_name</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="n">obj_type</span> <span class="ow">and</span> <span class="n">obj_type</span> <span class="o">!=</span> <span class="s2">&quot;IO&quot;</span> <span class="k">else</span> <span class="n">attr_name</span>
         <span class="n">threads_involved</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">({</span><span class="n">tid</span> <span class="k">for</span> <span class="n">tid</span><span class="p">,</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">accesses</span><span class="p">})</span>
         <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">threads_involved</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
             <span class="k">continue</span>
 
-        <span class="n">is_io</span> <span class="o">=</span> <span class="n">attr</span> <span class="ow">in</span> <span class="n">io_attrs</span>
+        <span class="n">is_io</span> <span class="o">=</span> <span class="n">attr_key</span> <span class="ow">in</span> <span class="n">io_attrs</span>
 
         <span class="c1"># Check for lost-update pattern: two threads both read before either writes</span>
         <span class="c1"># Pattern: R_a ... R_b ... W_a ... W_b (or W_b before W_a)</span>
@@ -684,24 +678,23 @@
                     <span class="c1"># Both read before both write?</span>
                     <span class="n">writes_start</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">w_a</span><span class="p">,</span> <span class="n">w_b</span><span class="p">)</span>
                     <span class="k">if</span> <span class="n">r_a</span> <span class="o">&lt;</span> <span class="n">writes_start</span> <span class="ow">and</span> <span class="n">r_b</span> <span class="o">&lt;</span> <span class="n">writes_start</span><span class="p">:</span>
-                        <span class="n">obj_desc</span> <span class="o">=</span> <span class="n">attr</span>
                         <span class="k">if</span> <span class="n">is_io</span><span class="p">:</span>
                             <span class="n">io_fallback</span> <span class="o">=</span> <span class="n">io_fallback</span> <span class="ow">or</span> <span class="n">ConflictInfo</span><span class="p">(</span>
                                 <span class="n">pattern</span><span class="o">=</span><span class="s2">&quot;lost_update&quot;</span><span class="p">,</span>
                                 <span class="n">summary</span><span class="o">=</span><span class="p">(</span>
                                     <span class="sa">f</span><span class="s2">&quot;Lost update via database I/O: threads </span><span class="si">{</span><span class="n">t_a</span><span class="si">}</span><span class="s2"> and </span><span class="si">{</span><span class="n">t_b</span><span class="si">}</span><span class="s2"> &quot;</span>
-                                    <span class="sa">f</span><span class="s2">&quot;both queried </span><span class="si">{</span><span class="n">obj_desc</span><span class="si">}</span><span class="s2"> before either committed.&quot;</span>
+                                    <span class="sa">f</span><span class="s2">&quot;both queried </span><span class="si">{</span><span class="n">attr_display</span><span class="si">}</span><span class="s2"> before either committed.&quot;</span>
                                 <span class="p">),</span>
-                                <span class="n">attr_name</span><span class="o">=</span><span class="n">attr</span><span class="p">,</span>
+                                <span class="n">attr_name</span><span class="o">=</span><span class="n">attr_name</span><span class="p">,</span>
                             <span class="p">)</span>
                         <span class="k">else</span><span class="p">:</span>
                             <span class="k">return</span> <span class="n">ConflictInfo</span><span class="p">(</span>
                                 <span class="n">pattern</span><span class="o">=</span><span class="s2">&quot;lost_update&quot;</span><span class="p">,</span>
                                 <span class="n">summary</span><span class="o">=</span><span class="p">(</span>
                                     <span class="sa">f</span><span class="s2">&quot;Lost update: threads </span><span class="si">{</span><span class="n">t_a</span><span class="si">}</span><span class="s2"> and </span><span class="si">{</span><span class="n">t_b</span><span class="si">}</span><span class="s2"> both read &quot;</span>
-                                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">obj_desc</span><span class="si">}</span><span class="s2"> before either wrote it back.&quot;</span>
+                                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">attr_display</span><span class="si">}</span><span class="s2"> before either wrote it back.&quot;</span>
                                 <span class="p">),</span>
-                                <span class="n">attr_name</span><span class="o">=</span><span class="n">attr</span><span class="p">,</span>
+                                <span class="n">attr_name</span><span class="o">=</span><span class="n">attr_name</span><span class="p">,</span>
                             <span class="p">)</span>
 
         <span class="c1"># Check for write-write without reads (simple overwrite)</span>
@@ -715,14 +708,16 @@
                     <span class="k">if</span> <span class="n">is_io</span><span class="p">:</span>
                         <span class="n">io_fallback</span> <span class="o">=</span> <span class="n">io_fallback</span> <span class="ow">or</span> <span class="n">ConflictInfo</span><span class="p">(</span>
                             <span class="n">pattern</span><span class="o">=</span><span class="s2">&quot;write_write&quot;</span><span class="p">,</span>
-                            <span class="n">summary</span><span class="o">=</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Concurrent database I/O: threads </span><span class="si">{</span><span class="n">t_a</span><span class="si">}</span><span class="s2"> and </span><span class="si">{</span><span class="n">t_b</span><span class="si">}</span><span class="s2"> both sent queries to </span><span class="si">{</span><span class="n">attr</span><span class="si">}</span><span class="s2">.&quot;</span><span class="p">),</span>
-                            <span class="n">attr_name</span><span class="o">=</span><span class="n">attr</span><span class="p">,</span>
+                            <span class="n">summary</span><span class="o">=</span><span class="p">(</span>
+                                <span class="sa">f</span><span class="s2">&quot;Concurrent database I/O: threads </span><span class="si">{</span><span class="n">t_a</span><span class="si">}</span><span class="s2"> and </span><span class="si">{</span><span class="n">t_b</span><span class="si">}</span><span class="s2"> both sent queries to </span><span class="si">{</span><span class="n">attr_display</span><span class="si">}</span><span class="s2">.&quot;</span>
+                            <span class="p">),</span>
+                            <span class="n">attr_name</span><span class="o">=</span><span class="n">attr_name</span><span class="p">,</span>
                         <span class="p">)</span>
                     <span class="k">else</span><span class="p">:</span>
                         <span class="k">return</span> <span class="n">ConflictInfo</span><span class="p">(</span>
                             <span class="n">pattern</span><span class="o">=</span><span class="s2">&quot;write_write&quot;</span><span class="p">,</span>
-                            <span class="n">summary</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;Write-write conflict: threads </span><span class="si">{</span><span class="n">t_a</span><span class="si">}</span><span class="s2"> and </span><span class="si">{</span><span class="n">t_b</span><span class="si">}</span><span class="s2"> both wrote to </span><span class="si">{</span><span class="n">attr</span><span class="si">}</span><span class="s2">.&quot;</span><span class="p">,</span>
-                            <span class="n">attr_name</span><span class="o">=</span><span class="n">attr</span><span class="p">,</span>
+                            <span class="n">summary</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;Write-write conflict: threads </span><span class="si">{</span><span class="n">t_a</span><span class="si">}</span><span class="s2"> and </span><span class="si">{</span><span class="n">t_b</span><span class="si">}</span><span class="s2"> both wrote to </span><span class="si">{</span><span class="n">attr_display</span><span class="si">}</span><span class="s2">.&quot;</span><span class="p">,</span>
+                            <span class="n">attr_name</span><span class="o">=</span><span class="n">attr_name</span><span class="p">,</span>
                         <span class="p">)</span>
 
     <span class="k">if</span> <span class="n">io_fallback</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
@@ -799,7 +794,8 @@
     <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">result</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">max_lines</span><span class="p">:</span>
         <span class="n">first_half</span> <span class="o">=</span> <span class="n">max_lines</span> <span class="o">//</span> <span class="mi">2</span>
         <span class="n">second_half</span> <span class="o">=</span> <span class="n">max_lines</span> <span class="o">-</span> <span class="n">first_half</span> <span class="o">-</span> <span class="mi">1</span>  <span class="c1"># -1 for the CollapsedRun</span>
-        <span class="n">omitted</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">result</span><span class="p">)</span> <span class="o">-</span> <span class="n">first_half</span> <span class="o">-</span> <span class="n">second_half</span>
+        <span class="n">dropped</span> <span class="o">=</span> <span class="n">result</span><span class="p">[</span><span class="n">first_half</span> <span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">result</span><span class="p">)</span> <span class="o">-</span> <span class="n">second_half</span><span class="p">]</span> <span class="k">if</span> <span class="n">second_half</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="n">result</span><span class="p">[</span><span class="n">first_half</span><span class="p">:]</span>
+        <span class="n">omitted</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">count</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">CollapsedRun</span><span class="p">)</span> <span class="k">else</span> <span class="mi">1</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">dropped</span><span class="p">)</span>
         <span class="n">tail</span> <span class="o">=</span> <span class="n">result</span><span class="p">[</span><span class="o">-</span><span class="n">second_half</span><span class="p">:]</span> <span class="k">if</span> <span class="n">second_half</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="p">[]</span>
         <span class="n">result</span> <span class="o">=</span> <span class="n">result</span><span class="p">[:</span><span class="n">first_half</span><span class="p">]</span> <span class="o">+</span> <span class="p">[</span><span class="n">CollapsedRun</span><span class="p">(</span><span class="n">count</span><span class="o">=</span><span class="n">omitted</span><span class="p">,</span> <span class="n">thread_id</span><span class="o">=-</span><span class="mi">1</span><span class="p">)]</span> <span class="o">+</span> <span class="n">tail</span>
 
@@ -815,7 +811,7 @@
 <span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">events</span><span class="p">:</span>
         <span class="k">return</span> <span class="p">[]</span>
-    <span class="n">result</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">SourceLineEvent</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">events</span><span class="p">[</span><span class="mi">0</span><span class="p">]]</span>
+    <span class="n">result</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">SourceLineEvent</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">replace</span><span class="p">(</span><span class="n">events</span><span class="p">[</span><span class="mi">0</span><span class="p">])]</span>
     <span class="k">for</span> <span class="n">ev</span> <span class="ow">in</span> <span class="n">events</span><span class="p">[</span><span class="mi">1</span><span class="p">:]:</span>
         <span class="n">prev</span> <span class="o">=</span> <span class="n">result</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
         <span class="k">if</span> <span class="n">ev</span><span class="o">.</span><span class="n">thread_id</span> <span class="o">==</span> <span class="n">prev</span><span class="o">.</span><span class="n">thread_id</span> <span class="ow">and</span> <span class="n">ev</span><span class="o">.</span><span class="n">lineno</span> <span class="o">==</span> <span class="n">prev</span><span class="o">.</span><span class="n">lineno</span> <span class="ow">and</span> <span class="n">ev</span><span class="o">.</span><span class="n">filename</span> <span class="o">==</span> <span class="n">prev</span><span class="o">.</span><span class="n">filename</span><span class="p">:</span>
@@ -824,7 +820,7 @@
             <span class="k">elif</span> <span class="n">ev</span><span class="o">.</span><span class="n">access_type</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;read+write&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="n">prev</span><span class="o">.</span><span class="n">access_type</span> <span class="o">==</span> <span class="s2">&quot;write&quot;</span><span class="p">:</span>
                 <span class="n">prev</span><span class="o">.</span><span class="n">access_type</span> <span class="o">=</span> <span class="s2">&quot;read+write&quot;</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="n">result</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">ev</span><span class="p">)</span>
+            <span class="n">result</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">replace</span><span class="p">(</span><span class="n">ev</span><span class="p">))</span>
     <span class="k">return</span> <span class="n">result</span>
 
 
@@ -935,13 +931,19 @@
     <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">condensed</span><span class="p">:</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">CollapsedRun</span><span class="p">):</span>
             <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">thread_id</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">:</span>
-                <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  </span><span class="si">{</span><span class="s1">&#39;&#39;</span><span class="si">:</span><span class="s2">&gt;</span><span class="si">{</span><span class="n">max_thread_label</span><span class="si">}}</span><span class="s2"> | ... </span><span class="si">{</span><span class="n">item</span><span class="o">.</span><span class="n">count</span><span class="si">}</span><span class="s2"> more lines from Thread </span><span class="si">{</span><span class="n">item</span><span class="o">.</span><span class="n">thread_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="n">thread_label</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="n">thread_names</span><span class="p">[</span><span class="n">item</span><span class="o">.</span><span class="n">thread_id</span><span class="p">]</span> <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">thread_id</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">thread_names</span><span class="p">)</span> <span class="k">else</span> <span class="sa">f</span><span class="s2">&quot;Thread </span><span class="si">{</span><span class="n">item</span><span class="o">.</span><span class="n">thread_id</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="p">)</span>
+                <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  </span><span class="si">{</span><span class="s1">&#39;&#39;</span><span class="si">:</span><span class="s2">&gt;</span><span class="si">{</span><span class="n">max_thread_label</span><span class="si">}}</span><span class="s2"> | ... </span><span class="si">{</span><span class="n">item</span><span class="o">.</span><span class="n">count</span><span class="si">}</span><span class="s2"> more lines from </span><span class="si">{</span><span class="n">thread_label</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  </span><span class="si">{</span><span class="s1">&#39;&#39;</span><span class="si">:</span><span class="s2">&gt;</span><span class="si">{</span><span class="n">max_thread_label</span><span class="si">}}</span><span class="s2"> | ... </span><span class="si">{</span><span class="n">item</span><span class="o">.</span><span class="n">count</span><span class="si">}</span><span class="s2"> more lines omitted&quot;</span><span class="p">)</span>
             <span class="k">continue</span>
 
         <span class="n">line_ev</span> <span class="o">=</span> <span class="n">item</span>
-        <span class="n">label</span> <span class="o">=</span> <span class="n">thread_names</span><span class="p">[</span><span class="n">line_ev</span><span class="o">.</span><span class="n">thread_id</span><span class="p">]</span><span class="o">.</span><span class="n">ljust</span><span class="p">(</span><span class="n">max_thread_label</span><span class="p">)</span>
+        <span class="n">tname</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">thread_names</span><span class="p">[</span><span class="n">line_ev</span><span class="o">.</span><span class="n">thread_id</span><span class="p">]</span> <span class="k">if</span> <span class="n">line_ev</span><span class="o">.</span><span class="n">thread_id</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">thread_names</span><span class="p">)</span> <span class="k">else</span> <span class="sa">f</span><span class="s2">&quot;Thread </span><span class="si">{</span><span class="n">line_ev</span><span class="o">.</span><span class="n">thread_id</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="p">)</span>
+        <span class="n">label</span> <span class="o">=</span> <span class="n">tname</span><span class="o">.</span><span class="n">ljust</span><span class="p">(</span><span class="n">max_thread_label</span><span class="p">)</span>
 
         <span class="c1"># I/O events from C extensions have no source location</span>
         <span class="n">is_io</span> <span class="o">=</span> <span class="n">line_ev</span><span class="o">.</span><span class="n">obj_type_name</span> <span class="o">==</span> <span class="s2">&quot;IO&quot;</span>
@@ -996,7 +998,7 @@
     <span class="c1"># Reproduction stats</span>
     <span class="k">if</span> <span class="n">reproduction_attempts</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;&quot;</span><span class="p">)</span>
-        <span class="n">pct</span> <span class="o">=</span> <span class="n">reproduction_successes</span> <span class="o">*</span> <span class="mi">100</span> <span class="o">//</span> <span class="n">reproduction_attempts</span>
+        <span class="n">pct</span> <span class="o">=</span> <span class="nb">round</span><span class="p">(</span><span class="n">reproduction_successes</span> <span class="o">*</span> <span class="mi">100</span> <span class="o">/</span> <span class="n">reproduction_attempts</span><span class="p">)</span>
         <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Reproduced </span><span class="si">{</span><span class="n">reproduction_successes</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="n">reproduction_attempts</span><span class="si">}</span><span class="s2"> times (</span><span class="si">{</span><span class="n">pct</span><span class="si">}</span><span class="s2">%)&quot;</span><span class="p">)</span>
 
     <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;&quot;</span><span class="p">)</span>
@@ -1049,7 +1051,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=c87aa342"></script>
+</div><script src="../../_static/documentation_options.js?v=1dd76d02"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.common - Frontrun 0.4.1 documentation</title>
+        <title>frontrun.common - Frontrun 0.5.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.4.1 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.4.1 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -244,11 +244,107 @@
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
+<span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Iterable</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">field</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">itertools</span><span class="w"> </span><span class="kn">import</span> <span class="n">permutations</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">TypeVar</span>
 
 <span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._sql_anomaly</span><span class="w"> </span><span class="kn">import</span> <span class="n">SqlAnomaly</span>
+
+
+<span class="n">_F</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;_F&quot;</span><span class="p">,</span> <span class="n">bound</span><span class="o">=</span><span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span>
+
+
+<span class="c1"># ---------------------------------------------------------------------------</span>
+<span class="c1"># Deprecation messages for the 0.5 → 0.6 shim layer.</span>
+<span class="c1"># Centralised so the module-level __getattr__ in ``frontrun/__init__.py`` and</span>
+<span class="c1"># the wrappers in ``bytecode.py`` / ``async_shuffler.py`` / ``async_dpor.py`` /</span>
+<span class="c1"># ``_dpor_runtime/explore.py`` stay in sync.  Each message must include a</span>
+<span class="c1"># concrete removal version (``removed in X.Y``); ``test_explore_unified``</span>
+<span class="c1"># enforces this so future entries can&#39;t slip in without a deadline.</span>
+<span class="c1"># ---------------------------------------------------------------------------</span>
+
+<span class="n">DEPRECATION_MESSAGES</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;explore_dpor&quot;</span><span class="p">:</span> <span class="p">(</span>
+        <span class="s2">&quot;explore_dpor is deprecated; use frontrun.explore(strategy=&#39;dpor&#39;) &quot;</span>
+        <span class="s2">&quot;(or frontrun.explore(...)) instead. The old API will be removed in 0.6.&quot;</span>
+    <span class="p">),</span>
+    <span class="s2">&quot;explore_async_dpor&quot;</span><span class="p">:</span> <span class="p">(</span>
+        <span class="s2">&quot;explore_async_dpor is deprecated; use frontrun.explore(strategy=&#39;dpor&#39;) &quot;</span>
+        <span class="s2">&quot;with async workers instead. The old API will be removed in 0.6.&quot;</span>
+    <span class="p">),</span>
+    <span class="s2">&quot;explore_interleavings&quot;</span><span class="p">:</span> <span class="p">(</span>
+        <span class="s2">&quot;explore_interleavings is deprecated; use frontrun.explore(strategy=&#39;random&#39;) &quot;</span>
+        <span class="s2">&quot;(or frontrun.explore_random(...)) instead. The old API will be removed in 0.6.&quot;</span>
+    <span class="p">),</span>
+    <span class="s2">&quot;explore_async_interleavings&quot;</span><span class="p">:</span> <span class="p">(</span>
+        <span class="s2">&quot;explore_async_interleavings (also accessed as async `explore_interleavings`) is deprecated; &quot;</span>
+        <span class="s2">&quot;use frontrun.explore(strategy=&#39;random&#39;) (or frontrun.explore_async_random(...)) instead. &quot;</span>
+        <span class="s2">&quot;The old API will be removed in 0.6.&quot;</span>
+    <span class="p">),</span>
+    <span class="s2">&quot;trace_executor_run_legacy_form&quot;</span><span class="p">:</span> <span class="p">(</span>
+        <span class="s2">&quot;Calling TraceExecutor.run() with individual thread names is deprecated; &quot;</span>
+        <span class="s2">&quot;pass a dict {name: callable} instead, e.g. &quot;</span>
+        <span class="s2">&quot;executor.run({&#39;thread1&#39;: fn1, &#39;thread2&#39;: fn2}, timeout=5.0). &quot;</span>
+        <span class="s2">&quot;Will be removed in 0.6.&quot;</span>
+    <span class="p">),</span>
+    <span class="s2">&quot;detect_redis_param&quot;</span><span class="p">:</span> <span class="p">(</span>
+        <span class="s2">&quot;detect_redis=True is deprecated; use detect_io=True instead &quot;</span>
+        <span class="s2">&quot;(now covers Redis in both sync and async). &quot;</span>
+        <span class="s2">&quot;The old parameter will be removed in 0.6.&quot;</span>
+    <span class="p">),</span>
+<span class="p">}</span>
+
+
+<div class="viewcode-block" id="deprecate">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.common.deprecate">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">deprecate</span><span class="p">(</span><span class="n">fn</span><span class="p">:</span> <span class="n">_F</span><span class="p">,</span> <span class="n">message</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_F</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Wrap *fn* in a :class:`DeprecationWarning`-emitting shim.</span>
+
+<span class="sd">    The wrapper is :func:`functools.wraps`-preserving so ``help()`` and</span>
+<span class="sd">    the inspectable signature still reflect *fn*.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="ne">DeprecationWarning</span><span class="p">,</span> <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">fn</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">_wrapper</span>  <span class="c1"># type: ignore[return-value]</span></div>
+
+
+
+<div class="viewcode-block" id="any_async">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.common.any_async">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">any_async</span><span class="p">(</span><span class="n">fns</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True if any element is a coroutine function.</span>
+
+<span class="sd">    Non-callables are ignored so callers can pass dicts of ``name -&gt; value``</span>
+<span class="sd">    directly.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="n">inspect</span><span class="o">.</span><span class="n">iscoroutinefunction</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span> <span class="k">for</span> <span class="n">fn</span> <span class="ow">in</span> <span class="n">fns</span> <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">fn</span><span class="p">))</span></div>
+
+
+
+<div class="viewcode-block" id="check_invariant">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.common.check_invariant">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">],</span> <span class="n">state</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">bool</span><span class="p">,</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Evaluate *invariant* on *state*, tolerating ``AssertionError``.</span>
+
+<span class="sd">    Returns ``(failed, assertion_message)``.  ``failed`` is True when the</span>
+<span class="sd">    invariant returns a falsy value or raises ``AssertionError``.  When</span>
+<span class="sd">    ``AssertionError`` was raised, its message is returned in the second</span>
+<span class="sd">    slot so callers can fold it into their result&#39;s ``explanation``.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span><span class="ow">not</span> <span class="n">invariant</span><span class="p">(</span><span class="n">state</span><span class="p">),</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">AssertionError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">))</span></div>
+
 
 
 <div class="viewcode-block" id="NondeterministicSQLError">
@@ -357,6 +453,24 @@
     <span class="n">reproduction_attempts</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">reproduction_successes</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">sql_anomaly</span><span class="p">:</span> <span class="n">SqlAnomaly</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">races_detected</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+
+<div class="viewcode-block" id="InterleavingResult.assert_holds">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.common.InterleavingResult.assert_holds">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">assert_holds</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg_prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Raise AssertionError with the race explanation if the invariant failed.</span>
+
+<span class="sd">        Prefer this over ``assert result.property_holds, result.explanation``.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            msg_prefix: Optional string prepended to the explanation in the</span>
+<span class="sd">                AssertionError message.  Useful for identifying which assertion</span>
+<span class="sd">                failed when multiple calls appear in one test.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">property_holds</span><span class="p">:</span>
+            <span class="n">explanation</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">explanation</span> <span class="ow">or</span> <span class="s2">&quot;&quot;</span>
+            <span class="k">raise</span> <span class="ne">AssertionError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">msg_prefix</span><span class="si">}{</span><span class="n">explanation</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="n">msg_prefix</span> <span class="k">else</span> <span class="n">explanation</span><span class="p">)</span></div>
+
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
         <span class="n">ce</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">counterexample</span>
@@ -364,10 +478,113 @@
             <span class="n">ce_repr</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">map</span><span class="p">(</span><span class="nb">str</span><span class="p">,</span><span class="w"> </span><span class="n">ce</span><span class="p">[:</span><span class="mi">5</span><span class="p">]))</span><span class="si">}</span><span class="s2">, ...(</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">ce</span><span class="p">)</span><span class="si">}</span><span class="s2"> steps)]&quot;</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">ce_repr</span> <span class="o">=</span> <span class="nb">repr</span><span class="p">(</span><span class="n">ce</span><span class="p">)</span>
+        <span class="n">parts</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="sa">f</span><span class="s2">&quot;property_holds=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">property_holds</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="sa">f</span><span class="s2">&quot;counterexample=</span><span class="si">{</span><span class="n">ce_repr</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="sa">f</span><span class="s2">&quot;num_explored=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">races_detected</span><span class="p">:</span>
+            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;races_detected=True&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;InterleavingResult(</span><span class="si">{</span><span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span><span class="si">}</span><span class="s2">)&quot;</span></div>
+
+
+
+<div class="viewcode-block" id="compute_serializable_states">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.common.compute_serializable_states">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">compute_serializable_states</span><span class="p">(</span>
+    <span class="n">setup</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">thread_funcs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="kc">None</span><span class="p">]],</span>
+    <span class="n">state_hash</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">set</span><span class="p">[</span><span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute the set of valid serializable states.</span>
+
+<span class="sd">    Runs all N! sequential orderings of the thread functions and collects</span>
+<span class="sd">    the hash of each resulting state.  An interleaved execution is</span>
+<span class="sd">    *serializable* if its final state hash is in this set.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        setup: Factory that creates fresh shared state.</span>
+<span class="sd">        thread_funcs: Thread/task functions (each takes state as argument).</span>
+<span class="sd">        state_hash: Hash function for state.  If None, uses ``repr()``.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Set of valid state hashes.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">state_hash</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">state_hash</span> <span class="o">=</span> <span class="nb">repr</span>
+    <span class="n">valid</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">perm</span> <span class="ow">in</span> <span class="n">permutations</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">thread_funcs</span><span class="p">))):</span>
+        <span class="n">s</span> <span class="o">=</span> <span class="n">setup</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">perm</span><span class="p">:</span>
+            <span class="n">thread_funcs</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">s</span><span class="p">)</span>
+        <span class="n">valid</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">state_hash</span><span class="p">(</span><span class="n">s</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">valid</span></div>
+
+
+
+<div class="viewcode-block" id="compute_serializable_states_async">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.common.compute_serializable_states_async">[docs]</a>
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">compute_serializable_states_async</span><span class="p">(</span>
+    <span class="n">setup</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">task_funcs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]],</span>
+    <span class="n">state_hash</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">set</span><span class="p">[</span><span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Async version of compute_serializable_states.</span>
+
+<span class="sd">    Runs all N! sequential orderings of async task functions.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">state_hash</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">state_hash</span> <span class="o">=</span> <span class="nb">repr</span>
+    <span class="n">valid</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">perm</span> <span class="ow">in</span> <span class="n">permutations</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">task_funcs</span><span class="p">))):</span>
+        <span class="n">s</span> <span class="o">=</span> <span class="n">setup</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">perm</span><span class="p">:</span>
+            <span class="k">await</span> <span class="n">task_funcs</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">s</span><span class="p">)</span>
+        <span class="n">valid</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">state_hash</span><span class="p">(</span><span class="n">s</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">valid</span></div>
+
+
+
+<div class="viewcode-block" id="resolve_serializable_hash_fn">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.common.resolve_serializable_hash_fn">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">resolve_serializable_hash_fn</span><span class="p">(</span>
+    <span class="n">serializable_invariant</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="nb">bool</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Extract the state-hash function from a ``serializable_invariant`` parameter.</span>
+
+<span class="sd">    Returns the callable itself when it is a hash function, or ``None``</span>
+<span class="sd">    when the caller passed ``True`` (meaning &quot;use the default ``repr``&quot;).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">serializable_invariant</span> <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">serializable_invariant</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span></div>
+
+
+
+<div class="viewcode-block" id="check_serializability_violation">
+<a class="viewcode-back" href="../../api_reference.html#frontrun.common.check_serializability_violation">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">check_serializability_violation</span><span class="p">(</span>
+    <span class="n">state</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
+    <span class="n">serial_valid_states</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+    <span class="n">hash_fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">execution_num</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Check whether *state* violates serializability.</span>
+
+<span class="sd">    Returns an explanation string when the state hash is not in</span>
+<span class="sd">    *serial_valid_states*, or ``None`` if it passes.</span>
+
+<span class="sd">    *hash_fn* should be the resolved state-hash function (use</span>
+<span class="sd">    :func:`resolve_serializable_hash_fn` to convert the raw</span>
+<span class="sd">    ``serializable_invariant`` parameter, falling back to ``repr``</span>
+<span class="sd">    when it returns ``None``).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">state_h</span> <span class="o">=</span> <span class="n">hash_fn</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">state_h</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">serial_valid_states</span><span class="p">:</span>
         <span class="k">return</span> <span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;InterleavingResult(property_holds=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">property_holds</span><span class="si">}</span><span class="s2">, &quot;</span>
-            <span class="sa">f</span><span class="s2">&quot;counterexample=</span><span class="si">{</span><span class="n">ce_repr</span><span class="si">}</span><span class="s2">, num_explored=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2">)&quot;</span>
-        <span class="p">)</span></div>
+            <span class="sa">f</span><span class="s2">&quot;Serializability violation in execution </span><span class="si">{</span><span class="n">execution_num</span><span class="si">}</span><span class="s2">.</span><span class="se">\n</span><span class="s2">&quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;State </span><span class="si">{</span><span class="n">state_h</span><span class="si">!r}</span><span class="s2"> does not match any sequential ordering.</span><span class="se">\n</span><span class="s2">&quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;Valid sequential states: </span><span class="si">{</span><span class="n">serial_valid_states</span><span class="si">!r}</span><span class="s2">&quot;</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="kc">None</span></div>
 
 </pre></div>
         </article>
@@ -401,7 +618,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=c87aa342"></script>
+</div><script src="../../_static/documentation_options.js?v=1dd76d02"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

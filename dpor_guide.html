@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="DPOR: Dynamic Partial Order Reduction" href="dpor.html"><link rel="prev" title="How Frontrun Works" href="approaches.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>DPOR in Practice - Frontrun 0.4.1 documentation</title>
+        <title>DPOR in Practice - Frontrun 0.5.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.4.1 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.4.1 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -252,9 +252,15 @@
         <article role="main" id="furo-main-content">
           <section id="dpor-in-practice">
 <h1>DPOR in Practice<a class="headerlink" href="#dpor-in-practice" title="Link to this heading">¶</a></h1>
-<p>This is a practical guide to using <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code> for systematic
-concurrency testing. For the underlying algorithm and theory, see
+<p>This is a practical guide to using <code class="docutils literal notranslate"><span class="pre">explore()</span></code> (or the old <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code>)
+for systematic concurrency testing. For the underlying algorithm and theory, see
 <a class="reference internal" href="dpor.html"><span class="doc">DPOR: Dynamic Partial Order Reduction</span></a>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Prefer</strong> <code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> <strong>(0.5+).</strong> The old <code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code>
+function is deprecated and will be removed in 0.6. Use
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore(strategy='dpor')</span></code> (the default) instead.</p>
+</div>
 <section id="what-dpor-does">
 <h2>What DPOR does<a class="headerlink" href="#what-dpor-does" title="Link to this heading">¶</a></h2>
 <p>DPOR and the invariant have separate jobs:</p>
@@ -265,24 +271,35 @@ least one write), and uses that information to skip redundant orderings.
 Two interleavings that only differ in the order of independent operations
 (e.g. two reads, or accesses to different objects) are equivalent, so DPOR
 runs only one representative from each equivalence class.</p></li>
-<li><p><strong>The invariant decides whether a bug occurred.</strong> After all threads finish,
-<code class="docutils literal notranslate"><span class="pre">explore_dpor()</span></code> calls your invariant on the final state. DPOR has no
+<li><p><strong>The invariant decides whether a bug occurred.</strong> After all workers finish,
+<code class="docutils literal notranslate"><span class="pre">explore()</span></code> calls your invariant on the final state. DPOR has no
 built-in notion of “correct” — it doesn’t know that <code class="docutils literal notranslate"><span class="pre">counter</span> <span class="pre">==</span> <span class="pre">1</span></code> is
 wrong and <code class="docutils literal notranslate"><span class="pre">counter</span> <span class="pre">==</span> <span class="pre">2</span></code> is right. You supply that judgement via the
-invariant.</p></li>
+invariant. Raising <code class="docutils literal notranslate"><span class="pre">AssertionError</span></code> in the invariant is treated as a failure
+(the message is included in <code class="docutils literal notranslate"><span class="pre">result.explanation</span></code>).</p></li>
 </ul>
 <p>(The name “invariant” is standard in tools like this — loom, CHESS, etc. —
 even though it is technically a <em>postcondition</em> checked once after the threads
 finish, not a continuously-monitored loop invariant.)</p>
 <p>Putting the two together:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore</span>
+
+<span class="n">result</span> <span class="o">=</span> <span class="n">explore</span><span class="p">(</span>
+    <span class="n">setup</span><span class="o">=</span><span class="n">MyState</span><span class="p">,</span>                         <span class="c1"># called fresh each execution</span>
+    <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">worker_a</span><span class="p">,</span> <span class="n">worker_b</span><span class="p">],</span>          <span class="c1"># each receives the state</span>
+    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="n">s</span><span class="o">.</span><span class="n">is_consistent</span><span class="p">(),</span> <span class="c1"># checked after all workers finish</span>
+<span class="p">)</span>
+<span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Old API (deprecated):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_dpor</span>
 
 <span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span>
-    <span class="n">setup</span><span class="o">=</span><span class="n">MyState</span><span class="p">,</span>                         <span class="c1"># called fresh each execution</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="n">thread_a</span><span class="p">,</span> <span class="n">thread_b</span><span class="p">],</span>          <span class="c1"># each receives the state</span>
-    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="n">s</span><span class="o">.</span><span class="n">is_consistent</span><span class="p">(),</span> <span class="c1"># checked after all threads finish</span>
+    <span class="n">setup</span><span class="o">=</span><span class="n">MyState</span><span class="p">,</span>
+    <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="n">thread_a</span><span class="p">,</span> <span class="n">thread_b</span><span class="p">],</span>
+    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="n">s</span><span class="o">.</span><span class="n">is_consistent</span><span class="p">(),</span>
 <span class="p">)</span>
-
 <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">explanation</span>
 </pre></div>
 </div>
@@ -305,9 +322,11 @@ detection mechanisms are layered from fine-grained to coarse:</p>
 <li><p>Lock acquire and release (<code class="docutils literal notranslate"><span class="pre">threading.Lock</span></code>, <code class="docutils literal notranslate"><span class="pre">threading.RLock</span></code>)</p></li>
 <li><p>Thread spawn and join</p></li>
 <li><p><strong>Redis commands</strong> — <code class="docutils literal notranslate"><span class="pre">execute_command()</span></code> is intercepted on redis-py
-clients when <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> (sync) or <code class="docutils literal notranslate"><span class="pre">detect_redis=True</span></code> (async).
-Each command is classified as a read or write on specific keys; two threads
-operating on <em>different</em> keys are independent.  See <a class="reference internal" href="redis.html"><span class="doc">Redis Conflict Detection – Technical Details</span></a>.</p></li>
+clients when <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code>, which now covers Redis in both sync
+and async contexts.  (The async-only <code class="docutils literal notranslate"><span class="pre">detect_redis=True</span></code> kwarg is
+deprecated in 0.5 and will be removed in 0.6.)  Each command is
+classified as a read or write on specific keys; two threads operating
+on <em>different</em> keys are independent.  See <a class="reference internal" href="redis.html"><span class="doc">Redis Conflict Detection – Technical Details</span></a>.</p></li>
 <li><p><strong>SQL statements</strong> — <code class="docutils literal notranslate"><span class="pre">cursor.execute()</span></code> is intercepted at the DBAPI
 layer.  Statements are parsed to per-table (or per-row) resource IDs; two
 threads touching <em>different</em> tables or rows are independent.  See
@@ -731,30 +750,25 @@ Python-level attribute accesses.</p>
     <span class="k">assert</span> <span class="ow">not</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span>   <span class="c1"># race detected!</span>
 </pre></div>
 </div>
-<p><strong>Async usage</strong> (<code class="docutils literal notranslate"><span class="pre">detect_redis=True</span></code>):</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">redis.asyncio</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">aioredis</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_async_dpor</span>
+<p><strong>Async usage</strong> (<code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> covers Redis from 0.5):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">redis.asyncio</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">aioredis</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_async_redis_check_then_act</span><span class="p">(</span><span class="n">redis_port</span><span class="p">):</span>
-    <span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">maybe_init</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
         <span class="n">r</span> <span class="o">=</span> <span class="n">aioredis</span><span class="o">.</span><span class="n">Redis</span><span class="p">(</span><span class="n">port</span><span class="o">=</span><span class="n">redis_port</span><span class="p">,</span> <span class="n">decode_responses</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="s2">&quot;resource&quot;</span><span class="p">):</span>
             <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;resource&quot;</span><span class="p">,</span> <span class="s2">&quot;initialized&quot;</span><span class="p">)</span>
         <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">aclose</span><span class="p">()</span>
 
-    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">invariant</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
-        <span class="n">r</span> <span class="o">=</span> <span class="n">aioredis</span><span class="o">.</span><span class="n">Redis</span><span class="p">(</span><span class="n">port</span><span class="o">=</span><span class="n">redis_port</span><span class="p">,</span> <span class="n">decode_responses</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-        <span class="n">count</span> <span class="o">=</span> <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;resource&quot;</span><span class="p">)</span>
-        <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">aclose</span><span class="p">()</span>
-        <span class="k">return</span> <span class="n">count</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-
-    <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">explore_async_dpor</span><span class="p">(</span>
+    <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>
-        <span class="n">tasks</span><span class="o">=</span><span class="p">[</span><span class="n">maybe_init</span><span class="p">,</span> <span class="n">maybe_init</span><span class="p">],</span>
+        <span class="n">workers</span><span class="o">=</span><span class="n">maybe_init</span><span class="p">,</span>
+        <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
-        <span class="n">detect_redis</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">detect_io</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
     <span class="p">))</span>
 </pre></div>
 </div>
@@ -776,6 +790,21 @@ buffered and reported atomically.</p></li>
 key-level semantics.</p></li>
 </ul>
 <p>For the full command classification and technical details, see <a class="reference internal" href="redis.html"><span class="doc">Redis Conflict Detection – Technical Details</span></a>.</p>
+</section>
+<section id="prefer-assert-holds-over-manual-asserts">
+<h2>Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts<a class="headerlink" href="#prefer-assert-holds-over-manual-asserts" title="Link to this heading">¶</a></h2>
+<p><code class="xref py py-meth docutils literal notranslate"><span class="pre">InterleavingResult.assert_holds()</span></code> is the recommended way to check a DPOR
+result in a test.  It raises <code class="docutils literal notranslate"><span class="pre">AssertionError</span></code> with the full race explanation
+when the invariant failed, and does nothing on success:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span> <span class="o">=</span> <span class="n">explore_dpor</span><span class="p">(</span><span class="n">setup</span><span class="p">,</span> <span class="p">[</span><span class="n">thread1</span><span class="p">,</span> <span class="n">thread2</span><span class="p">],</span> <span class="n">invariant</span><span class="p">)</span>
+<span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>          <span class="c1"># preferred</span>
+<span class="c1"># instead of: assert result.property_holds, result.explanation</span>
+</pre></div>
+</div>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">msg_prefix</span></code> to distinguish multiple assertions in one test:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">(</span><span class="n">msg_prefix</span><span class="o">=</span><span class="s2">&quot;transfer race: &quot;</span><span class="p">)</span>
+</pre></div>
+</div>
 </section>
 </section>
 
@@ -849,6 +878,7 @@ key-level semantics.</p></li>
 </ul>
 </li>
 <li><a class="reference internal" href="#redis-key-level-detection">Redis key-level detection</a></li>
+<li><a class="reference internal" href="#prefer-assert-holds-over-manual-asserts">Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts</a></li>
 </ul>
 </li>
 </ul>
@@ -860,7 +890,7 @@ key-level semantics.</p></li>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=c87aa342"></script>
+</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

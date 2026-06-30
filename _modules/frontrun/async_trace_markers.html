@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.async_trace_markers - Frontrun 0.4.1 documentation</title>
+        <title>frontrun.async_trace_markers - Frontrun 0.5.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.4.1 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.4.1 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -309,13 +309,17 @@
 <span class="sd">&quot;&quot;&quot;</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Coroutine</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._marker_coordination</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">MarkerRegistry</span><span class="p">,</span>
+    <span class="n">ThreadCoordinator</span><span class="p">,</span>
+    <span class="n">finalize_marker_executor_run</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._trace_marker_runtime</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_trace_function</span><span class="p">,</span> <span class="n">run_traced_callable</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">Schedule</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">MarkerRegistry</span><span class="p">,</span> <span class="n">ThreadCoordinator</span>
 
 
 <div class="viewcode-block" id="AsyncTraceExecutor">
@@ -350,68 +354,12 @@
 
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_create_trace_function</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">execution_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Create a trace function for a specific async task.</span>
-
-<span class="sd">        This trace function checks both the current line and previous line for markers</span>
-<span class="sd">        (to support both inline and separate-line markers) and blocks the thread when</span>
-<span class="sd">        a marker is detected.</span>
-
-<span class="sd">        Args:</span>
-<span class="sd">            execution_name: The name of the task this trace function is for</span>
-
-<span class="sd">        Returns:</span>
-<span class="sd">            A trace function suitable for sys.settrace</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-
-        <span class="k">def</span><span class="w"> </span><span class="nf">trace_function</span><span class="p">(</span><span class="n">frame</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">event</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">arg</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="c1"># Only care about &#39;line&#39; events</span>
-                <span class="k">if</span> <span class="n">event</span> <span class="o">!=</span> <span class="s2">&quot;line&quot;</span><span class="p">:</span>
-                    <span class="k">return</span> <span class="n">trace_function</span>
-
-                <span class="c1"># Scan this file for markers if we haven&#39;t already</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">marker_registry</span><span class="o">.</span><span class="n">scan_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">)</span>
-
-                <span class="n">filename</span> <span class="o">=</span> <span class="n">frame</span><span class="o">.</span><span class="n">f_code</span><span class="o">.</span><span class="n">co_filename</span>
-                <span class="n">lineno</span> <span class="o">=</span> <span class="n">frame</span><span class="o">.</span><span class="n">f_lineno</span>
-
-                <span class="c1"># Check current line (for inline markers like: x = 1  # frontrun: marker)</span>
-                <span class="n">marker_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">marker_registry</span><span class="o">.</span><span class="n">get_marker</span><span class="p">(</span><span class="n">filename</span><span class="p">,</span> <span class="n">lineno</span><span class="p">)</span>
-                <span class="k">if</span> <span class="n">marker_name</span><span class="p">:</span>
-                    <span class="c1"># Release execution lock while waiting (let other threads run).</span>
-                    <span class="c1"># wait_for_turn reacquires it before returning.</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">_execution_lock</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">wait_for_turn</span><span class="p">(</span><span class="n">execution_name</span><span class="p">,</span> <span class="n">marker_name</span><span class="p">,</span> <span class="n">_reacquire_execution_lock</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-                    <span class="c1"># Check if an error occurred in another task</span>
-                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">error</span><span class="p">:</span>
-                        <span class="k">raise</span> <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">error</span>
-                    <span class="k">return</span> <span class="n">trace_function</span>
-
-                <span class="c1"># Check previous line (for separate-line markers)</span>
-                <span class="k">if</span> <span class="n">lineno</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
-                    <span class="n">prev_marker</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">marker_registry</span><span class="o">.</span><span class="n">get_marker</span><span class="p">(</span><span class="n">filename</span><span class="p">,</span> <span class="n">lineno</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
-                    <span class="k">if</span> <span class="n">prev_marker</span><span class="p">:</span>
-                        <span class="c1"># Release execution lock while waiting (let other threads run).</span>
-                        <span class="c1"># wait_for_turn reacquires it before returning.</span>
-                        <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">_execution_lock</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
-                        <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">wait_for_turn</span><span class="p">(</span><span class="n">execution_name</span><span class="p">,</span> <span class="n">prev_marker</span><span class="p">,</span> <span class="n">_reacquire_execution_lock</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-                        <span class="c1"># Check if an error occurred in another task</span>
-                        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">error</span><span class="p">:</span>
-                            <span class="k">raise</span> <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">error</span>
-
-                <span class="k">return</span> <span class="n">trace_function</span>
-            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-                <span class="c1"># Release execution lock before reporting to avoid deadlock</span>
-                <span class="c1"># (report_error needs the condition lock, which another thread</span>
-                <span class="c1"># may hold while waiting for _execution_lock in wait_for_turn).</span>
-                <span class="k">try</span><span class="p">:</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">_execution_lock</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
-                <span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
-                    <span class="k">pass</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">report_error</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
-                <span class="k">return</span> <span class="kc">None</span>
-
-        <span class="k">return</span> <span class="n">trace_function</span>
+        <span class="k">return</span> <span class="n">build_trace_function</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="p">,</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">marker_registry</span><span class="p">,</span>
+            <span class="n">execution_name</span><span class="p">,</span>
+            <span class="n">include_previous_line</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_thread_wrapper</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">execution_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">task_fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="kc">None</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Wrapper that runs an async task in its own event loop with tracing.</span>
@@ -420,30 +368,13 @@
 <span class="sd">            execution_name: The name of this task</span>
 <span class="sd">            task_fn: The async function to execute</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">error</span><span class="p">:</span> <span class="ne">Exception</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="k">try</span><span class="p">:</span>
-            <span class="c1"># Install trace function for this task</span>
-            <span class="n">trace_fn</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_create_trace_function</span><span class="p">(</span><span class="n">execution_name</span><span class="p">)</span>
-            <span class="c1"># Acquire execution lock before running (serializes with other threads)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">_execution_lock</span><span class="o">.</span><span class="n">acquire</span><span class="p">()</span>
-            <span class="n">sys</span><span class="o">.</span><span class="n">settrace</span><span class="p">(</span><span class="n">trace_fn</span><span class="p">)</span>
-
-            <span class="c1"># Run the async task in its own event loop</span>
-            <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">task_fn</span><span class="p">())</span>
-        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="c1"># Store the error but don&#39;t call report_error yet — we may still</span>
-            <span class="c1"># hold _execution_lock and report_error needs the condition lock,</span>
-            <span class="c1"># which risks deadlock against wait_for_turn&#39;s lock ordering.</span>
-            <span class="n">error</span> <span class="o">=</span> <span class="n">e</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">task_errors</span><span class="p">[</span><span class="n">execution_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">e</span>
-        <span class="k">finally</span><span class="p">:</span>
-            <span class="n">sys</span><span class="o">.</span><span class="n">settrace</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">_execution_lock</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
-            <span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
-                <span class="k">pass</span>
-            <span class="k">if</span> <span class="n">error</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">report_error</span><span class="p">(</span><span class="n">error</span><span class="p">)</span>
+        <span class="n">run_traced_callable</span><span class="p">(</span>
+            <span class="n">coordinator</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="p">,</span>
+            <span class="n">execution_name</span><span class="o">=</span><span class="n">execution_name</span><span class="p">,</span>
+            <span class="n">trace_function</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_create_trace_function</span><span class="p">(</span><span class="n">execution_name</span><span class="p">),</span>
+            <span class="n">body</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">task_fn</span><span class="p">()),</span>
+            <span class="n">error_sink</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">task_errors</span><span class="p">,</span>
+        <span class="p">)</span>
 
 <div class="viewcode-block" id="AsyncTraceExecutor.run">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.async_trace_markers.AsyncTraceExecutor.run">[docs]</a>
@@ -471,20 +402,13 @@
             <span class="n">threads</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">thread</span><span class="p">)</span>
             <span class="n">thread</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
 
-        <span class="c1"># Wait for all threads to complete</span>
-        <span class="k">for</span> <span class="n">thread</span> <span class="ow">in</span> <span class="n">threads</span><span class="p">:</span>
-            <span class="n">thread</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
-
-        <span class="c1"># Check if any threads are still alive after timeout</span>
-        <span class="n">alive_threads</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">thread</span> <span class="k">for</span> <span class="n">thread</span> <span class="ow">in</span> <span class="n">threads</span> <span class="k">if</span> <span class="n">thread</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()]</span>
-        <span class="k">if</span> <span class="n">alive_threads</span><span class="p">:</span>
-            <span class="n">thread_names</span> <span class="o">=</span> <span class="p">[</span><span class="n">thread</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">thread</span> <span class="ow">in</span> <span class="n">alive_threads</span><span class="p">]</span>
-            <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Tasks did not complete within </span><span class="si">{</span><span class="n">timeout</span><span class="si">}</span><span class="s2">s: </span><span class="si">{</span><span class="n">thread_names</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-
-        <span class="c1"># If any task had an error, raise the first one</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">task_errors</span><span class="p">:</span>
-            <span class="n">first_error</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">task_errors</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span>
-            <span class="k">raise</span> <span class="n">first_error</span></div>
+        <span class="n">finalize_marker_executor_run</span><span class="p">(</span>
+            <span class="n">threads</span><span class="o">=</span><span class="n">threads</span><span class="p">,</span>
+            <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+            <span class="n">task_errors</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">task_errors</span><span class="p">,</span>
+            <span class="n">coordinator</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="p">,</span>
+            <span class="n">timeout_message</span><span class="o">=</span><span class="k">lambda</span> <span class="n">alive</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;Tasks did not complete within </span><span class="si">{</span><span class="n">timeout</span><span class="si">}</span><span class="s2">s: </span><span class="si">{</span><span class="p">[</span><span class="n">t</span><span class="o">.</span><span class="n">name</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">t</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">alive</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+        <span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="AsyncTraceExecutor.reset">
@@ -605,7 +529,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=c87aa342"></script>
+</div><script src="../../_static/documentation_options.js?v=1dd76d02"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

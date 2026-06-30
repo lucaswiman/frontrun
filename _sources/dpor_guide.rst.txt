@@ -1,9 +1,15 @@
 DPOR in Practice
 ================
 
-This is a practical guide to using ``explore_dpor()`` for systematic
-concurrency testing. For the underlying algorithm and theory, see
+This is a practical guide to using ``explore()`` (or the old ``explore_dpor()``)
+for systematic concurrency testing. For the underlying algorithm and theory, see
 :doc:`dpor`.
+
+.. note::
+
+   **Prefer** :func:`frontrun.explore` **(0.5+).** The old ``explore_dpor()``
+   function is deprecated and will be removed in 0.6. Use
+   ``frontrun.explore(strategy='dpor')`` (the default) instead.
 
 
 What DPOR does
@@ -18,11 +24,12 @@ DPOR and the invariant have separate jobs:
   (e.g. two reads, or accesses to different objects) are equivalent, so DPOR
   runs only one representative from each equivalence class.
 
-- **The invariant decides whether a bug occurred.** After all threads finish,
-  ``explore_dpor()`` calls your invariant on the final state. DPOR has no
+- **The invariant decides whether a bug occurred.** After all workers finish,
+  ``explore()`` calls your invariant on the final state. DPOR has no
   built-in notion of "correct" --- it doesn't know that ``counter == 1`` is
   wrong and ``counter == 2`` is right. You supply that judgement via the
-  invariant.
+  invariant. Raising ``AssertionError`` in the invariant is treated as a failure
+  (the message is included in ``result.explanation``).
 
 (The name "invariant" is standard in tools like this --- loom, CHESS, etc. ---
 even though it is technically a *postcondition* checked once after the threads
@@ -32,14 +39,24 @@ Putting the two together:
 
 .. code-block:: python
 
+   from frontrun import explore
+
+   result = explore(
+       setup=MyState,                         # called fresh each execution
+       workers=[worker_a, worker_b],          # each receives the state
+       invariant=lambda s: s.is_consistent(), # checked after all workers finish
+   )
+   result.assert_holds()
+
+Old API (deprecated)::
+
    from frontrun.dpor import explore_dpor
 
    result = explore_dpor(
-       setup=MyState,                         # called fresh each execution
-       threads=[thread_a, thread_b],          # each receives the state
-       invariant=lambda s: s.is_consistent(), # checked after all threads finish
+       setup=MyState,
+       threads=[thread_a, thread_b],
+       invariant=lambda s: s.is_consistent(),
    )
-
    assert result.property_holds, result.explanation
 
 1. DPOR picks an interleaving (based on conflict analysis).
@@ -62,9 +79,11 @@ detection mechanisms are layered from fine-grained to coarse:
 - Lock acquire and release (``threading.Lock``, ``threading.RLock``)
 - Thread spawn and join
 - **Redis commands** --- ``execute_command()`` is intercepted on redis-py
-  clients when ``detect_io=True`` (sync) or ``detect_redis=True`` (async).
-  Each command is classified as a read or write on specific keys; two threads
-  operating on *different* keys are independent.  See :doc:`redis`.
+  clients when ``detect_io=True``, which now covers Redis in both sync
+  and async contexts.  (The async-only ``detect_redis=True`` kwarg is
+  deprecated in 0.5 and will be removed in 0.6.)  Each command is
+  classified as a read or write on specific keys; two threads operating
+  on *different* keys are independent.  See :doc:`redis`.
 - **SQL statements** --- ``cursor.execute()`` is intercepted at the DBAPI
   layer.  Statements are parsed to per-table (or per-row) resource IDs; two
   threads touching *different* tables or rows are independent.  See
@@ -542,33 +561,28 @@ Python-level attribute accesses.
        )
        assert not result.property_holds   # race detected!
 
-**Async usage** (``detect_redis=True``):
+**Async usage** (``detect_io=True`` covers Redis from 0.5):
 
 .. code-block:: python
 
+   import asyncio
+
    import redis.asyncio as aioredis
-   from frontrun.async_dpor import explore_async_dpor
+   from frontrun import explore
 
    def test_async_redis_check_then_act(redis_port):
-       import asyncio
-
        async def maybe_init(state):
            r = aioredis.Redis(port=redis_port, decode_responses=True)
            if not await r.exists("resource"):
                await r.set("resource", "initialized")
            await r.aclose()
 
-       async def invariant(state):
-           r = aioredis.Redis(port=redis_port, decode_responses=True)
-           count = await r.get("resource")
-           await r.aclose()
-           return count is not None
-
-       asyncio.run(explore_async_dpor(
+       asyncio.run(explore(
            setup=lambda: None,
-           tasks=[maybe_init, maybe_init],
+           workers=maybe_init,
+           count=2,
            invariant=lambda s: True,
-           detect_redis=True,
+           detect_io=True,
        ))
 
 DPOR inserts fine-grained scheduling points around each Redis command, so it
@@ -590,3 +604,18 @@ the classic TOCTOU (check-then-act) race window.
   key-level semantics.
 
 For the full command classification and technical details, see :doc:`redis`.
+
+Prefer ``assert_holds()`` over manual asserts
+---------------------------------------------
+
+:meth:`InterleavingResult.assert_holds` is the recommended way to check a DPOR
+result in a test.  It raises ``AssertionError`` with the full race explanation
+when the invariant failed, and does nothing on success::
+
+   result = explore_dpor(setup, [thread1, thread2], invariant)
+   result.assert_holds()          # preferred
+   # instead of: assert result.property_holds, result.explanation
+
+Pass ``msg_prefix`` to distinguish multiple assertions in one test::
+
+   result.assert_holds(msg_prefix="transfer race: ")

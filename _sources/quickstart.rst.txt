@@ -35,9 +35,10 @@ Triggering a Race Condition
        ])
 
        executor = TraceExecutor(schedule)
-       executor.run("thread1", counter.increment)
-       executor.run("thread2", counter.increment)
-       executor.wait(timeout=5.0)
+       executor.run({
+           "thread1": counter.increment,
+           "thread2": counter.increment,
+       }, timeout=5.0)
 
        assert counter.value == 1  # One increment lost
 
@@ -111,18 +112,31 @@ that step.
 Running with Controlled Interleaving
 -------------------------------------
 
+Pass a ``{name: callable}`` dict to ``run()`` to start all threads and wait for
+them in a single call:
+
 .. code-block:: python
 
    from frontrun.trace_markers import TraceExecutor
 
    executor = TraceExecutor(schedule)
+   executor.run({
+       "thread1": task_function_1,
+       "thread2": task_function_2,
+   }, timeout=5.0)
 
-   # Register tasks to run
-   executor.run("thread1", task_function_1)
-   executor.run("thread2", task_function_2)
+This is the preferred form and matches the async API exactly.
 
-   # Wait for completion
-   executor.wait(timeout=5.0)
+.. note::
+
+   **Legacy API (deprecated)**
+
+   The original two-step form is still supported but emits a
+   ``DeprecationWarning`` and will be removed in version 0.6::
+
+       executor.run("thread1", task_function_1)   # deprecated
+       executor.run("thread2", task_function_2)   # deprecated
+       executor.wait(timeout=5.0)
 
 
 Async Support
@@ -196,3 +210,17 @@ scheduled tasks.
        })
 
        assert counter.value == 2  # No lost update
+
+Prefer ``assert_holds()`` over manual asserts
+----------------------------------------------
+
+Instead of writing ``assert result.property_holds, result.explanation`` after
+every exploration call, use the convenience helper :meth:`InterleavingResult.assert_holds`::
+
+   result = explore_dpor(setup, [thread1, thread2], invariant)
+   result.assert_holds()  # raises AssertionError with explanation on failure
+
+An optional ``msg_prefix`` is prepended to the explanation, which is handy
+when multiple assertions appear in one test::
+
+   result.assert_holds(msg_prefix="counter race: ")

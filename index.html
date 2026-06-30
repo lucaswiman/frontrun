@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Installation" href="installation.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Frontrun 0.4.1 documentation</title>
+        <title>Frontrun 0.5.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="#"><div class="brand">Frontrun 0.4.1 documentation</div></a>
+      <a href="#"><div class="brand">Frontrun 0.5.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="#">
   
-  <span class="sidebar-brand-text">Frontrun 0.4.1 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -284,6 +284,7 @@ a known race window.</p></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#creating-schedules">Creating Schedules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#running-with-controlled-interleaving">Running with Controlled Interleaving</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#async-support">Async Support</a></li>
+<li class="toctree-l2"><a class="reference internal" href="quickstart.html#prefer-assert-holds-over-manual-asserts">Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a><ul>
@@ -292,6 +293,7 @@ a known race window.</p></li>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#trace-markers">Trace Markers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#marker-schedule-exploration">Marker Schedule Exploration</a></li>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#automatic-i-o-detection">Automatic I/O Detection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="approaches.html#prefer-assert-holds-over-manual-asserts">Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a><ul>
@@ -304,6 +306,7 @@ a known race window.</p></li>
 <li class="toctree-l2"><a class="reference internal" href="dpor_guide.html#c-level-i-o-interception-via-ld-preload">C-level I/O interception via <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="dpor_guide.html#orm-helpers-django-dpor-and-sqlalchemy-dpor">ORM helpers: <code class="docutils literal notranslate"><span class="pre">django_dpor</span></code> and <code class="docutils literal notranslate"><span class="pre">sqlalchemy_dpor</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="dpor_guide.html#redis-key-level-detection">Redis key-level detection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="dpor_guide.html#prefer-assert-holds-over-manual-asserts">Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a><ul>
@@ -531,7 +534,7 @@ or <a class="reference internal" href="approaches.html"><span class="doc">How Fr
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=c87aa342"></script>
+</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

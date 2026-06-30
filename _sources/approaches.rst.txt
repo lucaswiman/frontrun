@@ -19,9 +19,14 @@ manual markers. It automatically detects attribute reads/writes, subscript
 accesses, and lock operations. The exploration engine is written in Rust for
 performance.
 
+.. note::
+
+   Prefer :func:`frontrun.explore` (the new unified API, 0.5+). The old
+   ``explore_dpor`` function is deprecated and will be removed in 0.6.
+
 .. code-block:: python
 
-   from frontrun.dpor import explore_dpor
+   from frontrun import explore
 
    class Counter:
        def __init__(self):
@@ -30,6 +35,18 @@ performance.
        def increment(self):
            temp = self.value
            self.value = temp + 1
+
+   result = explore(
+       setup=Counter,
+       workers=Counter.increment,
+       count=2,
+       invariant=lambda c: c.value == 2,
+   )
+   result.assert_holds()
+
+Old API (deprecated)::
+
+   from frontrun.dpor import explore_dpor
 
    result = explore_dpor(
        setup=Counter,
@@ -103,14 +120,20 @@ that spin-yield via the scheduler instead of blocking. The patching is scoped
 to each test run: primitives are replaced before ``setup()`` and restored
 afterwards.
 
-``explore_interleavings()`` does property-based exploration in the style of
+Random exploration (``strategy="random"``) does property-based exploration in the style of
 `Hypothesis <https://hypothesis.readthedocs.io/>`_: it generates random
 opcode-level schedules and checks that an invariant holds under each one,
 returning any counterexample schedule.
 
+.. note::
+
+   Prefer :func:`frontrun.explore` with ``strategy="random"`` (the new unified
+   API, 0.5+). The old ``explore_interleavings`` function is deprecated and
+   will be removed in 0.6.
+
 .. code-block:: python
 
-   from frontrun.bytecode import explore_interleavings
+   from frontrun import explore
 
    class Counter:
        def __init__(self, value=0):
@@ -121,21 +144,32 @@ returning any counterexample schedule.
            self.value = temp + 1
 
    def test_counter_is_atomic():
-       result = explore_interleavings(
+       result = explore(
            setup=lambda: Counter(value=0),
-           threads=[
-               lambda c: c.increment(),
-               lambda c: c.increment(),
-           ],
+           workers=Counter.increment,
+           count=2,
            invariant=lambda c: c.value == 2,
+           strategy="random",
            max_attempts=200,
-           max_ops=200,
            seed=42,
        )
+       result.assert_holds()
 
-       assert result.property_holds, result.explanation
+Old API (deprecated)::
 
-``explore_interleavings()`` often finds races very quickly --- sometimes on the
+   from frontrun.bytecode import explore_interleavings
+
+   result = explore_interleavings(
+       setup=lambda: Counter(value=0),
+       threads=[lambda c: c.increment(), lambda c: c.increment()],
+       invariant=lambda c: c.value == 2,
+       max_attempts=200,
+       max_ops=200,
+       seed=42,
+   )
+   assert result.property_holds, result.explanation
+
+Random exploration often finds races very quickly --- sometimes on the
 first attempt --- because even a single random schedule has a reasonable chance
 of interleaving the critical section. It can also catch races that are invisible
 to DPOR: if a C extension mutates shared state *without any I/O* (e.g.
@@ -416,3 +450,18 @@ engine for conflict analysis.
 
    frontrun pytest -vv tests/           # I/O interception + monkey-patching
    frontrun python examples/orm_race.py  # same, for scripts
+
+Prefer ``assert_holds()`` over manual asserts
+---------------------------------------------
+
+All exploration functions return an :class:`~frontrun.common.InterleavingResult`.
+Use :meth:`~frontrun.common.InterleavingResult.assert_holds` to check the result
+in a single call — it raises ``AssertionError`` (with the full race explanation)
+on failure and returns ``None`` on success::
+
+   result = explore_dpor(setup, [t1, t2], invariant)
+   result.assert_holds()   # raises with explanation when property_holds is False
+
+This is preferable to ``assert result.property_holds, result.explanation``
+because it works correctly under pytest's assertion rewriting and requires no
+memory burden on the caller to supply the message argument.

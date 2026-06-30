@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Trace Filtering" href="trace_filtering.html"><link rel="prev" title="SQL Conflict Detection – Technical Details" href="sql-technical-details.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Redis Conflict Detection – Technical Details - Frontrun 0.4.1 documentation</title>
+        <title>Redis Conflict Detection – Technical Details - Frontrun 0.5.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.4.1 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.5.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.4.1 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.5.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -390,22 +390,26 @@ parameter is needed.</p>
 <span class="p">)</span>
 </pre></div>
 </div>
-<p><strong>Async</strong> <code class="docutils literal notranslate"><span class="pre">explore_async_dpor</span></code>:
-Pass <code class="docutils literal notranslate"><span class="pre">detect_redis=True</span></code> to activate patching for <code class="docutils literal notranslate"><span class="pre">redis.asyncio</span></code> and
-<code class="docutils literal notranslate"><span class="pre">coredis</span></code> clients.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore_async_dpor</span>
+<p><strong>Async</strong> <code class="docutils literal notranslate"><span class="pre">frontrun.explore</span></code> with async workers:
+<code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> also activates patching for <code class="docutils literal notranslate"><span class="pre">redis.asyncio</span></code> and
+<code class="docutils literal notranslate"><span class="pre">coredis</span></code> clients from 0.5 onwards.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun</span><span class="w"> </span><span class="kn">import</span> <span class="n">explore</span>
 
-<span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">explore_async_dpor</span><span class="p">(</span>
+<span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">explore</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="n">State</span><span class="p">,</span>
-    <span class="n">tasks</span><span class="o">=</span><span class="p">[</span><span class="n">task_a</span><span class="p">,</span> <span class="n">task_b</span><span class="p">],</span>
+    <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">task_a</span><span class="p">,</span> <span class="n">task_b</span><span class="p">],</span>
     <span class="n">invariant</span><span class="o">=</span><span class="n">check_invariant</span><span class="p">,</span>
-    <span class="n">detect_redis</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">detect_io</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span>
 </pre></div>
 </div>
-<p>When <code class="docutils literal notranslate"><span class="pre">detect_redis=True</span></code> (or <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> for sync), the coarse
-endpoint-level socket I/O reports for Redis connections are automatically
-suppressed.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> is set (sync or async), the coarse endpoint-level
+socket I/O reports for Redis connections are automatically suppressed.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The async-only <code class="docutils literal notranslate"><span class="pre">detect_redis=True</span></code> kwarg is deprecated in 0.5 and
+will be removed in 0.6.  Use <code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> instead.</p>
+</div>
 <p>Without suppression, every <code class="docutils literal notranslate"><span class="pre">send()</span></code> (classified as a write on
 <code class="docutils literal notranslate"><span class="pre">socket:&lt;host&gt;:&lt;port&gt;</span></code>) and every <code class="docutils literal notranslate"><span class="pre">recv()</span></code> (a read on the same resource)
 would conflict with every other send/recv to the same server.  Ten Redis
@@ -516,7 +520,7 @@ keys alone.  See <code class="docutils literal notranslate"><span class="pre">id
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=c87aa342"></script>
+</div><script src="_static/documentation_options.js?v=1dd76d02"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

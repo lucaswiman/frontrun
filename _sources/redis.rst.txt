@@ -164,24 +164,28 @@ parameter is needed.
        detect_io=True,    # default; activates Redis key-level patching
    )
 
-**Async** ``explore_async_dpor``:
-Pass ``detect_redis=True`` to activate patching for ``redis.asyncio`` and
-``coredis`` clients.
+**Async** ``frontrun.explore`` with async workers:
+``detect_io=True`` also activates patching for ``redis.asyncio`` and
+``coredis`` clients from 0.5 onwards.
 
 .. code-block:: python
 
-   from frontrun.async_dpor import explore_async_dpor
+   from frontrun import explore
 
-   result = await explore_async_dpor(
+   result = await explore(
        setup=State,
-       tasks=[task_a, task_b],
+       workers=[task_a, task_b],
        invariant=check_invariant,
-       detect_redis=True,
+       detect_io=True,
    )
 
-When ``detect_redis=True`` (or ``detect_io=True`` for sync), the coarse
-endpoint-level socket I/O reports for Redis connections are automatically
-suppressed.
+When ``detect_io=True`` is set (sync or async), the coarse endpoint-level
+socket I/O reports for Redis connections are automatically suppressed.
+
+.. note::
+
+   The async-only ``detect_redis=True`` kwarg is deprecated in 0.5 and
+   will be removed in 0.6.  Use ``detect_io=True`` instead.
 
 Without suppression, every ``send()`` (classified as a write on
 ``socket:<host>:<port>``) and every ``recv()`` (a read on the same resource)
