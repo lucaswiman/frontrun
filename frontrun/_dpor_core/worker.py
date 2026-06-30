@@ -14,13 +14,20 @@ new backend can plug in without touching the core:
     subprocesses under the ``frontrun`` CLI and implements the same Protocol.
 
 ``TurnTransport``
-    Blocks a worker until the scheduler grants it the turn, and lets the
-    scheduler hand the turn off. In-process this is a ``threading.Condition``
-    over a shared "current worker"/"done" set (today fused into
-    :class:`frontrun._dpor_runtime.scheduler.DporScheduler`); cross-process it
-    is a length-prefixed message over a per-worker unix socket. The Protocol is
-    pinned here so both backends target one contract; lifting ``DporScheduler``
-    onto it is the next slice of the unification.
+    The *coordinator-internal* turn primitive: blocks a worker until the
+    scheduler grants it the turn, and lets the scheduler hand the turn off.
+    In-process this is a ``threading.Condition`` over a shared "current
+    worker"/"done" set (today fused into
+    :class:`frontrun._dpor_runtime.scheduler.DporScheduler`); cross-process the
+    coordinator implements it by withholding/sending a GRANT frame on the
+    per-worker socket. Lifting ``DporScheduler`` onto it is a later slice.
+
+Note the worker-facing *scheduler surface* is a separate seam, not
+``TurnTransport``. The SQL/Redis interception layers call ``report_and_wait`` /
+``acquire_row_locks`` / ``release_row_locks`` (plus the io-reporter callable) on
+whatever scheduler is in thread-local context; cross-process that object is
+:class:`frontrun._dpor_runtime.xproc.proxy.SchedulerProxy`, which forwards those
+calls over the socket to a coordinator that drives ``TurnTransport``.
 
 Nothing in this module imports threading or asyncio — these are pure typing
 contracts shared by every backend.
