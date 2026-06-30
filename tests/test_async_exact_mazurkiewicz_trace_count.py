@@ -71,6 +71,7 @@ class TestAsyncIndependentState:
                 deadlock_timeout=5.0,
                 total_timeout=60.0,
                 strategy="dpor",
+                detect_io=False,
             )
         )
 
@@ -121,6 +122,7 @@ class TestAsyncTwoTasksSharedState:
                 deadlock_timeout=5.0,
                 total_timeout=60.0,
                 strategy="dpor",
+                detect_io=False,
             )
         )
 
@@ -168,6 +170,7 @@ class TestAsyncNTasksWithLock:
                 deadlock_timeout=5.0,
                 total_timeout=60.0,
                 strategy="dpor",
+                detect_io=False,
             )
         )
 
@@ -215,6 +218,7 @@ class TestAsyncTwoTasksSharedStateWithLock:
                 deadlock_timeout=5.0,
                 total_timeout=60.0,
                 strategy="dpor",
+                detect_io=False,
             )
         )
 
