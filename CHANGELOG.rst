@@ -6,6 +6,9 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+0.5.0 (2026-06-29)
+-----------------
+
 **Public API refresh.** Several of the library's public entry points have
 been unified or renamed for ergonomics. The old names keep working in
 this release but emit ``DeprecationWarning``; they are scheduled for
