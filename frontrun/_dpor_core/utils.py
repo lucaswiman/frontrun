@@ -104,6 +104,7 @@ def advance_replay_index(
         if replay_index >= len(replay_schedule):
             if not extend_fn():
                 return replay_index, None
+            continue
         scheduled = replay_schedule[replay_index]
         replay_index += 1
         if scheduled not in actors_done:

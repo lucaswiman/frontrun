@@ -436,3 +436,11 @@ class TestKeySpecInterpreterEdgeCases:
         result = parse_redis_access("MEMORY", ("DOCTOR",))
         assert result.read_keys == []
         assert result.write_keys == []
+
+
+def test_command_key_specs_includes_fcall() -> None:
+    """_COMMAND_KEY_SPECS is the complete catalog — FCALL/FCALL_RO must be present even though _EVAL_CMDS shadows them."""
+    from frontrun._redis_command_data import _COMMAND_KEY_SPECS
+
+    assert "FCALL" in _COMMAND_KEY_SPECS
+    assert "FCALL_RO" in _COMMAND_KEY_SPECS

@@ -482,3 +482,30 @@ class TestExploreRandomDeadlockHandling:
             "explore_random should catch DeadlockError from run_with_schedule "
             "and return InterleavingResult with property_holds=False"
         )
+
+
+def test_timeout_counts_as_explored():
+    """Timed-out schedules must be counted in both num_explored and unique_interleavings.
+
+    Regression: the TimeoutError handler added the schedule hash to
+    seen_schedule_hashes without incrementing num_explored, causing
+    unique_interleavings > num_explored — a semantic contradiction.
+    """
+    import time
+
+    def slow_worker(state):
+        time.sleep(1)
+
+    result = explore_random(
+        setup=lambda: None,
+        threads=[slow_worker, slow_worker],
+        invariant=lambda s: True,
+        max_attempts=5,
+        timeout_per_run=0.001,
+        seed=42,
+        patch_sleep=False,
+    )
+    assert result.num_explored > 0, "timed-out runs should still count as explored"
+    assert result.unique_interleavings <= result.num_explored, (
+        f"unique_interleavings ({result.unique_interleavings}) should not exceed num_explored ({result.num_explored})"
+    )

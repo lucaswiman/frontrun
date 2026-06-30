@@ -707,6 +707,7 @@ def explore_random(
                 # half-finished racing state (finding 9d).
                 if debug:
                     print(f"Skipping timed-out schedule: {schedule}", flush=True)
+                result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))
                 continue
             result.num_explored += 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import sys
 from collections.abc import Callable, Coroutine
 from contextlib import contextmanager
 from typing import Any, TypeVar
@@ -81,7 +82,7 @@ def wrap_sync_thread(
             unsuppress_sync_reporting()
             suppress_sync_reporting()
             try:
-                conn_ctx.__exit__(None, None, None)
+                conn_ctx.__exit__(*sys.exc_info())
             finally:
                 unsuppress_sync_reporting()
             raise
@@ -113,8 +114,6 @@ def wrap_sync_thread(
             try:
                 fn(state)
             except BaseException:
-                import sys
-
                 exc_info = sys.exc_info()  # type: ignore[assignment]
                 raise
             finally:
