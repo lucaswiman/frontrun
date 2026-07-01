@@ -18,6 +18,46 @@ granularity.
    The supported model is: **if the workers are Python, run frontrun inside
    them.** There is no scheduling of unmodified non-Python processes.
 
+Because separate processes share no memory, only *external-store* accesses (SQL
+statements, Redis commands) are scheduling points --- purely in-memory work
+inside a worker is not interleaved the way threads are. This is coarser than
+thread scheduling by design: the interesting cross-process races are the ones
+that go through the shared database or cache.
+
+Unlike the in-process DPOR path, cross-process exploration does **not** require
+the ``frontrun`` CLI wrapper (there is no ``LD_PRELOAD`` C-level I/O to
+intercept); a plain ``pytest`` run works, since each worker installs frontrun's
+Python-level SQL/Redis interception itself.
+
+
+Which entry point?
+------------------
+
+There are two public entry points; pick by how you want to define workers:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 35 35
+
+   * -
+     - ``explore(execution="process")``
+     - ``explore_processes()``
+   * - Worker is
+     - a **picklable** callable (module-level function), same as threads
+     - a ``"module:callable"`` **target string** run in a fresh interpreter
+   * - Args reach the worker via
+     - :mod:`multiprocessing` **pickling** (tuples, dicts, most objects)
+     - **JSON** through the environment (scalars/lists/str-keyed dicts only)
+   * - Return type
+     - :class:`~frontrun.common.InterleavingResult` (like threads/async)
+     - :class:`CrossProcessResult` (``ok`` / ``failure`` / ``failure_kind`` ...)
+   * - Reach for it when
+     - you want a drop-in mirror of the threading API
+     - the target must run in a clean interpreter, or richer JSON args suffice
+
+``explore(execution="process")`` is the ergonomic default; ``explore_processes()``
+is the lower-level door with explicit per-worker specs.
+
 
 ``execution="process"`` --- the ergonomic mirror
 -------------------------------------------------
@@ -124,10 +164,14 @@ callables, it spawns each worker as a real OS process running a
 
 ``processes`` is a mapping of label → :class:`~frontrun.Subprocess` (labels are
 purely for readability) or a plain sequence. ``Subprocess(target, args)`` names a
-``"module:callable"`` and its positional ``args``; the args must be
-JSON-serialisable, since they are passed to the child through the environment.
-Because the child imports the target by name, it must be importable in a fresh
-interpreter --- a module-level callable in an installed or on-path module.
+``"module:callable"`` and its positional ``args``; the args are passed to the
+child as **JSON through the environment**, so they must be JSON-serialisable
+**and survive a JSON round-trip**: a tuple arrives as a list and a dict with
+non-string keys comes back string-keyed. Pass plain scalars, lists, and
+string-keyed dicts --- or use ``frontrun.explore(execution="process")`` (which
+pickles) when you need richer argument types. Because the child imports the
+target by name, it must be importable in a fresh interpreter --- a module-level
+callable in an installed or on-path module.
 
 Here ``setup`` and ``invariant`` take no arguments and reach the shared store
 directly (they run in the coordinator process); ``setup`` resets the external
@@ -153,6 +197,9 @@ state before each interleaving and ``invariant`` checks it afterwards.
      - Number of interleavings explored.
    * - ``exhausted``
      - ``True`` if the search space was fully covered.
+   * - ``accesses``
+     - The external accesses observed on the failing run, as
+       ``(worker_id, resource, "read"|"write")`` tuples, or ``None``.
 
 
 Strategies and worker reuse
@@ -170,7 +217,58 @@ Strategies and worker reuse
 ``reuse_workers=True`` keeps the worker processes alive across iterations,
 re-running the target in place instead of respawning for each interleaving. The
 verdict is identical; reuse trades startup cost for the target being run
-repeatedly in one process.
+repeatedly in one process, so the target's process-global state must be safe to
+re-enter (frontrun resets its own per-connection SQL state between iterations).
+It is available on both entry points --- ``explore_processes(..., reuse_workers=True)``
+and ``frontrun.explore(..., execution="process", reuse_workers=True)``:
+
+.. code-block:: python
+
+   result = frontrun.explore_processes(
+       {"w0": frontrun.Subprocess(_TARGET, (db,)), "w1": frontrun.Subprocess(_TARGET, (db,))},
+       setup=lambda: _demo_counter.setup(db),
+       invariant=lambda: _demo_counter.read(db) == 2,
+       reuse_workers=True,          # spawn each worker once, re-run per interleaving
+   )
+
+
+Deadlock detection
+------------------
+
+When workers take row locks (``SELECT ... FOR UPDATE``) in conflicting orders,
+the coordinator's wait-for graph detects the cycle and reports
+``failure_kind == "deadlock"`` --- the same machinery as the in-process DPOR
+path. This needs a store with real row locks (PostgreSQL/MySQL); SQLite has
+none, so the example requires a running Postgres:
+
+.. code-block:: python
+
+   # myapp/transfer.py  (importable target)
+   import psycopg2
+
+   def lock_two(dsn, first_id, second_id):
+       conn = psycopg2.connect(dsn)
+       conn.autocommit = False
+       cur = conn.cursor()
+       cur.execute("SELECT * FROM accounts WHERE id = %s FOR UPDATE", (first_id,))
+       cur.execute("SELECT * FROM accounts WHERE id = %s FOR UPDATE", (second_id,))
+       conn.commit()
+       conn.close()
+
+.. code-block:: python
+
+   # Two workers lock rows 1 and 2 in opposite order: a classic deadlock.
+   result = frontrun.explore_processes(
+       {
+           "w0": frontrun.Subprocess("myapp.transfer:lock_two", (dsn, 1, 2)),
+           "w1": frontrun.Subprocess("myapp.transfer:lock_two", (dsn, 2, 1)),
+       },
+       setup=lambda: reset_accounts(dsn),
+       invariant=lambda: True,          # we are looking for the deadlock, not a data race
+   )
+   assert not result.ok
+   assert result.failure_kind == "deadlock"
+   assert result.failing_schedule is not None
 
 
 Redis workers

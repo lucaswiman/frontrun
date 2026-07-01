@@ -344,12 +344,13 @@ The lower-level `frontrun.explore_processes(...)` spawns `frontrun.Subprocess("m
 ```python
 import frontrun
 
-# Each worker is spawned as a fresh process running "module:callable".
+# Illustrative: myapp.checkout:reserve is your own importable target, and
+# reset_inventory / stock_never_negative are your own coordinator-side helpers.
+# Args are passed to the child as JSON (tuples arrive as lists); use
+# execution="process" above when you need richer, pickled arguments.
 result = frontrun.explore_processes(
-    {
-        "w0": frontrun.Subprocess("myapp.checkout:reserve", (order_id,)),
-        "w1": frontrun.Subprocess("myapp.checkout:reserve", (order_id,)),
-    },
+    frontrun.Subprocess("myapp.checkout:reserve", ("order-1",)),
+    count=2,                          # replicate the spec (or pass a dict/list of specs)
     setup=reset_inventory,            # runs in the coordinator; resets the DB before each run
     invariant=stock_never_negative,  # reads the DB afterwards; returns True/False
     max_iterations=50,
@@ -358,7 +359,7 @@ if not result.ok:
     raise AssertionError(result.failure)
 ```
 
-`strategy="dpor"` (default) prunes equivalent interleavings and detects deadlocks; `strategy="exhaustive"` brute-forces every interleaving as a reduction-free cross-check. `reuse_workers=True` keeps workers alive across iterations. Cross-process tests spawn real processes and are marked with the pytest `e2e` marker — run them via `make test-e2e-3.14` or `pytest -m e2e`.
+`strategy="dpor"` (default) prunes equivalent interleavings and detects deadlocks; `strategy="exhaustive"` brute-forces every interleaving as a reduction-free cross-check. `reuse_workers=True` keeps workers alive across iterations (available on both entry points). Cross-process tests spawn real processes and are marked with the pytest `e2e` marker — run them via `make test-e2e-3.14` or `pytest -m e2e`. (Cross-process mode installs its interception in Python, so it does not need the `frontrun` CLI wrapper.)
 
 ### C-Level I/O Interception
 

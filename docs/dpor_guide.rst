@@ -603,3 +603,12 @@ when the invariant failed, and does nothing on success::
 Pass ``msg_prefix`` to distinguish multiple assertions in one test::
 
    result.assert_holds(msg_prefix="transfer race: ")
+
+
+Workers in separate processes
+-----------------------------
+
+If your workers are separate OS processes contending on a shared database or
+Redis (rather than threads in one process), the same DPOR engine drives the
+search via ``frontrun.explore(..., execution="process")``. See
+:doc:`cross_process`.

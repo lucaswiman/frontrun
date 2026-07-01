@@ -14,7 +14,11 @@ Unreleased
   ``frontrun.explore_processes(...)`` (with ``frontrun.Subprocess``) spawns real
   OS processes from ``"module:callable"`` targets and supports ``strategy="dpor"``
   (default, engine reduction + cross-worker deadlock detection) or
-  ``"exhaustive"``, plus ``reuse_workers=True``. See :doc:`cross_process`.
+  ``"exhaustive"``. Both entry points accept ``reuse_workers=True`` (spawn each
+  worker once, re-run per interleaving) and a ``count=`` shorthand to replicate a
+  worker; a non-picklable worker or an unimportable target now fails with a clear
+  frontrun-level message (the child's real error, not a bare connection timeout).
+  See :doc:`cross_process`.
 
 0.6.0 (2026-06-30)
 ------------------
