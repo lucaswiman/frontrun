@@ -20,6 +20,7 @@ import struct
 from typing import Any
 
 # Worker -> coordinator
+HELLO = "hello"  # first frame on connect; announces this worker's id
 ACCESS = "access"  # an io-reporter (resource_id, kind) access report
 REPORT_AND_WAIT = "report_and_wait"  # request a scheduling turn; expects GRANT/ABORT
 ACQUIRE_LOCKS = "acquire_locks"  # block until row locks are held; expects GRANT/ABORT

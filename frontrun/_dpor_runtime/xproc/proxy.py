@@ -43,6 +43,10 @@ class SchedulerProxy:
         # sending into a socket the coordinator has stopped reading.
         self._aborted = False
 
+    def hello(self) -> None:
+        """Announce this worker's id to the coordinator (first frame after connect)."""
+        proto.send_msg(self._sock, {"t": proto.HELLO, "w": self._worker_id})
+
     # --- io-reporter callable: installed via set_io_reporter(proxy.io_report) ---
 
     def io_report(self, resource_id: str, kind: str) -> None:
