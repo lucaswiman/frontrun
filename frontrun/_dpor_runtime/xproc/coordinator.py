@@ -22,6 +22,7 @@ import os
 import shutil
 import socket
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -51,6 +52,41 @@ def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket
     if hello is None or hello.get("t") != proto.HELLO:
         raise RuntimeError(f"expected HELLO frame, got {hello!r}")
     return sock, int(hello["w"])
+
+
+def accept_hello_live(
+    listener: socket.socket,
+    launch: Any,
+    handles: Any,
+    connect_budget: float,
+) -> tuple[socket.socket, int]:
+    """Accept one HELLO, failing fast if a launched child dies before connecting.
+
+    A worker that crashes at startup (bad ``module:callable`` target, import
+    error) never connects, so a plain ``accept`` would block the full connect
+    budget before timing out. Poll ``launch.diagnose(handles)`` between short
+    accept attempts and raise as soon as a child has exited, so the coordinator
+    surfaces the real cause in ~a poll interval instead of tens of seconds.
+    """
+    deadline = time.monotonic() + connect_budget
+    any_exited = getattr(launch, "any_exited", None)
+    prev = listener.gettimeout()
+    listener.settimeout(min(0.5, connect_budget))
+    try:
+        while True:
+            try:
+                return accept_hello(listener, connect_budget)
+            except (TimeoutError, OSError):
+                # accept() timed out with no connection yet (the accepted socket
+                # keeps the full connect_budget, so this is not a slow HELLO).
+                # any_exited is non-destructive; the stderr-reading diagnose() is
+                # left for the failure path so it is not consumed here.
+                if any_exited is not None and any_exited(handles):
+                    raise TimeoutError("worker exited before connecting") from None
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("workers did not connect within the deadlock timeout") from None
+    finally:
+        listener.settimeout(prev)
 
 
 @dataclass
@@ -209,7 +245,7 @@ class CrossProcessCoordinator:
         accesses: list[tuple[int, str, str]] = []
         try:
             for _ in range(self.num_workers):
-                sock, wid = accept_hello(listener, self.deadlock_timeout)
+                sock, wid = accept_hello_live(listener, launch, handles, self.deadlock_timeout)
                 conn = _Conn(wid, sock)
                 conns[wid] = conn
                 self._advance(conn, accesses, registry)

@@ -84,6 +84,25 @@ def test_count_shorthand_replicates_spec(tmp_path) -> None:
     assert result.failure_kind == "invariant"
 
 
+def test_bad_target_reports_real_cause_quickly() -> None:
+    # A typo'd target must fail fast with the child's real error, not block the
+    # full connect budget (deadlock_timeout*2+10) before a bare timeout.
+    import time
+
+    start = time.monotonic()
+    result = frontrun.explore_processes(
+        frontrun.Subprocess("frontrun_no_such_module:go"),
+        count=2,
+        setup=lambda: None,
+        invariant=lambda: True,
+        deadlock_timeout=2.0,
+    )
+    elapsed = time.monotonic() - start
+    assert result.failure_kind == "worker_error"
+    assert "No module named" in (result.failure or "") or "ModuleNotFoundError" in (result.failure or "")
+    assert elapsed < 10.0, f"bad-target detection took {elapsed:.1f}s (should fast-fail)"
+
+
 def test_atomic_increment_has_no_race(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
     result = frontrun.explore_processes(

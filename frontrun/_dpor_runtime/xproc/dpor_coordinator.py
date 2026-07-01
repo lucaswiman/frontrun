@@ -33,7 +33,7 @@ from frontrun._dpor_runtime.scheduler import DporScheduler
 from frontrun._opcode_observer import StableObjectIds
 
 from . import protocol as proto
-from .coordinator import CrossProcessResult, Launcher, accept_hello
+from .coordinator import CrossProcessResult, Launcher, accept_hello_live
 
 
 def _setup_relay_tls(scheduler: DporScheduler, worker_id: int) -> list[tuple[int, str, bool]]:
@@ -233,6 +233,9 @@ class DporCrossProcessCoordinator:
     ) -> None:
         self.num_workers = num_workers
         self.deadlock_timeout = deadlock_timeout
+        # Overall budget for a worker to connect and send HELLO; also the relay
+        # join budget. Generous vs deadlock_timeout because process spawn is slow.
+        self._connect_budget = deadlock_timeout * 2 + 10.0
         self.preemption_bound = preemption_bound
         self.max_executions = max_executions
         self.max_branches = max_branches
@@ -267,7 +270,7 @@ class DporCrossProcessCoordinator:
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(self.socket_path)
         listener.listen(self.num_workers)
-        listener.settimeout(self.deadlock_timeout * 2 + 10.0)
+        listener.settimeout(self._connect_budget)
         install_wait_for_graph()
 
         persistent_handles: Any = None
@@ -281,7 +284,7 @@ class DporCrossProcessCoordinator:
                 persistent_handles = launch.launch(self.socket_path, list(range(self.num_workers)))
                 try:
                     for _ in range(self.num_workers):
-                        sock, wid = accept_hello(listener, self.deadlock_timeout)
+                        sock, wid = accept_hello_live(listener, launch, persistent_handles, self._connect_budget)
                         persistent_socks[wid] = sock
                 except (TimeoutError, OSError) as exc:
                     return _connection_failure(_launch_error(launch, persistent_handles, exc), 0)
@@ -388,7 +391,7 @@ class DporCrossProcessCoordinator:
         try:
             try:
                 for _ in range(self.num_workers):
-                    sock, wid = accept_hello(listener, self.deadlock_timeout)
+                    sock, wid = accept_hello_live(listener, launch, handles, self._connect_budget)
                     socks_by_id[wid] = sock
             except (TimeoutError, OSError) as exc:
                 # Reap dead children so the launcher can read their exit/stderr,

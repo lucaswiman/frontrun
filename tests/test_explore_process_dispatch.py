@@ -57,3 +57,45 @@ def test_explore_processes_count_replicates_single_spec() -> None:
 def test_explore_processes_count_rejects_mapping() -> None:
     with pytest.raises(ValueError, match="count"):
         cross_process._resolve_specs({"w0": Subprocess("pkg.mod:go")}, count=2)
+
+
+def test_process_result_explanation_includes_kind_and_accesses() -> None:
+    from frontrun._dpor_runtime.xproc.coordinator import CrossProcessResult
+
+    cpr = CrossProcessResult(
+        ok=False,
+        iterations=3,
+        exhausted=False,
+        failing_schedule=[0, 1],
+        failure="cross-worker deadlock",
+        failure_kind="deadlock",
+        accesses=[(0, "sql:accounts:id=1", "write"), (1, "sql:accounts:id=2", "write")],
+    )
+    ir = cross_process._to_interleaving_result(cpr)
+    assert not ir.property_holds
+    assert "[deadlock]" in (ir.explanation or "")
+    assert "sql:accounts:id=1" in (ir.explanation or "")
+
+
+def test_process_rejects_silent_noop_kwargs() -> None:
+    with pytest.raises(ValueError, match="serializable_invariant"):
+        frontrun.explore(
+            setup=lambda: None,
+            workers=lambda s: None,
+            count=2,
+            invariant=lambda s: True,
+            execution="process",
+            serializable_invariant=True,
+        )
+
+
+def test_explore_processes_reuse_rejects_exhaustive() -> None:
+    with pytest.raises(ValueError, match="reuse_workers"):
+        frontrun.explore_processes(
+            Subprocess("pkg.mod:go"),
+            count=2,
+            setup=lambda: None,
+            invariant=lambda: True,
+            strategy="exhaustive",
+            reuse_workers=True,
+        )

@@ -23,7 +23,7 @@ Example::
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, CrossProcessResult
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
@@ -42,8 +42,14 @@ def _to_interleaving_result(result: CrossProcessResult) -> Any:
 
     explanation = None
     if not result.ok:
+        kind = f"[{result.failure_kind}] " if result.failure_kind else ""
         where = f" at schedule {result.failing_schedule}" if result.failing_schedule is not None else ""
-        explanation = f"{result.failure or 'invariant violated'}{where}"
+        explanation = f"{kind}{result.failure or 'invariant violated'}{where}"
+        # Surface the external-access trace so a process-mode failure is
+        # diagnosable without dropping down to explore_processes().
+        if result.accesses:
+            trace = ", ".join(f"w{wid}:{access}:{rid}" for wid, rid, access in result.accesses)
+            explanation += f"\n  accesses: {trace}"
     return InterleavingResult(
         property_holds=result.ok,
         counterexample=result.failing_schedule,
@@ -130,7 +136,7 @@ def explore_processes(
     setup: Callable[[], Any],
     invariant: Callable[[], bool],
     count: int | None = None,
-    strategy: str = "dpor",
+    strategy: Literal["dpor", "exhaustive"] = "dpor",
     max_iterations: int = 4096,
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
@@ -158,6 +164,8 @@ def explore_processes(
     specs = _resolve_specs(processes, count)
     if not specs:
         raise ValueError("explore_processes requires at least one Subprocess")
+    if reuse_workers and strategy == "exhaustive":
+        raise ValueError("explore_processes(): reuse_workers is not supported with strategy='exhaustive'")
     if strategy == "dpor":
         return DporCrossProcessCoordinator(
             num_workers=len(specs),

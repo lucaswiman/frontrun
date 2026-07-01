@@ -1,19 +1,20 @@
 """Launch-time failure UX for cross-process workers.
 
-The first mistakes a new user makes are (1) passing a non-picklable worker to
-``execution="process"`` and (2) naming a target module that does not import.
-Both used to surface as an inscrutable pickling traceback or a misleading
-``TimeoutError`` with the real cause discarded. These tests pin the friendlier
-behaviour: a clear frontrun-level message and, for subprocesses, the child's
-actual error folded into the diagnostic.
+``execution="process"`` serialises workers with dill, so closures and lambdas
+work (not just module-level functions); only genuinely unserialisable captures
+(open sockets, ...) fail, and then with a clear frontrun-level message. A bad
+``module:callable`` subprocess target surfaces the child's real error via
+``diagnose()`` instead of a misleading ``TimeoutError``.
 """
 
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from frontrun._dpor_runtime.xproc.dpor_coordinator import _connection_failure, _launch_error
-from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, SubprocessLauncher
+from frontrun._dpor_runtime.xproc.launch import Subprocess, SubprocessLauncher, _dumps_worker
 
 
 class _FakeLauncher:
@@ -24,16 +25,26 @@ class _FakeLauncher:
         return self._detail
 
 
-def test_mplauncher_rejects_unpicklable_worker(tmp_path) -> None:
-    # A closure defined here is not picklable; execution="process" requires
-    # module-level workers. The launcher must say so, not dump a raw
-    # PicklingError from deep in multiprocessing.
-    def local_worker(state) -> None:  # noqa: ARG001 - unpicklable by construction
-        return None
+def test_dumps_worker_handles_closures() -> None:
+    # dill serialises closures (stdlib pickle would not), so a locally-defined
+    # worker capturing state round-trips — the parity win over module-level-only.
+    import dill
 
-    launcher = MpLauncher([local_worker], state_fn=lambda: None)
-    with pytest.raises(TypeError, match="picklable"):
-        launcher.launch(str(tmp_path / "s.sock"), [0])
+    def make(bump: int):
+        def worker(state) -> int:
+            return state + bump
+
+        return worker
+
+    fn, state = dill.loads(_dumps_worker(make(100), 1))
+    assert fn(state) == 101
+
+
+def test_dumps_worker_rejects_truly_unserialisable() -> None:
+    # An open socket in the setup() state can't be serialised even by dill; the
+    # error must be a clear frontrun message, not a raw pickling traceback.
+    with pytest.raises(TypeError, match="could not serialise"):
+        _dumps_worker(lambda state: state, socket.socket())
 
 
 def test_subprocess_launcher_diagnoses_bad_target(tmp_path) -> None:

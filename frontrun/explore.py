@@ -92,11 +92,13 @@ def explore(
         execution: ``"thread"`` (default) runs workers as threads/async tasks in
             this process; ``"process"`` runs each worker in its own spawned
             Python process, coordinating over a socket. Process mode has the same
-            ``setup`` / ``workers`` / ``invariant`` / ``count`` shape but requires
-            **picklable** module-level workers and a **picklable** ``setup()``
-            return value (a handle to external SQL/Redis state — a DB path/URL,
-            not a live Python object), and supports ``strategy="dpor"`` with sync
-            workers only. See :doc:`/cross_process`.
+            ``setup`` / ``workers`` / ``invariant`` / ``count`` shape; workers and
+            the ``setup()`` return value are serialised with dill (so closures and
+            lambdas work, not just module-level functions), and ``setup()`` should
+            return a handle to external SQL/Redis state (a DB path/URL, not a live
+            connection). Supports ``strategy="dpor"`` with sync workers only and
+            needs the ``process`` extra (``pip install frontrun[process]``). See
+            :doc:`/cross_process`.
         reuse_workers: Process execution only. Spawn each worker process once and
             re-run it per interleaving instead of respawning (amortises spawn
             cost); ignored for thread execution.
@@ -149,6 +151,27 @@ def explore(
             raise ValueError("explore(): execution='process' does not support async workers")
         if strategy != "dpor":
             raise ValueError("explore(): execution='process' supports strategy='dpor' only")
+        # These options change *which* bugs are found and are not honored in
+        # process mode (state is external; there is no in-process opcode trace).
+        # Reject them explicitly rather than silently ignoring — a silent no-op
+        # here is a correctness footgun when porting a thread test.
+        unsupported = [
+            name
+            for name, is_set in (
+                ("serializable_invariant", serializable_invariant is not False),
+                ("error_on_any_race", error_on_any_race),
+                ("lock_timeout", lock_timeout is not None),
+                ("trace_packages", trace_packages is not None),
+                ("track_dunder_dict_accesses", track_dunder_dict_accesses),
+                ("detect_sql", detect_sql),
+            )
+            if is_set
+        ]
+        if unsupported:
+            raise ValueError(
+                f"explore(): execution='process' does not support {', '.join(unsupported)} "
+                "(these affect in-process tracing only; drop them or use execution='thread')"
+            )
         from frontrun.cross_process import _explore_process
 
         return _explore_process(

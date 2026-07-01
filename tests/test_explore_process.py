@@ -67,6 +67,32 @@ def test_process_execution_reuse_finds_lost_update(tmp_path) -> None:
     assert result.counterexample is not None
 
 
+def test_process_execution_accepts_closure_workers(tmp_path) -> None:
+    # dill serialisation lets execution="process" take a locally-defined closure
+    # (not just a module-level function), matching what thread execution accepts.
+    import sqlite3
+
+    db = str(tmp_path / "counter.db")
+
+    def increment(state) -> None:
+        conn = sqlite3.connect(state, isolation_level=None)
+        try:
+            val = conn.execute("SELECT val FROM counter WHERE id = 1").fetchone()[0]
+            conn.execute("UPDATE counter SET val = ? WHERE id = 1", (val + 1,))
+        finally:
+            conn.close()
+
+    result = frontrun.explore(
+        setup=_make_setup(db),
+        workers=increment,
+        count=2,
+        invariant=lambda state: _demo_counter.read(state) == 2,
+        execution="process",
+    )
+    assert not result.property_holds
+    assert result.counterexample is not None
+
+
 def test_process_execution_rejects_async_workers() -> None:
     async def worker(state):  # noqa: RUF029 - intentionally async to trigger the guard
         return None
