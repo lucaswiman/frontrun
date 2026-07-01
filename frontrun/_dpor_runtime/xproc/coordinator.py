@@ -173,9 +173,7 @@ class CrossProcessCoordinator:
             # element, so every interleaving is reached exactly once.
             for i in range(len(prefix), len(outcome.schedule)):
                 chosen = outcome.schedule[i]
-                stack.extend(
-                    [*outcome.schedule[:i], alt] for alt in outcome.branch_points[i] if alt != chosen
-                )
+                stack.extend([*outcome.schedule[:i], alt] for alt in outcome.branch_points[i] if alt != chosen)
 
         return CrossProcessResult(ok=True, iterations=iterations, exhausted=exhausted)
 

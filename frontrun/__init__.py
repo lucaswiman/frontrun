@@ -61,6 +61,8 @@ from frontrun.trace_markers import TraceExecutor
 if TYPE_CHECKING:
     from frontrun.async_shuffler import explore_async_random as explore_async_random
     from frontrun.bytecode import explore_random as explore_random
+    from frontrun.cross_process import Subprocess as Subprocess
+    from frontrun.cross_process import explore_processes as explore_processes
 
 try:
     __version__: str = _metadata_version("frontrun")
@@ -71,6 +73,8 @@ except Exception:
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "explore_random": ("frontrun.bytecode", "explore_random"),
     "explore_async_random": ("frontrun.async_shuffler", "explore_async_random"),
+    "explore_processes": ("frontrun.cross_process", "explore_processes"),
+    "Subprocess": ("frontrun.cross_process", "Subprocess"),
 }
 
 
@@ -83,9 +87,11 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "NondeterministicSQLError",
+    "Subprocess",
     "TraceExecutor",
     "__version__",
     "explore",
     "explore_async_random",
+    "explore_processes",
     "explore_random",
 ]

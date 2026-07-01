@@ -76,6 +76,10 @@ testpaths = ["tests"]
 addopts = "--tb=short"
 timeout = 60
 asyncio_mode = "auto"
+markers = [
+    "integration: tests requiring external services (redis, postgres, network)",
+    "e2e: end-to-end tests that spawn real subprocesses",
+]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
