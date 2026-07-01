@@ -25,19 +25,16 @@ import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
-from frontrun._dpor_core import RowLockRegistry
+from frontrun._dpor_core import RowLockRegistry, WorkerSet, WorkerTarget
 
 from . import protocol as proto
 
 
-class Launcher(Protocol):
-    """Starts workers that connect back to *socket_path* and joins them."""
-
-    def launch(self, socket_path: str, worker_ids: list[int]) -> Any: ...
-
-    def join(self, handles: Any, timeout: float) -> None: ...
+def worker_targets(socket_path: str, worker_ids: list[int]) -> list[WorkerTarget]:
+    """Build backend-neutral targets carrying the coordinator socket path."""
+    return [WorkerTarget(worker_id=wid, args=(socket_path,)) for wid in worker_ids]
 
 
 def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket, int]:
@@ -56,7 +53,7 @@ def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket
 
 def accept_hello_live(
     listener: socket.socket,
-    launch: Any,
+    worker_set: Any,
     handles: Any,
     connect_budget: float,
 ) -> tuple[socket.socket, int]:
@@ -64,12 +61,12 @@ def accept_hello_live(
 
     A worker that crashes at startup (bad ``module:callable`` target, import
     error) never connects, so a plain ``accept`` would block the full connect
-    budget before timing out. Poll ``launch.diagnose(handles)`` between short
+    budget before timing out. Poll ``worker_set.diagnose(handles)`` between short
     accept attempts and raise as soon as a child has exited, so the coordinator
     surfaces the real cause in ~a poll interval instead of tens of seconds.
     """
     deadline = time.monotonic() + connect_budget
-    any_exited = getattr(launch, "any_exited", None)
+    any_exited = getattr(worker_set, "any_exited", None)
     prev = listener.gettimeout()
     listener.settimeout(min(0.5, connect_budget))
     try:
@@ -142,7 +139,7 @@ class CrossProcessCoordinator:
     def explore(
         self,
         *,
-        launch: Launcher,
+        worker_set: WorkerSet,
         setup: Callable[[], Any],
         invariant: Callable[[], bool],
         max_iterations: int = 4096,
@@ -152,7 +149,7 @@ class CrossProcessCoordinator:
         listener.listen(self.num_workers)
         listener.settimeout(self.deadlock_timeout)
         try:
-            return self._explore(listener, launch, setup, invariant, max_iterations)
+            return self._explore(listener, worker_set, setup, invariant, max_iterations)
         finally:
             listener.close()
             self._cleanup_socket()
@@ -162,7 +159,7 @@ class CrossProcessCoordinator:
     def _explore(
         self,
         listener: socket.socket,
-        launch: Launcher,
+        worker_set: WorkerSet,
         setup: Callable[[], Any],
         invariant: Callable[[], bool],
         max_iterations: int,
@@ -183,7 +180,7 @@ class CrossProcessCoordinator:
 
             setup()
             try:
-                outcome = self._run_once(listener, launch, prefix)
+                outcome = self._run_once(listener, worker_set, prefix)
             except (TimeoutError, OSError) as exc:
                 return CrossProcessResult(
                     ok=False,
@@ -238,14 +235,14 @@ class CrossProcessCoordinator:
 
     # -- one interleaving ---------------------------------------------------
 
-    def _run_once(self, listener: socket.socket, launch: Launcher, prefix: list[int]) -> _Outcome:
-        handles = launch.launch(self.socket_path, list(range(self.num_workers)))
+    def _run_once(self, listener: socket.socket, worker_set: WorkerSet, prefix: list[int]) -> _Outcome:
+        handles = worker_set.launch(worker_targets(self.socket_path, list(range(self.num_workers))))
         registry = RowLockRegistry()
         conns: dict[int, _Conn] = {}
         accesses: list[tuple[int, str, str]] = []
         try:
             for _ in range(self.num_workers):
-                sock, wid = accept_hello_live(listener, launch, handles, self.deadlock_timeout)
+                sock, wid = accept_hello_live(listener, worker_set, handles, self.deadlock_timeout)
                 conn = _Conn(wid, sock)
                 conns[wid] = conn
                 self._advance(conn, accesses, registry)
@@ -258,7 +255,7 @@ class CrossProcessCoordinator:
                     c.sock.close()
                 except OSError:
                     pass
-            launch.join(handles, self.deadlock_timeout)
+            worker_set.join(handles, self.deadlock_timeout)
 
     def _drive(
         self,

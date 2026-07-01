@@ -26,6 +26,7 @@ from frontrun._dpor_core.utils import (
     make_deadline,
     reset_execution_state,
 )
+from frontrun._dpor_core.worker import WorkerSet, WorkerTarget
 
 __all__ = [
     "ExplorationStep",
@@ -33,6 +34,8 @@ __all__ = [
     "ReplayEngine",
     "ReplayExecution",
     "RowLockRegistry",
+    "WorkerSet",
+    "WorkerTarget",
     "advance_replay_index",
     "apply_lock_blocked_override",
     "compute_serializable_baseline_async",

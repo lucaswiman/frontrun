@@ -38,7 +38,7 @@ def test_reuse_finds_lost_update() -> None:
     worker = _rmw_worker(db)
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, reuse_workers=True)
     result = coord.explore(
-        launch=PersistentThreadLauncher([worker, worker]),
+        worker_set=PersistentThreadLauncher([worker, worker]),
         setup=db.reset,
         invariant=lambda: db.balance == 200,
     )
@@ -51,13 +51,13 @@ def test_reuse_matches_spawn_execution_count() -> None:
     # Reuse must explore the same DPOR search as spawn-per-iteration.
     db_spawn = _DB()
     spawn = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False).explore(
-        launch=ThreadLauncher([_rmw_worker(db_spawn), _rmw_worker(db_spawn)]),
+        worker_set=ThreadLauncher([_rmw_worker(db_spawn), _rmw_worker(db_spawn)]),
         setup=db_spawn.reset,
         invariant=lambda: True,
     )
     db_reuse = _DB()
     reuse = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False, reuse_workers=True).explore(
-        launch=PersistentThreadLauncher([_rmw_worker(db_reuse), _rmw_worker(db_reuse)]),
+        worker_set=PersistentThreadLauncher([_rmw_worker(db_reuse), _rmw_worker(db_reuse)]),
         setup=db_reuse.reset,
         invariant=lambda: True,
     )
@@ -83,7 +83,7 @@ def test_reuse_stops_safely_on_deadlock() -> None:
 
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, reuse_workers=True, stop_on_first=False)
     result = coord.explore(
-        launch=PersistentThreadLauncher([locker(row1, row2), locker(row2, row1)]),
+        worker_set=PersistentThreadLauncher([locker(row1, row2), locker(row2, row1)]),
         setup=lambda: None,
         invariant=lambda: True,
     )
@@ -107,7 +107,7 @@ def test_reuse_no_state_leak_across_iterations() -> None:
 
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, reuse_workers=True)
     result = coord.explore(
-        launch=PersistentThreadLauncher([atomic, atomic]),
+        worker_set=PersistentThreadLauncher([atomic, atomic]),
         setup=db.reset,
         invariant=lambda: db.balance == 200,
     )

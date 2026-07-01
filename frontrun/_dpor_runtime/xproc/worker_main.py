@@ -86,7 +86,7 @@ def main() -> None:
             worker_id,
             run_target,
             on_connect=lambda proxy: _install_interception(proxy, worker_id),
-            before_iteration=_reset_iteration_state,
+            before_iteration=lambda _msg: _reset_iteration_state(),
         )
     else:
 

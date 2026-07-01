@@ -55,7 +55,7 @@ def test_dpor_finds_lost_update() -> None:
     worker = _rmw_worker(db)
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
     result = coord.explore(
-        launch=ThreadLauncher([worker, worker]),
+        worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
         invariant=lambda: db.balance == 200,
     )
@@ -69,7 +69,7 @@ def test_dpor_row_lock_prevents_lost_update() -> None:
     worker = _row_locked_worker(db)
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
     result = coord.explore(
-        launch=ThreadLauncher([worker, worker]),
+        worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
         invariant=lambda: db.balance == 200,
     )
@@ -85,13 +85,30 @@ def test_dpor_reports_worker_error() -> None:
 
     coord = DporCrossProcessCoordinator(num_workers=1, deadlock_timeout=5.0)
     result = coord.explore(
-        launch=ThreadLauncher([boom]),
+        worker_set=ThreadLauncher([boom]),
         setup=db.reset,
         invariant=lambda: True,
     )
     assert not result.ok
     assert result.failure_kind == "worker_error"
     assert "kaboom" in (result.failure or "")
+
+
+def test_dpor_reports_worker_disconnect_after_hello() -> None:
+    # A worker can connect and then die before DONE/ERROR (os._exit, SIGKILL,
+    # segfault, etc.). That must be a worker failure, not a successful run.
+    def disconnect(proxy) -> None:
+        proxy._sock.close()
+
+    coord = DporCrossProcessCoordinator(num_workers=1, deadlock_timeout=0.2)
+    result = coord.explore(
+        worker_set=ThreadLauncher([disconnect]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert not result.ok
+    assert result.failure_kind == "worker_error"
+    assert "disconnected" in (result.failure or "")
 
 
 def test_dpor_stop_on_first_false_still_reports_race() -> None:
@@ -101,7 +118,7 @@ def test_dpor_stop_on_first_false_still_reports_race() -> None:
     worker = _rmw_worker(db)
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, stop_on_first=False)
     result = coord.explore(
-        launch=ThreadLauncher([worker, worker]),
+        worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
         invariant=lambda: db.balance == 200,
     )
@@ -119,7 +136,7 @@ def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
     db_ex = _DB()
     w_ex = _rmw_worker(db_ex)
     exhaustive = CrossProcessCoordinator(num_workers=2).explore(
-        launch=ThreadLauncher([w_ex, w_ex]),
+        worker_set=ThreadLauncher([w_ex, w_ex]),
         setup=db_ex.reset,
         invariant=lambda: True,
         max_iterations=100,
@@ -128,7 +145,7 @@ def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
     db_dp = _DB()
     w_dp = _rmw_worker(db_dp)
     dpor = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False).explore(
-        launch=ThreadLauncher([w_dp, w_dp]),
+        worker_set=ThreadLauncher([w_dp, w_dp]),
         setup=db_dp.reset,
         invariant=lambda: True,
     )
@@ -151,7 +168,7 @@ def test_dpor_no_race_when_safe() -> None:
 
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
     result = coord.explore(
-        launch=ThreadLauncher([atomic, atomic]),
+        worker_set=ThreadLauncher([atomic, atomic]),
         setup=db.reset,
         invariant=lambda: db.balance == 200,
     )

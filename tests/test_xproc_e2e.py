@@ -15,12 +15,12 @@ from __future__ import annotations
 import pytest
 
 import frontrun
-from frontrun._dpor_runtime.xproc import _demo_counter
+from tests import xproc_demo_counter
 
 pytestmark = pytest.mark.e2e
 
-_TARGET = "frontrun._dpor_runtime.xproc._demo_counter:increment"
-_ATOMIC_TARGET = "frontrun._dpor_runtime.xproc._demo_counter:increment_atomic"
+_TARGET = "tests.xproc_demo_counter:increment"
+_ATOMIC_TARGET = "tests.xproc_demo_counter:increment_atomic"
 
 
 def test_lost_update_race_found_across_processes(tmp_path) -> None:
@@ -30,8 +30,8 @@ def test_lost_update_race_found_across_processes(tmp_path) -> None:
             "w0": frontrun.Subprocess(_TARGET, (db,)),
             "w1": frontrun.Subprocess(_TARGET, (db,)),
         },
-        setup=lambda: _demo_counter.setup(db),
-        invariant=lambda: _demo_counter.read(db) == 2,
+        setup=lambda: xproc_demo_counter.setup(db),
+        invariant=lambda: xproc_demo_counter.read(db) == 2,
         max_iterations=50,
     )
     assert not result.ok, "expected the lost-update interleaving to be found"
@@ -47,8 +47,8 @@ def test_lost_update_found_with_exhaustive_strategy(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
     result = frontrun.explore_processes(
         {"w0": frontrun.Subprocess(_TARGET, (db,)), "w1": frontrun.Subprocess(_TARGET, (db,))},
-        setup=lambda: _demo_counter.setup(db),
-        invariant=lambda: _demo_counter.read(db) == 2,
+        setup=lambda: xproc_demo_counter.setup(db),
+        invariant=lambda: xproc_demo_counter.read(db) == 2,
         strategy="exhaustive",
         max_iterations=50,
     )
@@ -62,8 +62,8 @@ def test_lost_update_found_with_reused_workers(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
     result = frontrun.explore_processes(
         {"w0": frontrun.Subprocess(_TARGET, (db,)), "w1": frontrun.Subprocess(_TARGET, (db,))},
-        setup=lambda: _demo_counter.setup(db),
-        invariant=lambda: _demo_counter.read(db) == 2,
+        setup=lambda: xproc_demo_counter.setup(db),
+        invariant=lambda: xproc_demo_counter.read(db) == 2,
         reuse_workers=True,
     )
     assert not result.ok
@@ -76,8 +76,8 @@ def test_count_shorthand_replicates_spec(tmp_path) -> None:
     result = frontrun.explore_processes(
         frontrun.Subprocess(_TARGET, (db,)),
         count=2,
-        setup=lambda: _demo_counter.setup(db),
-        invariant=lambda: _demo_counter.read(db) == 2,
+        setup=lambda: xproc_demo_counter.setup(db),
+        invariant=lambda: xproc_demo_counter.read(db) == 2,
         max_iterations=50,
     )
     assert not result.ok
@@ -110,8 +110,8 @@ def test_atomic_increment_has_no_race(tmp_path) -> None:
             "w0": frontrun.Subprocess(_ATOMIC_TARGET, (db,)),
             "w1": frontrun.Subprocess(_ATOMIC_TARGET, (db,)),
         },
-        setup=lambda: _demo_counter.setup(db),
-        invariant=lambda: _demo_counter.read(db) == 2,
+        setup=lambda: xproc_demo_counter.setup(db),
+        invariant=lambda: xproc_demo_counter.read(db) == 2,
         max_iterations=50,
     )
     assert result.ok, f"unexpected failure {result.failure!r} at {result.failing_schedule!r}"

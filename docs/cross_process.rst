@@ -84,6 +84,12 @@ dill for serialising workers. Two differences are inherent to using processes:
 ``setup`` and ``invariant`` run in the coordinator process; the workers run in
 their own spawned processes.
 
+Because this entry point uses :mod:`multiprocessing` with the ``spawn`` start
+method, the parent program must be a file-backed Python module. Running it from
+stdin, ``python -c``, or a REPL/notebook cell is rejected with a clear error
+before workers start. Put the test in a ``.py`` file, or use
+``explore_processes()`` with importable ``"module:callable"`` targets.
+
 .. code-block:: python
 
    import sqlite3
@@ -147,9 +153,8 @@ callables, it spawns each worker as a real OS process running a
 .. code-block:: python
 
    import frontrun
-   from frontrun._dpor_runtime.xproc import _demo_counter
 
-   _TARGET = "frontrun._dpor_runtime.xproc._demo_counter:increment"
+   _TARGET = "myapp.counter:increment"  # your importable module-level worker
 
    def test_lost_update_across_processes(tmp_path):
        db = str(tmp_path / "counter.db")
@@ -158,8 +163,8 @@ callables, it spawns each worker as a real OS process running a
                "w0": frontrun.Subprocess(_TARGET, (db,)),
                "w1": frontrun.Subprocess(_TARGET, (db,)),
            },
-           setup=lambda: _demo_counter.setup(db),   # resets the DB before each interleaving
-           invariant=lambda: _demo_counter.read(db) == 2,  # reads the DB afterwards
+           setup=lambda: reset_counter(db),   # your DB reset helper
+           invariant=lambda: read_counter(db) == 2,
            max_iterations=50,
        )
        assert not result.ok
@@ -230,8 +235,8 @@ and ``frontrun.explore(..., execution="process", reuse_workers=True)``:
 
    result = frontrun.explore_processes(
        {"w0": frontrun.Subprocess(_TARGET, (db,)), "w1": frontrun.Subprocess(_TARGET, (db,))},
-       setup=lambda: _demo_counter.setup(db),
-       invariant=lambda: _demo_counter.read(db) == 2,
+       setup=lambda: reset_counter(db),
+       invariant=lambda: read_counter(db) == 2,
        reuse_workers=True,          # spawn each worker once, re-run per interleaving
    )
 
@@ -287,16 +292,14 @@ performs a racy GET/SET, while the coordinator resets and checks the counter:
 .. code-block:: python
 
    import frontrun
-   from frontrun._dpor_runtime.xproc import _demo_redis
 
-   _TARGET = "frontrun._dpor_runtime.xproc._demo_redis:increment"
+   _TARGET = "myapp.redis_counter:increment"  # your importable Redis worker
 
    def test_redis_lost_update():
-       _demo_redis.setup()
        result = frontrun.explore_processes(
            {"w0": frontrun.Subprocess(_TARGET), "w1": frontrun.Subprocess(_TARGET)},
-           setup=_demo_redis.setup,
-           invariant=lambda: _demo_redis.read() == 2,
+           setup=reset_redis_counter,
+           invariant=lambda: read_redis_counter() == 2,
        )
        assert not result.ok
        assert result.failure_kind == "invariant"

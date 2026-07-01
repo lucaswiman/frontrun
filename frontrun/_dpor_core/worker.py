@@ -1,13 +1,11 @@
-"""Backend-agnostic worker *port* for DPOR exploration.
+"""Backend-agnostic worker-launch port for DPOR exploration.
 
 The DPOR *decision core* — the Rust engine, the :class:`RowLockRegistry`, and
 the wait-for graph — is independent of how the competing units of work are run.
-``WorkerSet`` captures that split so a new backend can plug in without touching
-the core: it launches N workers, drives them to completion against a deadline,
-and reports which ones overran. In-process DPOR runs the workers as OS threads
-(:func:`frontrun._threaded_runner.run_thread_group`, wrapped by
-:class:`frontrun._dpor_runtime.worker_set.ThreadWorkerSet`); the cross-process
-backend (``ideas/cross_process_exploration.md``) spawns processes.
+``WorkerSet`` captures that split so backends can plug in without inventing a
+parallel launcher shape: it starts a collection of stable worker ids and joins
+the backend-specific handles against a deadline. In-process DPOR runs workers as
+OS threads; cross-process DPOR uses the same launch/join port for subprocesses.
 
 The worker-facing *scheduler surface* is a separate concern: the SQL/Redis
 interception layers call ``report_and_wait`` / ``acquire_row_locks`` /
@@ -30,40 +28,30 @@ from typing import Any, Protocol, runtime_checkable
 class WorkerTarget:
     """One unit of work to launch.
 
-    ``worker_id`` is the stable, dense index the DPOR engine uses as the
-    "thread id" of this worker (``0..n-1``); it is identical whether the worker
-    is an OS thread or a remote process, which is what lets the engine and
-    row-lock state transfer across backends unchanged.
+    ``worker_id`` is the stable, dense index the DPOR engine uses as the worker's
+    logical thread id (``0..n-1``). ``func`` / ``args`` are interpreted by the
+    concrete :class:`WorkerSet`: the in-process thread backend calls
+    ``func(*args)`` directly, while cross-process backends keep their callable or
+    subprocess specs on the WorkerSet and use ``args`` for launch metadata such
+    as the coordinator socket path.
     """
 
     worker_id: int
-    func: Callable[..., None]
+    func: Callable[..., None] | None = None
     args: tuple[Any, ...] = ()
 
 
 @runtime_checkable
 class WorkerSet(Protocol):
-    """Launches workers and joins them against a deadline.
+    """Starts backend-specific workers and joins their handles."""
 
-    A single ``run()`` call corresponds to exploring **one** interleaving: the
-    workers are started, joined until they finish or ``timeout`` elapses, and
-    any still-alive workers are surfaced via ``on_timeout``. ``teardown`` runs
-    unconditionally afterwards (even on timeout), mirroring the lifecycle of
-    the existing thread runner.
-    """
-
-    def run(
+    def launch(
         self,
         targets: Sequence[WorkerTarget],
-        run_one: Callable[[WorkerTarget], None],
-        *,
-        timeout: float,
-        on_timeout: Callable[[list[Any]], None] | None = None,
-        teardown: Callable[[], None] | None = None,
-    ) -> None:
-        """Launch ``run_one(target)`` for each target and join against ``timeout``.
+    ) -> Any:
+        """Start *targets* and return backend-specific handles."""
+        ...
 
-        ``on_timeout`` receives the backend-specific handles (OS threads,
-        subprocess handles) of workers still alive at the deadline.
-        """
+    def join(self, handles: Any, timeout: float) -> list[Any]:
+        """Join *handles* against *timeout* and return handles still alive."""
         ...

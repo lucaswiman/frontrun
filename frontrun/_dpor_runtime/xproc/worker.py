@@ -15,6 +15,8 @@ from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
+from frontrun._dpor_core.worker import WorkerTarget
+
 from . import protocol as proto
 from .proxy import SchedulerProxy
 
@@ -71,14 +73,15 @@ def _serve_persistent(
     body: WorkerBody,
     *,
     on_connect: Callable[[SchedulerProxy], None] | None = None,
-    before_iteration: Callable[[], None] | None = None,
+    before_iteration: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     """Connect once and run *body(proxy)* once per ITER_START until SHUTDOWN.
 
     ``on_connect`` runs once after HELLO (e.g. install SQL/Redis interception,
-    which is global and shares the persistent proxy). ``before_iteration`` runs
-    before each run (e.g. reset per-connection SQL state that would otherwise
-    leak across iterations). The socket has no read timeout: the worker may
+    which is global and shares the persistent proxy). ``before_iteration`` sees
+    the ITER_START frame and runs before each target call (e.g. refresh
+    per-iteration state or reset per-connection SQL metadata). The socket has no
+    read timeout: the worker may
     idle arbitrarily long between iterations while the coordinator runs setup
     and checks invariants.
     """
@@ -95,7 +98,7 @@ def _serve_persistent(
             if msg.get("t") != proto.ITER_START:
                 continue
             if before_iteration is not None:
-                before_iteration()
+                before_iteration(msg)
             _run_iteration(proxy, body)
 
 
@@ -105,9 +108,11 @@ class ThreadLauncher:
     def __init__(self, bodies: Sequence[WorkerBody]) -> None:
         self._bodies = list(bodies)
 
-    def launch(self, socket_path: str, worker_ids: list[int]) -> list[threading.Thread]:
+    def launch(self, targets: Sequence[WorkerTarget]) -> list[threading.Thread]:
         threads: list[threading.Thread] = []
-        for wid in worker_ids:
+        for target in targets:
+            wid = target.worker_id
+            socket_path = str(target.args[0])
             body = self._bodies[wid]
             t = threading.Thread(
                 target=_connect_and_serve,
@@ -119,9 +124,10 @@ class ThreadLauncher:
             threads.append(t)
         return threads
 
-    def join(self, handles: Any, timeout: float) -> None:
+    def join(self, handles: Any, timeout: float) -> list[threading.Thread]:
         for t in handles:
             t.join(timeout)
+        return [t for t in handles if t.is_alive()]
 
 
 class PersistentThreadLauncher:
@@ -136,9 +142,11 @@ class PersistentThreadLauncher:
         self._bodies = list(bodies)
         self._threads: list[threading.Thread] = []
 
-    def launch(self, socket_path: str, worker_ids: list[int]) -> list[threading.Thread]:
+    def launch(self, targets: Sequence[WorkerTarget]) -> list[threading.Thread]:
         if not self._threads:
-            for wid in worker_ids:
+            for target in targets:
+                wid = target.worker_id
+                socket_path = str(target.args[0])
                 body = self._bodies[wid]
                 t = threading.Thread(
                     target=_serve_persistent,
@@ -150,6 +158,7 @@ class PersistentThreadLauncher:
                 self._threads.append(t)
         return self._threads
 
-    def join(self, handles: Any, timeout: float) -> None:
+    def join(self, handles: Any, timeout: float) -> list[threading.Thread]:
         for t in self._threads:
             t.join(timeout)
+        return [t for t in self._threads if t.is_alive()]

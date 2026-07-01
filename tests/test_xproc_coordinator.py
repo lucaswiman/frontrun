@@ -64,7 +64,7 @@ def test_finds_lost_update_race() -> None:
     coord = CrossProcessCoordinator(num_workers=2)
     worker = _incrementer_without_locks(db)
     result = coord.explore(
-        launch=ThreadLauncher([worker, worker]),
+        worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
         invariant=lambda: db.balance == 200,
         max_iterations=100,
@@ -81,7 +81,7 @@ def test_row_lock_prevents_lost_update() -> None:
     coord = CrossProcessCoordinator(num_workers=2)
     worker = _incrementer_with_row_lock(db)
     result = coord.explore(
-        launch=ThreadLauncher([worker, worker]),
+        worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
         invariant=lambda: db.balance == 200,
         max_iterations=100,
@@ -106,7 +106,7 @@ def test_explores_all_interleavings_and_reports_count() -> None:
         return True
 
     result = coord.explore(
-        launch=ThreadLauncher([worker, worker]),
+        worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
         invariant=record_true,
         max_iterations=100,
@@ -125,7 +125,7 @@ def test_unsupported_before_io_frame_is_reported_not_hung() -> None:
 
     coord = CrossProcessCoordinator(num_workers=1, deadlock_timeout=3.0)
     result = coord.explore(
-        launch=ThreadLauncher([redis_style]),
+        worker_set=ThreadLauncher([redis_style]),
         setup=lambda: None,
         invariant=lambda: True,
         max_iterations=10,
@@ -144,7 +144,7 @@ def test_reports_worker_error() -> None:
 
     coord = CrossProcessCoordinator(num_workers=1)
     result = coord.explore(
-        launch=ThreadLauncher([boom]),
+        worker_set=ThreadLauncher([boom]),
         setup=db.reset,
         invariant=lambda: True,
         max_iterations=10,

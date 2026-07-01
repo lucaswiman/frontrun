@@ -3,13 +3,14 @@
 ``SubprocessLauncher`` spawns one OS process per worker, each running
 ``python -m frontrun._dpor_runtime.xproc.worker_main`` with the coordinator
 socket path, worker id, and ``module:callable`` target passed through the
-environment. It implements the same ``Launcher`` interface the coordinator uses
-for the in-process ``ThreadLauncher``, so the coordinator's scheduling logic is
-identical across both.
+environment. It implements the shared ``WorkerSet`` launch/join port, so the
+coordinator's scheduling logic is identical across thread-backed functional
+tests and real subprocess runs.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import multiprocessing
 import os
@@ -18,6 +19,10 @@ import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from frontrun._dpor_core.worker import WorkerTarget
+
+from . import protocol as proto
 
 _WORKER_MODULE = "frontrun._dpor_runtime.xproc.worker_main"
 
@@ -46,6 +51,20 @@ def _dumps_worker(worker_fn: Callable[[Any], Any], state: Any) -> bytes:
         ) from exc
 
 
+def _require_file_backed_main() -> None:
+    """Fail clearly when multiprocessing spawn cannot re-import ``__main__``."""
+    main = sys.modules.get("__main__")
+    main_file = getattr(main, "__file__", None)
+    if isinstance(main_file, str) and main_file and not main_file.startswith("<") and os.path.exists(main_file):
+        return
+    raise RuntimeError(
+        "explore(execution='process') uses multiprocessing 'spawn', which requires the parent "
+        "program to run from a file-backed Python module. It cannot be launched from stdin, "
+        "`python -c`, or a REPL/notebook cell; put the test in a .py file or use "
+        "frontrun.explore_processes() with importable module:callable targets."
+    )
+
+
 def _mp_worker_entry(
     socket_path: str,
     worker_id: int,
@@ -69,12 +88,20 @@ def _mp_worker_entry(
         worker_fn(state)
 
     if reuse:
+
+        def refresh_iteration(iter_msg: dict[str, Any]) -> None:
+            nonlocal worker_fn, state
+            encoded = iter_msg.get("payload")
+            if isinstance(encoded, str):
+                worker_fn, state = dill.loads(base64.b64decode(encoded.encode("ascii")))
+            _reset_iteration_state()
+
         _serve_persistent(
             socket_path,
             worker_id,
             run_target,
             on_connect=lambda proxy: _install_interception(proxy, worker_id),
-            before_iteration=_reset_iteration_state,
+            before_iteration=refresh_iteration,
         )
     else:
 
@@ -109,22 +136,30 @@ class MpLauncher:
         self._ctx = multiprocessing.get_context("spawn")
         self._procs: list[Any] | None = None
 
-    def launch(self, socket_path: str, worker_ids: list[int]) -> list[Any]:
+    def launch(self, targets: Sequence[WorkerTarget]) -> list[Any]:
+        _require_file_backed_main()
         # Reuse mode spawns each worker once; later iterations reconnect the same
         # long-lived processes via ITER_START rather than respawning.
         if self._reuse and self._procs is not None:
             return self._procs
-        state = self._state_fn()
+        targets = list(targets)
+        socket_path = str(targets[0].args[0]) if targets else ""
+        state = None if self._reuse else self._state_fn()
         # Serialise with dill up front (raises a clear error for genuinely
         # unserialisable workers/state) so children receive plain bytes that
         # multiprocessing's own stdlib pickling handles trivially.
         procs = [
             self._ctx.Process(
                 target=_mp_worker_entry,
-                args=(socket_path, wid, _dumps_worker(self._worker_fns[wid], state), self._reuse),
+                args=(
+                    socket_path,
+                    target.worker_id,
+                    _dumps_worker(self._worker_fns[target.worker_id], state),
+                    self._reuse,
+                ),
                 daemon=True,
             )
-            for wid in worker_ids
+            for target in targets
         ]
         scrubbed = {k: os.environ.pop(k) for k in ("LD_PRELOAD", "FRONTRUN_IO_FD") if k in os.environ}
         try:
@@ -136,12 +171,21 @@ class MpLauncher:
             self._procs = procs
         return procs
 
-    def join(self, handles: Any, timeout: float) -> None:
+    def iter_start_message(self, worker_id: int) -> dict[str, Any]:
+        """Build the ITER_START frame for one reused multiprocessing worker."""
+        state = self._state_fn()
+        payload = _dumps_worker(self._worker_fns[worker_id], state)
+        return {"t": proto.ITER_START, "payload": base64.b64encode(payload).decode("ascii")}
+
+    def join(self, handles: Any, timeout: float) -> list[Any]:
+        alive: list[Any] = []
         for proc in handles:
             proc.join(timeout)
             if proc.is_alive():
+                alive.append(proc)
                 proc.terminate()
                 proc.join(1.0)
+        return alive
 
     def any_exited(self, handles: Any) -> bool:
         """Non-destructive: has any worker process already exited?"""
@@ -179,10 +223,12 @@ class SubprocessLauncher:
         self._specs = specs
         self._reuse = reuse
 
-    def launch(self, socket_path: str, worker_ids: list[int]) -> list[subprocess.Popen[bytes]]:
+    def launch(self, targets: Sequence[WorkerTarget]) -> list[subprocess.Popen[bytes]]:
         base_env = self._child_env_base()
         procs: list[subprocess.Popen[bytes]] = []
-        for wid in worker_ids:
+        for target in targets:
+            wid = target.worker_id
+            socket_path = str(target.args[0])
             spec = self._specs[wid]
             env = dict(base_env)
             env["FRONTRUN_XPROC_SOCKET"] = socket_path
@@ -194,16 +240,19 @@ class SubprocessLauncher:
             procs.append(subprocess.Popen([sys.executable, "-m", _WORKER_MODULE], env=env, stderr=subprocess.PIPE))
         return procs
 
-    def join(self, handles: Any, timeout: float) -> None:
+    def join(self, handles: Any, timeout: float) -> list[subprocess.Popen[bytes]]:
+        alive: list[subprocess.Popen[bytes]] = []
         for proc in handles:
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
+                alive.append(proc)
                 proc.kill()
                 try:
                     proc.wait(timeout=2.0)
                 except subprocess.TimeoutExpired:
                     pass
+        return alive
 
     def any_exited(self, handles: Any) -> bool:
         """Non-destructive: has any worker process already exited?"""

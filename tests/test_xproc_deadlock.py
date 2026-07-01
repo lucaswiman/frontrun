@@ -33,7 +33,7 @@ def _locker(first: str, second: str):
 def test_detects_cross_worker_lock_cycle() -> None:
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0)
     result = coord.explore(
-        launch=ThreadLauncher([_locker(ROW1, ROW2), _locker(ROW2, ROW1)]),
+        worker_set=ThreadLauncher([_locker(ROW1, ROW2), _locker(ROW2, ROW1)]),
         setup=lambda: None,
         invariant=lambda: True,
     )
@@ -46,7 +46,7 @@ def test_same_order_locking_has_no_deadlock() -> None:
     # Both workers take locks in the same order => no cycle, invariant holds.
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0)
     result = coord.explore(
-        launch=ThreadLauncher([_locker(ROW1, ROW2), _locker(ROW1, ROW2)]),
+        worker_set=ThreadLauncher([_locker(ROW1, ROW2), _locker(ROW1, ROW2)]),
         setup=lambda: None,
         invariant=lambda: True,
     )

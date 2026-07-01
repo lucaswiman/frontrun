@@ -45,7 +45,7 @@ def test_dpor_finds_redis_lost_update() -> None:
     worker = _incr_worker(store)
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
     result = coord.explore(
-        launch=ThreadLauncher([worker, worker]),
+        worker_set=ThreadLauncher([worker, worker]),
         setup=store.reset,
         invariant=lambda: store.value == 2,
     )
@@ -66,7 +66,7 @@ def test_dpor_redis_atomic_incr_has_no_race() -> None:
 
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
     result = coord.explore(
-        launch=ThreadLauncher([atomic, atomic]),
+        worker_set=ThreadLauncher([atomic, atomic]),
         setup=store.reset,
         invariant=lambda: store.value == 2,
     )

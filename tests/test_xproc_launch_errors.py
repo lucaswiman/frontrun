@@ -13,11 +13,12 @@ import socket
 
 import pytest
 
+from frontrun._dpor_core.worker import WorkerTarget
 from frontrun._dpor_runtime.xproc.dpor_coordinator import _connection_failure, _launch_error
-from frontrun._dpor_runtime.xproc.launch import Subprocess, SubprocessLauncher, _dumps_worker
+from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, SubprocessLauncher, _dumps_worker
 
 
-class _FakeLauncher:
+class _FakeWorkerSet:
     def __init__(self, detail: str | None) -> None:
         self._detail = detail
 
@@ -51,19 +52,30 @@ def test_subprocess_launcher_diagnoses_bad_target(tmp_path) -> None:
     # A target in a module that does not exist makes the child exit immediately
     # with ModuleNotFoundError. diagnose() must recover that real cause from the
     # child's stderr rather than leaving the coordinator to guess "timeout".
-    launcher = SubprocessLauncher([Subprocess("frontrun_no_such_module:go")])
-    handles = launcher.launch(str(tmp_path / "s.sock"), [0])
+    worker_set = SubprocessLauncher([Subprocess("frontrun_no_such_module:go")])
+    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(str(tmp_path / "s.sock"),))])
     for proc in handles:
         proc.wait(timeout=10)
-    detail = launcher.diagnose(handles)
+    detail = worker_set.diagnose(handles)
     assert detail is not None
     assert "No module named" in detail or "ModuleNotFoundError" in detail
 
 
+def test_mp_launcher_rejects_stdin_main(monkeypatch, tmp_path) -> None:
+    # multiprocessing's spawn start method cannot re-import a stdin/-c __main__;
+    # fail before starting children so users get a frontrun-level explanation.
+    import __main__
+
+    monkeypatch.setattr(__main__, "__file__", "<stdin>", raising=False)
+    worker_set = MpLauncher([lambda state: None], state_fn=lambda: None)
+    with pytest.raises(RuntimeError, match="file-backed Python module"):
+        worker_set.launch([WorkerTarget(worker_id=0, args=(str(tmp_path / "s.sock"),))])
+
+
 def test_connection_failure_folds_in_launcher_diagnosis() -> None:
-    # A connect timeout enriched with the launcher's diagnosis must report the
+    # A connect timeout enriched with the WorkerSet's diagnosis must report the
     # real cause (no leaked internal exception-class name).
-    enriched = _launch_error(_FakeLauncher("worker 0: ModuleNotFoundError: no mod"), None, TimeoutError("timed out"))
+    enriched = _launch_error(_FakeWorkerSet("worker 0: ModuleNotFoundError: no mod"), None, TimeoutError("timed out"))
     result = _connection_failure(enriched, iterations=1)
     assert result.failure_kind == "worker_error"
     assert "ModuleNotFoundError" in (result.failure or "")
@@ -72,6 +84,6 @@ def test_connection_failure_folds_in_launcher_diagnosis() -> None:
 
 def test_connection_failure_without_diagnosis_is_plain() -> None:
     # No diagnosis available -> fall back to the bare exception description.
-    same = _launch_error(_FakeLauncher(None), None, TimeoutError("timed out"))
+    same = _launch_error(_FakeWorkerSet(None), None, TimeoutError("timed out"))
     result = _connection_failure(same, iterations=1)
     assert "TimeoutError" in (result.failure or "")

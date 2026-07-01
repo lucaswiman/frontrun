@@ -296,6 +296,8 @@ The approaches above interleave concurrency *within one Python process*. Cross-p
 
 `frontrun.explore(..., execution="process")` mirrors the threads/async interface (install the `process` extra: `pip install frontrun[process]`). The only differences are inherent to processes: workers are serialised with **dill** (so closures and lambdas work, not just module-level functions), and `setup()` returns a **handle** to the external state (e.g. a SQLite path or DB URL) that is passed to each `worker(state)` and to `invariant(state)`. `setup` and `invariant` run in the coordinator process; workers run in their own spawned processes. It returns the same `InterleavingResult` as threads/async.
 
+This multiprocessing path must be launched from a file-backed `.py` module, not stdin, `python -c`, or a REPL/notebook cell. For those environments, use `explore_processes()` with importable `"module:callable"` targets.
+
 ```python
 import sqlite3
 import frontrun

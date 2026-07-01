@@ -101,8 +101,8 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
         search=search,
         reuse_workers=reuse_workers,
     )
-    launcher = MpLauncher(workers, state_fn=lambda: state_box.get("state"), reuse=reuse_workers)
-    result = coordinator.explore(launch=launcher, setup=coord_setup, invariant=coord_invariant)
+    worker_set = MpLauncher(workers, state_fn=lambda: state_box.get("state"), reuse=reuse_workers)
+    result = coordinator.explore(worker_set=worker_set, setup=coord_setup, invariant=coord_invariant)
     return _to_interleaving_result(result)
 
 
@@ -173,10 +173,10 @@ def explore_processes(
             max_executions=max_executions,
             preemption_bound=preemption_bound,
             reuse_workers=reuse_workers,
-        ).explore(launch=SubprocessLauncher(specs, reuse=reuse_workers), setup=setup, invariant=invariant)
+        ).explore(worker_set=SubprocessLauncher(specs, reuse=reuse_workers), setup=setup, invariant=invariant)
     if strategy == "exhaustive":
         return CrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,
-        ).explore(launch=SubprocessLauncher(specs), setup=setup, invariant=invariant, max_iterations=max_iterations)
+        ).explore(worker_set=SubprocessLauncher(specs), setup=setup, invariant=invariant, max_iterations=max_iterations)
     raise ValueError(f"unknown strategy {strategy!r}; expected 'dpor' or 'exhaustive'")

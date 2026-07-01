@@ -12,14 +12,14 @@ from __future__ import annotations
 import pytest
 
 import frontrun
-from frontrun._dpor_runtime.xproc import _demo_counter
+from tests import xproc_demo_counter
 
 pytestmark = pytest.mark.e2e
 
 
 def _make_setup(db: str):
     def setup():
-        _demo_counter.setup(db)
+        xproc_demo_counter.setup(db)
         return db  # picklable handle passed to each worker(state) and invariant(state)
 
     return setup
@@ -29,9 +29,9 @@ def test_process_execution_finds_lost_update(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
     result = frontrun.explore(
         setup=_make_setup(db),
-        workers=_demo_counter.increment,
+        workers=xproc_demo_counter.increment,
         count=2,
-        invariant=lambda state: _demo_counter.read(state) == 2,
+        invariant=lambda state: xproc_demo_counter.read(state) == 2,
         execution="process",
     )
     assert not result.property_holds
@@ -43,8 +43,8 @@ def test_process_execution_atomic_increment_holds(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
     result = frontrun.explore(
         setup=_make_setup(db),
-        workers=[_demo_counter.increment_atomic, _demo_counter.increment_atomic],
-        invariant=lambda state: _demo_counter.read(state) == 2,
+        workers=[xproc_demo_counter.increment_atomic, xproc_demo_counter.increment_atomic],
+        invariant=lambda state: xproc_demo_counter.read(state) == 2,
         execution="process",
     )
     assert result.property_holds, result.explanation
@@ -57,14 +57,41 @@ def test_process_execution_reuse_finds_lost_update(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
     result = frontrun.explore(
         setup=_make_setup(db),
-        workers=_demo_counter.increment,
+        workers=xproc_demo_counter.increment,
         count=2,
-        invariant=lambda state: _demo_counter.read(state) == 2,
+        invariant=lambda state: xproc_demo_counter.read(state) == 2,
         execution="process",
         reuse_workers=True,
     )
     assert not result.property_holds
     assert result.counterexample is not None
+
+
+def test_process_execution_reuse_refreshes_setup_state(tmp_path) -> None:
+    # Reuse mode must pass each iteration's fresh setup() return to the worker,
+    # not keep using the state serialized when persistent processes first spawned.
+    calls = 0
+
+    def setup():
+        nonlocal calls
+        calls += 1
+        db = str(tmp_path / f"counter-{calls}.db")
+        xproc_demo_counter.setup(db)
+        return db
+
+    result = frontrun.explore(
+        setup=setup,
+        workers=xproc_demo_counter.increment,
+        count=2,
+        invariant=lambda state: xproc_demo_counter.read(state) in (1, 2),
+        execution="process",
+        reuse_workers=True,
+        stop_on_first=False,
+        max_executions=2,
+    )
+    assert result.property_holds, result.explanation
+    assert result.num_explored == 2
+    assert calls == 2
 
 
 def test_process_execution_accepts_closure_workers(tmp_path) -> None:
@@ -86,7 +113,7 @@ def test_process_execution_accepts_closure_workers(tmp_path) -> None:
         setup=_make_setup(db),
         workers=increment,
         count=2,
-        invariant=lambda state: _demo_counter.read(state) == 2,
+        invariant=lambda state: xproc_demo_counter.read(state) == 2,
         execution="process",
     )
     assert not result.property_holds

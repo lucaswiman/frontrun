@@ -425,12 +425,9 @@ class DporBytecodeRunner:
         run_thread = self._run_thread
 
         targets = [
-            WorkerTarget(worker_id=i, func=func, args=tuple(thread_args))
+            WorkerTarget(worker_id=i, func=run_thread, args=(i, func, tuple(thread_args)))
             for i, (func, thread_args) in enumerate(zip(funcs, args))
         ]
-
-        def run_one(target: WorkerTarget) -> None:
-            run_thread(target.worker_id, target.func, target.args)
 
         def on_timeout(alive: list[threading.Thread]) -> None:
             notify_scheduler_timeout(self.scheduler, alive)
@@ -438,7 +435,6 @@ class DporBytecodeRunner:
         worker_set = ThreadWorkerSet(name_prefix="dpor", thread_store=self.threads)
         worker_set.run(
             targets,
-            run_one,
             timeout=timeout,
             on_timeout=on_timeout,
             teardown=self._stop_opcode_trace,

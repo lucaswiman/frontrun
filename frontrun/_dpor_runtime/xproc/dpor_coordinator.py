@@ -27,13 +27,13 @@ from dataclasses import replace
 from typing import Any
 
 from frontrun._deadlock import DeadlockError, SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
-from frontrun._dpor_core import dpor_exploration_iter, make_deadline, make_dpor_engine
+from frontrun._dpor_core import WorkerSet, dpor_exploration_iter, make_deadline, make_dpor_engine
 from frontrun._dpor_runtime._shared import _dpor_tls, _make_object_key
 from frontrun._dpor_runtime.scheduler import DporScheduler
 from frontrun._opcode_observer import StableObjectIds
 
 from . import protocol as proto
-from .coordinator import CrossProcessResult, Launcher, accept_hello_live
+from .coordinator import CrossProcessResult, accept_hello_live, worker_targets
 
 
 def _setup_relay_tls(scheduler: DporScheduler, worker_id: int) -> list[tuple[int, str, bool]]:
@@ -114,6 +114,8 @@ def _relay_loop(
             except (TimeoutError, OSError):
                 msg = None
             if msg is None:
+                with accesses_lock:
+                    worker_errors[worker_id] = "worker disconnected or timed out"
                 break
             kind = msg["t"]
             if kind == proto.ACCESS:
@@ -190,14 +192,14 @@ class _WorkerLaunchError(OSError):
     """A worker failed to connect; its message already carries child diagnostics."""
 
 
-def _launch_error(launch: Launcher, handles: Any, exc: Exception) -> Exception:
-    """Enrich a connect failure with the launcher's diagnosis of dead children.
+def _launch_error(worker_set: WorkerSet, handles: Any, exc: Exception) -> Exception:
+    """Enrich a connect failure with the WorkerSet's diagnosis of dead children.
 
     Turns a bare ``TimeoutError`` (worker never sent HELLO) into a message naming
     the real cause — e.g. a child that exited with ``ModuleNotFoundError`` for a
-    bad ``module:callable`` target — when the launcher can recover it.
+    bad ``module:callable`` target — when the WorkerSet can recover it.
     """
-    diagnose = getattr(launch, "diagnose", None)
+    diagnose = getattr(worker_set, "diagnose", None)
     detail = diagnose(handles) if diagnose is not None else None
     if not detail:
         return exc
@@ -252,7 +254,7 @@ class DporCrossProcessCoordinator:
     def explore(
         self,
         *,
-        launch: Launcher,
+        worker_set: WorkerSet,
         setup: Callable[[], Any],
         invariant: Callable[[], bool],
     ) -> CrossProcessResult:
@@ -281,13 +283,13 @@ class DporCrossProcessCoordinator:
         try:
             # Reuse mode: spawn persistent workers and accept their connections once.
             if self.reuse_workers:
-                persistent_handles = launch.launch(self.socket_path, list(range(self.num_workers)))
+                persistent_handles = worker_set.launch(worker_targets(self.socket_path, list(range(self.num_workers))))
                 try:
                     for _ in range(self.num_workers):
-                        sock, wid = accept_hello_live(listener, launch, persistent_handles, self._connect_budget)
+                        sock, wid = accept_hello_live(listener, worker_set, persistent_handles, self._connect_budget)
                         persistent_socks[wid] = sock
                 except (TimeoutError, OSError) as exc:
-                    return _connection_failure(_launch_error(launch, persistent_handles, exc), 0)
+                    return _connection_failure(_launch_error(worker_set, persistent_handles, exc), 0)
 
             for step in dpor_exploration_iter(
                 engine=engine,
@@ -311,9 +313,9 @@ class DporCrossProcessCoordinator:
                 setup()  # reset external state before each interleaving
                 try:
                     if self.reuse_workers:
-                        self._run_reused(persistent_socks, scheduler, accesses, worker_errors, unclean)
+                        self._run_reused(persistent_socks, worker_set, scheduler, accesses, worker_errors, unclean)
                     else:
-                        self._run_spawned(listener, launch, scheduler, accesses, worker_errors, unclean)
+                        self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean)
                 except (TimeoutError, OSError) as exc:
                     return _connection_failure(exc, num_explored + 1)
                 num_explored += 1
@@ -348,7 +350,7 @@ class DporCrossProcessCoordinator:
                     except OSError:
                         pass
                 if persistent_handles is not None:
-                    launch.join(persistent_handles, self.deadlock_timeout)
+                    worker_set.join(persistent_handles, self.deadlock_timeout)
             uninstall_wait_for_graph()
             listener.close()
             self._cleanup_socket()
@@ -380,24 +382,24 @@ class DporCrossProcessCoordinator:
     def _run_spawned(
         self,
         listener: socket.socket,
-        launch: Launcher,
+        worker_set: WorkerSet,
         scheduler: DporScheduler,
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
         unclean: set[int],
     ) -> None:
-        handles = launch.launch(self.socket_path, list(range(self.num_workers)))
+        handles = worker_set.launch(worker_targets(self.socket_path, list(range(self.num_workers))))
         socks_by_id: dict[int, socket.socket] = {}
         try:
             try:
                 for _ in range(self.num_workers):
-                    sock, wid = accept_hello_live(listener, launch, handles, self._connect_budget)
+                    sock, wid = accept_hello_live(listener, worker_set, handles, self._connect_budget)
                     socks_by_id[wid] = sock
             except (TimeoutError, OSError) as exc:
-                # Reap dead children so the launcher can read their exit/stderr,
+                # Reap dead children so the WorkerSet can read their exit/stderr,
                 # then surface the real cause instead of a bare connect timeout.
-                launch.join(handles, self.deadlock_timeout)
-                raise _launch_error(launch, handles, exc) from exc
+                worker_set.join(handles, self.deadlock_timeout)
+                raise _launch_error(worker_set, handles, exc) from exc
             self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
         finally:
             for s in socks_by_id.values():
@@ -405,18 +407,24 @@ class DporCrossProcessCoordinator:
                     s.close()
                 except OSError:
                     pass
-            launch.join(handles, self.deadlock_timeout)
+            worker_set.join(handles, self.deadlock_timeout)
 
     def _run_reused(
         self,
         socks_by_id: dict[int, socket.socket],
+        worker_set: WorkerSet,
         scheduler: DporScheduler,
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
         unclean: set[int],
     ) -> None:
-        for sock in socks_by_id.values():
-            proto.send_msg(sock, {"t": proto.ITER_START})
+        iter_start_message = getattr(worker_set, "iter_start_message", None)
+        for wid, sock in socks_by_id.items():
+            if iter_start_message is not None:
+                msg = iter_start_message(wid)
+            else:
+                msg = {"t": proto.ITER_START}
+            proto.send_msg(sock, msg)
         self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
 
     def _evaluate(

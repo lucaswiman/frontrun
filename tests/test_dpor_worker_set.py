@@ -1,9 +1,8 @@
 """Unit tests for the backend-agnostic worker-launch seam.
 
 ``ThreadWorkerSet`` is the in-process (OS-thread) implementation of the
-``WorkerSet`` port defined in ``frontrun._dpor_core.worker``. The planned
-cross-process backend will supply a subprocess-based implementation of the
-same Protocol; these tests pin the launch-and-join contract both must honour.
+``WorkerSet`` port defined in ``frontrun._dpor_core.worker``. Cross-process
+launchers implement the same launch-and-join contract with process handles.
 """
 
 from __future__ import annotations
@@ -35,22 +34,32 @@ def test_runs_every_target_to_completion() -> None:
         return body
 
     ws = ThreadWorkerSet(name_prefix="test")
-    ws.run(_targets([make(0), make(1), make(2)]), lambda t: t.func(), timeout=5.0)
+    ws.run(_targets([make(0), make(1), make(2)]), timeout=5.0)
 
     assert sorted(seen) == [0, 1, 2]
 
 
-def test_run_one_receives_worker_id_and_args() -> None:
+def test_launch_and_join_return_live_handles() -> None:
+    release = threading.Event()
+    ws = ThreadWorkerSet()
+    handles = ws.launch(_targets([lambda: release.wait(timeout=5.0)]))
+    alive = ws.join(handles, timeout=0.1)
+    release.set()
+    for thread in alive:
+        thread.join(timeout=2.0)
+    assert len(alive) == 1
+
+
+def test_target_receives_args() -> None:
     received: dict[int, tuple] = {}
     lock = threading.Lock()
 
-    targets = [WorkerTarget(worker_id=i, func=(lambda: None), args=(i, i * 10)) for i in range(3)]
-
-    def run_one(t: WorkerTarget) -> None:
+    def record(worker_id: int, value: int) -> None:
         with lock:
-            received[t.worker_id] = t.args
+            received[worker_id] = (worker_id, value)
 
-    ThreadWorkerSet().run(targets, run_one, timeout=5.0)
+    targets = [WorkerTarget(worker_id=i, func=record, args=(i, i * 10)) for i in range(3)]
+    ThreadWorkerSet().run(targets, timeout=5.0)
 
     assert received == {0: (0, 0), 1: (1, 10), 2: (2, 20)}
 
@@ -66,7 +75,7 @@ def test_teardown_runs_after_join() -> None:
     def teardown() -> None:
         order.append("teardown")
 
-    ThreadWorkerSet().run(_targets([body, body]), lambda t: t.func(), timeout=5.0, teardown=teardown)
+    ThreadWorkerSet().run(_targets([body, body]), timeout=5.0, teardown=teardown)
 
     assert order.count("work") == 2
     assert order[-1] == "teardown"
@@ -88,7 +97,6 @@ def test_on_timeout_called_with_alive_workers() -> None:
 
     ThreadWorkerSet().run(
         _targets([fast, slow]),
-        lambda t: t.func(),
         timeout=0.3,
         on_timeout=on_timeout,
     )
@@ -99,6 +107,6 @@ def test_on_timeout_called_with_alive_workers() -> None:
 def test_threads_exposed_for_inspection() -> None:
     store: list[threading.Thread] = []
     ws = ThreadWorkerSet(thread_store=store)
-    ws.run(_targets([lambda: time.sleep(0)]), lambda t: t.func(), timeout=5.0)
+    ws.run(_targets([lambda: time.sleep(0)]), timeout=5.0)
     assert len(store) == 1
     assert ws.threads is store
