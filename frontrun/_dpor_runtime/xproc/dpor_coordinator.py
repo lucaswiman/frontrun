@@ -177,6 +177,7 @@ class DporCrossProcessCoordinator:
         total_timeout: float | None = None,
         stop_on_first: bool = True,
         search: str | None = None,
+        reuse_workers: bool = False,
     ) -> None:
         self.num_workers = num_workers
         self.deadlock_timeout = deadlock_timeout
@@ -186,6 +187,7 @@ class DporCrossProcessCoordinator:
         self.total_timeout = total_timeout
         self.stop_on_first = stop_on_first
         self.search = search
+        self.reuse_workers = reuse_workers
         self._own_dir: str | None = None
         if socket_path is None:
             self._own_dir = tempfile.mkdtemp(prefix="frontrun-xproc-")
@@ -215,6 +217,16 @@ class DporCrossProcessCoordinator:
         listener.listen(self.num_workers)
         listener.settimeout(self.deadlock_timeout * 2 + 10.0)
         install_wait_for_graph()
+
+        # Reuse mode: spawn persistent workers and accept their connections once.
+        persistent_handles: Any = None
+        persistent_socks: dict[int, socket.socket] = {}
+        if self.reuse_workers:
+            persistent_handles = launch.launch(self.socket_path, list(range(self.num_workers)))
+            for _ in range(self.num_workers):
+                sock, wid = accept_hello(listener, self.deadlock_timeout)
+                persistent_socks[wid] = sock
+
         num_explored = 0
         try:
             for step in dpor_exploration_iter(
@@ -236,7 +248,10 @@ class DporCrossProcessCoordinator:
                 accesses: list[tuple[int, str, str]] = []
                 worker_errors: dict[int, str] = {}
                 setup()  # reset external state before each interleaving
-                self._run_execution(listener, launch, scheduler, accesses, worker_errors)
+                if self.reuse_workers:
+                    self._run_reused(persistent_socks, scheduler, accesses, worker_errors)
+                else:
+                    self._run_spawned(listener, launch, scheduler, accesses, worker_errors)
                 num_explored += 1
 
                 result = self._evaluate(
@@ -246,11 +261,46 @@ class DporCrossProcessCoordinator:
                     return result
             return CrossProcessResult(ok=True, iterations=num_explored, exhausted=True)
         finally:
+            if self.reuse_workers:
+                for sock in persistent_socks.values():
+                    try:
+                        proto.send_msg(sock, {"t": proto.SHUTDOWN})
+                    except OSError:
+                        pass
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                if persistent_handles is not None:
+                    launch.join(persistent_handles, self.deadlock_timeout)
             uninstall_wait_for_graph()
             listener.close()
             self._cleanup_socket()
 
-    def _run_execution(
+    def _drive_relays(
+        self,
+        scheduler: DporScheduler,
+        socks_by_id: dict[int, socket.socket],
+        accesses: list[tuple[int, str, str]],
+        worker_errors: dict[int, str],
+    ) -> None:
+        accesses_lock = threading.Lock()
+        relays = [
+            threading.Thread(
+                target=_relay_loop,
+                args=(scheduler, wid, sock, accesses, accesses_lock, worker_errors),
+                name=f"xproc-relay-{wid}",
+                daemon=True,
+            )
+            for wid, sock in socks_by_id.items()
+        ]
+        for t in relays:
+            t.start()
+        join_budget = self.deadlock_timeout * 2 + 10.0
+        for t in relays:
+            t.join(join_budget)
+
+    def _run_spawned(
         self,
         listener: socket.socket,
         launch: Launcher,
@@ -258,34 +308,31 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
     ) -> None:
-        setup_done_state = launch.launch(self.socket_path, list(range(self.num_workers)))
-        accesses_lock = threading.Lock()
-        relays: list[threading.Thread] = []
-        socks: list[socket.socket] = []
+        handles = launch.launch(self.socket_path, list(range(self.num_workers)))
+        socks_by_id: dict[int, socket.socket] = {}
         try:
             for _ in range(self.num_workers):
                 sock, wid = accept_hello(listener, self.deadlock_timeout)
-                socks.append(sock)
-                relays.append(
-                    threading.Thread(
-                        target=_relay_loop,
-                        args=(scheduler, wid, sock, accesses, accesses_lock, worker_errors),
-                        name=f"xproc-relay-{wid}",
-                        daemon=True,
-                    )
-                )
-            for t in relays:
-                t.start()
-            join_budget = self.deadlock_timeout * 2 + 10.0
-            for t in relays:
-                t.join(join_budget)
+                socks_by_id[wid] = sock
+            self._drive_relays(scheduler, socks_by_id, accesses, worker_errors)
         finally:
-            for s in socks:
+            for s in socks_by_id.values():
                 try:
                     s.close()
                 except OSError:
                     pass
-            launch.join(setup_done_state, self.deadlock_timeout)
+            launch.join(handles, self.deadlock_timeout)
+
+    def _run_reused(
+        self,
+        socks_by_id: dict[int, socket.socket],
+        scheduler: DporScheduler,
+        accesses: list[tuple[int, str, str]],
+        worker_errors: dict[int, str],
+    ) -> None:
+        for sock in socks_by_id.values():
+            proto.send_msg(sock, {"t": proto.ITER_START})
+        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors)
 
     def _evaluate(
         self,

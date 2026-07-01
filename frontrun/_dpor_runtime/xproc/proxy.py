@@ -47,6 +47,10 @@ class SchedulerProxy:
         """Announce this worker's id to the coordinator (first frame after connect)."""
         proto.send_msg(self._sock, {"t": proto.HELLO, "w": self._worker_id})
 
+    def reset(self) -> None:
+        """Clear the abort latch so a reused worker can run the next iteration."""
+        self._aborted = False
+
     # --- io-reporter callable: installed via set_io_reporter(proxy.io_report) ---
 
     def io_report(self, resource_id: str, kind: str) -> None:

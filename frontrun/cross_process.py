@@ -42,6 +42,7 @@ def explore_processes(
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
     deadlock_timeout: float = 15.0,
+    reuse_workers: bool = False,
 ) -> CrossProcessResult:
     """Explore interleavings of *processes* contending on shared external state.
 
@@ -63,17 +64,17 @@ def explore_processes(
     specs = list(processes.values()) if isinstance(processes, Mapping) else list(processes)
     if not specs:
         raise ValueError("explore_processes requires at least one Subprocess")
-    launcher = SubprocessLauncher(specs)
     if strategy == "dpor":
         return DporCrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,
             max_executions=max_executions,
             preemption_bound=preemption_bound,
-        ).explore(launch=launcher, setup=setup, invariant=invariant)
+            reuse_workers=reuse_workers,
+        ).explore(launch=SubprocessLauncher(specs, reuse=reuse_workers), setup=setup, invariant=invariant)
     if strategy == "exhaustive":
         return CrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,
-        ).explore(launch=launcher, setup=setup, invariant=invariant, max_iterations=max_iterations)
+        ).explore(launch=SubprocessLauncher(specs), setup=setup, invariant=invariant, max_iterations=max_iterations)
     raise ValueError(f"unknown strategy {strategy!r}; expected 'dpor' or 'exhaustive'")

@@ -16,7 +16,7 @@ import json
 import os
 
 from .proxy import SchedulerProxy
-from .worker import _connect_and_serve
+from .worker import _connect_and_serve, _serve_persistent
 
 
 def _install_interception(proxy: SchedulerProxy, worker_id: int) -> None:
@@ -42,6 +42,22 @@ def _install_interception(proxy: SchedulerProxy, worker_id: int) -> None:
     set_io_reporter(proxy.io_report)
 
 
+def _reset_iteration_state() -> None:
+    """Clear per-connection SQL state that would otherwise leak across reused runs."""
+    try:
+        from frontrun._sql_cursor import clear_sql_metadata
+        from frontrun._sql_endpoint_suppression import clear_permanent_suppressions
+        from frontrun._sql_insert_tracker import clear_insert_tracker
+        from frontrun._sql_transactions import reset_connection_state
+
+        clear_permanent_suppressions()
+        clear_insert_tracker()
+        clear_sql_metadata()
+        reset_connection_state()
+    except ImportError:
+        pass
+
+
 def _resolve_target(target: str) -> object:
     module_name, sep, attr = target.partition(":")
     if not sep:
@@ -55,14 +71,30 @@ def main() -> None:
     worker_id = int(os.environ["FRONTRUN_XPROC_WORKER_ID"])
     target = os.environ["FRONTRUN_XPROC_TARGET"]
     args = tuple(json.loads(os.environ.get("FRONTRUN_XPROC_ARGS", "[]")))
+    reuse = os.environ.get("FRONTRUN_XPROC_REUSE") == "1"
 
     fn = _resolve_target(target)
 
-    def body(proxy: SchedulerProxy) -> None:
-        _install_interception(proxy, worker_id)
+    def run_target(proxy: SchedulerProxy) -> None:
         fn(*args)  # type: ignore[operator]
 
-    _connect_and_serve(socket_path, worker_id, body)
+    if reuse:
+        # Install interception once (it is global and shares the persistent
+        # proxy); reset per-connection SQL state before each run.
+        _serve_persistent(
+            socket_path,
+            worker_id,
+            run_target,
+            on_connect=lambda proxy: _install_interception(proxy, worker_id),
+            before_iteration=_reset_iteration_state,
+        )
+    else:
+
+        def body(proxy: SchedulerProxy) -> None:
+            _install_interception(proxy, worker_id)
+            run_target(proxy)
+
+        _connect_and_serve(socket_path, worker_id, body)
 
 
 if __name__ == "__main__":

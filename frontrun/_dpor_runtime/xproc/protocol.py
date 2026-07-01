@@ -33,6 +33,8 @@ ERROR = "error"  # worker raised (fire-and-forget)
 # Coordinator -> worker
 GRANT = "grant"  # turn granted; proceed
 ABORT = "abort"  # exploration finished/errored; unwind
+ITER_START = "iter_start"  # (reuse mode) run one more iteration of the target
+SHUTDOWN = "shutdown"  # (reuse mode) exploration done; exit the worker loop
 
 _LEN = struct.Struct(">I")
 

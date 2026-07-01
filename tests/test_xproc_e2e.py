@@ -56,6 +56,20 @@ def test_lost_update_found_with_exhaustive_strategy(tmp_path) -> None:
     assert result.failure_kind == "invariant"
 
 
+def test_lost_update_found_with_reused_workers(tmp_path) -> None:
+    # Persistent workers (reuse_workers=True) must reach the same verdict while
+    # re-running the target in place instead of respawning each interleaving.
+    db = str(tmp_path / "counter.db")
+    result = frontrun.explore_processes(
+        {"w0": frontrun.Subprocess(_TARGET, (db,)), "w1": frontrun.Subprocess(_TARGET, (db,))},
+        setup=lambda: _demo_counter.setup(db),
+        invariant=lambda: _demo_counter.read(db) == 2,
+        reuse_workers=True,
+    )
+    assert not result.ok
+    assert result.failure_kind == "invariant"
+
+
 def test_atomic_increment_has_no_race(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
     result = frontrun.explore_processes(

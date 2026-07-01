@@ -34,8 +34,9 @@ class Subprocess:
 
 
 class SubprocessLauncher:
-    def __init__(self, specs: list[Subprocess]) -> None:
+    def __init__(self, specs: list[Subprocess], *, reuse: bool = False) -> None:
         self._specs = specs
+        self._reuse = reuse
 
     def launch(self, socket_path: str, worker_ids: list[int]) -> list[subprocess.Popen[bytes]]:
         base_env = self._child_env_base()
@@ -47,6 +48,8 @@ class SubprocessLauncher:
             env["FRONTRUN_XPROC_WORKER_ID"] = str(wid)
             env["FRONTRUN_XPROC_TARGET"] = spec.target
             env["FRONTRUN_XPROC_ARGS"] = json.dumps(list(spec.args))
+            if self._reuse:
+                env["FRONTRUN_XPROC_REUSE"] = "1"
             procs.append(subprocess.Popen([sys.executable, "-m", _WORKER_MODULE], env=env))
         return procs
 
