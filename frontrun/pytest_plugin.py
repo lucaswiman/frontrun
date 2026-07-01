@@ -94,6 +94,14 @@ def pytest_configure(config: pytest.Config) -> None:
 
     _warm_sql_parsers()
 
+    # Warm multiprocessing's resource_tracker BEFORE patching locks, for the
+    # same reason as sqlglot above: its module-level ``threading.Lock()`` is
+    # created on first import, and ``frontrun.explore(execution="process")``
+    # would otherwise trigger that import while locks are patched — turning it
+    # into a CooperativeLock that fails when acquired at interpreter shutdown
+    # (no scheduler context, meta_path gone).
+    import multiprocessing.resource_tracker  # noqa: F401
+
     from frontrun._cooperative import patch_locks
 
     patch_locks()
