@@ -137,6 +137,14 @@ def _relay_loop(
                     _reply(sock, True)
             elif kind == proto.RELEASE_LOCKS:
                 scheduler.release_row_locks(worker_id)
+            elif kind == proto.BEFORE_IO:
+                scheduler.before_io(worker_id, msg["rid"])
+                granted = not (scheduler._finished or scheduler._error)
+                _reply(sock, granted)
+                if not granted:
+                    break
+            elif kind == proto.AFTER_IO:
+                scheduler.after_io(worker_id, msg["rid"])
             elif kind == proto.DONE:
                 break
             elif kind == proto.ERROR:

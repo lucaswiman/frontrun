@@ -19,12 +19,24 @@ from .proxy import SchedulerProxy
 from .worker import _connect_and_serve
 
 
-def _install_sql_interception(proxy: SchedulerProxy, worker_id: int) -> None:
-    """Route this process's SQL access through *proxy* (see the bootstrap audit)."""
+def _install_interception(proxy: SchedulerProxy, worker_id: int) -> None:
+    """Route this process's SQL and Redis access through *proxy*.
+
+    Installs the same context the in-process runner installs (minus opcode
+    tracing): the scheduler proxy, the worker's logical id, and the io-reporter.
+    SQL cursor patching is global; Redis patching is installed only when the
+    ``redis`` package is importable so SQL-only workers need no Redis dependency.
+    """
     from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
     from frontrun._sql_cursor import patch_sql
 
     patch_sql()  # global: every subsequent sqlite3/psycopg connection is traced
+    try:
+        from frontrun._redis_client import patch_redis
+
+        patch_redis()
+    except ImportError:
+        pass
     set_dpor_scheduler(proxy)
     set_dpor_thread_id(worker_id)
     set_io_reporter(proxy.io_report)
@@ -47,7 +59,7 @@ def main() -> None:
     fn = _resolve_target(target)
 
     def body(proxy: SchedulerProxy) -> None:
-        _install_sql_interception(proxy, worker_id)
+        _install_interception(proxy, worker_id)
         fn(*args)  # type: ignore[operator]
 
     _connect_and_serve(socket_path, worker_id, body)

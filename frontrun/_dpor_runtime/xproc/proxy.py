@@ -82,6 +82,19 @@ class SchedulerProxy:
             return
         proto.send_msg(self._sock, {"t": proto.RELEASE_LOCKS, "w": self._worker_id})
 
+    def before_io(self, thread_id: int, resource_id: str) -> None:
+        """Enter a two-phase IO boundary (Redis); block until granted the turn."""
+        if self._aborted:
+            return
+        proto.send_msg(self._sock, {"t": proto.BEFORE_IO, "w": self._worker_id, "rid": resource_id})
+        self._await_grant()
+
+    def after_io(self, thread_id: int, resource_id: str) -> None:
+        """Exit the IO boundary and release the turn. Fire-and-forget."""
+        if self._aborted:
+            return
+        proto.send_msg(self._sock, {"t": proto.AFTER_IO, "w": self._worker_id, "rid": resource_id})
+
     # --- worker lifecycle (called by the worker bootstrap, not interception) ---
 
     def mark_done(self) -> None:

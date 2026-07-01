@@ -25,6 +25,8 @@ ACCESS = "access"  # an io-reporter (resource_id, kind) access report
 REPORT_AND_WAIT = "report_and_wait"  # request a scheduling turn; expects GRANT/ABORT
 ACQUIRE_LOCKS = "acquire_locks"  # block until row locks are held; expects GRANT/ABORT
 RELEASE_LOCKS = "release_locks"  # drop all held row locks (fire-and-forget)
+BEFORE_IO = "before_io"  # enter a two-phase IO boundary (Redis); expects GRANT/ABORT
+AFTER_IO = "after_io"  # exit the IO boundary, release the turn (fire-and-forget)
 DONE = "done"  # worker finished (fire-and-forget)
 ERROR = "error"  # worker raised (fire-and-forget)
 
