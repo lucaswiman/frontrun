@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import pickle
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -22,21 +23,41 @@ from typing import Any
 _WORKER_MODULE = "frontrun._dpor_runtime.xproc.worker_main"
 
 
-def _mp_worker_entry(socket_path: str, worker_id: int, worker_fn: Callable[[Any], Any], state: Any) -> None:
+def _mp_worker_entry(
+    socket_path: str,
+    worker_id: int,
+    worker_fn: Callable[[Any], Any],
+    state: Any,
+    reuse: bool = False,
+) -> None:
     """multiprocessing entry: connect, install interception, run ``worker_fn(state)``.
 
     Runs in the spawned child. Mirrors ``worker_main`` but receives the worker
     callable and the (picklable) setup state directly via multiprocessing pickling
-    instead of a ``module:callable`` string + env-encoded args.
+    instead of a ``module:callable`` string + env-encoded args. With ``reuse`` the
+    child stays alive and re-runs the target per ITER_START (persistent mode).
     """
-    from .worker import _connect_and_serve
-    from .worker_main import _install_interception
+    from .worker import _connect_and_serve, _serve_persistent
+    from .worker_main import _install_interception, _reset_iteration_state
 
-    def body(proxy: Any) -> None:
-        _install_interception(proxy, worker_id)
+    def run_target(proxy: Any) -> None:
         worker_fn(state)
 
-    _connect_and_serve(socket_path, worker_id, body)
+    if reuse:
+        _serve_persistent(
+            socket_path,
+            worker_id,
+            run_target,
+            on_connect=lambda proxy: _install_interception(proxy, worker_id),
+            before_iteration=_reset_iteration_state,
+        )
+    else:
+
+        def body(proxy: Any) -> None:
+            _install_interception(proxy, worker_id)
+            worker_fn(state)
+
+        _connect_and_serve(socket_path, worker_id, body)
 
 
 class MpLauncher:
@@ -49,27 +70,50 @@ class MpLauncher:
     C-level I/O preload (whose event pipe has no reader here).
     """
 
-    def __init__(self, worker_fns: Sequence[Callable[[Any], Any]], state_fn: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        worker_fns: Sequence[Callable[[Any], Any]],
+        state_fn: Callable[[], Any],
+        *,
+        reuse: bool = False,
+    ) -> None:
         self._worker_fns = list(worker_fns)
         self._state_fn = state_fn
+        self._reuse = reuse
         self._ctx = multiprocessing.get_context("spawn")
+        self._procs: list[Any] | None = None
 
     def launch(self, socket_path: str, worker_ids: list[int]) -> list[Any]:
+        # Reuse mode spawns each worker once; later iterations reconnect the same
+        # long-lived processes via ITER_START rather than respawning.
+        if self._reuse and self._procs is not None:
+            return self._procs
         state = self._state_fn()
+        procs = [
+            self._ctx.Process(
+                target=_mp_worker_entry,
+                args=(socket_path, wid, self._worker_fns[wid], state, self._reuse),
+                daemon=True,
+            )
+            for wid in worker_ids
+        ]
         scrubbed = {k: os.environ.pop(k) for k in ("LD_PRELOAD", "FRONTRUN_IO_FD") if k in os.environ}
+        started: list[Any] = []
         try:
-            procs = [
-                self._ctx.Process(
-                    target=_mp_worker_entry,
-                    args=(socket_path, wid, self._worker_fns[wid], state),
-                    daemon=True,
-                )
-                for wid in worker_ids
-            ]
             for p in procs:
                 p.start()
+                started.append(p)
+        except (pickle.PicklingError, AttributeError, TypeError) as exc:
+            for p in started:
+                p.terminate()
+            raise TypeError(
+                "explore(execution='process') requires picklable, module-level workers and a "
+                f"picklable setup() return value (multiprocessing could not pickle them): {exc}"
+            ) from exc
         finally:
             os.environ.update(scrubbed)
+        if self._reuse:
+            self._procs = procs
         return procs
 
     def join(self, handles: Any, timeout: float) -> None:
@@ -78,6 +122,15 @@ class MpLauncher:
             if proc.is_alive():
                 proc.terminate()
                 proc.join(1.0)
+
+    def diagnose(self, handles: Any) -> str | None:
+        """Describe any worker that exited before connecting (nonzero exit code)."""
+        parts = [
+            f"worker {i}: process exited with code {proc.exitcode}"
+            for i, proc in enumerate(handles)
+            if proc.exitcode not in (None, 0)
+        ]
+        return "; ".join(parts) or None
 
 
 @dataclass(frozen=True)
@@ -114,7 +167,7 @@ class SubprocessLauncher:
             env["FRONTRUN_XPROC_ARGS"] = json.dumps(list(spec.args))
             if self._reuse:
                 env["FRONTRUN_XPROC_REUSE"] = "1"
-            procs.append(subprocess.Popen([sys.executable, "-m", _WORKER_MODULE], env=env))
+            procs.append(subprocess.Popen([sys.executable, "-m", _WORKER_MODULE], env=env, stderr=subprocess.PIPE))
         return procs
 
     def join(self, handles: Any, timeout: float) -> None:
@@ -127,6 +180,28 @@ class SubprocessLauncher:
                     proc.wait(timeout=2.0)
                 except subprocess.TimeoutExpired:
                     pass
+
+    def diagnose(self, handles: Any) -> str | None:
+        """Recover the real cause when a worker died before connecting.
+
+        A bad ``module:callable`` target makes the child exit with a traceback on
+        stderr; surface its last line so the coordinator reports e.g.
+        ``ModuleNotFoundError`` instead of a bare connection timeout.
+        """
+        parts: list[str] = []
+        for i, proc in enumerate(handles):
+            rc = proc.poll()
+            if rc is None or rc == 0:
+                continue
+            err = ""
+            if proc.stderr is not None:
+                try:
+                    err = proc.stderr.read().decode(errors="replace").strip()
+                except (OSError, ValueError):
+                    err = ""
+            last = err.splitlines()[-1] if err else f"exit code {rc}"
+            parts.append(f"worker {i}: {last}")
+        return "; ".join(parts) or None
 
     @staticmethod
     def _child_env_base() -> dict[str, str]:

@@ -186,13 +186,32 @@ def _reply(sock: socket.socket, granted: bool) -> None:
         pass
 
 
+class _WorkerLaunchError(OSError):
+    """A worker failed to connect; its message already carries child diagnostics."""
+
+
+def _launch_error(launch: Launcher, handles: Any, exc: Exception) -> Exception:
+    """Enrich a connect failure with the launcher's diagnosis of dead children.
+
+    Turns a bare ``TimeoutError`` (worker never sent HELLO) into a message naming
+    the real cause — e.g. a child that exited with ``ModuleNotFoundError`` for a
+    bad ``module:callable`` target — when the launcher can recover it.
+    """
+    diagnose = getattr(launch, "diagnose", None)
+    detail = diagnose(handles) if diagnose is not None else None
+    if not detail:
+        return exc
+    return _WorkerLaunchError(f"{type(exc).__name__}: {exc}; {detail}")
+
+
 def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
     """A worker never connected (or its socket broke): report a clean result."""
+    detail = str(exc) if isinstance(exc, _WorkerLaunchError) else f"{type(exc).__name__}: {exc}"
     return CrossProcessResult(
         ok=False,
         iterations=iterations,
         exhausted=False,
-        failure=f"worker connection failed: {type(exc).__name__}: {exc}",
+        failure=f"worker connection failed: {detail}",
         failure_kind="worker_error",
     )
 
@@ -265,7 +284,7 @@ class DporCrossProcessCoordinator:
                         sock, wid = accept_hello(listener, self.deadlock_timeout)
                         persistent_socks[wid] = sock
                 except (TimeoutError, OSError) as exc:
-                    return _connection_failure(exc, 0)
+                    return _connection_failure(_launch_error(launch, persistent_handles, exc), 0)
 
             for step in dpor_exploration_iter(
                 engine=engine,
@@ -367,9 +386,15 @@ class DporCrossProcessCoordinator:
         handles = launch.launch(self.socket_path, list(range(self.num_workers)))
         socks_by_id: dict[int, socket.socket] = {}
         try:
-            for _ in range(self.num_workers):
-                sock, wid = accept_hello(listener, self.deadlock_timeout)
-                socks_by_id[wid] = sock
+            try:
+                for _ in range(self.num_workers):
+                    sock, wid = accept_hello(listener, self.deadlock_timeout)
+                    socks_by_id[wid] = sock
+            except (TimeoutError, OSError) as exc:
+                # Reap dead children so the launcher can read their exit/stderr,
+                # then surface the real cause instead of a bare connect timeout.
+                launch.join(handles, self.deadlock_timeout)
+                raise _launch_error(launch, handles, exc) from exc
             self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
         finally:
             for s in socks_by_id.values():

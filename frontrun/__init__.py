@@ -85,6 +85,12 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module 'frontrun' has no attribute {name!r}")
 
 
+def __dir__() -> list[str]:
+    # Surface the PEP 562 lazy attributes (explore_processes, Subprocess, ...) in
+    # REPL/notebook tab-completion, which relies on dir() rather than __all__.
+    return sorted(set(globals()) | set(_LAZY_IMPORTS))
+
+
 __all__ = [
     "NondeterministicSQLError",
     "Subprocess",

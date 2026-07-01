@@ -65,6 +65,7 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
     total_timeout: float | None = None,
     stop_on_first: bool = True,
     search: str | None = None,
+    reuse_workers: bool = False,
     **_ignored: Any,
 ) -> Any:
     """Back the ``frontrun.explore(execution="process")`` path.
@@ -72,7 +73,8 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
     Runs each worker callable in its own ``multiprocessing`` process. ``setup()``
     returns a *picklable* handle to the shared external state (e.g. a DB URL);
     it is passed to every ``worker(state)`` and to ``invariant(state)``. Both
-    ``setup`` and ``invariant`` run in this (coordinator) process.
+    ``setup`` and ``invariant`` run in this (coordinator) process. With
+    ``reuse_workers`` the processes are spawned once and re-run per interleaving.
     """
     state_box: dict[str, Any] = {}
 
@@ -91,17 +93,43 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
         total_timeout=total_timeout,
         stop_on_first=stop_on_first,
         search=search,
+        reuse_workers=reuse_workers,
     )
-    launcher = MpLauncher(workers, state_fn=lambda: state_box.get("state"))
+    launcher = MpLauncher(workers, state_fn=lambda: state_box.get("state"), reuse=reuse_workers)
     result = coordinator.explore(launch=launcher, setup=coord_setup, invariant=coord_invariant)
     return _to_interleaving_result(result)
 
 
+def _resolve_specs(
+    processes: Mapping[str, Subprocess] | Sequence[Subprocess] | Subprocess,
+    count: int | None,
+) -> list[Subprocess]:
+    """Expand ``processes`` (+ optional ``count``) into a concrete list of specs.
+
+    A single :class:`Subprocess` with ``count=N`` replicates it N times (the
+    process-side mirror of ``explore(workers=fn, count=N)``); a mapping or
+    sequence is taken as-is and forbids ``count``.
+    """
+    if isinstance(processes, Subprocess):
+        if count is None:
+            return [processes]
+        if count <= 0:
+            raise ValueError(f"explore_processes(): count must be a positive integer, got {count!r}")
+        return [processes] * count
+    if count is not None:
+        raise ValueError(
+            "explore_processes(): 'count' can only be used with a single Subprocess; "
+            "pass a mapping/sequence without count, or one Subprocess with count=N."
+        )
+    return list(processes.values()) if isinstance(processes, Mapping) else list(processes)
+
+
 def explore_processes(
-    processes: Mapping[str, Subprocess] | Sequence[Subprocess],
+    processes: Mapping[str, Subprocess] | Sequence[Subprocess] | Subprocess,
     *,
     setup: Callable[[], Any],
     invariant: Callable[[], bool],
+    count: int | None = None,
     strategy: str = "dpor",
     max_iterations: int = 4096,
     max_executions: int | None = None,
@@ -112,9 +140,10 @@ def explore_processes(
     """Explore interleavings of *processes* contending on shared external state.
 
     ``processes`` is a mapping of label → :class:`Subprocess` (labels are for
-    readability) or a plain sequence. ``setup`` resets the external state before
-    each interleaving and ``invariant`` checks it afterwards; both run in this
-    (coordinator) process.
+    readability), a plain sequence, or a single :class:`Subprocess` with
+    ``count=N`` to replicate it (the mirror of ``explore(workers=fn, count=N)``).
+    ``setup`` resets the external state before each interleaving and ``invariant``
+    checks it afterwards; both run in this (coordinator) process.
 
     ``strategy``:
 
@@ -126,7 +155,7 @@ def explore_processes(
       granularity, bounded by ``max_iterations``. Useful as a reduction-free
       cross-check.
     """
-    specs = list(processes.values()) if isinstance(processes, Mapping) else list(processes)
+    specs = _resolve_specs(processes, count)
     if not specs:
         raise ValueError("explore_processes requires at least one Subprocess")
     if strategy == "dpor":

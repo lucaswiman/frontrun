@@ -51,6 +51,22 @@ def test_process_execution_atomic_increment_holds(tmp_path) -> None:
     assert result.num_explored >= 1
 
 
+def test_process_execution_reuse_finds_lost_update(tmp_path) -> None:
+    # reuse_workers spawns each process once and re-runs it per interleaving; it
+    # must reach the same lost-update verdict as spawn-per-iteration.
+    db = str(tmp_path / "counter.db")
+    result = frontrun.explore(
+        setup=_make_setup(db),
+        workers=_demo_counter.increment,
+        count=2,
+        invariant=lambda state: _demo_counter.read(state) == 2,
+        execution="process",
+        reuse_workers=True,
+    )
+    assert not result.property_holds
+    assert result.counterexample is not None
+
+
 def test_process_execution_rejects_async_workers() -> None:
     async def worker(state):  # noqa: RUF029 - intentionally async to trigger the guard
         return None

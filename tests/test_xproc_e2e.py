@@ -70,6 +70,20 @@ def test_lost_update_found_with_reused_workers(tmp_path) -> None:
     assert result.failure_kind == "invariant"
 
 
+def test_count_shorthand_replicates_spec(tmp_path) -> None:
+    # A single Subprocess with count=N mirrors explore(workers=fn, count=N).
+    db = str(tmp_path / "counter.db")
+    result = frontrun.explore_processes(
+        frontrun.Subprocess(_TARGET, (db,)),
+        count=2,
+        setup=lambda: _demo_counter.setup(db),
+        invariant=lambda: _demo_counter.read(db) == 2,
+        max_iterations=50,
+    )
+    assert not result.ok
+    assert result.failure_kind == "invariant"
+
+
 def test_atomic_increment_has_no_race(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
     result = frontrun.explore_processes(

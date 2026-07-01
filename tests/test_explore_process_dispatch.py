@@ -1,0 +1,59 @@
+"""Fast dispatch-level tests for the process execution path (no spawning).
+
+These pin argument wiring that would otherwise only be observable through slow
+e2e spawns: the execution-dependent ``deadlock_timeout`` default and the
+``count=`` shorthand that replicates a single :class:`Subprocess`.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+import frontrun
+from frontrun import cross_process
+from frontrun._dpor_runtime.xproc.launch import Subprocess
+
+
+def test_process_deadlock_timeout_defaults_to_15(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake(setup, workers, invariant, **kwargs):  # noqa: ARG001
+        seen.update(kwargs)
+        return "sentinel"
+
+    monkeypatch.setattr(cross_process, "_explore_process", fake)
+    out = frontrun.explore(
+        setup=lambda: None, workers=lambda s: None, count=2, invariant=lambda s: True, execution="process"
+    )
+    assert out == "sentinel"
+    assert seen["deadlock_timeout"] == 15.0
+
+
+def test_process_deadlock_timeout_explicit_is_respected(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake(setup, workers, invariant, **kwargs):  # noqa: ARG001
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(cross_process, "_explore_process", fake)
+    frontrun.explore(
+        setup=lambda: None,
+        workers=lambda s: None,
+        count=2,
+        invariant=lambda s: True,
+        execution="process",
+        deadlock_timeout=3.0,
+    )
+    assert seen["deadlock_timeout"] == 3.0
+
+
+def test_explore_processes_count_replicates_single_spec() -> None:
+    spec = Subprocess("pkg.mod:go", ("a",))
+    specs = cross_process._resolve_specs(spec, count=3)
+    assert specs == [spec, spec, spec]
+
+
+def test_explore_processes_count_rejects_mapping() -> None:
+    with pytest.raises(ValueError, match="count"):
+        cross_process._resolve_specs({"w0": Subprocess("pkg.mod:go")}, count=2)
