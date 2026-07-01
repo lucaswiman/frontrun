@@ -39,6 +39,20 @@ class Launcher(Protocol):
     def join(self, handles: Any, timeout: float) -> None: ...
 
 
+def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket, int]:
+    """Accept one worker connection and read its HELLO frame, returning (sock, worker_id).
+
+    Shared by the exhaustive and DPOR coordinators so accept order is decoupled
+    from worker ids.
+    """
+    sock, _addr = listener.accept()
+    sock.settimeout(timeout)
+    hello = proto.recv_msg(sock)
+    if hello is None or hello.get("t") != proto.HELLO:
+        raise RuntimeError(f"expected HELLO frame, got {hello!r}")
+    return sock, int(hello["w"])
+
+
 @dataclass
 class CrossProcessResult:
     """Outcome of a cross-process exploration."""
@@ -186,12 +200,7 @@ class CrossProcessCoordinator:
         accesses: list[tuple[int, str, str]] = []
         try:
             for _ in range(self.num_workers):
-                sock, _addr = listener.accept()
-                sock.settimeout(self.deadlock_timeout)
-                hello = proto.recv_msg(sock)
-                if hello is None or hello.get("t") != proto.HELLO:
-                    raise RuntimeError(f"expected HELLO frame, got {hello!r}")
-                wid = int(hello["w"])
+                sock, wid = accept_hello(listener, self.deadlock_timeout)
                 conn = _Conn(wid, sock)
                 conns[wid] = conn
                 self._advance(conn, accesses, registry)
