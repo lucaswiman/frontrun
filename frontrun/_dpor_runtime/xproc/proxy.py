@@ -114,9 +114,15 @@ class SchedulerProxy:
         proto.send_msg(self._sock, {"t": proto.ERROR, "w": self._worker_id, "msg": message})
 
     def _await_grant(self) -> bool:
-        """Block on the coordinator's reply. ``True`` for GRANT, ``False`` for ABORT/EOF."""
+        """Block on the coordinator's reply. ``True`` only for GRANT.
+
+        Anything else — ABORT, EOF, or an out-of-band control frame such as
+        ITER_START/SHUTDOWN that arrives because a prior handshake was
+        abandoned — latches the abort so a reused worker can never mistake a
+        control frame for a grant and run its next statement off by one frame.
+        """
         msg = proto.recv_msg(self._sock)
-        if msg is None or msg.get("t") == proto.ABORT:
-            self._aborted = True
-            return False
-        return True
+        if msg is not None and msg.get("t") == proto.GRANT:
+            return True
+        self._aborted = True
+        return False

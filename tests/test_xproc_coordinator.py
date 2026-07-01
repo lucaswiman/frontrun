@@ -116,6 +116,25 @@ def test_explores_all_interleavings_and_reports_count() -> None:
     assert result.iterations == 6
 
 
+def test_unsupported_before_io_frame_is_reported_not_hung() -> None:
+    # The exhaustive coordinator does not speak Redis's two-phase before_io.
+    # It must surface an unexpected frame as a worker error rather than swallow
+    # it and leave the worker blocked awaiting a grant.
+    def redis_style(proxy) -> None:
+        proxy.before_io(0, "redis:GET:key")
+
+    coord = CrossProcessCoordinator(num_workers=1, deadlock_timeout=3.0)
+    result = coord.explore(
+        launch=ThreadLauncher([redis_style]),
+        setup=lambda: None,
+        invariant=lambda: True,
+        max_iterations=10,
+    )
+    assert not result.ok
+    assert result.failure_kind == "worker_error"
+    assert "unsupported frame" in (result.failure or "")
+
+
 def test_reports_worker_error() -> None:
     db = _DB()
 

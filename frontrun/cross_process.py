@@ -61,7 +61,10 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
     deadlock_timeout: float = 15.0,
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
+    max_branches: int = 100_000,
+    total_timeout: float | None = None,
     stop_on_first: bool = True,
+    search: str | None = None,
     **_ignored: Any,
 ) -> Any:
     """Back the ``frontrun.explore(execution="process")`` path.
@@ -84,7 +87,10 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
         deadlock_timeout=deadlock_timeout,
         max_executions=max_executions,
         preemption_bound=preemption_bound,
+        max_branches=max_branches,
+        total_timeout=total_timeout,
         stop_on_first=stop_on_first,
+        search=search,
     )
     launcher = MpLauncher(workers, state_fn=lambda: state_box.get("state"))
     result = coordinator.explore(launch=launcher, setup=coord_setup, invariant=coord_invariant)

@@ -307,6 +307,16 @@ class CrossProcessCoordinator:
                 conn.error = msg.get("msg", "worker error")
                 registry.pop_all(conn.worker_id, None)
                 return
+            else:
+                # An unexpected frame — e.g. BEFORE_IO/AFTER_IO from a Redis
+                # worker, which the exhaustive coordinator does not support.
+                # Surface it as a worker error instead of silently swallowing
+                # the frame and leaving the worker blocked awaiting a grant.
+                conn.done = True
+                conn.pending = None
+                conn.error = f"unsupported frame {kind!r} (use strategy='dpor' for Redis workers)"
+                registry.pop_all(conn.worker_id, None)
+                return
 
     def _cleanup_socket(self) -> None:
         try:

@@ -23,6 +23,7 @@ import socket
 import tempfile
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from frontrun._deadlock import DeadlockError, SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
@@ -230,6 +231,7 @@ class DporCrossProcessCoordinator:
                 persistent_socks[wid] = sock
 
         num_explored = 0
+        first_failure: CrossProcessResult | None = None
         try:
             for step in dpor_exploration_iter(
                 engine=engine,
@@ -260,7 +262,12 @@ class DporCrossProcessCoordinator:
                     execution, scheduler, engine_lock, invariant, worker_errors, accesses, num_explored
                 )
                 if result is not None:
-                    return result
+                    if self.stop_on_first:
+                        return result
+                    if first_failure is None:
+                        first_failure = result
+            if first_failure is not None:
+                return replace(first_failure, iterations=num_explored, exhausted=True)
             return CrossProcessResult(ok=True, iterations=num_explored, exhausted=True)
         finally:
             if self.reuse_workers:
@@ -346,11 +353,28 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         num_explored: int,
     ) -> CrossProcessResult | None:
-        """Return a failing result to stop, or None to continue exploring."""
+        """Return a failing result for this execution, or None if it held.
+
+        The caller decides whether to stop (``stop_on_first``) or keep
+        exploring; this never silently drops a failure.
+        """
         with engine_lock:
             schedule_trace = list(execution.schedule_trace)
         err = scheduler._error
 
+        # Deadlock first: a row-lock cycle aborts the holder, whose worker then
+        # often raises too, so checking worker_errors first would mask the
+        # deadlock behind that induced crash (mirrors the in-process priority).
+        if isinstance(err, DeadlockError):
+            return CrossProcessResult(
+                ok=False,
+                iterations=num_explored,
+                exhausted=False,
+                failing_schedule=schedule_trace,
+                failure=getattr(err, "cycle_description", None) or str(err),
+                failure_kind="deadlock",
+                accesses=accesses,
+            )
         if worker_errors:
             wid = min(worker_errors)
             return CrossProcessResult(
@@ -362,31 +386,20 @@ class DporCrossProcessCoordinator:
                 failure_kind="worker_error",
                 accesses=accesses,
             )
-        if isinstance(err, DeadlockError):
-            return CrossProcessResult(
-                ok=False,
-                iterations=num_explored,
-                exhausted=False,
-                failing_schedule=schedule_trace,
-                failure=getattr(err, "cycle_description", None) or str(err),
-                failure_kind="deadlock",
-                accesses=accesses,
-            )
         # A scheduler fallback TimeoutError means the run free-ran unscheduled;
         # its final state describes no DPOR schedule, so skip the invariant.
         if isinstance(err, TimeoutError):
             return None
         if not invariant():
-            if self.stop_on_first:
-                return CrossProcessResult(
-                    ok=False,
-                    iterations=num_explored,
-                    exhausted=False,
-                    failing_schedule=schedule_trace,
-                    failure="invariant violated",
-                    failure_kind="invariant",
-                    accesses=accesses,
-                )
+            return CrossProcessResult(
+                ok=False,
+                iterations=num_explored,
+                exhausted=False,
+                failing_schedule=schedule_trace,
+                failure="invariant violated",
+                failure_kind="invariant",
+                accesses=accesses,
+            )
         return None
 
     def _cleanup_socket(self) -> None:

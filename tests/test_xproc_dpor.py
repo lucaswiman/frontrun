@@ -94,6 +94,23 @@ def test_dpor_reports_worker_error() -> None:
     assert "kaboom" in (result.failure or "")
 
 
+def test_dpor_stop_on_first_false_still_reports_race() -> None:
+    # Regression: with stop_on_first=False the coordinator must still report the
+    # invariant violation, not silently explore to exhaustion and return ok.
+    db = _DB()
+    worker = _rmw_worker(db)
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, stop_on_first=False)
+    result = coord.explore(
+        launch=ThreadLauncher([worker, worker]),
+        setup=db.reset,
+        invariant=lambda: db.balance == 200,
+    )
+    assert not result.ok
+    assert result.failure_kind == "invariant"
+    assert result.failing_schedule is not None
+    assert result.exhausted  # whole space explored, yet the failure is still surfaced
+
+
 def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
     # For two read-modify-write workers the exhaustive strategy explores all
     # C(4,2)=6 interleavings; DPOR prunes equivalent ones and explores fewer.

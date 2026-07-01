@@ -158,6 +158,28 @@ def test_acquire_row_locks_raises_on_abort() -> None:
         coord.close()
 
 
+def test_await_grant_rejects_non_grant_control_frame() -> None:
+    # Regression: only a GRANT frame counts as a grant. A stray control frame
+    # (e.g. ITER_START from a reused-worker handshake that got out of step) must
+    # latch the abort, never be mistaken for a grant.
+    worker, coord = _pair()
+
+    def coordinator() -> None:
+        assert proto.recv_msg(coord)["t"] == proto.REPORT_AND_WAIT
+        proto.send_msg(coord, {"t": proto.ITER_START})  # not a GRANT
+
+    t = threading.Thread(target=coordinator)
+    t.start()
+    try:
+        proxy = SchedulerProxy(worker, worker_id=1)
+        assert proxy.report_and_wait(None, 1) is False
+        assert proxy.report_and_wait(None, 1) is False  # abort latched
+    finally:
+        t.join(timeout=2.0)
+        worker.close()
+        coord.close()
+
+
 def test_release_row_locks_is_fire_and_forget() -> None:
     worker, coord = _pair()
     try:

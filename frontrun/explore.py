@@ -138,7 +138,10 @@ def explore(
             deadlock_timeout=deadlock_timeout,
             max_executions=max_executions,
             preemption_bound=preemption_bound,
+            max_branches=max_branches,
+            total_timeout=total_timeout,
             stop_on_first=stop_on_first,
+            search=search,
         )
     if execution != "thread":
         raise ValueError(f"explore(): unknown execution={execution!r}; must be 'thread' or 'process'")
