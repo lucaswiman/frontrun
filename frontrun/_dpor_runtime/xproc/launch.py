@@ -84,9 +84,13 @@ class MpLauncher:
 class Subprocess:
     """A worker to spawn: a ``"module:callable"`` target and its positional args.
 
-    ``args`` must be JSON-serialisable — they are passed to the spawned process
-    through the environment. The callable runs in the child with frontrun's SQL
-    interception routed to the coordinator.
+    ``args`` are passed to the spawned process as JSON through the environment,
+    so they must be JSON-serialisable **and survive a JSON round-trip**: a tuple
+    arrives as a list and a dict with non-string keys comes back string-keyed.
+    Pass plain scalars / lists / string-keyed dicts, or use
+    ``frontrun.explore(execution="process")`` (which pickles) for richer args.
+    The callable runs in the child with frontrun's SQL interception routed to
+    the coordinator.
     """
 
     target: str

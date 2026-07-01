@@ -146,7 +146,16 @@ class CrossProcessCoordinator:
             seen.add(key)
 
             setup()
-            outcome = self._run_once(listener, launch, prefix)
+            try:
+                outcome = self._run_once(listener, launch, prefix)
+            except (TimeoutError, OSError) as exc:
+                return CrossProcessResult(
+                    ok=False,
+                    iterations=iterations + 1,
+                    exhausted=False,
+                    failure=f"worker connection failed: {type(exc).__name__}: {exc}",
+                    failure_kind="worker_error",
+                )
             iterations += 1
 
             if outcome.errors:

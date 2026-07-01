@@ -95,10 +95,18 @@ def _relay_loop(
     accesses: list[tuple[int, str, str]],
     accesses_lock: threading.Lock,
     worker_errors: dict[int, str],
+    unclean: set[int],
 ) -> None:
-    """Translate one worker's socket frames into scheduler calls."""
+    """Translate one worker's socket frames into scheduler calls.
+
+    Records the worker id in *unclean* unless the worker reached a clean
+    terminal (DONE/ERROR). An abort mid-handshake or a recv timeout leaves the
+    worker still running and its socket at an unknown frame boundary; in reuse
+    mode the coordinator uses *unclean* to avoid reusing a poisoned connection.
+    """
     pending_io = _setup_relay_tls(scheduler, worker_id)
     registered_groups: set[int] = set()
+    clean = False
     try:
         while True:
             try:
@@ -142,19 +150,30 @@ def _relay_loop(
                 scheduler.release_row_locks(worker_id)
             elif kind == proto.BEFORE_IO:
                 scheduler.before_io(worker_id, msg["rid"])
-                granted = not (scheduler._finished or scheduler._error)
+                # The turn was granted iff before_io made this worker the active
+                # IO thread; read it under the condition lock rather than racing
+                # on _finished/_error, which other relays mutate.
+                with scheduler._condition:
+                    granted = scheduler._active_io_thread == worker_id
                 _reply(sock, granted)
                 if not granted:
                     break
             elif kind == proto.AFTER_IO:
                 scheduler.after_io(worker_id, msg["rid"])
             elif kind == proto.DONE:
+                clean = True
                 break
             elif kind == proto.ERROR:
-                worker_errors[worker_id] = str(msg.get("msg", "worker error"))
-                scheduler.report_error(RuntimeError(worker_errors[worker_id]))
+                message = str(msg.get("msg", "worker error"))
+                with accesses_lock:
+                    worker_errors[worker_id] = message
+                scheduler.report_error(RuntimeError(message))
+                clean = True
                 break
     finally:
+        if not clean:
+            with accesses_lock:
+                unclean.add(worker_id)
         _flush_orphan_pending_io(scheduler, worker_id, pending_io)
         _teardown_relay_tls(scheduler, worker_id)
         scheduler.mark_done(worker_id)
@@ -165,6 +184,17 @@ def _reply(sock: socket.socket, granted: bool) -> None:
         proto.send_msg(sock, {"t": proto.GRANT if granted else proto.ABORT})
     except OSError:
         pass
+
+
+def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
+    """A worker never connected (or its socket broke): report a clean result."""
+    return CrossProcessResult(
+        ok=False,
+        iterations=iterations,
+        exhausted=False,
+        failure=f"worker connection failed: {type(exc).__name__}: {exc}",
+        failure_kind="worker_error",
+    )
 
 
 class DporCrossProcessCoordinator:
@@ -221,18 +251,22 @@ class DporCrossProcessCoordinator:
         listener.settimeout(self.deadlock_timeout * 2 + 10.0)
         install_wait_for_graph()
 
-        # Reuse mode: spawn persistent workers and accept their connections once.
         persistent_handles: Any = None
         persistent_socks: dict[int, socket.socket] = {}
-        if self.reuse_workers:
-            persistent_handles = launch.launch(self.socket_path, list(range(self.num_workers)))
-            for _ in range(self.num_workers):
-                sock, wid = accept_hello(listener, self.deadlock_timeout)
-                persistent_socks[wid] = sock
-
         num_explored = 0
+        exhausted = True
         first_failure: CrossProcessResult | None = None
         try:
+            # Reuse mode: spawn persistent workers and accept their connections once.
+            if self.reuse_workers:
+                persistent_handles = launch.launch(self.socket_path, list(range(self.num_workers)))
+                try:
+                    for _ in range(self.num_workers):
+                        sock, wid = accept_hello(listener, self.deadlock_timeout)
+                        persistent_socks[wid] = sock
+                except (TimeoutError, OSError) as exc:
+                    return _connection_failure(exc, 0)
+
             for step in dpor_exploration_iter(
                 engine=engine,
                 engine_lock=engine_lock,
@@ -251,11 +285,15 @@ class DporCrossProcessCoordinator:
                 )
                 accesses: list[tuple[int, str, str]] = []
                 worker_errors: dict[int, str] = {}
+                unclean: set[int] = set()
                 setup()  # reset external state before each interleaving
-                if self.reuse_workers:
-                    self._run_reused(persistent_socks, scheduler, accesses, worker_errors)
-                else:
-                    self._run_spawned(listener, launch, scheduler, accesses, worker_errors)
+                try:
+                    if self.reuse_workers:
+                        self._run_reused(persistent_socks, scheduler, accesses, worker_errors, unclean)
+                    else:
+                        self._run_spawned(listener, launch, scheduler, accesses, worker_errors, unclean)
+                except (TimeoutError, OSError) as exc:
+                    return _connection_failure(exc, num_explored + 1)
                 num_explored += 1
 
                 result = self._evaluate(
@@ -266,9 +304,16 @@ class DporCrossProcessCoordinator:
                         return result
                     if first_failure is None:
                         first_failure = result
+
+                # In reuse mode a worker aborted mid-iteration leaves stray
+                # frames on its persistent socket; sending the next ITER_START
+                # would desync it. Stop reusing rather than corrupt the search.
+                if self.reuse_workers and unclean:
+                    exhausted = False
+                    break
             if first_failure is not None:
-                return replace(first_failure, iterations=num_explored, exhausted=True)
-            return CrossProcessResult(ok=True, iterations=num_explored, exhausted=True)
+                return replace(first_failure, iterations=num_explored, exhausted=exhausted)
+            return CrossProcessResult(ok=True, iterations=num_explored, exhausted=exhausted)
         finally:
             if self.reuse_workers:
                 for sock in persistent_socks.values():
@@ -292,12 +337,13 @@ class DporCrossProcessCoordinator:
         socks_by_id: dict[int, socket.socket],
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
+        unclean: set[int],
     ) -> None:
         accesses_lock = threading.Lock()
         relays = [
             threading.Thread(
                 target=_relay_loop,
-                args=(scheduler, wid, sock, accesses, accesses_lock, worker_errors),
+                args=(scheduler, wid, sock, accesses, accesses_lock, worker_errors, unclean),
                 name=f"xproc-relay-{wid}",
                 daemon=True,
             )
@@ -316,6 +362,7 @@ class DporCrossProcessCoordinator:
         scheduler: DporScheduler,
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
+        unclean: set[int],
     ) -> None:
         handles = launch.launch(self.socket_path, list(range(self.num_workers)))
         socks_by_id: dict[int, socket.socket] = {}
@@ -323,7 +370,7 @@ class DporCrossProcessCoordinator:
             for _ in range(self.num_workers):
                 sock, wid = accept_hello(listener, self.deadlock_timeout)
                 socks_by_id[wid] = sock
-            self._drive_relays(scheduler, socks_by_id, accesses, worker_errors)
+            self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
         finally:
             for s in socks_by_id.values():
                 try:
@@ -338,10 +385,11 @@ class DporCrossProcessCoordinator:
         scheduler: DporScheduler,
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
+        unclean: set[int],
     ) -> None:
         for sock in socks_by_id.values():
             proto.send_msg(sock, {"t": proto.ITER_START})
-        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors)
+        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
 
     def _evaluate(
         self,

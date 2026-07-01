@@ -65,6 +65,32 @@ def test_reuse_matches_spawn_execution_count() -> None:
     assert reuse.iterations == spawn.iterations
 
 
+def test_reuse_stops_safely_on_deadlock() -> None:
+    # A deadlock aborts a worker mid-iteration, leaving its persistent socket at
+    # an unknown frame boundary. Reuse must report the deadlock and stop rather
+    # than send the next ITER_START into a poisoned socket (desync) or hang.
+    row1, row2 = "sql:acct:id=1", "sql:acct:id=2"
+
+    def locker(first: str, second: str):
+        def worker(proxy) -> None:
+            proxy.acquire_row_locks(0, [first])
+            proxy.report_and_wait(None, 0)
+            proxy.acquire_row_locks(0, [second])
+            proxy.report_and_wait(None, 0)
+            proxy.release_row_locks(0)
+
+        return worker
+
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, reuse_workers=True, stop_on_first=False)
+    result = coord.explore(
+        launch=PersistentThreadLauncher([locker(row1, row2), locker(row2, row1)]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert not result.ok
+    assert result.failure_kind == "deadlock"
+
+
 def test_reuse_no_state_leak_across_iterations() -> None:
     # A safe atomic increment must hold across every reused iteration; a leak
     # would surface as balance > 200 (extra increments from a prior run).
