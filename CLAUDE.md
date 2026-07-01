@@ -14,7 +14,7 @@ Unified entry point is `frontrun.explore(strategy=...)`, which dispatches throug
 ## Project layout
 
 - `frontrun/` — Python package (pure Python + compiled `_dpor` extension)
-  - `_dpor_core/` — pure helpers shared by sync + async DPOR (`engine.py`, `invariants.py`, `concurrency.py`, `failures.py`, `row_locks.py`, `scheduling.py`, `utils.py`, `worker.py` — the `WorkerSet`/`TurnTransport` ports)
+  - `_dpor_core/` — pure helpers shared by sync + async DPOR (`engine.py`, `invariants.py`, `concurrency.py`, `failures.py`, `row_locks.py`, `scheduling.py`, `utils.py`, `worker.py` — the `WorkerSet` port)
   - `_dpor_runtime/` — sync DPOR internals (`explore.py`, `scheduler.py`, `runner.py`, `worker_set.py`, `replay.py`, `preload_bridge.py`)
     - `xproc/` — cross-process exploration (`frontrun.explore(execution="process")`): schedules separate Python OS processes (spawned via `multiprocessing`/`subprocess`) contending on shared SQL/Redis state. Each worker runs frontrun's SQL/Redis patching and coordinates over a socket. `protocol.py` (wire framing), `proxy.py` (worker-side `SchedulerProxy`), `coordinator.py` (exhaustive), `dpor_coordinator.py` (engine-driven via per-worker relay threads that reuse `DporScheduler`), `launch.py`/`worker_main.py` (spawn + bootstrap). Public API in `frontrun/cross_process.py`.
   - `_strategy.py` — `Strategy` / `AsyncStrategy` Protocols + adapter registries used by `frontrun.explore()`

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import socket
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 from . import protocol as proto
@@ -22,27 +23,6 @@ from .proxy import SchedulerProxy
 WorkerBody = Callable[[SchedulerProxy], None]
 
 
-def _connect_and_serve(socket_path: str, worker_id: int, body: WorkerBody) -> None:
-    """Connect to the coordinator, run *body(proxy)*, and report done/error."""
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(socket_path)
-    proxy = SchedulerProxy(sock, worker_id)
-    try:
-        proxy.hello()
-        try:
-            body(proxy)
-        except Exception as exc:  # noqa: BLE001 - report any worker failure upstream
-            message = f"{type(exc).__name__}: {exc}"
-            _safe(lambda: proxy.report_error(message))
-        else:
-            _safe(proxy.mark_done)
-    finally:
-        try:
-            sock.close()
-        except OSError:
-            pass
-
-
 def _safe(thunk: Callable[[], None]) -> None:
     """Run *thunk*, swallowing socket errors (the coordinator may have hung up)."""
     try:
@@ -51,7 +31,24 @@ def _safe(thunk: Callable[[], None]) -> None:
         pass
 
 
+@contextmanager
+def _connected_proxy(socket_path: str, worker_id: int) -> Generator[tuple[SchedulerProxy, socket.socket]]:
+    """Connect to the coordinator, announce the worker id, and clean up on exit."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect(socket_path)
+    proxy = SchedulerProxy(sock, worker_id)
+    try:
+        proxy.hello()
+        yield proxy, sock
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
 def _run_iteration(proxy: SchedulerProxy, body: WorkerBody) -> None:
+    """Run one iteration of *body(proxy)* and report done/error to the coordinator."""
     proxy.reset()
     try:
         body(proxy)
@@ -60,6 +57,12 @@ def _run_iteration(proxy: SchedulerProxy, body: WorkerBody) -> None:
         _safe(lambda: proxy.report_error(message))
     else:
         _safe(proxy.mark_done)
+
+
+def _connect_and_serve(socket_path: str, worker_id: int, body: WorkerBody) -> None:
+    """Connect to the coordinator, run *body(proxy)* once, and report done/error."""
+    with _connected_proxy(socket_path, worker_id) as (proxy, _sock):
+        _run_iteration(proxy, body)
 
 
 def _serve_persistent(
@@ -79,11 +82,7 @@ def _serve_persistent(
     idle arbitrarily long between iterations while the coordinator runs setup
     and checks invariants.
     """
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(socket_path)
-    proxy = SchedulerProxy(sock, worker_id)
-    try:
-        proxy.hello()
+    with _connected_proxy(socket_path, worker_id) as (proxy, sock):
         if on_connect is not None:
             on_connect(proxy)
         while True:
@@ -98,11 +97,6 @@ def _serve_persistent(
             if before_iteration is not None:
                 before_iteration()
             _run_iteration(proxy, body)
-    finally:
-        try:
-            sock.close()
-        except OSError:
-            pass
 
 
 class ThreadLauncher:

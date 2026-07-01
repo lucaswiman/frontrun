@@ -114,14 +114,16 @@ def _relay_loop(
                 pending_io.append((obj_key, access_kind, True))  # synced=True: Python-level SQL/Redis
                 with accesses_lock:
                     accesses.append((worker_id, rid, access_kind))
-                if rid.startswith("sql:"):
+                # Register the resource's table group with the engine once per
+                # obj_key (Defect #15). Gate the parse/hash on the membership
+                # check so a recurring access doesn't re-split and re-hash.
+                if rid.startswith("sql:") and obj_key not in registered_groups:
                     parts = rid.split(":")
                     table_group = f"sql:{parts[1]}" if len(parts) >= 2 else rid
                     group_key = hash(table_group) & 0xFFFFFFFFFFFFFFFF
-                    if obj_key not in registered_groups:
-                        with scheduler._engine_lock:
-                            scheduler.engine.register_resource_group(obj_key, group_key)
-                        registered_groups.add(obj_key)
+                    with scheduler._engine_lock:
+                        scheduler.engine.register_resource_group(obj_key, group_key)
+                    registered_groups.add(obj_key)
             elif kind == proto.REPORT_AND_WAIT:
                 granted = scheduler.report_and_wait(None, worker_id)
                 _reply(sock, granted)
