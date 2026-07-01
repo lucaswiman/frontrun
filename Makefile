@@ -1,4 +1,4 @@
-.PHONY: test clean docs docs-clean docs-html docs-clean-build lint type-check check test-integration test-e2e build-all screenshot
+.PHONY: test clean docs docs-clean docs-html docs-clean-build lint type-check check test-integration test-e2e build-xproc-sched build-all screenshot
 .PRECIOUS: .venv-% .venv-%/activate
 
 # Python versions to test
@@ -77,11 +77,19 @@ test-integration: $(addprefix test-integration-,$(PYTHON_VERSIONS))
 # End-to-end tests (spawn real subprocesses) for a specific Python version.
 # Selected by @pytest.mark.e2e. Cross-process exploration uses stdlib sqlite3,
 # so no external services are required.
-test-e2e-%: build-dpor-% build-io
+test-e2e-%: build-dpor-% build-io build-xproc-sched
 	PATH=$(CURDIR)/.venv-$*/bin:$$PATH $(CURDIR)/.venv-$*/bin/frontrun pytest $(PYTEST_ARGS) -m e2e
 
 # End-to-end tests for all Python versions
 test-e2e: $(addprefix test-e2e-,$(PYTHON_VERSIONS))
+
+# Isolated LD_PRELOAD scheduling shim for the Phase 4 cross-process PoC
+# (scheduling unmodified/non-Python workers at C-level socket granularity).
+# Kept separate from libfrontrun_io.so so it can never destabilise the suite;
+# loaded only by the Phase 4 e2e's own worker subprocesses.
+build-xproc-sched:
+	gcc -shared -fPIC -O2 -Wall -o frontrun/libfrontrun_xproc_sched.so \
+		crates/xproc_sched/frontrun_xproc_sched.c -ldl
 
 .PHONY: rebuild
 rebuild:
