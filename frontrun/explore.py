@@ -43,6 +43,7 @@ def explore(
     *,
     count: int | None = None,
     strategy: Strategy = "dpor",
+    execution: str = "thread",
     # DPOR-specific kwargs
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
@@ -119,6 +120,29 @@ def explore(
             ``count <= 0``, or ``strategy`` is unrecognised.
     """
     worker_list = _resolve_workers(workers, count)
+
+    # Cross-process execution: each worker runs in its own Python process,
+    # coordinating over a socket. Same call shape as threads/async; workers and
+    # the setup() state must be picklable, and state is external (SQL/Redis).
+    if execution == "process":
+        if any_async(worker_list):
+            raise ValueError("explore(): execution='process' does not support async workers")
+        if strategy != "dpor":
+            raise ValueError("explore(): execution='process' supports strategy='dpor' only")
+        from frontrun.cross_process import _explore_process
+
+        return _explore_process(
+            setup,
+            worker_list,
+            invariant,
+            deadlock_timeout=deadlock_timeout,
+            max_executions=max_executions,
+            preemption_bound=preemption_bound,
+            stop_on_first=stop_on_first,
+        )
+    if execution != "thread":
+        raise ValueError(f"explore(): unknown execution={execution!r}; must be 'thread' or 'process'")
+
     registry = ASYNC_STRATEGIES if any_async(worker_list) else STRATEGIES
     if strategy not in registry:
         valid = ", ".join(repr(k) for k in sorted(registry))

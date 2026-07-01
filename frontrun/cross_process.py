@@ -27,9 +27,68 @@ from typing import Any
 
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, CrossProcessResult
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
-from frontrun._dpor_runtime.xproc.launch import Subprocess, SubprocessLauncher
+from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, SubprocessLauncher
 
 __all__ = ["CrossProcessResult", "Subprocess", "explore_processes"]
+
+
+def _to_interleaving_result(result: CrossProcessResult) -> Any:
+    """Map a CrossProcessResult onto the InterleavingResult explore() returns.
+
+    Keeps ``execution="process"`` result-compatible with threads/async
+    (``property_holds`` / ``counterexample`` / ``explanation`` / ``assert_holds``).
+    """
+    from frontrun.common import InterleavingResult
+
+    explanation = None
+    if not result.ok:
+        where = f" at schedule {result.failing_schedule}" if result.failing_schedule is not None else ""
+        explanation = f"{result.failure or 'invariant violated'}{where}"
+    return InterleavingResult(
+        property_holds=result.ok,
+        counterexample=result.failing_schedule,
+        num_explored=result.iterations,
+        unique_interleavings=result.iterations,
+        explanation=explanation,
+    )
+
+
+def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazily by frontrun.explore
+    setup: Callable[[], Any],
+    workers: list[Callable[[Any], Any]],
+    invariant: Callable[[Any], bool],
+    *,
+    deadlock_timeout: float = 15.0,
+    max_executions: int | None = None,
+    preemption_bound: int | None = 2,
+    stop_on_first: bool = True,
+    **_ignored: Any,
+) -> Any:
+    """Back the ``frontrun.explore(execution="process")`` path.
+
+    Runs each worker callable in its own ``multiprocessing`` process. ``setup()``
+    returns a *picklable* handle to the shared external state (e.g. a DB URL);
+    it is passed to every ``worker(state)`` and to ``invariant(state)``. Both
+    ``setup`` and ``invariant`` run in this (coordinator) process.
+    """
+    state_box: dict[str, Any] = {}
+
+    def coord_setup() -> None:
+        state_box["state"] = setup()
+
+    def coord_invariant() -> bool:
+        return bool(invariant(state_box.get("state")))
+
+    coordinator = DporCrossProcessCoordinator(
+        num_workers=len(workers),
+        deadlock_timeout=deadlock_timeout,
+        max_executions=max_executions,
+        preemption_bound=preemption_bound,
+        stop_on_first=stop_on_first,
+    )
+    launcher = MpLauncher(workers, state_fn=lambda: state_box.get("state"))
+    result = coordinator.explore(launch=launcher, setup=coord_setup, invariant=coord_invariant)
+    return _to_interleaving_result(result)
 
 
 def explore_processes(

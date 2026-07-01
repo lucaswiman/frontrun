@@ -11,13 +11,73 @@ identical across both.
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 _WORKER_MODULE = "frontrun._dpor_runtime.xproc.worker_main"
+
+
+def _mp_worker_entry(socket_path: str, worker_id: int, worker_fn: Callable[[Any], Any], state: Any) -> None:
+    """multiprocessing entry: connect, install interception, run ``worker_fn(state)``.
+
+    Runs in the spawned child. Mirrors ``worker_main`` but receives the worker
+    callable and the (picklable) setup state directly via multiprocessing pickling
+    instead of a ``module:callable`` string + env-encoded args.
+    """
+    from .worker import _connect_and_serve
+    from .worker_main import _install_interception
+
+    def body(proxy: Any) -> None:
+        _install_interception(proxy, worker_id)
+        worker_fn(state)
+
+    _connect_and_serve(socket_path, worker_id, body)
+
+
+class MpLauncher:
+    """Spawn Python worker callables via ``multiprocessing`` (the primary backend).
+
+    ``worker_fns`` are plain picklable callables (module-level functions, same as
+    threads); ``state_fn`` yields the current picklable state produced by
+    ``setup()``, pickled to each worker. Uses the ``spawn`` start method and
+    scrubs ``LD_PRELOAD`` / ``FRONTRUN_IO_FD`` so children do not inherit the
+    C-level I/O preload (whose event pipe has no reader here).
+    """
+
+    def __init__(self, worker_fns: Sequence[Callable[[Any], Any]], state_fn: Callable[[], Any]) -> None:
+        self._worker_fns = list(worker_fns)
+        self._state_fn = state_fn
+        self._ctx = multiprocessing.get_context("spawn")
+
+    def launch(self, socket_path: str, worker_ids: list[int]) -> list[Any]:
+        state = self._state_fn()
+        scrubbed = {k: os.environ.pop(k) for k in ("LD_PRELOAD", "FRONTRUN_IO_FD") if k in os.environ}
+        try:
+            procs = [
+                self._ctx.Process(
+                    target=_mp_worker_entry,
+                    args=(socket_path, wid, self._worker_fns[wid], state),
+                    daemon=True,
+                )
+                for wid in worker_ids
+            ]
+            for p in procs:
+                p.start()
+        finally:
+            os.environ.update(scrubbed)
+        return procs
+
+    def join(self, handles: Any, timeout: float) -> None:
+        for proc in handles:
+            proc.join(timeout)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(1.0)
 
 
 @dataclass(frozen=True)
