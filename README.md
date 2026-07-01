@@ -294,7 +294,7 @@ The same key-level precision applies to hashes (`HGET`/`HSET`), lists, sets, sor
 
 The approaches above interleave concurrency *within one Python process*. Cross-process exploration extends DPOR to **separate Python processes** that contend on shared *external* state (SQL and Redis). Each worker runs frontrun's SQL/Redis interception and coordinates with a parent over a socket; the Rust DPOR engine drives the search at external-access granularity, pruning equivalent interleavings and detecting cross-worker `SELECT FOR UPDATE` deadlocks.
 
-`frontrun.explore(..., execution="process")` mirrors the threads/async interface. The only differences are inherent to processes: workers are **picklable** module-level callables, and `setup()` returns a **picklable handle** to the external state (e.g. a SQLite path or DB URL) that is passed to each `worker(state)` and to `invariant(state)`. `setup` and `invariant` run in the coordinator process; workers run in their own spawned processes. It returns the same `InterleavingResult` as threads/async.
+`frontrun.explore(..., execution="process")` mirrors the threads/async interface (install the `process` extra: `pip install frontrun[process]`). The only differences are inherent to processes: workers are serialised with **dill** (so closures and lambdas work, not just module-level functions), and `setup()` returns a **handle** to the external state (e.g. a SQLite path or DB URL) that is passed to each `worker(state)` and to `invariant(state)`. `setup` and `invariant` run in the coordinator process; workers run in their own spawned processes. It returns the same `InterleavingResult` as threads/async.
 
 ```python
 import sqlite3

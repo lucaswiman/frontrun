@@ -43,10 +43,10 @@ There are two public entry points; pick by how you want to define workers:
      - ``explore(execution="process")``
      - ``explore_processes()``
    * - Worker is
-     - a **picklable** callable (module-level function), same as threads
+     - any callable — **closures and lambdas too** (serialised with dill)
      - a ``"module:callable"`` **target string** run in a fresh interpreter
    * - Args reach the worker via
-     - :mod:`multiprocessing` **pickling** (tuples, dicts, most objects)
+     - **dill** serialisation of ``setup()``'s return (tuples, dicts, closures)
      - **JSON** through the environment (scalars/lists/str-keyed dicts only)
    * - Return type
      - :class:`~frontrun.common.InterleavingResult` (like threads/async)
@@ -68,14 +68,18 @@ async interface (including ``count=`` to replicate a worker) and returns the sam
 :class:`~frontrun.common.InterleavingResult` (``property_holds`` /
 ``counterexample`` / ``explanation`` / ``assert_holds``).
 
-Two differences are inherent to using processes:
+Install the ``process`` extra (``pip install frontrun[process]``), which pulls in
+dill for serialising workers. Two differences are inherent to using processes:
 
-* Workers must be **picklable** (module-level callables), exactly as with
-  :mod:`multiprocessing`.
-* ``setup()`` returns a **picklable handle** to the external state --- a DB URL,
-  a SQLite path, a Redis key namespace --- rather than a live Python object. The
-  handle is passed to every ``worker(state)`` and to ``invariant(state)``. State
-  lives in the external store (SQL/Redis), not in shared Python memory.
+* Workers are **serialised with dill**, so closures and lambdas work as well as
+  module-level functions (dill handles more than the stdlib pickle that
+  :mod:`multiprocessing` uses). Genuinely unserialisable captures --- an open
+  connection, socket, or file handle held by the worker --- still fail, with a
+  clear error.
+* ``setup()`` returns a **handle** to the external state --- a DB URL, a SQLite
+  path, a Redis key namespace --- rather than a live Python object. The handle is
+  passed to every ``worker(state)`` and to ``invariant(state)``. State lives in
+  the external store (SQL/Redis), not in shared Python memory.
 
 ``setup`` and ``invariant`` run in the coordinator process; the workers run in
 their own spawned processes.
@@ -255,6 +259,9 @@ none, so the example requires a running Postgres:
        conn.commit()
        conn.close()
 
+Then (``dsn`` and ``reset_accounts`` are your own connection string and
+table-reset helper):
+
 .. code-block:: python
 
    # Two workers lock rows 1 and 2 in opposite order: a classic deadlock.
@@ -297,6 +304,35 @@ performs a racy GET/SET, while the coordinator resets and checks the counter:
 Redis exploration requires the ``redis`` package and a running server (the demo
 workers read ``FRONTRUN_XPROC_REDIS_URL``, defaulting to a local instance). The
 atomic variant --- Redis ``INCR`` --- has no race, so ``result.ok`` is ``True``.
+
+The ergonomic ``execution="process"`` door works against Redis too --- the
+``setup()`` return value is the picklable handle (here the Redis URL) passed to
+each ``worker(state)``:
+
+.. code-block:: python
+
+   import redis
+   import frontrun
+
+   REDIS_URL = "redis://127.0.0.1:6379/0"
+
+   def increment(url):
+       r = redis.Redis.from_url(url)
+       current = int(r.get("counter") or 0)
+       r.set("counter", current + 1)
+
+   def setup():
+       redis.Redis.from_url(REDIS_URL).set("counter", 0)
+       return REDIS_URL  # picklable handle passed to each worker(state)/invariant(state)
+
+   result = frontrun.explore(
+       setup=setup,
+       workers=increment,
+       count=2,
+       invariant=lambda url: int(redis.Redis.from_url(url).get("counter")) == 2,
+       execution="process",
+   )
+   assert not result.property_holds   # lost update found across processes
 
 
 Running the tests

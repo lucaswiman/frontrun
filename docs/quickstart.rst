@@ -3,7 +3,9 @@ Quick Start
 
 This guide covers the basics using **trace markers** --- the simplest approach.
 For automatic race finding without manual markers, see :doc:`dpor_guide` (systematic
-exploration) or :doc:`approaches` (bytecode exploration).
+exploration) or :doc:`approaches` (bytecode exploration). If your workers are
+separate OS processes contending on a shared database or Redis rather than
+threads, see :doc:`cross_process`.
 
 
 Triggering a Race Condition
