@@ -25,15 +25,18 @@ position-sensitive future access cache, provenance-tagged access summaries,
 WeakWrite+WeakRead merge, per-step independence check, SQL resource grouping
 (Defect #15 Approach 2), async/await marker support.
 
-**Cross-process exploration** (`frontrun.explore_processes`, `_dpor_runtime/xproc/`).
-Phase 1 (plumbing/exhaustive), Phase 2 (engine-driven DPOR reduction via per-worker
-relay threads reusing `DporScheduler`; cross-process row-lock deadlock detection;
-Redis) and Phase 3 (persistent worker reuse) are done and covered by unit +
-functional + e2e tests (SQLite/Redis subprocesses). Phase 4 (schedule unmodified /
-non-Python workers by blocking in an isolated LD_PRELOAD shim, `crates/xproc_sched/`)
-has a working PoC at raw-send granularity. Remaining: feed cross-process accesses
-through the engine with SQL **wire-protocol parsing** for statement/transaction
-classification (still tracked below under integrations-and-detection).
+**Cross-process exploration** (`frontrun.explore(execution="process")`,
+`_dpor_runtime/xproc/`). Multiprocessing/subprocess Python workers running
+frontrun's SQL/Redis patching, coordinated over a socket. Phase 1
+(plumbing/exhaustive), Phase 2 (engine-driven DPOR reduction via per-worker relay
+threads reusing `DporScheduler`; cross-process row-lock deadlock detection; Redis)
+and Phase 3 (persistent worker reuse) are done and covered by unit + functional +
+e2e tests (SQLite/Redis subprocesses).
+
+Scheduling *unmodified / non-Python* workers (LD_PRELOAD-level interception + SQL
+wire-protocol parsing) was explored and dropped: it gives up the sound, statement-
+and row-level model that the in-worker Python patching provides. If the workers
+are Python, run frontrun inside them — that is the supported path.
 
 ## Dropped (2026-06-12 cleanup)
 
@@ -50,8 +53,8 @@ test generation. Originals in git history.
 ### P1 — New directions (endorsed 2026-06)
 
 1. **Cross-process exploration** (cross_process_exploration.md) — ✅ implemented
-   (Phases 1–3 + Phase 4 PoC); see the Implemented section above. Follow-up: SQL
-   wire-protocol parsing to drive the engine for fully unmodified workers.
+   for Python multiprocessing/subprocess workers (Phases 1–3); see the Implemented
+   section above. Non-Python / unmodified-worker scheduling was dropped by design.
 2. **Fault-point exploration** (fault_injection.md) — start with the async cancellation
    sweep (v1), which needs no new exploration machinery.
 3. **Virtual clock** (virtual_clock.md) — v1 autojump clock for sync, then the
