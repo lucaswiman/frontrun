@@ -20,6 +20,19 @@ Unified Exploration Entry Points
 .. autofunction:: frontrun.explore_async_random
 
 
+Cross-Process Exploration
+-------------------------
+
+See :doc:`cross_process` for a guide. ``frontrun.explore(...,
+execution="process")`` mirrors the thread/async interface; the functions below
+are the lower-level entry point.
+
+.. autofunction:: frontrun.explore_processes
+
+.. autoclass:: frontrun.Subprocess
+   :members:
+
+
 Trace Markers
 --------------
 

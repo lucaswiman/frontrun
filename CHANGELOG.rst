@@ -6,6 +6,16 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+* **Cross-process exploration.** ``frontrun.explore(...)`` gains an
+  ``execution="process"`` mode that runs each worker in its own Python process,
+  interleaving separate processes that contend on shared external state (SQL and
+  Redis). Workers are picklable module-level callables and ``setup()`` returns a
+  picklable handle to the external state. The lower-level
+  ``frontrun.explore_processes(...)`` (with ``frontrun.Subprocess``) spawns real
+  OS processes from ``"module:callable"`` targets and supports ``strategy="dpor"``
+  (default, engine reduction + cross-worker deadlock detection) or
+  ``"exhaustive"``, plus ``reuse_workers=True``. See :doc:`cross_process`.
+
 0.6.0 (2026-06-30)
 ------------------
 

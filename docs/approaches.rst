@@ -354,6 +354,42 @@ The three marker-level tools are complementary:
    **all** problematic interleavings, not just the one counterexample.
 
 
+Cross-Process Exploration
+-------------------------
+
+The four approaches above interleave concurrency *within one Python process*.
+Cross-process exploration extends the DPOR approach to **separate Python
+processes** that contend on shared *external* state (SQL and Redis). Each worker
+runs frontrun's SQL/Redis interception and coordinates with a parent over a
+socket; the Rust DPOR engine drives the search at external-access granularity,
+pruning equivalent interleavings and detecting cross-worker
+``SELECT FOR UPDATE`` deadlocks.
+
+:func:`frontrun.explore` mirrors the thread/async interface with
+``execution="process"``. Workers are picklable module-level callables and
+``setup()`` returns a picklable handle to the external state (e.g. a DB URL),
+passed to each ``worker(state)`` and to ``invariant(state)``:
+
+.. code-block:: python
+
+   import frontrun
+
+   result = frontrun.explore(
+       setup=make_state,          # returns a picklable handle (e.g. a SQLite path)
+       workers=increment,         # module-level callable(state)
+       count=2,
+       invariant=lambda state: read(state) == 2,
+       execution="process",
+   )
+   result.assert_holds()
+
+The lower-level :func:`frontrun.explore_processes` spawns
+:class:`frontrun.Subprocess` targets (``"module:callable"`` + args) as real OS
+processes and offers ``strategy="dpor"`` (default) or ``"exhaustive"``, plus
+``reuse_workers=True`` to keep workers alive across iterations. See
+:doc:`cross_process` for the full guide.
+
+
 Automatic I/O Detection
 -------------------------
 

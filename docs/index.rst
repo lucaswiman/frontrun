@@ -21,6 +21,10 @@ Four approaches, in order of decreasing interpretability:
 4. **Trace markers** --- comment-based synchronization points for reproducing
    a known race window.
 
+The DPOR engine also drives **cross-process exploration**: the same
+``frontrun.explore(...)`` interface applied to separate Python processes that
+contend on shared external state (SQL and Redis).
+
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
@@ -36,6 +40,7 @@ Four approaches, in order of decreasing interpretability:
    orm_race
    sql-technical-details
    redis
+   cross_process
    trace_filtering
    internals
    api_reference
