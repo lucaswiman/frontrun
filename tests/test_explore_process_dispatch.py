@@ -89,6 +89,32 @@ def test_process_rejects_silent_noop_kwargs() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("kwarg", "value"),
+    [
+        ("detect_io", False),
+        ("patch_sleep", False),
+        ("timeout_per_run", 30.0),
+        ("reproduce_on_failure", 3),
+        ("warn_nondeterministic_sql", False),
+    ],
+)
+def test_process_rejects_more_silent_noop_kwargs(kwarg: str, value: object) -> None:
+    # These thread-mode knobs are not plumbed into process workers (state is
+    # external; there is no in-process trace/replay), so a non-default value must
+    # raise rather than silently no-op — the same porting footgun the existing
+    # rejection list closes for serializable_invariant et al.
+    with pytest.raises(ValueError, match=kwarg):
+        frontrun.explore(
+            setup=lambda: None,
+            workers=lambda s: None,
+            count=2,
+            invariant=lambda s: True,
+            execution="process",
+            **{kwarg: value},
+        )
+
+
 def test_explore_processes_reuse_rejects_exhaustive() -> None:
     with pytest.raises(ValueError, match="reuse_workers"):
         frontrun.explore_processes(

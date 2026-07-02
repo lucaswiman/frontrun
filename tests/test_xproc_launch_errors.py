@@ -61,6 +61,41 @@ def test_subprocess_launcher_diagnoses_bad_target(tmp_path) -> None:
     assert "No module named" in detail or "ModuleNotFoundError" in detail
 
 
+class _FakeProc:
+    def __init__(self, exitcode: int | None) -> None:
+        self.exitcode = exitcode
+
+
+def test_mp_any_exited_ignores_clean_exit() -> None:
+    # A worker that connected, ran no scheduled access, and exited cleanly (0)
+    # must NOT trip the fast-fail "worker exited before connecting" path while a
+    # co-worker's HELLO is still being accepted — only a genuine crash (nonzero)
+    # should. This matches diagnose()'s nonzero filter.
+    ls = MpLauncher([lambda state: None], state_fn=lambda: None)
+    assert ls.any_exited([_FakeProc(0)]) is False
+    assert ls.any_exited([_FakeProc(None), _FakeProc(0)]) is False
+    assert ls.any_exited([_FakeProc(1)]) is True
+    assert ls.any_exited([_FakeProc(None), _FakeProc(-9)]) is True
+
+
+class _FakePopen:
+    def __init__(self, rc: int | None) -> None:
+        self._rc = rc
+
+    def poll(self) -> int | None:
+        return self._rc
+
+
+def test_subprocess_any_exited_ignores_clean_exit() -> None:
+    # Same clean-exit rule for the subprocess backend: a returncode of 0 is not a
+    # crash and must not fast-fail the accept loop.
+    ls = SubprocessLauncher([Subprocess("pkg.mod:go")])
+    assert ls.any_exited([_FakePopen(0)]) is False
+    assert ls.any_exited([_FakePopen(None)]) is False
+    assert ls.any_exited([_FakePopen(1)]) is True
+    assert ls.any_exited([_FakePopen(-9)]) is True
+
+
 def test_mp_launcher_rejects_stdin_main(monkeypatch, tmp_path) -> None:
     # multiprocessing's spawn start method cannot re-import a stdin/-c __main__;
     # fail before starting children so users get a frontrun-level explanation.
