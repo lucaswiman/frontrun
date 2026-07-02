@@ -33,10 +33,21 @@ threads reusing `DporScheduler`; cross-process row-lock deadlock detection; Redi
 and Phase 3 (persistent worker reuse) are done and covered by unit + functional +
 e2e tests (SQLite/Redis subprocesses).
 
-Scheduling *unmodified / non-Python* workers (LD_PRELOAD-level interception + SQL
-wire-protocol parsing) was explored and dropped: it gives up the sound, statement-
-and row-level model that the in-worker Python patching provides. If the workers
-are Python, run frontrun inside them — that is the supported path.
+Scheduling *unmodified / non-Python* workers via **LD_PRELOAD** syscall
+interception was prototyped (Phase 4 PoC) and removed — but the lesson is *wrong
+layer, not wrong goal*. The block-until-grant primitive worked; what LD_PRELOAD
+can't supply is the semantic access identity DPOR needs (which row/key, read vs
+write), step-completion/quiescence (it hooked `send` but not `recv`, so grant
+order != effect order), or coverage of the common case (SQLite is in-process file
+I/O with no wire protocol; Go/static binaries bypass libc). The viable route, if
+demand appears, is a **protocol-aware scheduling proxy at the DSN level**: run a
+frontrun proxy in front of Postgres/Redis so "unmodified worker" becomes "point
+your connection string at the proxy". Full-duplex framing makes step-completion =
+response-forwarded (closing the quiescence hole for free) and gives a natural home
+for row-predicate and TX tracking, so it *can* preserve full DPOR semantics — at
+roughly a per-protocol wire state machine's worth of cost (PG-first). The PG
+parser at `crates/io/src/sql_extract.rs` is a starting seed. Until then: if the
+workers are Python, run frontrun inside them — that is the supported path.
 
 ## Dropped (2026-06-12 cleanup)
 
@@ -54,7 +65,8 @@ test generation. Originals in git history.
 
 1. **Cross-process exploration** (cross_process_exploration.md) — ✅ implemented
    for Python multiprocessing/subprocess workers (Phases 1–3); see the Implemented
-   section above. Non-Python / unmodified-worker scheduling was dropped by design.
+   section above. Non-Python / unmodified-worker scheduling: LD_PRELOAD was the
+   wrong layer (see above) — the open route is a DSN-level protocol-aware proxy.
 2. **Fault-point exploration** (fault_injection.md) — start with the async cancellation
    sweep (v1), which needs no new exploration machinery.
 3. **Virtual clock** (virtual_clock.md) — v1 autojump clock for sync, then the
