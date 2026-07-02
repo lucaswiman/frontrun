@@ -6,32 +6,27 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
-* **Breaking (cross-process).** ``frontrun.explore_processes(...)`` now threads
-  ``setup()``'s return value into ``invariant(state)`` — the ``invariant`` is
-  called with the state handle ``setup()`` returned instead of taking no
-  arguments. This reconciles the low-level entry point with
-  ``frontrun.explore(execution="process")``, which already passed the handle.
-  Update callers from ``invariant=lambda: check()`` to
-  ``invariant=lambda state: check()`` (ignore ``state`` if you read the shared
-  store directly).
-
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,
   interleaving separate processes that contend on shared external state (SQL and
   Redis). Workers are serialised with dill (install the ``process`` extra), so
   closures and lambdas work — not just module-level functions; ``setup()``
-  returns a handle to the external state. The lower-level
-  ``frontrun.explore_processes(...)`` (with ``frontrun.Subprocess``) spawns real
-  OS processes from ``"module:callable"`` targets and supports ``strategy="dpor"``
-  (default, engine reduction + cross-worker deadlock detection) or
-  ``"exhaustive"``. Both entry points accept ``reuse_workers=True`` (spawn each
-  worker once, re-run per interleaving) and a ``count=`` shorthand to replicate a
-  worker; an unserialisable worker or an unimportable target now fails *fast*
-  with a clear frontrun-level message (the child's real error, not a bare
-  connection timeout). Process-mode failures carry the failure kind and the
-  external-access trace in their explanation, and options that only affect
-  in-process tracing (``serializable_invariant``, ``error_on_any_race``, ...) are
-  rejected rather than silently ignored. See :doc:`cross_process`.
+  returns a handle to the external state that is passed to each ``worker(state)``
+  and to ``invariant(state)`` (the same shape as thread/async mode). The
+  lower-level ``frontrun.explore_processes(...)`` (with ``frontrun.Subprocess``)
+  spawns real OS processes from ``"module:callable"`` targets, takes the same
+  ``invariant(state)`` contract, and supports ``strategy="dpor"`` (default,
+  engine reduction + cross-worker deadlock detection) or ``"exhaustive"``. Both
+  entry points accept ``reuse_workers=True`` (spawn each worker once, re-run per
+  interleaving) and a ``count=`` shorthand to replicate a worker; an
+  unserialisable worker or an unimportable target now fails *fast* with a clear
+  frontrun-level message (the child's real error, not a bare connection timeout).
+  Process-mode failures carry the failure kind and the external-access trace in
+  their explanation; ``CrossProcessResult.exhausted`` honestly reports ``False``
+  when ``max_executions`` / ``total_timeout`` truncate the search; and options
+  that only affect in-process tracing (``serializable_invariant``,
+  ``error_on_any_race``, ...) are rejected rather than silently ignored. See
+  :doc:`cross_process`.
 
 0.6.0 (2026-06-30)
 ------------------
