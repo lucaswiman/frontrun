@@ -97,6 +97,10 @@ def test_process_rejects_silent_noop_kwargs() -> None:
         ("timeout_per_run", 30.0),
         ("reproduce_on_failure", 3),
         ("warn_nondeterministic_sql", False),
+        ("max_attempts", 5),
+        ("max_ops", 10),
+        ("seed", 123),
+        ("debug", True),
     ],
 )
 def test_process_rejects_more_silent_noop_kwargs(kwarg: str, value: object) -> None:

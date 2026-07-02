@@ -233,6 +233,14 @@ re-enter (frontrun resets its own per-connection SQL state between iterations).
 It is available on both entry points --- ``explore_processes(..., reuse_workers=True)``
 and ``frontrun.explore(..., execution="process", reuse_workers=True)``:
 
+.. note::
+
+   Under ``reuse_workers=True`` the first iteration that ends unclean --- a
+   deadlock or an aborted worker --- leaves a poisoned persistent socket, so
+   the search ends early (reported honestly as ``exhausted=False``) rather than
+   re-spawning. For exhaustive multi-bug search over deadlock-bearing workloads
+   use the default respawn mode (``reuse_workers=False``).
+
 .. code-block:: python
 
    result = frontrun.explore_processes(

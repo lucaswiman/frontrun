@@ -25,6 +25,9 @@ class _FakeWorkerSet:
     def any_exited(self, handles) -> bool:  # noqa: ARG002 - handles unused in fake
         return self._detail is not None
 
+    def all_exited(self, handles) -> bool:  # noqa: ARG002 - handles unused in fake
+        return self._detail is not None
+
     def diagnose(self, handles) -> str | None:  # noqa: ARG002 - handles unused in fake
         return self._detail
 
@@ -97,6 +100,56 @@ def test_subprocess_any_exited_ignores_clean_exit() -> None:
     assert ls.any_exited([_FakePopen(None)]) is False
     assert ls.any_exited([_FakePopen(1)]) is True
     assert ls.any_exited([_FakePopen(-9)]) is True
+
+
+# --- Fix 4: all_exited (clean exit before HELLO must fail fast) -----------
+
+
+def test_mp_all_exited_counts_clean_exits() -> None:
+    # Unlike any_exited, all_exited counts clean (0) exits: a target that
+    # sys.exit(0)s at import before sending HELLO leaves every child exited, so
+    # the accept loop can fail fast instead of blocking the whole connect budget.
+    ls = MpLauncher([lambda state: None], state_fn=lambda: None)
+    assert ls.all_exited([_FakeProc(0)]) is True
+    assert ls.all_exited([_FakeProc(1)]) is True
+    assert ls.all_exited([_FakeProc(None)]) is False
+    assert ls.all_exited([_FakeProc(0), _FakeProc(None)]) is False
+
+
+def test_subprocess_all_exited_counts_clean_exits() -> None:
+    # Same semantics for the subprocess backend.
+    ls = SubprocessLauncher([Subprocess("pkg.mod:go")])
+    assert ls.all_exited([_FakePopen(0)]) is True
+    assert ls.all_exited([_FakePopen(-9)]) is True
+    assert ls.all_exited([_FakePopen(None)]) is False
+    assert ls.all_exited([_FakePopen(0), _FakePopen(None)]) is False
+
+
+# --- Fix 3: MpLauncher.diagnose surfaces a child's captured stderr ---------
+
+
+def test_mp_diagnose_surfaces_child_stderr(tmp_path) -> None:
+    # A pre-HELLO crash (e.g. dill.loads / import failure) writes a traceback to
+    # the child's redirected stderr file; diagnose() must surface its last line
+    # rather than a bare exit code, matching SubprocessLauncher.
+    ls = MpLauncher([lambda state: None], state_fn=lambda: None)
+    err = tmp_path / "w0.err"
+    err.write_text("Traceback (most recent call last):\n  ...\nModuleNotFoundError: No module named 'nope'\n")
+    ls._stderr_files = [str(err)]
+    detail = ls.diagnose([_FakeProc(1)])
+    assert detail is not None
+    assert "ModuleNotFoundError: No module named 'nope'" in detail
+    # A clean exit is not diagnosed.
+    assert ls.diagnose([_FakeProc(0)]) is None
+
+
+def test_mp_diagnose_falls_back_to_exit_code_without_stderr(tmp_path) -> None:
+    # Empty (or missing) capture file -> fall back to the bare exit-code message.
+    ls = MpLauncher([lambda state: None], state_fn=lambda: None)
+    empty = tmp_path / "w0.err"
+    empty.write_text("")
+    ls._stderr_files = [str(empty)]
+    assert "process exited with code 2" in (ls.diagnose([_FakeProc(2)]) or "")
 
 
 def test_mp_launcher_rejects_stdin_main(monkeypatch, tmp_path) -> None:

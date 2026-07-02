@@ -135,6 +135,53 @@ def test_unsupported_before_io_frame_is_reported_not_hung() -> None:
     assert "unsupported frame" in (result.failure or "")
 
 
+def test_replay_divergence_reported_as_nondeterministic() -> None:
+    # A nondeterministic workload can make a recorded prefix choice ungrantable
+    # on replay. That is a divergent/nondeterministic schedule, NOT a genuine
+    # cross-worker deadlock, and must be reported as its own failure_kind so the
+    # message is not misleading for a non-deadlocking workload.
+    lock = threading.Lock()
+    calls = {"n": 0}
+
+    def stable(proxy) -> None:
+        proxy.report_and_wait(None, 0)
+
+    def flaky(proxy) -> None:
+        # First exploration run: take a scheduling point (so the coordinator
+        # records "grant worker 1 here" as a branch). Later runs skip it, so
+        # replaying that recorded choice finds worker 1 no longer grantable.
+        with lock:
+            calls["n"] += 1
+            first = calls["n"] == 1
+        if first:
+            proxy.report_and_wait(None, 0)
+
+    coord = CrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0)
+    result = coord.explore(
+        worker_set=ThreadLauncher([stable, flaky]),
+        setup=lambda: None,
+        invariant=lambda: True,
+        max_iterations=50,
+    )
+    assert not result.ok
+    assert result.failure_kind == "nondeterministic"
+    assert result.failure_kind != "deadlock"
+    assert "reproducible" in (result.failure or "")
+
+
+def test_active_lock_owner_public_accessor() -> None:
+    # Fix 2: _grantable must read row-lock ownership through a public accessor
+    # rather than reaching into RowLockRegistry._active_row_locks.
+    from frontrun._dpor_core.row_locks import RowLockRegistry
+
+    reg = RowLockRegistry()
+    assert reg.active_lock_owner("sql:accounts:id=1") is None
+    reg.record_acquire(7, "sql:accounts:id=1", None)
+    assert reg.active_lock_owner("sql:accounts:id=1") == 7
+    reg.pop_all(7, None)
+    assert reg.active_lock_owner("sql:accounts:id=1") is None
+
+
 def test_reports_worker_error() -> None:
     db = _DB()
 

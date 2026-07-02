@@ -75,10 +75,18 @@ def accept_hello_live(
             except (TimeoutError, OSError):
                 # accept() timed out with no connection yet (the accepted socket
                 # keeps the full connect_budget, so this is not a slow HELLO).
-                # any_exited is non-destructive; the stderr-reading diagnose() is
-                # left for the failure path so it is not consumed here.
-                if isinstance(worker_set, LivenessProbe) and worker_set.any_exited(handles):
-                    raise TimeoutError("worker exited before connecting") from None
+                # any_exited / all_exited are non-destructive; the stderr-reading
+                # diagnose() is left for the failure path so it is not consumed
+                # here.
+                if isinstance(worker_set, LivenessProbe):
+                    if worker_set.any_exited(handles):
+                        raise TimeoutError("worker exited before connecting") from None
+                    # A child can also exit *cleanly* (code 0) before ever sending
+                    # HELLO — e.g. a target that calls sys.exit(0) at import. That
+                    # is invisible to any_exited (nonzero-only), so without this
+                    # the accept loop would block the whole connect budget.
+                    if worker_set.all_exited(handles):
+                        raise TimeoutError("all workers exited before connecting") from None
                 if time.monotonic() >= deadline:
                     raise TimeoutError("workers did not connect within the deadlock timeout") from None
     finally:
@@ -94,7 +102,7 @@ class CrossProcessResult:
     exhausted: bool
     failing_schedule: list[int] | None = None
     failure: str | None = None
-    # One of: "invariant", "worker_error", "deadlock", None.
+    # One of: "invariant", "worker_error", "deadlock", "nondeterministic", None.
     failure_kind: str | None = None
     accesses: list[tuple[int, str, str]] | None = None
 
@@ -115,7 +123,12 @@ class _Outcome:
     schedule: list[int]
     branch_points: list[list[int]]
     accesses: list[tuple[int, str, str]]
-    deadlock: bool
+    # Why _drive stopped short of finishing every worker, if it did:
+    #   None             — all workers finished cleanly
+    #   "deadlock"       — a genuine cross-worker deadlock (no runnable worker)
+    #   "nondeterministic" — the recorded prefix choice is no longer grantable
+    #                        during replay (a nondeterministic workload)
+    stop: str | None
     errors: dict[int, str]
 
 
@@ -201,7 +214,7 @@ class CrossProcessCoordinator:
                     failure_kind="worker_error",
                     accesses=outcome.accesses,
                 )
-            if outcome.deadlock:
+            if outcome.stop == "deadlock":
                 return CrossProcessResult(
                     ok=False,
                     iterations=iterations,
@@ -209,6 +222,16 @@ class CrossProcessCoordinator:
                     failing_schedule=outcome.schedule,
                     failure="cross-worker deadlock (no runnable worker)",
                     failure_kind="deadlock",
+                    accesses=outcome.accesses,
+                )
+            if outcome.stop == "nondeterministic":
+                return CrossProcessResult(
+                    ok=False,
+                    iterations=iterations,
+                    exhausted=False,
+                    failing_schedule=outcome.schedule,
+                    failure="recorded schedule no longer reproducible (nondeterministic workload?)",
+                    failure_kind="nondeterministic",
                     accesses=outcome.accesses,
                 )
             if not invariant():
@@ -245,9 +268,9 @@ class CrossProcessCoordinator:
                 conn = _Conn(wid, sock)
                 conns[wid] = conn
                 self._advance(conn, accesses, registry)
-            schedule, branch_points, deadlock = self._drive(conns, prefix, accesses, registry)
+            schedule, branch_points, stop = self._drive(conns, prefix, accesses, registry)
             errors = {wid: c.error for wid, c in conns.items() if c.error is not None}
-            return _Outcome(schedule, branch_points, accesses, deadlock, errors)
+            return _Outcome(schedule, branch_points, accesses, stop, errors)
         finally:
             for c in conns.values():
                 try:
@@ -262,7 +285,7 @@ class CrossProcessCoordinator:
         prefix: list[int],
         accesses: list[tuple[int, str, str]],
         registry: RowLockRegistry,
-    ) -> tuple[list[int], list[list[int]], bool]:
+    ) -> tuple[list[int], list[list[int]], str | None]:
         schedule: list[int] = []
         branch_points: list[list[int]] = []
         step = 0
@@ -270,16 +293,18 @@ class CrossProcessCoordinator:
             grantable = self._grantable(conns, registry)
             if not grantable:
                 if all(c.done for c in conns.values()):
-                    return schedule, branch_points, False
-                return schedule, branch_points, True  # some worker stuck: deadlock
+                    return schedule, branch_points, None
+                return schedule, branch_points, "deadlock"  # some worker stuck: deadlock
             branch_points.append(grantable)
             if step < len(prefix):
                 choice = prefix[step]
                 if choice not in grantable:
-                    # Nondeterministic replay: the recorded prefix no longer
-                    # matches. Surface as a deadlock-style stop rather than
-                    # silently exploring a different tree.
-                    return schedule, branch_points, True
+                    # Nondeterministic replay: the recorded prefix choice is no
+                    # longer grantable, so the schedule cannot be reproduced.
+                    # This is a divergent (nondeterministic) workload, NOT a
+                    # cross-worker deadlock — surface it as its own stop reason
+                    # rather than silently exploring a different tree.
+                    return schedule, branch_points, "nondeterministic"
             else:
                 choice = grantable[0]
             schedule.append(choice)
@@ -297,7 +322,7 @@ class CrossProcessCoordinator:
                 out.append(wid)
             elif kind == proto.ACQUIRE_LOCKS:
                 resources = conn.pending["res"]
-                if all(registry._active_row_locks.get(r) in (None, wid) for r in resources):
+                if all(registry.active_lock_owner(r) in (None, wid) for r in resources):
                     out.append(wid)
         return out
 

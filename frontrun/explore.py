@@ -172,6 +172,12 @@ def explore(
                 ("timeout_per_run", timeout_per_run != 5.0),
                 ("reproduce_on_failure", reproduce_on_failure != 10),
                 ("warn_nondeterministic_sql", not warn_nondeterministic_sql),
+                # Random-strategy-only knobs: process mode forces strategy='dpor',
+                # so a non-default value here is a silent no-op.
+                ("max_attempts", max_attempts != 200),
+                ("max_ops", max_ops is not None),
+                ("seed", seed is not None),
+                ("debug", debug),
             )
             if is_set
         ]

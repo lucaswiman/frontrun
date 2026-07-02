@@ -225,7 +225,36 @@ def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
     )
 
 
+def _serialization_failure(exc: Exception, iterations: int) -> CrossProcessResult:
+    """A worker/state couldn't be serialised for a subprocess: report cleanly.
+
+    ``_dumps_worker`` raises ``TypeError`` for an unpicklable/undillable payload
+    and ``ImportError`` when dill is missing; these surface from
+    ``worker_set.launch(...)`` / ``iter_start_message(...)`` inside the
+    exploration loop. Return the same structured ``worker_error`` result the
+    connection-failure path uses instead of letting a bare exception escape,
+    while still surfacing the clear message.
+    """
+    return CrossProcessResult(
+        ok=False,
+        iterations=iterations,
+        exhausted=False,
+        failure=f"worker serialization failed: {type(exc).__name__}: {exc}",
+        failure_kind="worker_error",
+    )
+
+
 class DporCrossProcessCoordinator:
+    """Engine-driven cross-process DPOR coordinator.
+
+    Reuse limitation: with ``reuse_workers=True`` the first iteration that ends
+    unclean (a deadlock or an aborted worker) leaves a poisoned persistent
+    socket, so the search stops early — reported honestly as
+    ``exhausted=False`` — rather than re-spawning workers. Use the default
+    respawn mode (``reuse_workers=False``) for exhaustive multi-bug search over
+    deadlock-bearing workloads.
+    """
+
     def __init__(
         self,
         *,
@@ -290,7 +319,12 @@ class DporCrossProcessCoordinator:
         try:
             # Reuse mode: spawn persistent workers and accept their connections once.
             if self.reuse_workers:
-                persistent_handles = worker_set.launch(worker_targets(self.socket_path, list(range(self.num_workers))))
+                try:
+                    persistent_handles = worker_set.launch(
+                        worker_targets(self.socket_path, list(range(self.num_workers)))
+                    )
+                except (TypeError, ImportError) as exc:
+                    return _serialization_failure(exc, 0)
                 try:
                     for _ in range(self.num_workers):
                         sock, wid = accept_hello_live(listener, worker_set, persistent_handles, self._connect_budget)
@@ -325,6 +359,11 @@ class DporCrossProcessCoordinator:
                         self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean)
                 except (TimeoutError, OSError) as exc:
                     return _connection_failure(exc, num_explored + 1)
+                except (TypeError, ImportError) as exc:
+                    # A dill serialisation failure in worker_set.launch(...) /
+                    # iter_start_message(...) — surface it as a structured
+                    # worker_error rather than a bare exception.
+                    return _serialization_failure(exc, num_explored + 1)
                 num_explored += 1
 
                 result = self._evaluate(
@@ -395,6 +434,18 @@ class DporCrossProcessCoordinator:
         join_budget = self.deadlock_timeout * 2 + 10.0
         for t in relays:
             t.join(join_budget)
+            # The deadlock_timeout-bounded scheduler normally guarantees every
+            # relay terminates within the budget. If one is still alive, that
+            # invariant was violated: abandoning it here would let a ghost
+            # thread keep calling into the shared engine/engine_lock with a
+            # stale scheduler while the next iteration runs a fresh one — a
+            # concurrent-engine data race. Fail loudly instead. The exploration
+            # loop catches (TimeoutError, OSError) and returns a clean result.
+            if t.is_alive():
+                raise TimeoutError(
+                    f"cross-process relay thread {t.name!r} did not terminate within "
+                    f"{join_budget}s; aborting to avoid a concurrent-engine data race"
+                )
 
     def _run_spawned(
         self,

@@ -55,6 +55,15 @@ class RowLockRegistry:
             self._row_lock_ids[res_id] = lid
         return lid
 
+    def active_lock_owner(self, res_id: str) -> int | None:
+        """Return the worker/task ID currently holding *res_id*, or ``None`` if free.
+
+        Public read-only accessor over ``_active_row_locks`` so schedulers (e.g.
+        the cross-process coordinator's grantability check) can test row-lock
+        ownership without reaching into private state.
+        """
+        return self._active_row_locks.get(res_id)
+
     def id_to_resource(self) -> dict[int, str]:
         """Return the inverse of ``_row_lock_ids`` for :func:`~frontrun._deadlock.format_cycle`.
 

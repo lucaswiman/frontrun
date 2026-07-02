@@ -16,6 +16,7 @@ import multiprocessing
 import os
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -50,6 +51,13 @@ def _terminate_procs(procs: Sequence[Any]) -> None:
                 proc.join(1.0)
             except Exception:  # noqa: BLE001 - best-effort teardown
                 pass
+
+
+def _make_stderr_file(worker_id: int) -> str:
+    """Create an empty temp file to capture one child's stderr; return its path."""
+    fd, path = tempfile.mkstemp(prefix="frontrun-xproc-stderr-", suffix=f".w{worker_id}")
+    os.close(fd)  # the child reopens by path (os.dup2 in _mp_worker_entry)
+    return path
 
 
 def _dumps_worker(worker_fn: Callable[[Any], Any], state: Any) -> bytes:
@@ -95,13 +103,26 @@ def _mp_worker_entry(
     worker_id: int,
     payload: bytes,
     reuse: bool = False,
+    stderr_path: str | None = None,
 ) -> None:
     """multiprocessing entry: connect, install interception, run ``worker_fn(state)``.
 
     Runs in the spawned child. ``payload`` is the dill-serialised ``(worker_fn,
     state)`` pair (dill, not stdlib pickle, so closures/lambdas survive). With
     ``reuse`` the child stays alive and re-runs the target per ITER_START.
+
+    When ``stderr_path`` is given, fd 2 is redirected to that file *before* any
+    work (including ``dill.loads``) so that a pre-HELLO crash — which
+    multiprocessing children would otherwise print to the parent's inherited
+    stderr — is captured where ``MpLauncher.diagnose`` can recover its real
+    cause. The redirect is at the fd level (``os.dup2``) so the interpreter's
+    own fatal-traceback writer is captured, not just Python-level ``sys.stderr``.
     """
+    if stderr_path:
+        fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.dup2(fd, 2)
+        os.close(fd)
+
     import dill
 
     from .worker import _connect_and_serve, _serve_persistent
@@ -160,6 +181,11 @@ class MpLauncher:
         self._reuse = reuse
         self._ctx = multiprocessing.get_context("spawn")
         self._procs: list[Any] | None = None
+        # Per-worker temp files capturing each child's stderr (parallel to the
+        # launched procs), so diagnose() can surface a pre-HELLO crash the way
+        # SubprocessLauncher does from its stderr pipe. multiprocessing children
+        # otherwise inherit the parent's stderr, hiding the real cause.
+        self._stderr_files: list[str] = []
 
     def launch(self, targets: Sequence[WorkerTarget]) -> list[Any]:
         _require_file_backed_main()
@@ -170,6 +196,10 @@ class MpLauncher:
         targets = list(targets)
         socket_path = str(targets[0].args[0]) if targets else ""
         state = None if self._reuse else self._state_fn()
+        # Fresh per-worker stderr capture files for this launch (drop the
+        # previous iteration's so they do not accumulate).
+        self._cleanup_stderr_files()
+        self._stderr_files = [_make_stderr_file(target.worker_id) for target in targets]
         # Serialise with dill up front (raises a clear error for genuinely
         # unserialisable workers/state) so children receive plain bytes that
         # multiprocessing's own stdlib pickling handles trivially.
@@ -181,10 +211,11 @@ class MpLauncher:
                     target.worker_id,
                     _dumps_worker(self._worker_fns[target.worker_id], state),
                     self._reuse,
+                    self._stderr_files[idx],
                 ),
                 daemon=True,
             )
-            for target in targets
+            for idx, target in enumerate(targets)
         ]
         scrubbed = {k: os.environ.pop(k) for k in ("LD_PRELOAD", "FRONTRUN_IO_FD") if k in os.environ}
         try:
@@ -238,14 +269,47 @@ class MpLauncher:
         """
         return any(proc.exitcode not in (None, 0) for proc in handles)
 
+    def all_exited(self, handles: Any) -> bool:
+        """Non-destructive: has *every* worker process exited (any code)?
+
+        Unlike ``any_exited`` this counts clean (0) exits too, so the accept loop
+        can fail fast when a target exits before HELLO (e.g. ``sys.exit(0)`` at
+        import) instead of waiting the whole connect budget.
+        """
+        return all(proc.exitcode is not None for proc in handles)
+
     def diagnose(self, handles: Any) -> str | None:
-        """Describe any worker that exited before connecting (nonzero exit code)."""
-        parts = [
-            f"worker {i}: process exited with code {proc.exitcode}"
-            for i, proc in enumerate(handles)
-            if proc.exitcode not in (None, 0)
-        ]
+        """Describe any worker that exited before connecting (nonzero exit code).
+
+        When the child's captured stderr holds a traceback, surface its last
+        line (e.g. a ``dill.loads``/``ModuleNotFoundError`` failure) instead of a
+        bare exit code, matching ``SubprocessLauncher.diagnose``.
+        """
+        parts: list[str] = []
+        for i, proc in enumerate(handles):
+            if proc.exitcode in (None, 0):
+                continue
+            detail = f"process exited with code {proc.exitcode}"
+            path = self._stderr_files[i] if i < len(self._stderr_files) else None
+            if path:
+                try:
+                    with open(path, errors="replace") as fh:
+                        text = fh.read().strip()
+                    if text:
+                        detail = text.splitlines()[-1]
+                except OSError:
+                    pass
+            parts.append(f"worker {i}: {detail}")
         return "; ".join(parts) or None
+
+    def _cleanup_stderr_files(self) -> None:
+        """Best-effort removal of the previous launch's stderr capture files."""
+        for path in self._stderr_files:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._stderr_files = []
 
 
 @dataclass(frozen=True)
@@ -328,6 +392,15 @@ class SubprocessLauncher:
         accept loop; only nonzero or signal deaths do, matching ``diagnose``.
         """
         return any(proc.poll() not in (None, 0) for proc in handles)
+
+    def all_exited(self, handles: Any) -> bool:
+        """Non-destructive: has *every* worker process exited (any code)?
+
+        Counts clean (0) exits too, so the accept loop can fail fast when a
+        target exits before HELLO (e.g. ``sys.exit(0)`` at import) rather than
+        blocking for the full connect budget.
+        """
+        return all(proc.poll() is not None for proc in handles)
 
     def diagnose(self, handles: Any) -> str | None:
         """Recover the real cause when a worker died before connecting.

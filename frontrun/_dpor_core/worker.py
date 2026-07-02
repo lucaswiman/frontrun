@@ -61,18 +61,25 @@ class WorkerSet(Protocol):
 class LivenessProbe(Protocol):
     """Optional WorkerSet capability: report on worker liveness without joining.
 
-    ``any_exited`` and ``diagnose`` always travel together — both process
-    launchers (``MpLauncher``, ``SubprocessLauncher``) implement both, while the
-    thread-backed launchers implement neither — so they form a single capability
-    Protocol. The coordinator uses ``any_exited`` (non-destructive) to fail fast
-    when a launched child dies before connecting, and ``diagnose`` to recover the
-    real cause for the failure message. Probing via ``isinstance`` (rather than
-    ``getattr``) keeps the call sites type-checked, so renaming a method breaks
-    loudly instead of silently reverting to the slow-timeout / bare-error path.
+    ``any_exited``, ``all_exited`` and ``diagnose`` always travel together — both
+    process launchers (``MpLauncher``, ``SubprocessLauncher``) implement all
+    three, while the thread-backed launchers implement none — so they form a
+    single capability Protocol. The coordinator uses ``any_exited``
+    (non-destructive) to fail fast when a launched child dies *abnormally* before
+    connecting, ``all_exited`` to also fail fast when every child has exited
+    (even cleanly, e.g. a target that calls ``sys.exit(0)`` at import) before all
+    HELLOs arrive, and ``diagnose`` to recover the real cause for the failure
+    message. Probing via ``isinstance`` (rather than ``getattr``) keeps the call
+    sites type-checked, so renaming a method breaks loudly instead of silently
+    reverting to the slow-timeout / bare-error path.
     """
 
     def any_exited(self, handles: Any) -> bool:
         """Non-destructive: has any worker exited abnormally (nonzero exit)?"""
+        ...
+
+    def all_exited(self, handles: Any) -> bool:
+        """Non-destructive: has *every* launched worker exited (any code)?"""
         ...
 
     def diagnose(self, handles: Any) -> str | None:
