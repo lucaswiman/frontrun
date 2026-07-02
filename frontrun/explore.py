@@ -34,6 +34,7 @@ from frontrun._strategy import ASYNC_STRATEGIES, STRATEGIES
 from frontrun.common import any_async
 
 Strategy = Literal["dpor", "random"]
+Execution = Literal["thread", "process"]
 
 
 def explore(
@@ -43,6 +44,7 @@ def explore(
     *,
     count: int | None = None,
     strategy: Strategy = "dpor",
+    execution: Execution = "thread",
     # DPOR-specific kwargs
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
@@ -50,7 +52,8 @@ def explore(
     timeout_per_run: float = 5.0,
     stop_on_first: bool = True,
     detect_io: bool = True,
-    deadlock_timeout: float = 5.0,
+    reuse_workers: bool = False,
+    deadlock_timeout: float | None = None,
     reproduce_on_failure: int = 10,
     total_timeout: float | None = None,
     warn_nondeterministic_sql: bool = True,
@@ -86,6 +89,19 @@ def explore(
             list/tuple.
         strategy: ``"dpor"`` (default) for systematic DPOR exploration, or
             ``"random"`` for random schedule sampling.
+        execution: ``"thread"`` (default) runs workers as threads/async tasks in
+            this process; ``"process"`` runs each worker in its own spawned
+            Python process, coordinating over a socket. Process mode has the same
+            ``setup`` / ``workers`` / ``invariant`` / ``count`` shape; workers and
+            the ``setup()`` return value are serialised with dill (so closures and
+            lambdas work, not just module-level functions), and ``setup()`` should
+            return a handle to external SQL/Redis state (a DB path/URL, not a live
+            connection). Supports ``strategy="dpor"`` with sync workers only and
+            needs the ``process`` extra (``pip install frontrun[process]``). See
+            :doc:`/cross_process`.
+        reuse_workers: Process execution only. Spawn each worker process once and
+            re-run it per interleaving instead of respawning (amortises spawn
+            cost); ignored for thread execution.
         max_executions: Safety limit on total executions (DPOR only).
         preemption_bound: Limit on preemptions per execution (DPOR only).
         max_branches: Maximum scheduling points per execution (DPOR only).
@@ -93,7 +109,9 @@ def explore(
         stop_on_first: Stop on first invariant violation (DPOR only).
         detect_io: Detect socket/file I/O operations as resource accesses.
             For async DPOR, also activates Redis key-level patching.
-        deadlock_timeout: Seconds to wait before declaring a deadlock.
+        deadlock_timeout: Seconds to wait before declaring a deadlock. Defaults
+            to 5.0 for thread execution and 15.0 for process execution (spawning
+            processes is slower), unless set explicitly.
         reproduce_on_failure: Replay counterexample this many times.
         total_timeout: Maximum total exploration time in seconds.
         warn_nondeterministic_sql: Raise on nondeterministic SQL INSERT.
@@ -119,6 +137,73 @@ def explore(
             ``count <= 0``, or ``strategy`` is unrecognised.
     """
     worker_list = _resolve_workers(workers, count)
+
+    # A deadlock_timeout left unset resolves per execution mode: process spawn is
+    # slow, so it gets a longer default than in-process threads.
+    if deadlock_timeout is None:
+        deadlock_timeout = 15.0 if execution == "process" else 5.0
+
+    # Cross-process execution: each worker runs in its own Python process,
+    # coordinating over a socket. Same call shape as threads/async; workers and
+    # the setup() state must be picklable, and state is external (SQL/Redis).
+    if execution == "process":
+        if any_async(worker_list):
+            raise ValueError("explore(): execution='process' does not support async workers")
+        if strategy != "dpor":
+            raise ValueError("explore(): execution='process' supports strategy='dpor' only")
+        # These options change *which* bugs are found and are not honored in
+        # process mode (state is external; there is no in-process opcode trace).
+        # Reject them explicitly rather than silently ignoring — a silent no-op
+        # here is a correctness footgun when porting a thread test.
+        unsupported = [
+            name
+            for name, is_set in (
+                ("serializable_invariant", serializable_invariant is not False),
+                ("error_on_any_race", error_on_any_race),
+                ("lock_timeout", lock_timeout is not None),
+                ("trace_packages", trace_packages is not None),
+                ("track_dunder_dict_accesses", track_dunder_dict_accesses),
+                ("detect_sql", detect_sql),
+                # Not plumbed into worker processes (only worker_fn + state cross
+                # the spawn boundary); a non-default value here is a silent no-op.
+                # timeout_per_run's analog in process mode is deadlock_timeout.
+                ("detect_io", not detect_io),
+                ("patch_sleep", not patch_sleep),
+                ("timeout_per_run", timeout_per_run != 5.0),
+                ("reproduce_on_failure", reproduce_on_failure != 10),
+                ("warn_nondeterministic_sql", not warn_nondeterministic_sql),
+                # Random-strategy-only knobs: process mode forces strategy='dpor',
+                # so a non-default value here is a silent no-op.
+                ("max_attempts", max_attempts != 200),
+                ("max_ops", max_ops is not None),
+                ("seed", seed is not None),
+                ("debug", debug),
+            )
+            if is_set
+        ]
+        if unsupported:
+            raise ValueError(
+                f"explore(): execution='process' does not support {', '.join(unsupported)} "
+                "(these affect in-process tracing only; drop them or use execution='thread')"
+            )
+        from frontrun.cross_process import _explore_process
+
+        return _explore_process(
+            setup,
+            worker_list,
+            invariant,
+            deadlock_timeout=deadlock_timeout,
+            max_executions=max_executions,
+            preemption_bound=preemption_bound,
+            max_branches=max_branches,
+            total_timeout=total_timeout,
+            stop_on_first=stop_on_first,
+            search=search,
+            reuse_workers=reuse_workers,
+        )
+    if execution != "thread":
+        raise ValueError(f"explore(): unknown execution={execution!r}; must be 'thread' or 'process'")
+
     registry = ASYNC_STRATEGIES if any_async(worker_list) else STRATEGIES
     if strategy not in registry:
         valid = ", ".join(repr(k) for k in sorted(registry))

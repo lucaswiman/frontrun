@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from frontrun._dpor_core import ReplayEngine as _ReplayEngine
 from frontrun._dpor_core import ReplayExecution as _ReplayExecution
-from frontrun._dpor_core import RowLockRegistry, advance_replay_index, extend_replay_schedule
+from frontrun._dpor_core import (
+    RowLockRegistry,
+    advance_replay_index,
+    apply_lock_blocked_override,
+    extend_replay_schedule,
+)
 
 from ._shared import *
 from ._shared import _dpor_tls, _get_instructions, _process_opcode
@@ -158,15 +163,10 @@ class DporScheduler:
             # the correct step.
             _pp = getattr(self.engine, "path_position", None)
             self._last_scheduled_path_id = _pp - 1 if _pp is not None else None
-            if scheduled is not None and scheduled in self._row_lock_blocked:
-                holder = self._row_lock_blocked[scheduled]
-                if holder not in self._threads_done:
-                    return holder
-                # Holder is done — lock should have been released via
-                # mark_done → _release_row_locks_unlocked.  Clean up the
-                # stale blocked entry so scheduled can proceed.
-                self._row_lock_blocked.pop(scheduled, None)
-            return scheduled
+            # Shared with the async scheduler: redirect to the lock holder when
+            # the engine picks a row-lock-blocked thread (defect #6), or drop a
+            # stale entry whose holder has finished.
+            return apply_lock_blocked_override(scheduled, self._row_lock_blocked, self._threads_done)
 
     def wait_for_turn(self, thread_id: int) -> bool:
         """Block until it's this thread's turn. Returns False when done."""

@@ -218,3 +218,10 @@ Known limitations
   object) may still produce additional backtrack points beyond those from Redis
   keys alone.  See ``ideas/KNOWN_ISSUES.md`` for details.
 - **coredis async client**: supported but less tested than ``redis.asyncio``.
+
+See also
+--------
+
+The same Redis key-level detection drives **cross-process** exploration when the
+contending workers are separate Python processes rather than threads; see
+:doc:`cross_process`.

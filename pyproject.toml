@@ -63,9 +63,15 @@ dev = [
     "sqlglot>=20.0",
     "aiosqlite>=0.17.0",
     "pytest-asyncio>=0.21.0",
+    "dill>=0.3.6",
 ]
 sql = [
     "sqlglot>=20.0",
+]
+process = [
+    # Cross-process exploration (execution="process") serialises worker callables
+    # with dill so closures/lambdas work, not just module-level functions.
+    "dill>=0.3.6",
 ]
 sql-async = [
     "aiosqlite>=0.17.0",
@@ -76,6 +82,10 @@ testpaths = ["tests"]
 addopts = "--tb=short"
 timeout = 60
 asyncio_mode = "auto"
+markers = [
+    "integration: tests requiring external services (redis, postgres, network)",
+    "e2e: end-to-end tests that spawn real subprocesses",
+]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

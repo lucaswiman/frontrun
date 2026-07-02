@@ -1,0 +1,215 @@
+"""Public API for cross-process exploration (Phase 1).
+
+Deterministically interleaves separate OS processes contending on shared
+external (SQL) state, scheduling at external-access granularity. See
+``ideas/cross_process_exploration.md``.
+
+Example::
+
+    import frontrun
+
+    result = frontrun.explore_processes(
+        {
+            "w0": frontrun.Subprocess("myapp.checkout:run", ("order-1",)),
+            "w1": frontrun.Subprocess("myapp.checkout:run", ("order-1",)),
+        },
+        setup=reset_db,                       # runs in this process; returns a state handle
+        invariant=lambda state: stock() >= 0,  # receives setup()'s handle; reads the DB here
+    )
+    if not result.ok:
+        raise AssertionError(result.failure)
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Literal
+
+from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, CrossProcessResult
+from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
+from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, SubprocessLauncher
+
+__all__ = ["CrossProcessResult", "Subprocess", "explore_processes"]
+
+
+def _to_interleaving_result(result: CrossProcessResult) -> Any:
+    """Map a CrossProcessResult onto the InterleavingResult explore() returns.
+
+    Keeps ``execution="process"`` result-compatible with threads/async
+    (``property_holds`` / ``counterexample`` / ``explanation`` / ``assert_holds``).
+    """
+    from frontrun.common import InterleavingResult
+
+    explanation = None
+    if not result.ok:
+        kind = f"[{result.failure_kind}] " if result.failure_kind else ""
+        where = f" at schedule {result.failing_schedule}" if result.failing_schedule is not None else ""
+        explanation = f"{kind}{result.failure or 'invariant violated'}{where}"
+        # Surface the external-access trace so a process-mode failure is
+        # diagnosable without dropping down to explore_processes().
+        if result.accesses:
+            trace = ", ".join(f"w{wid}:{access}:{rid}" for wid, rid, access in result.accesses)
+            explanation += f"\n  accesses: {trace}"
+    return InterleavingResult(
+        property_holds=result.ok,
+        counterexample=result.failing_schedule,
+        num_explored=result.iterations,
+        unique_interleavings=result.iterations,
+        explanation=explanation,
+    )
+
+
+def _state_threaded_hooks(
+    setup: Callable[[], Any],
+    invariant: Callable[[Any], bool],
+) -> tuple[Callable[[], None], Callable[[], bool], dict[str, Any]]:
+    """Bridge the state-threaded public hooks onto the nullary coordinator contract.
+
+    The cross-process coordinators call ``setup()`` / ``invariant()`` with no
+    arguments, but the public API threads ``setup()``'s return value into
+    ``invariant(state)`` (mirroring thread/async mode). This captures the handle
+    ``setup()`` returns and feeds it to ``invariant`` on each check. The box is
+    returned too so callers that also need the handle elsewhere (e.g. to hand it
+    to worker processes) can read the same captured value.
+    """
+    state_box: dict[str, Any] = {}
+
+    def coord_setup() -> None:
+        state_box["state"] = setup()
+
+    def coord_invariant() -> bool:
+        return bool(invariant(state_box.get("state")))
+
+    return coord_setup, coord_invariant, state_box
+
+
+def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazily by frontrun.explore
+    setup: Callable[[], Any],
+    workers: list[Callable[[Any], Any]],
+    invariant: Callable[[Any], bool],
+    *,
+    deadlock_timeout: float = 15.0,
+    max_executions: int | None = None,
+    preemption_bound: int | None = 2,
+    max_branches: int = 100_000,
+    total_timeout: float | None = None,
+    stop_on_first: bool = True,
+    search: str | None = None,
+    reuse_workers: bool = False,
+) -> Any:
+    """Back the ``frontrun.explore(execution="process")`` path.
+
+    Runs each worker callable in its own ``multiprocessing`` process. ``setup()``
+    returns a *picklable* handle to the shared external state (e.g. a DB URL);
+    it is passed to every ``worker(state)`` and to ``invariant(state)``. Both
+    ``setup`` and ``invariant`` run in this (coordinator) process. With
+    ``reuse_workers`` the processes are spawned once and re-run per interleaving.
+    """
+    # Workers also need setup()'s handle (via state_fn); read it from the same box
+    # the helper captures it into, so invariant(state) and the workers agree.
+    coord_setup, coord_invariant, state_box = _state_threaded_hooks(setup, invariant)
+
+    coordinator = DporCrossProcessCoordinator(
+        num_workers=len(workers),
+        deadlock_timeout=deadlock_timeout,
+        max_executions=max_executions,
+        preemption_bound=preemption_bound,
+        max_branches=max_branches,
+        total_timeout=total_timeout,
+        stop_on_first=stop_on_first,
+        search=search,
+        reuse_workers=reuse_workers,
+    )
+    worker_set = MpLauncher(workers, state_fn=lambda: state_box.get("state"), reuse=reuse_workers)
+    result = coordinator.explore(worker_set=worker_set, setup=coord_setup, invariant=coord_invariant)
+    return _to_interleaving_result(result)
+
+
+def _resolve_specs(
+    processes: Mapping[str, Subprocess] | Sequence[Subprocess] | Subprocess,
+    count: int | None,
+) -> list[Subprocess]:
+    """Expand ``processes`` (+ optional ``count``) into a concrete list of specs.
+
+    A single :class:`Subprocess` with ``count=N`` replicates it N times (the
+    process-side mirror of ``explore(workers=fn, count=N)``); a mapping or
+    sequence is taken as-is and forbids ``count``.
+    """
+    if isinstance(processes, Subprocess):
+        if count is None:
+            return [processes]
+        if count <= 0:
+            raise ValueError(f"explore_processes(): count must be a positive integer, got {count!r}")
+        return [processes] * count
+    if count is not None:
+        raise ValueError(
+            "explore_processes(): 'count' can only be used with a single Subprocess; "
+            "pass a mapping/sequence without count, or one Subprocess with count=N."
+        )
+    return list(processes.values()) if isinstance(processes, Mapping) else list(processes)
+
+
+def explore_processes(
+    processes: Mapping[str, Subprocess] | Sequence[Subprocess] | Subprocess,
+    *,
+    setup: Callable[[], Any],
+    invariant: Callable[[Any], bool],
+    count: int | None = None,
+    strategy: Literal["dpor", "exhaustive"] = "dpor",
+    max_iterations: int = 4096,
+    max_executions: int | None = None,
+    preemption_bound: int | None = 2,
+    deadlock_timeout: float = 15.0,
+    reuse_workers: bool = False,
+) -> CrossProcessResult:
+    """Explore interleavings of *processes* contending on shared external state.
+
+    ``processes`` is a mapping of label → :class:`Subprocess` (labels are for
+    readability), a plain sequence, or a single :class:`Subprocess` with
+    ``count=N`` to replicate it (the mirror of ``explore(workers=fn, count=N)``).
+
+    ``setup`` resets the external state before each interleaving and returns a
+    handle to it (e.g. a DB URL / connection info). That handle is passed to
+    ``invariant(state)``, which checks the state afterwards and returns a bool —
+    matching ``explore(execution="process")``. Both run in this (coordinator)
+    process; ``invariant`` may ignore ``state`` and read the shared store directly.
+
+    ``strategy``:
+
+    * ``"dpor"`` (default) drives the Rust DPOR engine, pruning equivalent
+      interleavings (partial-order reduction) and detecting cross-worker
+      ``SELECT FOR UPDATE`` deadlocks. ``max_executions`` / ``preemption_bound``
+      tune the search.
+    * ``"exhaustive"`` brute-forces every interleaving at external-access
+      granularity, bounded by ``max_iterations``. Useful as a reduction-free
+      cross-check.
+    """
+    specs = _resolve_specs(processes, count)
+    if not specs:
+        raise ValueError("explore_processes requires at least one Subprocess")
+    if reuse_workers and strategy == "exhaustive":
+        raise ValueError("explore_processes(): reuse_workers is not supported with strategy='exhaustive'")
+    # Coordinators call setup()/invariant() nullary; thread setup()'s handle into
+    # invariant(state) here to match explore(execution="process").
+    coord_setup, coord_invariant, _ = _state_threaded_hooks(setup, invariant)
+    if strategy == "dpor":
+        return DporCrossProcessCoordinator(
+            num_workers=len(specs),
+            deadlock_timeout=deadlock_timeout,
+            max_executions=max_executions,
+            preemption_bound=preemption_bound,
+            reuse_workers=reuse_workers,
+        ).explore(
+            worker_set=SubprocessLauncher(specs, reuse=reuse_workers), setup=coord_setup, invariant=coord_invariant
+        )
+    if strategy == "exhaustive":
+        return CrossProcessCoordinator(
+            num_workers=len(specs),
+            deadlock_timeout=deadlock_timeout,
+        ).explore(
+            worker_set=SubprocessLauncher(specs),
+            setup=coord_setup,
+            invariant=coord_invariant,
+            max_iterations=max_iterations,
+        )
+    raise ValueError(f"unknown strategy {strategy!r}; expected 'dpor' or 'exhaustive'")

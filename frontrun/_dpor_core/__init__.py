@@ -17,6 +17,7 @@ from frontrun._dpor_core.invariants import (
     format_race_failure_explanation,
 )
 from frontrun._dpor_core.row_locks import RowLockRegistry
+from frontrun._dpor_core.scheduling import apply_lock_blocked_override
 from frontrun._dpor_core.utils import (
     advance_replay_index,
     extend_replay_schedule,
@@ -25,14 +26,20 @@ from frontrun._dpor_core.utils import (
     make_deadline,
     reset_execution_state,
 )
+from frontrun._dpor_core.worker import IterationCustomizer, LivenessProbe, WorkerSet, WorkerTarget
 
 __all__ = [
     "ExplorationStep",
+    "IterationCustomizer",
+    "LivenessProbe",
     "NoOpLock",
     "ReplayEngine",
     "ReplayExecution",
     "RowLockRegistry",
+    "WorkerSet",
+    "WorkerTarget",
     "advance_replay_index",
+    "apply_lock_blocked_override",
     "compute_serializable_baseline_async",
     "compute_serializable_baseline_sync",
     "dpor_exploration_iter",

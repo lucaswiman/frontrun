@@ -94,7 +94,9 @@ poisoning. See git history for the original write-ups.
 
 **What:** Parse PostgreSQL `K` (BackendKeyData) and `Z` (ReadyForQuery) messages in `LD_PRELOAD` recv hooks to extract `backend_pid` and transaction boundaries.
 
-**Why:** Enables transaction tracking and connection identity at C level for non-Python drivers (libpq FFI, etc.). Becomes more interesting if cross-process exploration (`ideas/cross_process_exploration.md`) is pursued, since worker processes need not be Python at all once scheduling happens at the wire level.
+**Why:** Enables transaction tracking and connection identity at C level for non-Python drivers (libpq FFI, etc.).
+
+**Note on non-Python cross-process workers:** scheduling unmodified workers is out of scope for frontrun by design (white-box vs. Jepsen-shaped — see the cross-process note in `index.md`). If it is ever pursued it belongs in a *separate tool*, and the wire parsing belongs in that tool's **DSN-level proxy** (a process in front of Postgres/Redis with full-duplex visibility, defining step-completion as response-forwarded), not in an `LD_PRELOAD` recv hook (one-sided, no quiescence, misses SQLite/static binaries). This `sql_extract.rs` PG parser would be a reusable seed for such a tool.
 
 **Complexity:** Medium. ~10 lines for BackendKeyData (one-time). ~50 lines for ReadyForQuery (requires message framing per fd).
 

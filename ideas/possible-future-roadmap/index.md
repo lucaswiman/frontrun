@@ -25,6 +25,40 @@ position-sensitive future access cache, provenance-tagged access summaries,
 WeakWrite+WeakRead merge, per-step independence check, SQL resource grouping
 (Defect #15 Approach 2), async/await marker support.
 
+**Cross-process exploration** (`frontrun.explore(execution="process")`,
+`_dpor_runtime/xproc/`). Multiprocessing/subprocess Python workers running
+frontrun's SQL/Redis patching, coordinated over a socket. Phase 1
+(plumbing/exhaustive), Phase 2 (engine-driven DPOR reduction via per-worker relay
+threads reusing `DporScheduler`; cross-process row-lock deadlock detection; Redis)
+and Phase 3 (persistent worker reuse) are done and covered by unit + functional +
+e2e tests (SQLite/Redis subprocesses).
+
+Scheduling *unmodified / non-Python* workers is **out of scope for frontrun by
+design**, and this is a scope decision, not a missing feature. frontrun is a
+white-box tester: it instruments *your* code from the inside to produce a
+deterministic, replayable, minimized proof of the exact interleaving that breaks
+an invariant (see "Design goals & scope" in `CLAUDE.md`). Reaching unmodified
+workers means intercepting at the wire — and that is a fundamentally black-box,
+*Jepsen-shaped* problem (observe histories, check them for consistency
+violations) rather than a white-box one (control the schedule, prove one
+interleaving). Different product.
+
+Two interception layers were considered and neither belongs in frontrun. The
+**LD_PRELOAD** syscall PoC (Phase 4, prototyped and removed) could block-until-grant,
+but can't supply the semantic access identity DPOR needs (which row/key, read vs
+write), can't get step-completion (it hooked `send` but not `recv`, so grant order
+!= effect order), and misses the common case (SQLite is in-process file I/O with no
+wire protocol; Go/static binaries bypass libc). A **DSN-level protocol-aware proxy**
+(a process in front of Postgres/Redis, so "unmodified worker" becomes "point your
+connection string at the proxy") would actually work — full-duplex framing gives
+identity + quiescence — but it is a *separate tool*: a per-protocol wire state
+machine, months of work, Jepsen-adjacent in shape. If ever built, it should be its
+own library/service that **reuses frontrun's Rust DPOR engine** (the reusable seam:
+vector clocks, sleep sets, wakeup tree, row-lock reasoning), not a feature grown
+inside frontrun. The PG parser at `crates/io/src/sql_extract.rs` would be a starting
+seed for such a tool. Meanwhile the supported path is unchanged: if the workers are
+Python, run frontrun inside them.
+
 ## Dropped (2026-06-12 cleanup)
 
 Removed as not worth doing — superseded by existing machinery, low value, or duplicative
@@ -39,10 +73,10 @@ test generation. Originals in git history.
 
 ### P1 — New directions (endorsed 2026-06)
 
-1. **Cross-process exploration** (cross_process_exploration.md) — coordinator + worker
-   `SchedulerProxy`, scheduling at external-access granularity. Phase 1 (plumbing, no
-   DPOR) is the next concrete step; finishing the `_dpor_core/` worker/scheduler
-   abstraction first makes it a third backend beside sync threads and async tasks.
+1. **Cross-process exploration** (cross_process_exploration.md) — ✅ implemented
+   for Python multiprocessing/subprocess workers (Phases 1–3); see the Implemented
+   section above. Non-Python / unmodified-worker scheduling is out of scope by
+   design (white-box vs. Jepsen-shaped; see above) — a separate tool, if ever.
 2. **Fault-point exploration** (fault_injection.md) — start with the async cancellation
    sweep (v1), which needs no new exploration machinery.
 3. **Virtual clock** (virtual_clock.md) — v1 autojump clock for sync, then the

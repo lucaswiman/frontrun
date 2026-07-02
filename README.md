@@ -24,6 +24,8 @@ Four approaches, in order of decreasing interpretability:
 
 All four have async variants. A C-level `LD_PRELOAD` library intercepts libc I/O for database drivers and other opaque extensions.
 
+The DPOR engine also drives **cross-process exploration**: the same `frontrun.explore(...)` interface applied to separate Python processes that contend on shared external state (SQL and Redis). See [Cross-Process Exploration](#cross-process-exploration) below.
+
 ### DPOR deadlock detection (dining philosophers)
 
 DPOR explores thread interleavings and detects deadlocks via wait-for-graph cycle analysis. Here it finds the circular wait in the classic 3-philosopher dining problem:
@@ -287,6 +289,79 @@ async def test_async_redis_race(redis_port):
 ```
 
 The same key-level precision applies to hashes (`HGET`/`HSET`), lists, sets, sorted sets, and all other Redis data structures — 160+ commands are classified. See the [Redis technical details](docs/redis.rst) for a full walkthrough.
+
+### Cross-Process Exploration
+
+The approaches above interleave concurrency *within one Python process*. Cross-process exploration extends DPOR to **separate Python processes** that contend on shared *external* state (SQL and Redis). Each worker runs frontrun's SQL/Redis interception and coordinates with a parent over a socket; the Rust DPOR engine drives the search at external-access granularity, pruning equivalent interleavings and detecting cross-worker `SELECT FOR UPDATE` deadlocks.
+
+`frontrun.explore(..., execution="process")` mirrors the threads/async interface (install the `process` extra: `pip install frontrun[process]`). The only differences are inherent to processes: workers are serialised with **dill** (so closures and lambdas work, not just module-level functions), and `setup()` returns a **handle** to the external state (e.g. a SQLite path or DB URL) that is passed to each `worker(state)` and to `invariant(state)`. `setup` and `invariant` run in the coordinator process; workers run in their own spawned processes. It returns the same `InterleavingResult` as threads/async.
+
+This multiprocessing path must be launched from a file-backed `.py` module, not stdin, `python -c`, or a REPL/notebook cell. For those environments, use `explore_processes()` with importable `"module:callable"` targets.
+
+```python
+import sqlite3
+import frontrun
+
+# Module-level (picklable) worker: racy read-modify-write over two statements.
+def increment(db_path):
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        val = conn.execute("SELECT val FROM counter WHERE id = 1").fetchone()[0]
+        conn.execute("UPDATE counter SET val = ? WHERE id = 1", (val + 1,))
+    finally:
+        conn.close()
+
+def read(db_path):
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        return conn.execute("SELECT val FROM counter WHERE id = 1").fetchone()[0]
+    finally:
+        conn.close()
+
+def test_counter_race(tmp_path):
+    db = str(tmp_path / "counter.db")
+
+    def setup():
+        conn = sqlite3.connect(db, isolation_level=None)
+        conn.execute("CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.execute("DELETE FROM counter")
+        conn.execute("INSERT INTO counter (id, val) VALUES (1, 0)")
+        conn.close()
+        return db  # picklable handle passed to each worker(state) and invariant(state)
+
+    result = frontrun.explore(
+        setup=setup,
+        workers=increment,
+        count=2,
+        invariant=lambda state: read(state) == 2,
+        execution="process",
+    )
+    assert not result.property_holds  # lost-update race found across processes
+```
+
+`execution="process"` accepts sync `strategy="dpor"` only; async workers and other strategies raise `ValueError`. SQLite needs nothing extra; Redis workers need the `redis` package and a running server.
+
+The lower-level `frontrun.explore_processes(...)` spawns `frontrun.Subprocess("module:callable", args)` targets as real OS processes (the target must be importable in a fresh interpreter) and returns a `CrossProcessResult` (`.ok`, `.failure`, `.failure_kind`, `.failing_schedule`, `.iterations`). `setup` returns a handle to the shared state that is passed to `invariant(state)` (matching `execution="process"`); both run in the coordinator and may reach the shared store directly:
+
+```python
+import frontrun
+
+# Illustrative: myapp.checkout:reserve is your own importable target, and
+# reset_inventory / stock_never_negative are your own coordinator-side helpers.
+# Args are passed to the child as JSON (tuples arrive as lists); use
+# execution="process" above when you need richer, pickled arguments.
+result = frontrun.explore_processes(
+    frontrun.Subprocess("myapp.checkout:reserve", ("order-1",)),
+    count=2,                                  # replicate the spec (or pass a dict/list of specs)
+    setup=reset_inventory,                    # runs in the coordinator; resets the DB, returns a handle
+    invariant=lambda state: stock_never_negative(state),  # receives setup()'s handle; returns True/False
+    max_iterations=50,
+)
+if not result.ok:
+    raise AssertionError(result.failure)
+```
+
+`strategy="dpor"` (default) prunes equivalent interleavings and detects deadlocks; `strategy="exhaustive"` brute-forces every interleaving as a reduction-free cross-check. `reuse_workers=True` keeps workers alive across iterations (available on both entry points). Cross-process tests spawn real processes and are marked with the pytest `e2e` marker — run them via `make test-e2e-3.14` or `pytest -m e2e`. (Cross-process mode installs its interception in Python, so it does not need the `frontrun` CLI wrapper.)
 
 ### C-Level I/O Interception
 

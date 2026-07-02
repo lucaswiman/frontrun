@@ -63,6 +63,7 @@ from frontrun._dpor_core import (
     ReplayExecution,
     RowLockRegistry,
     advance_replay_index,
+    apply_lock_blocked_override,
     compute_serializable_baseline_async,
     dpor_exploration_iter,
     extend_replay_schedule,
@@ -439,13 +440,10 @@ class AsyncDporScheduler(InterleavedLoop):
         if not runnable:
             return None
         scheduled = self.engine.schedule(self.execution)
-        if scheduled is not None and scheduled in self._lock_blocked:
-            holder = self._lock_blocked[scheduled]
-            if holder not in self._tasks_done:
-                return holder
-            # Holder is done — lock should be released. Clean up stale entry.
-            self._lock_blocked.pop(scheduled, None)
-        return scheduled
+        # Shared with the sync scheduler: redirect to the lock holder when the
+        # engine picks a lock-blocked task, or drop a stale entry whose holder
+        # has finished.
+        return apply_lock_blocked_override(scheduled, self._lock_blocked, self._tasks_done)
 
     # -- InterleavedLoop policy -----------------------------------------
 

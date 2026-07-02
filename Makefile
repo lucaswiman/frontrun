@@ -1,4 +1,4 @@
-.PHONY: test clean docs docs-clean docs-html docs-clean-build lint type-check check test-integration build-all screenshot
+.PHONY: test clean docs docs-clean docs-html docs-clean-build lint type-check check test-integration test-e2e build-all screenshot
 .PRECIOUS: .venv-% .venv-%/activate
 
 # Python versions to test
@@ -73,6 +73,15 @@ test-integration-%: build-integration-% build-io
 
 # Integration tests for all Python versions
 test-integration: $(addprefix test-integration-,$(PYTHON_VERSIONS))
+
+# End-to-end tests (spawn real subprocesses) for a specific Python version.
+# Selected by @pytest.mark.e2e. Cross-process exploration uses stdlib sqlite3,
+# so no external services are required.
+test-e2e-%: build-dpor-% build-io
+	PATH=$(CURDIR)/.venv-$*/bin:$$PATH $(CURDIR)/.venv-$*/bin/frontrun pytest $(PYTEST_ARGS) -m e2e
+
+# End-to-end tests for all Python versions
+test-e2e: $(addprefix test-e2e-,$(PYTHON_VERSIONS))
 
 .PHONY: rebuild
 rebuild:
