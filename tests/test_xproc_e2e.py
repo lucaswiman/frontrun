@@ -113,6 +113,23 @@ def test_invariant_receives_setup_state_handle(tmp_path) -> None:
     assert all(s is handle for s in received), "invariant must receive the setup() return value"
 
 
+def test_max_executions_cap_reports_not_exhausted(tmp_path) -> None:
+    # max_executions truncates the DPOR search. `exhausted` is the tool's coverage
+    # guarantee, so a capped run must NOT claim the space was fully covered — else
+    # a user bounding a long search and trusting `exhausted` gets false assurance.
+    # Two atomic (race-free) workers still have >1 interleaving to explore, so
+    # capping at 1 leaves the space unexplored.
+    db = str(tmp_path / "counter.db")
+    result = frontrun.explore_processes(
+        {"w0": frontrun.Subprocess(_ATOMIC_TARGET, (db,)), "w1": frontrun.Subprocess(_ATOMIC_TARGET, (db,))},
+        setup=lambda: xproc_demo_counter.setup(db),
+        invariant=lambda _state: xproc_demo_counter.read(db) == 2,
+        max_executions=1,
+    )
+    assert result.iterations == 1
+    assert not result.exhausted, "a max_executions-capped search must report exhausted=False"
+
+
 def test_bad_target_reports_real_cause_quickly() -> None:
     # A typo'd target must fail fast with the child's real error, not block the
     # full connect budget (deadlock_timeout*2+10) before a bare timeout.
