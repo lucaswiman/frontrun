@@ -6,6 +6,15 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+* **Breaking (cross-process).** ``frontrun.explore_processes(...)`` now threads
+  ``setup()``'s return value into ``invariant(state)`` — the ``invariant`` is
+  called with the state handle ``setup()`` returned instead of taking no
+  arguments. This reconciles the low-level entry point with
+  ``frontrun.explore(execution="process")``, which already passed the handle.
+  Update callers from ``invariant=lambda: check()`` to
+  ``invariant=lambda state: check()`` (ignore ``state`` if you read the shared
+  store directly).
+
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,
   interleaving separate processes that contend on shared external state (SQL and

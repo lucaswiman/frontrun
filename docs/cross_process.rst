@@ -164,7 +164,7 @@ callables, it spawns each worker as a real OS process running a
                "w1": frontrun.Subprocess(_TARGET, (db,)),
            },
            setup=lambda: reset_counter(db),   # your DB reset helper
-           invariant=lambda: read_counter(db) == 2,
+           invariant=lambda _state: read_counter(db) == 2,
            max_iterations=50,
        )
        assert not result.ok
@@ -182,9 +182,11 @@ pickles) when you need richer argument types. Because the child imports the
 target by name, it must be importable in a fresh interpreter --- a module-level
 callable in an installed or on-path module.
 
-Here ``setup`` and ``invariant`` take no arguments and reach the shared store
-directly (they run in the coordinator process); ``setup`` resets the external
-state before each interleaving and ``invariant`` checks it afterwards.
+``setup`` and ``invariant`` both run in the coordinator process. ``setup``
+resets the external state before each interleaving and returns a handle to it;
+that handle is passed to ``invariant(state)``, which checks the state afterwards
+--- mirroring ``explore(execution="process")``. ``invariant`` may ignore
+``state`` and reach the shared store directly.
 
 :func:`~frontrun.explore_processes` returns a ``CrossProcessResult``:
 
@@ -236,7 +238,7 @@ and ``frontrun.explore(..., execution="process", reuse_workers=True)``:
    result = frontrun.explore_processes(
        {"w0": frontrun.Subprocess(_TARGET, (db,)), "w1": frontrun.Subprocess(_TARGET, (db,))},
        setup=lambda: reset_counter(db),
-       invariant=lambda: read_counter(db) == 2,
+       invariant=lambda _state: read_counter(db) == 2,
        reuse_workers=True,          # spawn each worker once, re-run per interleaving
    )
 
@@ -276,7 +278,7 @@ table-reset helper):
            "w1": frontrun.Subprocess("myapp.transfer:lock_two", (dsn, 2, 1)),
        },
        setup=lambda: reset_accounts(dsn),
-       invariant=lambda: True,          # we are looking for the deadlock, not a data race
+       invariant=lambda _state: True,   # we are looking for the deadlock, not a data race
    )
    assert not result.ok
    assert result.failure_kind == "deadlock"
@@ -299,7 +301,7 @@ performs a racy GET/SET, while the coordinator resets and checks the counter:
        result = frontrun.explore_processes(
            {"w0": frontrun.Subprocess(_TARGET), "w1": frontrun.Subprocess(_TARGET)},
            setup=reset_redis_counter,
-           invariant=lambda: read_redis_counter() == 2,
+           invariant=lambda _state: read_redis_counter() == 2,
        )
        assert not result.ok
        assert result.failure_kind == "invariant"

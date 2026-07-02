@@ -38,7 +38,7 @@ def test_redis_lost_update_found_across_processes(redis_demo) -> None:
             "w1": frontrun.Subprocess(_TARGET),
         },
         setup=redis_demo.setup,
-        invariant=lambda: redis_demo.read() == 2,
+        invariant=lambda _state: redis_demo.read() == 2,
     )
     assert not result.ok
     assert result.failure_kind == "invariant"
@@ -51,7 +51,7 @@ def test_redis_atomic_incr_has_no_race(redis_demo) -> None:
             "w1": frontrun.Subprocess(_ATOMIC_TARGET),
         },
         setup=redis_demo.setup,
-        invariant=lambda: redis_demo.read() == 2,
+        invariant=lambda _state: redis_demo.read() == 2,
     )
     assert result.ok, f"unexpected {result.failure_kind}: {result.failure!r}"
     assert result.exhausted

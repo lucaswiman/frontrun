@@ -121,7 +121,7 @@ def test_explore_processes_reuse_rejects_exhaustive() -> None:
             Subprocess("pkg.mod:go"),
             count=2,
             setup=lambda: None,
-            invariant=lambda: True,
+            invariant=lambda _state: True,
             strategy="exhaustive",
             reuse_workers=True,
         )

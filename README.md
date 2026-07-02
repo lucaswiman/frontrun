@@ -341,7 +341,7 @@ def test_counter_race(tmp_path):
 
 `execution="process"` accepts sync `strategy="dpor"` only; async workers and other strategies raise `ValueError`. SQLite needs nothing extra; Redis workers need the `redis` package and a running server.
 
-The lower-level `frontrun.explore_processes(...)` spawns `frontrun.Subprocess("module:callable", args)` targets as real OS processes (the target must be importable in a fresh interpreter) and returns a `CrossProcessResult` (`.ok`, `.failure`, `.failure_kind`, `.failing_schedule`, `.iterations`). Here `setup`/`invariant` take no arguments and reach the shared store directly:
+The lower-level `frontrun.explore_processes(...)` spawns `frontrun.Subprocess("module:callable", args)` targets as real OS processes (the target must be importable in a fresh interpreter) and returns a `CrossProcessResult` (`.ok`, `.failure`, `.failure_kind`, `.failing_schedule`, `.iterations`). `setup` returns a handle to the shared state that is passed to `invariant(state)` (matching `execution="process"`); both run in the coordinator and may reach the shared store directly:
 
 ```python
 import frontrun
@@ -352,9 +352,9 @@ import frontrun
 # execution="process" above when you need richer, pickled arguments.
 result = frontrun.explore_processes(
     frontrun.Subprocess("myapp.checkout:reserve", ("order-1",)),
-    count=2,                          # replicate the spec (or pass a dict/list of specs)
-    setup=reset_inventory,            # runs in the coordinator; resets the DB before each run
-    invariant=stock_never_negative,  # reads the DB afterwards; returns True/False
+    count=2,                                  # replicate the spec (or pass a dict/list of specs)
+    setup=reset_inventory,                    # runs in the coordinator; resets the DB, returns a handle
+    invariant=lambda state: stock_never_negative(state),  # receives setup()'s handle; returns True/False
     max_iterations=50,
 )
 if not result.ok:

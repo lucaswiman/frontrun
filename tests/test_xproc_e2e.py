@@ -31,7 +31,7 @@ def test_lost_update_race_found_across_processes(tmp_path) -> None:
             "w1": frontrun.Subprocess(_TARGET, (db,)),
         },
         setup=lambda: xproc_demo_counter.setup(db),
-        invariant=lambda: xproc_demo_counter.read(db) == 2,
+        invariant=lambda _state: xproc_demo_counter.read(db) == 2,
         max_iterations=50,
     )
     assert not result.ok, "expected the lost-update interleaving to be found"
@@ -48,7 +48,7 @@ def test_lost_update_found_with_exhaustive_strategy(tmp_path) -> None:
     result = frontrun.explore_processes(
         {"w0": frontrun.Subprocess(_TARGET, (db,)), "w1": frontrun.Subprocess(_TARGET, (db,))},
         setup=lambda: xproc_demo_counter.setup(db),
-        invariant=lambda: xproc_demo_counter.read(db) == 2,
+        invariant=lambda _state: xproc_demo_counter.read(db) == 2,
         strategy="exhaustive",
         max_iterations=50,
     )
@@ -63,7 +63,7 @@ def test_lost_update_found_with_reused_workers(tmp_path) -> None:
     result = frontrun.explore_processes(
         {"w0": frontrun.Subprocess(_TARGET, (db,)), "w1": frontrun.Subprocess(_TARGET, (db,))},
         setup=lambda: xproc_demo_counter.setup(db),
-        invariant=lambda: xproc_demo_counter.read(db) == 2,
+        invariant=lambda _state: xproc_demo_counter.read(db) == 2,
         reuse_workers=True,
     )
     assert not result.ok
@@ -77,11 +77,40 @@ def test_count_shorthand_replicates_spec(tmp_path) -> None:
         frontrun.Subprocess(_TARGET, (db,)),
         count=2,
         setup=lambda: xproc_demo_counter.setup(db),
-        invariant=lambda: xproc_demo_counter.read(db) == 2,
+        invariant=lambda _state: xproc_demo_counter.read(db) == 2,
         max_iterations=50,
     )
     assert not result.ok
     assert result.failure_kind == "invariant"
+
+
+def test_invariant_receives_setup_state_handle(tmp_path) -> None:
+    # explore_processes must thread setup()'s return value into invariant(state),
+    # matching explore(execution="process"). Both run in the coordinator process,
+    # so we can assert object identity of the handle.
+    db = str(tmp_path / "counter.db")
+    handle = {"db": db}  # arbitrary state handle returned by setup()
+    received: list[object] = []
+
+    def setup() -> object:
+        xproc_demo_counter.setup(db)
+        return handle
+
+    def invariant(state: object) -> bool:
+        received.append(state)
+        return xproc_demo_counter.read(db) == 2
+
+    frontrun.explore_processes(
+        {
+            "w0": frontrun.Subprocess(_TARGET, (db,)),
+            "w1": frontrun.Subprocess(_TARGET, (db,)),
+        },
+        setup=setup,
+        invariant=invariant,
+        max_iterations=50,
+    )
+    assert received, "invariant was never called"
+    assert all(s is handle for s in received), "invariant must receive the setup() return value"
 
 
 def test_bad_target_reports_real_cause_quickly() -> None:
@@ -94,7 +123,7 @@ def test_bad_target_reports_real_cause_quickly() -> None:
         frontrun.Subprocess("frontrun_no_such_module:go"),
         count=2,
         setup=lambda: None,
-        invariant=lambda: True,
+        invariant=lambda _state: True,
         deadlock_timeout=2.0,
     )
     elapsed = time.monotonic() - start
@@ -111,7 +140,7 @@ def test_atomic_increment_has_no_race(tmp_path) -> None:
             "w1": frontrun.Subprocess(_ATOMIC_TARGET, (db,)),
         },
         setup=lambda: xproc_demo_counter.setup(db),
-        invariant=lambda: xproc_demo_counter.read(db) == 2,
+        invariant=lambda _state: xproc_demo_counter.read(db) == 2,
         max_iterations=50,
     )
     assert result.ok, f"unexpected failure {result.failure!r} at {result.failing_schedule!r}"

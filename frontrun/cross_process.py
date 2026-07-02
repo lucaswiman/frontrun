@@ -13,8 +13,8 @@ Example::
             "w0": frontrun.Subprocess("myapp.checkout:run", ("order-1",)),
             "w1": frontrun.Subprocess("myapp.checkout:run", ("order-1",)),
         },
-        setup=reset_db,                  # runs in this process between iterations
-        invariant=lambda: stock() >= 0,  # reads the DB in this process
+        setup=reset_db,                       # runs in this process; returns a state handle
+        invariant=lambda state: stock() >= 0,  # receives setup()'s handle; reads the DB here
     )
     if not result.ok:
         raise AssertionError(result.failure)
@@ -59,6 +59,30 @@ def _to_interleaving_result(result: CrossProcessResult) -> Any:
     )
 
 
+def _state_threaded_hooks(
+    setup: Callable[[], Any],
+    invariant: Callable[[Any], bool],
+) -> tuple[Callable[[], None], Callable[[], bool], dict[str, Any]]:
+    """Bridge the state-threaded public hooks onto the nullary coordinator contract.
+
+    The cross-process coordinators call ``setup()`` / ``invariant()`` with no
+    arguments, but the public API threads ``setup()``'s return value into
+    ``invariant(state)`` (mirroring thread/async mode). This captures the handle
+    ``setup()`` returns and feeds it to ``invariant`` on each check. The box is
+    returned too so callers that also need the handle elsewhere (e.g. to hand it
+    to worker processes) can read the same captured value.
+    """
+    state_box: dict[str, Any] = {}
+
+    def coord_setup() -> None:
+        state_box["state"] = setup()
+
+    def coord_invariant() -> bool:
+        return bool(invariant(state_box.get("state")))
+
+    return coord_setup, coord_invariant, state_box
+
+
 def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazily by frontrun.explore
     setup: Callable[[], Any],
     workers: list[Callable[[Any], Any]],
@@ -81,13 +105,9 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
     ``setup`` and ``invariant`` run in this (coordinator) process. With
     ``reuse_workers`` the processes are spawned once and re-run per interleaving.
     """
-    state_box: dict[str, Any] = {}
-
-    def coord_setup() -> None:
-        state_box["state"] = setup()
-
-    def coord_invariant() -> bool:
-        return bool(invariant(state_box.get("state")))
+    # Workers also need setup()'s handle (via state_fn); read it from the same box
+    # the helper captures it into, so invariant(state) and the workers agree.
+    coord_setup, coord_invariant, state_box = _state_threaded_hooks(setup, invariant)
 
     coordinator = DporCrossProcessCoordinator(
         num_workers=len(workers),
@@ -133,7 +153,7 @@ def explore_processes(
     processes: Mapping[str, Subprocess] | Sequence[Subprocess] | Subprocess,
     *,
     setup: Callable[[], Any],
-    invariant: Callable[[], bool],
+    invariant: Callable[[Any], bool],
     count: int | None = None,
     strategy: Literal["dpor", "exhaustive"] = "dpor",
     max_iterations: int = 4096,
@@ -147,8 +167,12 @@ def explore_processes(
     ``processes`` is a mapping of label → :class:`Subprocess` (labels are for
     readability), a plain sequence, or a single :class:`Subprocess` with
     ``count=N`` to replicate it (the mirror of ``explore(workers=fn, count=N)``).
-    ``setup`` resets the external state before each interleaving and ``invariant``
-    checks it afterwards; both run in this (coordinator) process.
+
+    ``setup`` resets the external state before each interleaving and returns a
+    handle to it (e.g. a DB URL / connection info). That handle is passed to
+    ``invariant(state)``, which checks the state afterwards and returns a bool —
+    matching ``explore(execution="process")``. Both run in this (coordinator)
+    process; ``invariant`` may ignore ``state`` and read the shared store directly.
 
     ``strategy``:
 
@@ -165,6 +189,9 @@ def explore_processes(
         raise ValueError("explore_processes requires at least one Subprocess")
     if reuse_workers and strategy == "exhaustive":
         raise ValueError("explore_processes(): reuse_workers is not supported with strategy='exhaustive'")
+    # Coordinators call setup()/invariant() nullary; thread setup()'s handle into
+    # invariant(state) here to match explore(execution="process").
+    coord_setup, coord_invariant, _ = _state_threaded_hooks(setup, invariant)
     if strategy == "dpor":
         return DporCrossProcessCoordinator(
             num_workers=len(specs),
@@ -172,10 +199,17 @@ def explore_processes(
             max_executions=max_executions,
             preemption_bound=preemption_bound,
             reuse_workers=reuse_workers,
-        ).explore(worker_set=SubprocessLauncher(specs, reuse=reuse_workers), setup=setup, invariant=invariant)
+        ).explore(
+            worker_set=SubprocessLauncher(specs, reuse=reuse_workers), setup=coord_setup, invariant=coord_invariant
+        )
     if strategy == "exhaustive":
         return CrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,
-        ).explore(worker_set=SubprocessLauncher(specs), setup=setup, invariant=invariant, max_iterations=max_iterations)
+        ).explore(
+            worker_set=SubprocessLauncher(specs),
+            setup=coord_setup,
+            invariant=coord_invariant,
+            max_iterations=max_iterations,
+        )
     raise ValueError(f"unknown strategy {strategy!r}; expected 'dpor' or 'exhaustive'")
