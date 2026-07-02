@@ -33,21 +33,31 @@ threads reusing `DporScheduler`; cross-process row-lock deadlock detection; Redi
 and Phase 3 (persistent worker reuse) are done and covered by unit + functional +
 e2e tests (SQLite/Redis subprocesses).
 
-Scheduling *unmodified / non-Python* workers via **LD_PRELOAD** syscall
-interception was prototyped (Phase 4 PoC) and removed — but the lesson is *wrong
-layer, not wrong goal*. The block-until-grant primitive worked; what LD_PRELOAD
-can't supply is the semantic access identity DPOR needs (which row/key, read vs
-write), step-completion/quiescence (it hooked `send` but not `recv`, so grant
-order != effect order), or coverage of the common case (SQLite is in-process file
-I/O with no wire protocol; Go/static binaries bypass libc). The viable route, if
-demand appears, is a **protocol-aware scheduling proxy at the DSN level**: run a
-frontrun proxy in front of Postgres/Redis so "unmodified worker" becomes "point
-your connection string at the proxy". Full-duplex framing makes step-completion =
-response-forwarded (closing the quiescence hole for free) and gives a natural home
-for row-predicate and TX tracking, so it *can* preserve full DPOR semantics — at
-roughly a per-protocol wire state machine's worth of cost (PG-first). The PG
-parser at `crates/io/src/sql_extract.rs` is a starting seed. Until then: if the
-workers are Python, run frontrun inside them — that is the supported path.
+Scheduling *unmodified / non-Python* workers is **out of scope for frontrun by
+design**, and this is a scope decision, not a missing feature. frontrun is a
+white-box tester: it instruments *your* code from the inside to produce a
+deterministic, replayable, minimized proof of the exact interleaving that breaks
+an invariant (see "Design goals & scope" in `CLAUDE.md`). Reaching unmodified
+workers means intercepting at the wire — and that is a fundamentally black-box,
+*Jepsen-shaped* problem (observe histories, check them for consistency
+violations) rather than a white-box one (control the schedule, prove one
+interleaving). Different product.
+
+Two interception layers were considered and neither belongs in frontrun. The
+**LD_PRELOAD** syscall PoC (Phase 4, prototyped and removed) could block-until-grant,
+but can't supply the semantic access identity DPOR needs (which row/key, read vs
+write), can't get step-completion (it hooked `send` but not `recv`, so grant order
+!= effect order), and misses the common case (SQLite is in-process file I/O with no
+wire protocol; Go/static binaries bypass libc). A **DSN-level protocol-aware proxy**
+(a process in front of Postgres/Redis, so "unmodified worker" becomes "point your
+connection string at the proxy") would actually work — full-duplex framing gives
+identity + quiescence — but it is a *separate tool*: a per-protocol wire state
+machine, months of work, Jepsen-adjacent in shape. If ever built, it should be its
+own library/service that **reuses frontrun's Rust DPOR engine** (the reusable seam:
+vector clocks, sleep sets, wakeup tree, row-lock reasoning), not a feature grown
+inside frontrun. The PG parser at `crates/io/src/sql_extract.rs` would be a starting
+seed for such a tool. Meanwhile the supported path is unchanged: if the workers are
+Python, run frontrun inside them.
 
 ## Dropped (2026-06-12 cleanup)
 
@@ -65,8 +75,8 @@ test generation. Originals in git history.
 
 1. **Cross-process exploration** (cross_process_exploration.md) — ✅ implemented
    for Python multiprocessing/subprocess workers (Phases 1–3); see the Implemented
-   section above. Non-Python / unmodified-worker scheduling: LD_PRELOAD was the
-   wrong layer (see above) — the open route is a DSN-level protocol-aware proxy.
+   section above. Non-Python / unmodified-worker scheduling is out of scope by
+   design (white-box vs. Jepsen-shaped; see above) — a separate tool, if ever.
 2. **Fault-point exploration** (fault_injection.md) — start with the async cancellation
    sweep (v1), which needs no new exploration machinery.
 3. **Virtual clock** (virtual_clock.md) — v1 autojump clock for sync, then the

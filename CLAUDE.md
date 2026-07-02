@@ -11,6 +11,14 @@ Deterministic concurrency testing library. Four exploration approaches:
 
 Unified entry point is `frontrun.explore(strategy=...)`, which dispatches through the `Strategy` / `AsyncStrategy` Protocol registries in `frontrun/_strategy.py`. C-level I/O interception is handled by the `LD_PRELOAD` library in `crates/io/`.
 
+## Design goals & scope
+
+frontrun is a **white-box** concurrency tester: it runs *your* code and controls its scheduling from the inside. The deliverable is a **constructive proof** — a deterministic, replayable, DPOR-minimized schedule that says "run these operations in this exact order and the invariant fails." That's the whole value: it distinguishes a real logic bug from a flaky timeout, and hands you the canonical minimal interleaving that causes it. Anything that weakens *determinism*, *replayability*, or *exactness of the counterexample* is working against the core.
+
+The anchoring use case is the **Python free-threading (no-GIL) transition**: once threads run truly concurrently, races the GIL used to hide become real, and frontrun exists to enumerate thread interleavings and prove a specific one is buggy. Cross-process / SQL / Redis exploration is a deliberate extension of the same white-box model to contention on shared *rows* rather than shared *memory* — workers are still instrumented from the inside (they import frontrun's patching), which is what preserves semantic access identity and step-completion.
+
+**Explicitly out of scope:** scheduling *unmodified / non-Python* workers via wire-level interception (the removed `LD_PRELOAD` PoC, or a DSN-level protocol-aware proxy). That is a black-box, Jepsen-shaped problem — observing histories for consistency violations rather than proving a specific interleaving — and belongs in a *separate* tool. Such a tool could reuse frontrun's Rust DPOR engine (the reusable seam: vector clocks, sleep sets, wakeup tree, row-lock reasoning are product-agnostic), but the interception layer and the product shape are different. Don't grow frontrun toward it.
+
 ## Project layout
 
 - `frontrun/` — Python package (pure Python + compiled `_dpor` extension)

@@ -96,7 +96,7 @@ poisoning. See git history for the original write-ups.
 
 **Why:** Enables transaction tracking and connection identity at C level for non-Python drivers (libpq FFI, etc.).
 
-**Note on non-Python cross-process workers:** parsing the wire protocol *inside an LD_PRELOAD recv hook* is the wrong layer for scheduling unmodified workers — it is one-sided (no quiescence), misses SQLite/static binaries, and can't drive aborts. If unmodified/non-Python worker scheduling is ever pursued, the wire parsing belongs in a **DSN-level proxy** (a frontrun process in front of Postgres/Redis) that has full-duplex visibility and can define step-completion as response-forwarded; see the Implemented / cross-process note in `index.md`. This `sql_extract.rs` PG parser is a reusable seed for that proxy either way.
+**Note on non-Python cross-process workers:** scheduling unmodified workers is out of scope for frontrun by design (white-box vs. Jepsen-shaped — see the cross-process note in `index.md`). If it is ever pursued it belongs in a *separate tool*, and the wire parsing belongs in that tool's **DSN-level proxy** (a process in front of Postgres/Redis with full-duplex visibility, defining step-completion as response-forwarded), not in an `LD_PRELOAD` recv hook (one-sided, no quiescence, misses SQLite/static binaries). This `sql_extract.rs` PG parser would be a reusable seed for such a tool.
 
 **Complexity:** Medium. ~10 lines for BackendKeyData (one-time). ~50 lines for ReadyForQuery (requires message framing per fd).
 
