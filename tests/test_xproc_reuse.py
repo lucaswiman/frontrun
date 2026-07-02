@@ -10,6 +10,7 @@ reaches the same verdicts and execution counts as spawn-per-iteration.
 from __future__ import annotations
 
 import socket
+import threading
 from typing import Any
 
 import pytest
@@ -191,6 +192,11 @@ def test_drive_relays_raises_on_hung_relay() -> None:
         with pytest.raises(TimeoutError, match="did not terminate"):
             coord._drive_relays(scheduler, {0: relay_end}, [], {}, set())
     finally:
-        # Unblock the hung daemon relay so it can unwind.
+        # Unblock the hung daemon relay (peer EOF makes recv_msg return None)
+        # and wait for it to unwind so no thread outlives the test.
+        relay = next((t for t in threading.enumerate() if t.name == "xproc-relay-0"), None)
         peer.close()
+        if relay is not None:
+            relay.join(timeout=10.0)
+            assert not relay.is_alive(), "relay thread failed to unwind after peer EOF"
         relay_end.close()
