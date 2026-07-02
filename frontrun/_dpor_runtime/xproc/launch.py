@@ -54,10 +54,37 @@ def _terminate_procs(procs: Sequence[Any]) -> None:
 
 
 def _make_stderr_file(worker_id: int) -> str:
-    """Create an empty temp file to capture one child's stderr; return its path."""
+    """Create an empty temp file to capture one child's stderr; return its path.
+
+    A file, not a pipe: nobody drains the capture while the child runs, so a
+    PIPE would block a worker that writes more than the pipe buffer (~64 KiB on
+    Linux) — it would never finish, and join() would kill it and misreport a
+    hang. Files absorb unbounded stderr without back-pressure.
+    """
     fd, path = tempfile.mkstemp(prefix="frontrun-xproc-stderr-", suffix=f".w{worker_id}")
-    os.close(fd)  # the child reopens by path (os.dup2 in _mp_worker_entry)
+    os.close(fd)  # children reopen by path (os.dup2) or inherit a fresh handle
     return path
+
+
+def _stderr_last_line(path: str | None) -> str | None:
+    """Return the last non-blank captured stderr line, or ``None`` if unreadable/empty."""
+    if not path:
+        return None
+    try:
+        with open(path, errors="replace") as fh:
+            text = fh.read().strip()
+    except OSError:
+        return None
+    return text.splitlines()[-1] if text else None
+
+
+def _unlink_all(paths: Sequence[str]) -> None:
+    """Best-effort removal of stderr capture files."""
+    for path in paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _dumps_worker(worker_fn: Callable[[Any], Any], state: Any) -> bytes:
@@ -289,27 +316,25 @@ class MpLauncher:
         for i, proc in enumerate(handles):
             if proc.exitcode in (None, 0):
                 continue
-            detail = f"process exited with code {proc.exitcode}"
             path = self._stderr_files[i] if i < len(self._stderr_files) else None
-            if path:
-                try:
-                    with open(path, errors="replace") as fh:
-                        text = fh.read().strip()
-                    if text:
-                        detail = text.splitlines()[-1]
-                except OSError:
-                    pass
+            detail = _stderr_last_line(path) or f"process exited with code {proc.exitcode}"
             parts.append(f"worker {i}: {detail}")
         return "; ".join(parts) or None
 
     def _cleanup_stderr_files(self) -> None:
         """Best-effort removal of the previous launch's stderr capture files."""
-        for path in self._stderr_files:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        _unlink_all(self._stderr_files)
         self._stderr_files = []
+
+    def __del__(self) -> None:
+        # The per-launch cleanup only runs on the *next* launch, so the final
+        # iteration's capture files would leak once the exploration finishes.
+        # diagnose() may be read after join(), so this finalizer is the earliest
+        # safe point to drop them.
+        try:
+            self._cleanup_stderr_files()
+        except Exception:  # noqa: BLE001 - interpreter-shutdown best effort
+            pass
 
 
 @dataclass(frozen=True)
@@ -333,9 +358,14 @@ class SubprocessLauncher:
     def __init__(self, specs: list[Subprocess], *, reuse: bool = False) -> None:
         self._specs = specs
         self._reuse = reuse
+        # Per-worker temp files capturing each child's stderr (parallel to the
+        # launched procs). Files, not PIPEs: an undrained PIPE blocks a child
+        # that writes more than the pipe buffer, deadlocking the exploration.
+        self._stderr_files: list[str] = []
 
     def launch(self, targets: Sequence[WorkerTarget]) -> list[subprocess.Popen[bytes]]:
         base_env = self._child_env_base()
+        self._cleanup_stderr_files()
         procs: list[subprocess.Popen[bytes]] = []
         try:
             for target in targets:
@@ -349,7 +379,9 @@ class SubprocessLauncher:
                 env["FRONTRUN_XPROC_ARGS"] = json.dumps(list(spec.args))
                 if self._reuse:
                     env["FRONTRUN_XPROC_REUSE"] = "1"
-                procs.append(subprocess.Popen([sys.executable, "-m", _WORKER_MODULE], env=env, stderr=subprocess.PIPE))
+                self._stderr_files.append(_make_stderr_file(wid))
+                with open(self._stderr_files[-1], "wb") as stderr_fh:
+                    procs.append(subprocess.Popen([sys.executable, "-m", _WORKER_MODULE], env=env, stderr=stderr_fh))
         except BaseException:
             # A Popen failed mid-loop: kill and reap the children that did start
             # so they cannot leak and hang on a GRANT that never arrives (the
@@ -414,15 +446,23 @@ class SubprocessLauncher:
             rc = proc.poll()
             if rc is None or rc == 0:
                 continue
-            err = ""
-            if proc.stderr is not None:
-                try:
-                    err = proc.stderr.read().decode(errors="replace").strip()
-                except (OSError, ValueError):
-                    err = ""
-            last = err.splitlines()[-1] if err else f"exit code {rc}"
+            path = self._stderr_files[i] if i < len(self._stderr_files) else None
+            last = _stderr_last_line(path) or f"exit code {rc}"
             parts.append(f"worker {i}: {last}")
         return "; ".join(parts) or None
+
+    def _cleanup_stderr_files(self) -> None:
+        """Best-effort removal of the previous launch's stderr capture files."""
+        _unlink_all(self._stderr_files)
+        self._stderr_files = []
+
+    def __del__(self) -> None:
+        # Same finalizer contract as MpLauncher: the per-launch cleanup only
+        # runs on the next launch, so drop the final launch's files here.
+        try:
+            self._cleanup_stderr_files()
+        except Exception:  # noqa: BLE001 - interpreter-shutdown best effort
+            pass
 
     @staticmethod
     def _child_env_base() -> dict[str, str]:
