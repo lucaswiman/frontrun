@@ -307,6 +307,50 @@ def test_mp_launcher_join_escalates_to_kill() -> None:
     assert proc.killed
 
 
+# --- stderr capture must not deadlock a chatty worker ----------------------
+
+
+def test_subprocess_worker_flooding_stderr_still_exits(tmp_path) -> None:
+    # A worker that writes more than a pipe buffer (~64 KiB) to stderr must
+    # still be able to finish. Capturing stderr with an undrained PIPE blocks
+    # the child's write forever: it never exits, join() times out and kills it,
+    # and the run misreports a hang. Capture must therefore go to a file. The
+    # flood target writes 256 KiB then exits 3, so diagnose() must also recover
+    # its final line from the capture.
+    worker_set = SubprocessLauncher([Subprocess("tests.xproc_stderr_flood:main")])
+    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(str(tmp_path / "s.sock"),))])
+    alive = worker_set.join(handles, timeout=8.0)
+    assert alive == [], "child blocked writing stderr: capture is deadlock-prone"
+    detail = worker_set.diagnose(handles)
+    assert detail is not None
+    assert "flooded stderr with 256 KiB" in detail
+
+
+# --- final launch's stderr capture files must not leak ----------------------
+
+
+def test_mp_launcher_removes_stderr_files_when_collected(tmp_path) -> None:
+    # _cleanup_stderr_files only runs on the *next* launch, so without a
+    # finalizer the final iteration's capture files leak (one per worker per
+    # explore() call). Dropping the launcher must remove them.
+    ls = MpLauncher([lambda state: None], state_fn=lambda: None)
+    err = tmp_path / "w0.err"
+    err.write_text("leftover")
+    ls._stderr_files = [str(err)]
+    del ls
+    assert not err.exists()
+
+
+def test_subprocess_launcher_removes_stderr_files_when_collected(tmp_path) -> None:
+    # Same finalizer contract for the subprocess backend.
+    ls = SubprocessLauncher([Subprocess("pkg.mod:go")])
+    err = tmp_path / "w0.err"
+    err.write_text("leftover")
+    ls._stderr_files = [str(err)]
+    del ls
+    assert not err.exists()
+
+
 # --- Change 3: typed capability Protocols (rename safety net) --------------
 
 
