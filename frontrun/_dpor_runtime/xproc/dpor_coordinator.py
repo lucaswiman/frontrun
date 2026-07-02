@@ -22,6 +22,7 @@ import shutil
 import socket
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -335,6 +336,16 @@ class DporCrossProcessCoordinator:
                 if self.reuse_workers and unclean:
                     exhausted = False
                     break
+            else:
+                # The iterator ended on its own. That is only genuine exhaustion
+                # if no bound truncated the search: next_execution() returns False
+                # identically for an empty wakeup tree and a hit max_executions cap
+                # (engine.rs), and the iterator also stops on total_timeout. Report
+                # exhausted honestly so a bounded run doesn't over-claim coverage.
+                if self.max_executions is not None and num_explored >= self.max_executions:
+                    exhausted = False
+                elif deadline is not None and time.monotonic() > deadline:
+                    exhausted = False
             if first_failure is not None:
                 return replace(first_failure, iterations=num_explored, exhausted=exhausted)
             return CrossProcessResult(ok=True, iterations=num_explored, exhausted=exhausted)
