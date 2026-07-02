@@ -27,6 +27,31 @@ from . import protocol as proto
 _WORKER_MODULE = "frontrun._dpor_runtime.xproc.worker_main"
 
 
+def _terminate_procs(procs: Sequence[Any]) -> None:
+    """Terminate/kill and reap already-started multiprocessing children.
+
+    Used to clean up after a partial launch so a spawn failure mid-loop never
+    orphans the children that did start. Best-effort: each step is guarded so one
+    unresponsive child cannot prevent reaping the rest.
+    """
+    for proc in procs:
+        try:
+            proc.terminate()
+        except Exception:  # noqa: BLE001 - best-effort teardown
+            pass
+    for proc in procs:
+        try:
+            proc.join(1.0)
+        except Exception:  # noqa: BLE001 - best-effort teardown
+            continue
+        if proc.is_alive():
+            try:
+                proc.kill()
+                proc.join(1.0)
+            except Exception:  # noqa: BLE001 - best-effort teardown
+                pass
+
+
 def _dumps_worker(worker_fn: Callable[[Any], Any], state: Any) -> bytes:
     """Serialise ``(worker_fn, state)`` with dill, raising a clear error on failure.
 
@@ -163,8 +188,19 @@ class MpLauncher:
         ]
         scrubbed = {k: os.environ.pop(k) for k in ("LD_PRELOAD", "FRONTRUN_IO_FD") if k in os.environ}
         try:
-            for p in procs:
-                p.start()
+            started: list[Any] = []
+            try:
+                for p in procs:
+                    p.start()
+                    started.append(p)
+            except BaseException:
+                # A spawn failed mid-loop (e.g. resource exhaustion): the
+                # already-started children would otherwise leak — their worker
+                # socket blocks forever awaiting a GRANT — because the exception
+                # escapes launch() before returning handles for the caller's
+                # try/finally to join. Reap them here before re-raising.
+                _terminate_procs(started)
+                raise
         finally:
             os.environ.update(scrubbed)
         if self._reuse:
@@ -185,6 +221,12 @@ class MpLauncher:
                 alive.append(proc)
                 proc.terminate()
                 proc.join(1.0)
+                if proc.is_alive():
+                    # Worker ignored SIGTERM; escalate to SIGKILL so
+                    # execution="process" cannot leave a runaway child, matching
+                    # SubprocessLauncher.join()'s .kill() escalation.
+                    proc.kill()
+                    proc.join(1.0)
         return alive
 
     def any_exited(self, handles: Any) -> bool:
@@ -231,19 +273,39 @@ class SubprocessLauncher:
     def launch(self, targets: Sequence[WorkerTarget]) -> list[subprocess.Popen[bytes]]:
         base_env = self._child_env_base()
         procs: list[subprocess.Popen[bytes]] = []
-        for target in targets:
-            wid = target.worker_id
-            socket_path = str(target.args[0])
-            spec = self._specs[wid]
-            env = dict(base_env)
-            env["FRONTRUN_XPROC_SOCKET"] = socket_path
-            env["FRONTRUN_XPROC_WORKER_ID"] = str(wid)
-            env["FRONTRUN_XPROC_TARGET"] = spec.target
-            env["FRONTRUN_XPROC_ARGS"] = json.dumps(list(spec.args))
-            if self._reuse:
-                env["FRONTRUN_XPROC_REUSE"] = "1"
-            procs.append(subprocess.Popen([sys.executable, "-m", _WORKER_MODULE], env=env, stderr=subprocess.PIPE))
+        try:
+            for target in targets:
+                wid = target.worker_id
+                socket_path = str(target.args[0])
+                spec = self._specs[wid]
+                env = dict(base_env)
+                env["FRONTRUN_XPROC_SOCKET"] = socket_path
+                env["FRONTRUN_XPROC_WORKER_ID"] = str(wid)
+                env["FRONTRUN_XPROC_TARGET"] = spec.target
+                env["FRONTRUN_XPROC_ARGS"] = json.dumps(list(spec.args))
+                if self._reuse:
+                    env["FRONTRUN_XPROC_REUSE"] = "1"
+                procs.append(subprocess.Popen([sys.executable, "-m", _WORKER_MODULE], env=env, stderr=subprocess.PIPE))
+        except BaseException:
+            # A Popen failed mid-loop: kill and reap the children that did start
+            # so they cannot leak and hang on a GRANT that never arrives (the
+            # exception escapes launch() before the caller can join them).
+            self._reap_partial(procs)
+            raise
         return procs
+
+    @staticmethod
+    def _reap_partial(procs: Sequence[subprocess.Popen[bytes]]) -> None:
+        for proc in procs:
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001 - best-effort teardown
+                pass
+        for proc in procs:
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:  # noqa: BLE001 - best-effort teardown
+                pass
 
     def join(self, handles: Any, timeout: float) -> list[subprocess.Popen[bytes]]:
         alive: list[subprocess.Popen[bytes]] = []

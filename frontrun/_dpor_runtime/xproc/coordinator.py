@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from frontrun._dpor_core import RowLockRegistry, WorkerSet, WorkerTarget
+from frontrun._dpor_core import LivenessProbe, RowLockRegistry, WorkerSet, WorkerTarget
 
 from . import protocol as proto
 
@@ -66,7 +66,6 @@ def accept_hello_live(
     surfaces the real cause in ~a poll interval instead of tens of seconds.
     """
     deadline = time.monotonic() + connect_budget
-    any_exited = getattr(worker_set, "any_exited", None)
     prev = listener.gettimeout()
     listener.settimeout(min(0.5, connect_budget))
     try:
@@ -78,7 +77,7 @@ def accept_hello_live(
                 # keeps the full connect_budget, so this is not a slow HELLO).
                 # any_exited is non-destructive; the stderr-reading diagnose() is
                 # left for the failure path so it is not consumed here.
-                if any_exited is not None and any_exited(handles):
+                if isinstance(worker_set, LivenessProbe) and worker_set.any_exited(handles):
                     raise TimeoutError("worker exited before connecting") from None
                 if time.monotonic() >= deadline:
                     raise TimeoutError("workers did not connect within the deadlock timeout") from None

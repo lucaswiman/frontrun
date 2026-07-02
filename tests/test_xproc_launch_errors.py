@@ -13,7 +13,7 @@ import socket
 
 import pytest
 
-from frontrun._dpor_core.worker import WorkerTarget
+from frontrun._dpor_core.worker import IterationCustomizer, LivenessProbe, WorkerTarget
 from frontrun._dpor_runtime.xproc.dpor_coordinator import _connection_failure, _launch_error
 from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, SubprocessLauncher, _dumps_worker
 
@@ -21,6 +21,9 @@ from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, Subproce
 class _FakeWorkerSet:
     def __init__(self, detail: str | None) -> None:
         self._detail = detail
+
+    def any_exited(self, handles) -> bool:  # noqa: ARG002 - handles unused in fake
+        return self._detail is not None
 
     def diagnose(self, handles) -> str | None:  # noqa: ARG002 - handles unused in fake
         return self._detail
@@ -122,3 +125,144 @@ def test_connection_failure_without_diagnosis_is_plain() -> None:
     same = _launch_error(_FakeWorkerSet(None), None, TimeoutError("timed out"))
     result = _connection_failure(same, iterations=1)
     assert "TimeoutError" in (result.failure or "")
+
+
+# --- Change 1: partial-launch cleanup (no orphaned children) --------------
+
+
+class _FakeMpProc:
+    """Fake multiprocessing handle recording lifecycle calls."""
+
+    def __init__(self, *, fail_start: bool = False) -> None:
+        self._fail_start = fail_start
+        self.started = False
+        self.terminated = False
+        self.killed = False
+        self._alive = False
+
+    def start(self) -> None:
+        if self._fail_start:
+            raise RuntimeError("boom: cannot spawn worker")
+        self.started = True
+        self._alive = True
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._alive = False
+
+    def kill(self) -> None:
+        self.killed = True
+        self._alive = False
+
+    def join(self, timeout: float | None = None) -> None:  # noqa: ARG002 - fake
+        pass
+
+
+class _FakeCtx:
+    def __init__(self, procs: list[_FakeMpProc]) -> None:
+        self._it = iter(procs)
+
+    def Process(self, *args, **kwargs) -> _FakeMpProc:  # noqa: N802, ARG002 - mimics mp API
+        return next(self._it)
+
+
+def test_mp_launcher_cleans_up_on_partial_launch(monkeypatch, tmp_path) -> None:
+    # If spawning the 2nd worker raises, the 1st (already started) child must be
+    # terminated before the exception propagates — otherwise it leaks and hangs
+    # forever waiting for a GRANT that never comes.
+    procs = [_FakeMpProc(), _FakeMpProc(fail_start=True)]
+    ws = MpLauncher([lambda state: None, lambda state: None], state_fn=lambda: None)
+    monkeypatch.setattr(ws, "_ctx", _FakeCtx(procs))
+    sock = str(tmp_path / "s.sock")
+    with pytest.raises(RuntimeError, match="boom"):
+        ws.launch([WorkerTarget(worker_id=0, args=(sock,)), WorkerTarget(worker_id=1, args=(sock,))])
+    assert procs[0].started
+    assert procs[0].terminated
+    assert not procs[0].is_alive()
+
+
+class _FakePopenProc:
+    def __init__(self) -> None:
+        self.killed = False
+        self._alive = True
+
+    def kill(self) -> None:
+        self.killed = True
+        self._alive = False
+
+    def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002 - fake
+        return 0
+
+
+def test_subprocess_launcher_cleans_up_on_partial_launch(monkeypatch, tmp_path) -> None:
+    # Same leak for the subprocess backend: if the 2nd Popen construction raises,
+    # the 1st spawned child must be killed rather than orphaned.
+    from frontrun._dpor_runtime.xproc import launch as launch_mod
+
+    made: list[_FakePopenProc] = []
+
+    def fake_popen(*args, **kwargs):  # noqa: ARG001 - mimics Popen signature
+        if made:
+            raise RuntimeError("boom: cannot spawn worker")
+        proc = _FakePopenProc()
+        made.append(proc)
+        return proc
+
+    monkeypatch.setattr(launch_mod.subprocess, "Popen", fake_popen)
+    ws = SubprocessLauncher([Subprocess("pkg.mod:go"), Subprocess("pkg.mod:go")])
+    sock = str(tmp_path / "s.sock")
+    with pytest.raises(RuntimeError, match="boom"):
+        ws.launch([WorkerTarget(worker_id=0, args=(sock,)), WorkerTarget(worker_id=1, args=(sock,))])
+    assert len(made) == 1
+    assert made[0].killed
+
+
+# --- Change 2: MpLauncher.join escalates to SIGKILL -----------------------
+
+
+class _StubbornMpProc:
+    """A handle that ignores terminate() (SIGTERM) and only dies on kill()."""
+
+    def __init__(self) -> None:
+        self.terminated = False
+        self.killed = False
+
+    def join(self, timeout: float | None = None) -> None:  # noqa: ARG002 - fake
+        pass
+
+    def is_alive(self) -> bool:
+        return not self.killed
+
+    def terminate(self) -> None:
+        self.terminated = True  # ignored: worker keeps running
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def test_mp_launcher_join_escalates_to_kill() -> None:
+    # A worker that ignores SIGTERM must be SIGKILLed, matching
+    # SubprocessLauncher; otherwise execution="process" leaves it running.
+    ws = MpLauncher([lambda state: None], state_fn=lambda: None)
+    proc = _StubbornMpProc()
+    alive = ws.join([proc], timeout=0.01)
+    assert proc in alive
+    assert proc.terminated
+    assert proc.killed
+
+
+# --- Change 3: typed capability Protocols (rename safety net) --------------
+
+
+def test_process_launchers_expose_capability_protocols() -> None:
+    # These isinstance checks are the safety net: a future rename of any of the
+    # capability methods breaks these loudly instead of silently degrading.
+    mp = MpLauncher([lambda state: None], state_fn=lambda: None)
+    sub = SubprocessLauncher([Subprocess("pkg.mod:go")])
+    assert isinstance(mp, LivenessProbe)
+    assert isinstance(mp, IterationCustomizer)
+    assert isinstance(sub, LivenessProbe)
+    assert not isinstance(sub, IterationCustomizer)

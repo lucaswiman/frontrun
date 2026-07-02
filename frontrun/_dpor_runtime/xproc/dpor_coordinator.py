@@ -28,7 +28,14 @@ from dataclasses import replace
 from typing import Any
 
 from frontrun._deadlock import DeadlockError, SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
-from frontrun._dpor_core import WorkerSet, dpor_exploration_iter, make_deadline, make_dpor_engine
+from frontrun._dpor_core import (
+    IterationCustomizer,
+    LivenessProbe,
+    WorkerSet,
+    dpor_exploration_iter,
+    make_deadline,
+    make_dpor_engine,
+)
 from frontrun._dpor_runtime._shared import _dpor_tls, _make_object_key
 from frontrun._dpor_runtime.scheduler import DporScheduler
 from frontrun._opcode_observer import StableObjectIds
@@ -200,8 +207,7 @@ def _launch_error(worker_set: WorkerSet, handles: Any, exc: Exception) -> Except
     the real cause — e.g. a child that exited with ``ModuleNotFoundError`` for a
     bad ``module:callable`` target — when the WorkerSet can recover it.
     """
-    diagnose = getattr(worker_set, "diagnose", None)
-    detail = diagnose(handles) if diagnose is not None else None
+    detail = worker_set.diagnose(handles) if isinstance(worker_set, LivenessProbe) else None
     if not detail:
         return exc
     return _WorkerLaunchError(f"{type(exc).__name__}: {exc}; {detail}")
@@ -429,10 +435,10 @@ class DporCrossProcessCoordinator:
         worker_errors: dict[int, str],
         unclean: set[int],
     ) -> None:
-        iter_start_message = getattr(worker_set, "iter_start_message", None)
+        customizer = worker_set if isinstance(worker_set, IterationCustomizer) else None
         for wid, sock in socks_by_id.items():
-            if iter_start_message is not None:
-                msg = iter_start_message(wid)
+            if customizer is not None:
+                msg = customizer.iter_start_message(wid)
             else:
                 msg = {"t": proto.ITER_START}
             proto.send_msg(sock, msg)
