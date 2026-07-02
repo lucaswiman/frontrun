@@ -188,8 +188,13 @@ class MpLauncher:
         return alive
 
     def any_exited(self, handles: Any) -> bool:
-        """Non-destructive: has any worker process already exited?"""
-        return any(proc.exitcode is not None for proc in handles)
+        """Non-destructive: has any worker process crashed (nonzero exit)?
+
+        Only an abnormal exit counts, mirroring ``diagnose``'s nonzero filter: a
+        worker that connected, ran no scheduled access, and exited cleanly (0)
+        must not fast-fail the accept loop of a co-worker still sending HELLO.
+        """
+        return any(proc.exitcode not in (None, 0) for proc in handles)
 
     def diagnose(self, handles: Any) -> str | None:
         """Describe any worker that exited before connecting (nonzero exit code)."""
@@ -255,8 +260,12 @@ class SubprocessLauncher:
         return alive
 
     def any_exited(self, handles: Any) -> bool:
-        """Non-destructive: has any worker process already exited?"""
-        return any(proc.poll() is not None for proc in handles)
+        """Non-destructive: has any worker process crashed (nonzero exit)?
+
+        A clean exit (returncode 0) is not a crash and must not fast-fail the
+        accept loop; only nonzero or signal deaths do, matching ``diagnose``.
+        """
+        return any(proc.poll() not in (None, 0) for proc in handles)
 
     def diagnose(self, handles: Any) -> str | None:
         """Recover the real cause when a worker died before connecting.

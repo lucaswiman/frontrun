@@ -164,6 +164,14 @@ def explore(
                 ("trace_packages", trace_packages is not None),
                 ("track_dunder_dict_accesses", track_dunder_dict_accesses),
                 ("detect_sql", detect_sql),
+                # Not plumbed into worker processes (only worker_fn + state cross
+                # the spawn boundary); a non-default value here is a silent no-op.
+                # timeout_per_run's analog in process mode is deadlock_timeout.
+                ("detect_io", not detect_io),
+                ("patch_sleep", not patch_sleep),
+                ("timeout_per_run", timeout_per_run != 5.0),
+                ("reproduce_on_failure", reproduce_on_failure != 10),
+                ("warn_nondeterministic_sql", not warn_nondeterministic_sql),
             )
             if is_set
         ]

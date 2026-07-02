@@ -72,7 +72,6 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
     stop_on_first: bool = True,
     search: str | None = None,
     reuse_workers: bool = False,
-    **_ignored: Any,
 ) -> Any:
     """Back the ``frontrun.explore(execution="process")`` path.
 
