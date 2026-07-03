@@ -1,4 +1,0 @@
-# Ignore all cloned external repos - they are checked out locally for testing
-# but should not be committed to this repository.
-*
-!.gitignore

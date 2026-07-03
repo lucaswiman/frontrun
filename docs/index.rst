@@ -44,7 +44,6 @@ contend on shared external state (SQL and Redis).
    trace_filtering
    internals
    api_reference
-   CASE_STUDIES
 
 
 Getting Started
