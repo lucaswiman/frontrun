@@ -128,6 +128,52 @@ def test_dpor_stop_on_first_false_still_reports_race() -> None:
     assert result.exhausted  # whole space explored, yet the failure is still surfaced
 
 
+def _unlocked_write_then_lock_worker(db: _DB):
+    """RMW whose unlocked write is reported just before acquiring an unrelated row lock.
+
+    Mirrors the ordering real SQL interception produces: an access is reported
+    after its statement executes (e.g. a post-INSERT indexical write) and the
+    NEXT statement is ``SELECT ... FOR UPDATE``. The write sits in the relay's
+    ``pending_io`` when ACQUIRE_LOCKS runs, so a pre-fix relay attributes it
+    inside the (later) critical section.
+    """
+
+    def worker(proxy) -> None:
+        proxy.report_and_wait(None, 0)
+        current = db.balance
+        proxy.io_report("sql:balance:id=1", "read")
+        proxy.report_and_wait(None, 0)
+        db.balance = current + 100
+        proxy.io_report("sql:balance:id=1", "write")  # buffered; no flush before acquire
+        proxy.acquire_row_locks(0, ["sql:acct:id=1"])
+        proxy.report_and_wait(None, 0)
+        proxy.release_row_locks(0)
+
+    return worker
+
+
+def test_dpor_flushes_pending_io_before_row_lock_acquire() -> None:
+    # Regression: an unlocked write reported just before ACQUIRE_LOCKS must be
+    # attributed OUTSIDE the (later) critical section. Otherwise two workers'
+    # unlocked writes look lock-synchronized, DPOR prunes the racing
+    # interleaving, and the lost update is missed (false ok=True / exhausted).
+    #
+    # Pre-fix this false negative occurs on ~29/30 runs (relay-timing dependent),
+    # so assert the violation is found across several fresh searches: pre-fix at
+    # least one search returns ok=True (fails), post-fix every search finds it.
+    for _ in range(5):
+        db = _DB()
+        worker = _unlocked_write_then_lock_worker(db)
+        coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, stop_on_first=False)
+        result = coord.explore(
+            worker_set=ThreadLauncher([worker, worker]),
+            setup=db.reset,
+            invariant=lambda: db.balance == 200,
+        )
+        assert not result.ok, "DPOR missed the lost update (pre-lock write attributed inside the lock)"
+        assert result.failure_kind == "invariant"
+
+
 def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
     # For two read-modify-write workers the exhaustive strategy explores all
     # C(4,2)=6 interleavings; DPOR prunes equivalent ones and explores fewer.
