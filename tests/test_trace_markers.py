@@ -364,6 +364,47 @@ def test_marker_text_in_string_literal_is_not_a_marker():
     assert "bogus" not in executor.marker_registry._markers.values()
 
 
+class _StandaloneMarkerCounter:
+    """RMW counter whose markers sit on their own standalone comment lines."""
+
+    def __init__(self):
+        self.value = 0
+
+    def increment(self):
+        # frontrun: read
+        tmp = self.value
+        tmp = tmp + 1
+        # frontrun: write
+        self.value = tmp
+
+
+def test_standalone_line_markers_enforce_schedule():
+    """Standalone-line markers (comment on its own line) must gate the next line.
+
+    Documented as a supported placement, standalone markers only fire via the
+    prev-line branch of the trace function; the sync executor must enable it so
+    the schedule is actually enforced.  A lost-update interleaving must be
+    forced, not silently run unscheduled (which would leave ``current_step == 0``
+    and ``value == 2``).
+    """
+    counter = _StandaloneMarkerCounter()
+    schedule = Schedule(
+        [
+            Step("t1", "read"),
+            Step("t2", "read"),
+            Step("t1", "write"),
+            Step("t2", "write"),
+        ]
+    )
+
+    executor = TraceExecutor(schedule, deadlock_timeout=1.0)
+    executor.run({"t1": counter.increment, "t2": counter.increment}, timeout=5.0)
+
+    assert executor.coordinator.error is None, executor.coordinator.error
+    assert executor.coordinator.current_step == 4
+    assert counter.value == 1  # lost update forced by the interleaving
+
+
 def test_markers_on_standalone_lines():
     """Markers on lines containing only the marker comment (not inline with code).
 
