@@ -57,8 +57,12 @@ class ThreadWorkerSet:
         on_timeout: Callable[[list[Any]], None] | None = None,
         teardown: Callable[[], None] | None = None,
     ) -> None:
-        handles = self.launch(targets)
         try:
+            # launch() must be inside the try: if it raises partway (e.g.
+            # thread.start() hits "can't start new thread"), teardown — the
+            # runner's opcode-tracer uninstall — must still run, or the
+            # process-wide tracer leaks and mis-traces every later execution.
+            handles = self.launch(targets)
             alive = self.join(handles, timeout)
             if alive and on_timeout is not None:
                 on_timeout(alive)

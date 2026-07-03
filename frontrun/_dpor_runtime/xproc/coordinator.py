@@ -45,9 +45,20 @@ def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket
     """
     sock, _addr = listener.accept()
     sock.settimeout(timeout)
-    hello = proto.recv_msg(sock)
-    if hello is None or hello.get("t") != proto.HELLO:
-        raise RuntimeError(f"expected HELLO frame, got {hello!r}")
+    # A worker can connect and then die (crash/OOM/os._exit) or send garbage
+    # before its HELLO.  Treat that as a *connection* failure (OSError, which
+    # accept_hello_live and the coordinators already catch and route through
+    # the liveness diagnostics), not an internal RuntimeError that escapes
+    # explore().  Always close the accepted socket on the error path so the fd
+    # is not leaked.
+    try:
+        hello = proto.recv_msg(sock)
+    except BaseException:
+        sock.close()
+        raise
+    if hello is None or hello.get("t") != proto.HELLO or "w" not in hello:
+        sock.close()
+        raise OSError(f"expected HELLO frame, got {hello!r}")
     return sock, int(hello["w"])
 
 

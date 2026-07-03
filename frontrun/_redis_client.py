@@ -184,7 +184,7 @@ def _replay_needs_scheduling_point(access: Any) -> bool:
     so the io-anchored replay schedule stays aligned.  Connection-setup
     commands (AUTH, SELECT, CLIENT SETNAME, ...) carry none and are skipped.
     """
-    return bool(access.read_keys or access.write_keys)
+    return bool(access.read_keys or access.write_keys or access.keyspace is not None)
 
 
 def _parse_and_report_execute_command(

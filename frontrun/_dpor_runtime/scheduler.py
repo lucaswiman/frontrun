@@ -520,22 +520,34 @@ class DporScheduler:
                 self._condition.notify_all()
 
     def mark_done(self, thread_id: int) -> None:
+        from frontrun._cooperative import _scheduler_tls
+
         with self._condition:
-            self._threads_done.add(thread_id)
-            with self._engine_lock:
-                self.execution.finish_thread(thread_id)
-            # Release any row locks the thread may still hold (safety net).
-            # _release_row_locks_unlocked avoids re-acquiring self._condition.
-            self._release_row_locks_unlocked(thread_id)
-            # Clean up stale row-lock-blocked entry (safety net).
-            self._row_lock_blocked.pop(thread_id, None)
-            # If the done thread was the current one, schedule next
-            if self._current_thread == thread_id:
-                next_thread = self._schedule_next()
-                self._current_thread = next_thread
-                if next_thread is None and len(self._threads_done) >= self.num_threads:
-                    self._finished = True
-            self._condition.notify_all()
+            # Set the reentrancy guard for this condition-holding critical
+            # section: mark_done runs at thread teardown, exactly when GC
+            # __del__ chains (e.g. redis.Redis.__del__) fire.  Without it, a
+            # __del__ that releases a cooperative lock would call back into the
+            # scheduler and try to re-acquire the non-reentrant self._condition
+            # on this thread → self-deadlock.  See defect #7.
+            _scheduler_tls._in_dpor_machinery = True
+            try:
+                self._threads_done.add(thread_id)
+                with self._engine_lock:
+                    self.execution.finish_thread(thread_id)
+                # Release any row locks the thread may still hold (safety net).
+                # _release_row_locks_unlocked avoids re-acquiring self._condition.
+                self._release_row_locks_unlocked(thread_id)
+                # Clean up stale row-lock-blocked entry (safety net).
+                self._row_lock_blocked.pop(thread_id, None)
+                # If the done thread was the current one, schedule next
+                if self._current_thread == thread_id:
+                    next_thread = self._schedule_next()
+                    self._current_thread = next_thread
+                    if next_thread is None and len(self._threads_done) >= self.num_threads:
+                        self._finished = True
+                self._condition.notify_all()
+            finally:
+                _scheduler_tls._in_dpor_machinery = False
 
     def report_error(self, error: Exception) -> None:
         with self._condition:

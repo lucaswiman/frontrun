@@ -83,6 +83,24 @@ def extract_equality_predicates(sql: str, *, ast: Any | None = None) -> list[Pre
     return _extract_from_ast(parsed)
 
 
+def _literal_value(node: Any) -> str | None:
+    """Return a literal's string value, unwrapping a leading unary minus.
+
+    sqlglot parses ``-5`` as ``Neg(Literal(5))`` rather than ``Literal("-5")``.
+    Treating only bare ``Literal`` nodes as values silently drops negative keys
+    (negative balances, offsets, sentinel ids), collapsing disjoint negative
+    rows to a table-level resource.  Returns ``None`` for non-literal values so
+    callers fall back to table-level as before.
+    """
+    from sqlglot import exp  # type: ignore[import-untyped]
+
+    if isinstance(node, exp.Neg) and isinstance(node.this, exp.Literal):
+        return "-" + node.this.this
+    if isinstance(node, exp.Literal):
+        return node.this
+    return None
+
+
 def _extract_from_ast(ast: object) -> list[Predicate]:
     """Internal helper to extract predicates from a parsed AST."""
     try:
@@ -117,10 +135,14 @@ def _extract_from_ast(ast: object) -> list[Predicate]:
         if isinstance(conjunct, exp.EQ):
             left, right = conjunct.this, conjunct.expression
             # Normalize: column on left, literal on right
-            if isinstance(left, exp.Column) and isinstance(right, exp.Literal):
-                predicates.append(EqualityPredicate(left.name, right.this))
-            elif isinstance(right, exp.Column) and isinstance(left, exp.Literal):
-                predicates.append(EqualityPredicate(right.name, left.this))
+            if isinstance(left, exp.Column):
+                value = _literal_value(right)
+                if value is not None:
+                    predicates.append(EqualityPredicate(left.name, value))
+            elif isinstance(right, exp.Column):
+                value = _literal_value(left)
+                if value is not None:
+                    predicates.append(EqualityPredicate(right.name, value))
         elif isinstance(conjunct, exp.In):
             col = conjunct.this
             if not isinstance(col, exp.Column):
@@ -131,8 +153,9 @@ def _extract_from_ast(ast: object) -> list[Predicate]:
             values: set[str] = set()
             all_literals = True
             for expr in expressions:
-                if isinstance(expr, exp.Literal):
-                    values.add(expr.this)
+                value = _literal_value(expr)
+                if value is not None:
+                    values.add(value)
                 else:
                     all_literals = False
                     break
@@ -190,8 +213,9 @@ def extract_row_level_access(sql: str, *, ast: Any | None = None) -> list[list[E
 
             row_preds: list[EqualityPredicate] = []
             for col, val_expr in zip(columns, tuple_expr.expressions):
-                if isinstance(val_expr, exp.Literal):
-                    row_preds.append(EqualityPredicate(col, val_expr.this))
+                value = _literal_value(val_expr)
+                if value is not None:
+                    row_preds.append(EqualityPredicate(col, value))
                 else:
                     # Non-literal (e.g. function call NOW()) — skip this column for row-level
                     pass
