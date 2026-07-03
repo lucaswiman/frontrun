@@ -453,3 +453,52 @@ class TestReaderLoopEOF:
 
         # Clean up (stop won't close write_fd since we already did)
         dispatcher._stopped = True
+
+    @pytest.mark.intentionally_leaves_dangling_threads
+    def test_reader_survives_concurrent_drain(self) -> None:
+        """A concurrent poll() drain must not be misread as EOF.
+
+        If a worker's poll() acquires ``_pipe_lock`` and drains the pipe in
+        the window between the reader's ``select()`` returning ready and the
+        reader acquiring ``_pipe_lock``, the reader's ``os.read`` raises
+        ``BlockingIOError`` (got_data=False) even though the write end is still
+        open.  The reader must NOT treat this as EOF and exit — otherwise it
+        silently stops draining and a later >64KiB burst blocks the writer.
+        """
+        dispatcher = IOEventDispatcher()
+        dispatcher.start()
+        try:
+            reader = dispatcher._reader_thread
+            assert reader is not None
+            assert reader.is_alive()
+            assert dispatcher._write_fd is not None
+            assert dispatcher._read_fd is not None
+
+            # Force the race deterministically: hold _pipe_lock, make the pipe
+            # readable so the reader's select() fires and it then blocks on
+            # _pipe_lock, and steal the bytes ourselves exactly as a concurrent
+            # poll() drain would (os.read under _pipe_lock).
+            with dispatcher._pipe_lock:
+                os.write(dispatcher._write_fd, b"junkbytes\n")
+                time.sleep(0.15)  # reader returns from select(), blocks on lock
+                try:
+                    os.read(dispatcher._read_fd, 65536)  # steal bytes (poll drain)
+                except BlockingIOError:
+                    pass
+            time.sleep(0.15)  # reader acquires lock -> BlockingIOError; must NOT break
+
+            assert reader.is_alive(), (
+                "reader thread died on a concurrent drain (false EOF) while the "
+                "write end is still open"
+            )
+
+            # Sanity: the reader still delivers subsequent events.
+            received: list[PreloadIOEvent] = []
+            dispatcher.add_listener(received.append)
+            os.write(dispatcher._write_fd, b"write\tfile:/tmp/x\t3\t1\t1\n")
+            deadline = time.time() + 2.0
+            while not received and time.time() < deadline:
+                time.sleep(0.02)
+            assert received, "reader stopped delivering events after a concurrent drain"
+        finally:
+            dispatcher.stop()
