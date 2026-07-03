@@ -396,6 +396,17 @@ class DporCrossProcessCoordinator:
                         return result
                     if first_failure is None:
                         first_failure = result
+                    # An aborted execution (deadlock or worker error) unwinds its
+                    # workers via SchedulerAbort before their remaining accesses
+                    # are reported, so the engine never seeds the wakeup tree from
+                    # this trace and next_execution() can return False with
+                    # interleavings still unexplored. Demote exhausted rather than
+                    # over-claim coverage (mirrors _evaluate building these results
+                    # with exhausted=False; an invariant failure completes fully so
+                    # it does NOT demote). Only max_executions/total_timeout were
+                    # previously handled, in the for..else below.
+                    if result.failure_kind in ("deadlock", "worker_error"):
+                        exhausted = False
 
                 # In reuse mode a worker aborted mid-iteration leaves stray
                 # frames on its persistent socket; sending the next ITER_START
