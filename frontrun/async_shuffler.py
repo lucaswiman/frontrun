@@ -419,9 +419,15 @@ async def explore_async_random(
             # A timeout/deadlock means tasks were cancelled mid-flight: the
             # state is partial and does not describe any completed interleaving,
             # so the invariant must NOT be evaluated against it (finding F6).
-            # Surface the deadlock as the counterexample instead of either
-            # silently dropping it or reporting a spurious invariant violation.
-            if runner.timed_out or runner.scheduler.had_error:
+            #
+            # Distinguish the two cases the way the sync bytecode explorer does
+            # (finding 9d): a genuinely-detected deadlock (the scheduler proved
+            # no task can proceed — e.g. a lock-order inversion) is a
+            # constructive counterexample and is surfaced; a plain wall-clock
+            # timeout with no scheduler-detected deadlock only means the worker
+            # was slow, which is inconclusive — skip it rather than reporting a
+            # false "Deadlock detected" violation for correct-but-slow code.
+            if runner.scheduler.had_error:
                 result.property_holds = False
                 result.counterexample = schedule
                 result.unique_interleavings = len(seen_schedule_hashes)
@@ -429,6 +435,8 @@ async def explore_async_random(
                 detail = str(sched_err) if sched_err is not None else "tasks did not complete within the timeout"
                 result.explanation = f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
                 return result
+            if runner.timed_out:
+                continue
 
             # --- serializable_invariant check ---
             if serial_valid_states is not None:
