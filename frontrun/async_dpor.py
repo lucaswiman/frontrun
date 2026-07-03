@@ -896,7 +896,19 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         if self._current_task is None:
             self._finished = True
             return True
-        return self._current_task == task_id
+        if self._current_task == task_id:
+            return True
+        # Mirror AsyncDporScheduler.should_proceed: if the currently-scheduled
+        # task is blocked on a lock held by task_id, let task_id proceed so it
+        # can release the lock.  The recorded schedule contains the engine's
+        # raw pick of the blocked task (the exploration-time holder override is
+        # not written to the trace), so without this override the picked task is
+        # stuck inside the real lock.acquire() and replay deadlocks.
+        if self._current_task in self._lock_blocked:
+            holder = self._lock_blocked[self._current_task]
+            if holder == task_id:
+                return True
+        return False
 
     def on_proceed(self, task_id: Any, marker: Any = None) -> None:
         self._advance()
