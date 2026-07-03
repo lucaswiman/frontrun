@@ -87,6 +87,53 @@ def test_reclaims_stale_frontrun_slot():
         obs.teardown_opcode_monitoring(tool_id)
 
 
+def test_reclaims_same_thread_stale_slot():
+    """A slot leaked by THIS still-alive thread must be reclaimable.
+
+    If a run claims the slot on the long-lived driver thread and then leaks it
+    (e.g. a launch failure bypasses teardown), the next setup on the SAME
+    thread must reclaim the stale slot — not misreport it as a concurrent
+    frontrun run.  The recorded owner ident equals the caller's own ident, so
+    _owner_thread_alive() is True, but a single sequential thread cannot
+    overlap with itself, so this is a stale slot, not a live concurrent holder.
+    """
+    import threading
+
+    from frontrun import _opcode_observer as obs
+
+    mon = sys.monitoring
+    tool_id = mon.OPTIMIZER_ID
+
+    # First run claims the slot on THIS (long-lived) thread and never tears
+    # down — simulates the launch-failure teardown-skip in worker_set.run().
+    obs.setup_opcode_monitoring(
+        tool_name="frontrun-bytecode",
+        handle_py_start=lambda *a: None,
+        handle_py_return=lambda *a: None,
+        handle_instruction=lambda *a: None,
+        tool_kind="optimizer",
+        monitor_returns=False,
+    )
+    assert obs._TOOL_OWNERS[tool_id] == threading.get_ident()
+
+    tid = None
+    try:
+        # Next setup on the SAME still-alive thread must reclaim the stale slot
+        # instead of raising "concurrent frontrun run".
+        tid = obs.setup_opcode_monitoring(
+            tool_name="frontrun-bytecode",
+            handle_py_start=lambda *a: None,
+            handle_py_return=lambda *a: None,
+            handle_instruction=lambda *a: None,
+            tool_kind="optimizer",
+            monitor_returns=False,
+        )
+        assert tid == tool_id
+    finally:
+        obs._TOOL_OWNERS[tool_id] = threading.get_ident()
+        obs.teardown_opcode_monitoring(tool_id)
+
+
 def test_teardown_does_not_free_other_owners_slot():
     """teardown_opcode_monitoring must not free a slot owned by another thread.
 
