@@ -134,6 +134,25 @@ def _update_write_tables(node: Any) -> set[str]:
     return tables
 
 
+def _delete_write_tables(node: Any) -> set[str]:
+    """Tables deleted by a DELETE, including MySQL multi-table deletes.
+
+    ``node.this`` is only the first target table; a ``DELETE t1, t2 FROM t1
+    JOIN t2 ...`` deletes rows from every table listed before FROM, which
+    sqlglot places in ``node.args['tables']``.  We union those with
+    ``node.this`` so multi-table deletes are not demoted to reads.
+    """
+    from sqlglot import exp  # type: ignore[import-untyped]
+
+    tables: set[str] = set()
+    if isinstance(node.this, exp.Table):
+        tables.add(node.this.name)
+    for tbl in node.args.get("tables", []) or []:
+        if isinstance(tbl, exp.Table):
+            tables.add(tbl.name)
+    return tables
+
+
 def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
     """Parse a SQL statement and return table access information.
 
@@ -448,8 +467,8 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                 elif isinstance(node, (exp.Update, exp.Delete)):
                     if isinstance(node, exp.Update):
                         targets = _update_write_tables(node)
-                    elif isinstance(node.this, exp.Table):
-                        targets = {node.this.name}
+                    elif isinstance(node, exp.Delete):
+                        targets = _delete_write_tables(node)
                     else:
                         targets = set()
                     for name in targets:
