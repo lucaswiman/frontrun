@@ -174,6 +174,19 @@ def _report_redis_access(
     return True
 
 
+def _replay_needs_scheduling_point(access: Any) -> bool:
+    """Whether a Redis command needs a replay scheduling point.
+
+    During replay the I/O reporter is ``None``, so ``_report_redis_access``
+    reports nothing and ``reported`` is ``False``.  We must still recreate a
+    scheduling point for every command that created one during exploration —
+    i.e. any command carrying a key-level *or* keyspace-level intent-lock —
+    so the io-anchored replay schedule stays aligned.  Connection-setup
+    commands (AUTH, SELECT, CLIENT SETNAME, ...) carry none and are skipped.
+    """
+    return bool(access.read_keys or access.write_keys)
+
+
 def _parse_and_report_execute_command(
     args: tuple[Any, ...],
     client: Any,
@@ -245,7 +258,7 @@ def _intercept_execute_command(
     needs_scheduling_point = reported
     if not needs_scheduling_point and _redis_replay_mode:
         access = parse_redis_access(cmd_name, cmd_args)
-        needs_scheduling_point = bool(access.read_keys or access.write_keys)
+        needs_scheduling_point = _replay_needs_scheduling_point(access)
 
     # Build a structured resource ID for IO-anchored replay.
     resource_id = ""

@@ -10,6 +10,8 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 from frontrun._dpor_core.worker import WorkerSet, WorkerTarget
 from frontrun._dpor_runtime.worker_set import ThreadWorkerSet
 
@@ -110,3 +112,22 @@ def test_threads_exposed_for_inspection() -> None:
     ws.run(_targets([lambda: time.sleep(0)]), timeout=5.0)
     assert len(store) == 1
     assert ws.threads is store
+
+
+def test_run_invokes_teardown_when_launch_fails() -> None:
+    # teardown is the runner's opcode-tracer uninstall.  If launch() raises
+    # (e.g. thread.start() hits "can't start new thread" under exhaustion, or a
+    # target has func=None), teardown must still run — otherwise the
+    # process-wide sys.settrace/sys.monitoring tracer leaks and mis-traces
+    # every subsequent execution.
+    torn_down: list[bool] = []
+    bad_targets = [WorkerTarget(worker_id=0, func=None, args=())]
+
+    with pytest.raises(TypeError):
+        ThreadWorkerSet().run(
+            bad_targets,
+            timeout=1.0,
+            teardown=lambda: torn_down.append(True),
+        )
+
+    assert torn_down == [True], "teardown must run even when launch() fails"

@@ -66,6 +66,20 @@ class TestFilenameToModule:
         fake = os.path.join(sp_dir, "pkg", "_speedups.cpython-314-x86_64-linux-gnu.so")
         assert _filename_to_module(fake) == "pkg._speedups"
 
+    def test_prefers_longest_matching_skip_dir(self, monkeypatch) -> None:
+        # On stock python.org layouts the stdlib dir and its site-packages
+        # child are BOTH in _SKIP_DIRS, so a file matches two prefixes.  The
+        # module name must be derived from the longest (most specific) prefix,
+        # deterministically — not from whichever the set happens to yield first
+        # (frozenset order depends on PYTHONHASHSEED).  Otherwise a user's
+        # trace_packages=["mylib.*"] silently fails to match run-to-run.
+        import frontrun._tracing as tracing
+
+        nested = ("/opt/py/lib", "/opt/py/lib/site-packages")  # short prefix first
+        monkeypatch.setattr(tracing, "_SKIP_DIRS", nested)
+        result = _filename_to_module("/opt/py/lib/site-packages/mylib/views.py")
+        assert result == "mylib.views"
+
 
 # ---------------------------------------------------------------------------
 # Unit tests for TraceFilter

@@ -122,6 +122,59 @@ class TestRLockGCReentrancyGuard:
 
         assert "lock_release" in events, f"Expected lock_release event, got {events}"
 
+    def test_rlock_machinery_release_removes_holding_edge(self) -> None:
+        """Releasing a normally-acquired RLock during machinery must remove its
+        wait-for-graph holding edge, or a stale edge can fabricate a deadlock.
+
+        Scenario: a thread acquires the RLock normally (adding a
+        ``lock -> holder`` edge), then a GC ``__del__`` releases it while
+        ``_in_dpor_machinery()`` is True.  ``CooperativeLock.release()`` scrubs
+        the edge on this path; ``CooperativeRLock.release()`` must do the same.
+        A leaked edge lets ``_check_lock_cycle`` find a cycle through a lock
+        nobody actually holds and raise a spurious ``DeadlockError``.
+        """
+        rlock = CooperativeRLock()
+
+        class FakeScheduler:
+            _finished = False
+            _error = False
+
+            def wait_for_turn(self, thread_id: int) -> None:
+                pass
+
+            def report_error(self, err: Exception) -> None:
+                pass
+
+        scheduler = FakeScheduler()
+        graph = install_wait_for_graph()
+        lock_node = ("lock", rlock._object_id)
+
+        try:
+            set_context(scheduler, 0)  # type: ignore[arg-type]
+            set_sync_reporter(lambda event, obj_id, lock_obj: None)
+
+            # Acquire normally: records a holding edge lock -> thread 0.
+            rlock.acquire()
+            edge_before_release = ("thread", 0) in graph._edges.get(lock_node, set())
+
+            # GC __del__ fires during DPOR machinery and releases the lock.
+            _scheduler_tls._in_dpor_machinery = True
+            rlock.release()
+            # Capture the edge state *before* the finally uninstalls (and clears)
+            # the graph — otherwise the assertion is vacuously true.
+            edge_after_release = ("thread", 0) in graph._edges.get(lock_node, set())
+        finally:
+            _scheduler_tls._in_dpor_machinery = False
+            set_sync_reporter(None)
+            set_context(None, None)  # type: ignore[arg-type]
+            uninstall_wait_for_graph()
+
+        assert edge_before_release, "precondition: holding edge recorded on acquire"
+        assert not edge_after_release, (
+            "CooperativeRLock.release() left a stale holding edge in the wait-for graph "
+            "when released during DPOR machinery"
+        )
+
     def test_rlock_reentrant_release_inner_during_machinery(self) -> None:
         """Reentrant RLock: inner release during machinery should not deadlock.
 

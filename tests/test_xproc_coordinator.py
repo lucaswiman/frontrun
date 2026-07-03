@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
 
@@ -199,3 +201,37 @@ def test_reports_worker_error() -> None:
     assert not result.ok
     assert result.failure_kind == "worker_error"
     assert "worker blew up" in (result.failure or "")
+
+
+def test_accept_hello_treats_pre_hello_death_as_connection_failure() -> None:
+    """A worker that connects then dies before sending HELLO must surface as a
+    connection failure (OSError, which the coordinators catch), not an uncaught
+    RuntimeError that escapes explore().  The accepted socket must be closed.
+    """
+    import socket
+
+    from frontrun._dpor_runtime.xproc import protocol as proto
+    from frontrun._dpor_runtime.xproc.coordinator import accept_hello
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        # Case 1: EOF before any HELLO frame.
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(("127.0.0.1", port))
+        client.close()
+        with pytest.raises(OSError):
+            accept_hello(listener, timeout=2.0)
+
+        # Case 2: a well-formed frame that is not a valid HELLO (missing "w").
+        client2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client2.connect(("127.0.0.1", port))
+        proto.send_msg(client2, {"t": proto.HELLO})  # no worker id
+        with pytest.raises(OSError):
+            accept_hello(listener, timeout=2.0)
+        client2.close()
+    finally:
+        listener.close()

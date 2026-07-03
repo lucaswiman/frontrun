@@ -253,6 +253,36 @@ def test_explore_finds_counter_race():
     asyncio.run(_test())
 
 
+def test_explore_reports_task_crash_instead_of_propagating():
+    """A task raising under some interleaving is a counterexample, not a fatal
+    crash.  The random shuffler must surface it as ``property_holds=False``
+    (mirroring the DPOR path's "Task crash ..." handling) rather than letting
+    the exception escape and abort the whole exploration.
+    """
+
+    async def _test():
+        async def raising_task(state):
+            await await_point()
+            raise ValueError("boom in task body")
+
+        result = await explore_async_random(
+            setup=lambda: {"n": 0},
+            tasks=[raising_task, raising_task],
+            invariant=lambda s: True,
+            max_attempts=5,
+            max_ops=20,
+            seed=1,
+        )
+
+        assert not result.property_holds
+        assert result.counterexample is not None
+        assert result.explanation is not None
+        assert "ValueError" in result.explanation
+        assert "boom in task body" in result.explanation
+
+    asyncio.run(_test())
+
+
 def test_explore_bank_account_race():
     """Random exploration should find a lost-update in BankAccount."""
 
