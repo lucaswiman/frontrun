@@ -79,7 +79,13 @@ class _ThreadTraceExecutor:
             self.coordinator,
             self.marker_registry,
             execution_name,
-            include_previous_line=False,
+            # Standalone-line markers (a `# frontrun: name` comment on its own
+            # line) never emit their own `line` event, so they only fire via the
+            # prev-line branch.  Enable it — matching the async executor — so
+            # documented standalone markers gate the following line.  The branch
+            # itself guards against firing on skipped executable lines, so inline
+            # markers are unaffected.
+            include_previous_line=True,
         )
 
     def _thread_wrapper(
