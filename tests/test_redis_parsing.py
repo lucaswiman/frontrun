@@ -593,6 +593,15 @@ class TestKeyspaceIntentLock:
         # Pub/sub channels are not keyspace operations.
         assert parse_redis_access("PUBLISH", ("ch", "msg")).keyspace is None
 
+    def test_colon_namespaced_key_reads_keyspace(self) -> None:
+        # A real data key literally named "channel:session" must still take a
+        # keyspace read so it conflicts with FLUSHDB/FLUSHALL.  The "channel:"
+        # prefix is an internal pub/sub sentinel, but colon-namespaced keys are
+        # idiomatic Redis and must not be mistaken for pub/sub channels.
+        result = parse_redis_access("GET", ("channel:session",))
+        assert result.read_keys == ["channel:session"]
+        assert result.keyspace == "read"
+
 
 class TestKeyspaceReporting:
     """The report path must emit a keyspace access alongside per-key accesses."""
