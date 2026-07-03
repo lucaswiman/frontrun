@@ -19,8 +19,15 @@ across every meaningfully different schedule. The point of this page is that the
 same workflow that finds the lost update in the two-line counter on the front
 page works, without modification, on code you already depend on.
 
-Both write-ups include the exact command, the library version, and the trace
-frontrun prints. You can reproduce them yourself.
+Both write-ups include the complete test and the trace frontrun prints, verified
+against ``python-http-client`` 3.3.7 and ``python-socketio`` 5.16.3. To reproduce
+one yourself, put the test in a file and run it through the ``frontrun`` CLI
+(plain ``pytest`` skips ``frontrun.explore()`` tests — see :doc:`installation`):
+
+.. code-block:: bash
+
+   pip install frontrun python-http-client python-socketio
+   frontrun pytest test_case_studies.py
 
 .. contents::
    :local:
@@ -112,7 +119,7 @@ DPOR points straight at the shared mutation inside the library:
      Thread 1 | client.py:145             self.request_headers.update(request_headers)
               | [read Client.request_headers]
               | [read dict.update]
-
+     ...
      Reproduced 10/10 times (100%)
 
 Both threads are calling ``update()`` on the same ``request_headers`` dict; when
@@ -190,8 +197,14 @@ clients should be registered:
            workers=[enter("sid_a", "room_a", "eio_a"),
                     enter("sid_b", "room_b", "eio_b")],
            invariant=both_clients_registered,
+           trace_packages=["socketio*"],
        )
        result.assert_holds()
+
+As with sendgrid, the shared state lives inside an installed package, so
+``trace_packages=["socketio*"]`` is required — without it frontrun never looks
+inside the library, the workers run without interleaving there, and the test
+passes without testing anything.
 
 DPOR reports the write-write conflict on the shared namespace dict:
 
