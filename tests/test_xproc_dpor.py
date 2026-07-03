@@ -249,6 +249,41 @@ def test_dpor_deadlock_does_not_claim_exhausted() -> None:
     assert control_result.iterations > 1
 
 
+def test_dpor_lock_first_workers_explore_deterministically() -> None:
+    # Regression: acquire_row_locks is not gated on the engine's scheduling
+    # turn, so when two workers' first frames are both ACQUIRE_LOCKS the relay
+    # threads race: whichever wins reports lock_acquire (and its subsequent
+    # write) at the step the engine committed to the OTHER thread. The engine's
+    # recorded schedule then disagrees with the actual executor, corrupting
+    # backtracking: the reachable acquisition-order reversal is silently pruned
+    # and the run reports iterations=1 with exhausted=True (over-claiming
+    # coverage). The in-process path cannot race here because opcode tracing
+    # means the acquiring thread already holds the turn.
+    row1 = "sql:accounts:id=1"
+
+    def writing_locker(proxy) -> None:
+        proxy.acquire_row_locks(0, [row1])
+        proxy.io_report(row1, "write")
+        proxy.report_and_wait(None, 0)
+        proxy.release_row_locks(0)
+
+    # Two same-lock workers with conflicting writes have exactly two
+    # Mazurkiewicz classes (the two acquisition orders). Pre-fix the race made
+    # this 1-or-2 nondeterministically; it must be 2 every time.
+    for attempt in range(8):
+        coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
+        result = coord.explore(
+            worker_set=ThreadLauncher([writing_locker, writing_locker]),
+            setup=lambda: None,
+            invariant=lambda: True,
+        )
+        assert result.ok
+        assert result.iterations == 2, (
+            f"attempt {attempt}: expected both lock-acquisition orders explored, "
+            f"got iterations={result.iterations} (exhausted={result.exhausted})"
+        )
+
+
 def test_dpor_no_race_when_safe() -> None:
     # Each worker does a single atomic increment under a scheduling point.
     db = _DB()
