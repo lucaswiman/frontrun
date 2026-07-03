@@ -72,6 +72,58 @@ class TestAsyncDporBasic:
         assert result.property_holds, f"No race expected: {result.counterexample}"
         assert result.num_explored >= 1
 
+    def test_finds_read_modify_write_torn_read(self) -> None:
+        """DPOR must explore the read-modify-write interleaving where a checker
+        observes a value change across its own await (torn read).
+
+        Async DPOR reported ``property_holds=True`` in only 3 executions because
+        ``on_proceed`` committed ``engine.schedule`` for the successor *before*
+        the granted block's shared-memory accesses were reported, so every
+        block's accesses reached the engine one committed step late — corrupting
+        happens-before/backtracking and missing the reachable ``torn`` class.
+        The equivalent sync workers find the violation.
+
+        Reachable interleaving: checker reads value=0, inc runs read+write (→1),
+        checker resumes, observes value != tmp, sets torn=True.
+        """
+        require_active("test_async_dpor_rmw_torn_read")
+
+        class C:
+            def __init__(self) -> None:
+                self.value = 0
+                self.torn = False
+
+        async def inc(c: C) -> None:
+            tmp = c.value
+            await asyncio.sleep(0)
+            c.value = tmp + 1
+
+        async def checker(c: C) -> None:
+            tmp = c.value
+            await asyncio.sleep(0)
+            if c.value != tmp:
+                c.torn = True
+            c.value = tmp + 1
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=C,
+                workers=[inc, checker],
+                invariant=lambda c: not c.torn,
+                max_executions=1000,
+                preemption_bound=None,
+                stop_on_first=False,
+                strategy="dpor",
+                detect_io=False,
+                deadlock_timeout=5.0,
+            )
+        )
+
+        assert not result.property_holds, (
+            f"reachable torn read must be found, got property_holds=True "
+            f"in {result.num_explored} executions (under-exploration bug)"
+        )
+
     def test_tracks_stale_read_across_await(self) -> None:
         """DPOR should catch a stale read carried across an await boundary."""
         require_active("test_async_dpor_stale_read_across_await")
