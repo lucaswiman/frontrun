@@ -115,3 +115,42 @@ class TestIOAnchoredReplayScheduler:
         sched.after_io(42, "redis://cmd")
 
         assert sched._finished is True
+
+    def test_done_thread_anchor_does_not_livelock(self) -> None:
+        """Defect #16 divergence: the next IO anchor references a finished thread.
+
+        When a thread takes a state-dependent early return (the exact divergence
+        this scheduler exists to tolerate) it finishes without doing its last
+        recorded IO. The next anchor then names an already-done thread. Replay
+        must skip that anchor and proceed with the remaining live thread rather
+        than busy-spinning on the done thread while HOLDING the condition lock
+        (a 100% CPU livelock that starves every other thread until the outer
+        join timeout).
+        """
+        from frontrun.dpor import _IOAnchoredReplayScheduler
+
+        io_schedule = [(0, "r"), (1, "r"), (0, "r2")]
+        sched = _IOAnchoredReplayScheduler(io_schedule, num_threads=2, deadlock_timeout=0.5)
+
+        # Thread 0 does its first IO, then diverges and finishes early (skips 'r2').
+        sched.before_io(0, "r")
+        sched.after_io(0, "r")
+        sched.mark_done(0)
+        # Thread 1 does its IO; the next anchor (0, 'r2') names finished thread 0.
+        sched.before_io(1, "r")
+        sched.after_io(1, "r")
+
+        result: dict[str, bool] = {}
+        t = threading.Thread(
+            target=lambda: result.__setitem__("ret", sched._wait_for_turn(1)),
+            daemon=True,
+        )
+        t.start()
+        t.join(timeout=3.0)
+
+        # Pre-fix: the thread busy-spins forever holding the condition lock.
+        assert not t.is_alive(), "replay livelocked on a finished thread's IO anchor"
+        assert result.get("ret") is True
+        # The condition lock must be free — no busy-spin holding it.
+        assert sched._lock.acquire(timeout=1.0), "condition lock still held by a busy-spinner"
+        sched._lock.release()
