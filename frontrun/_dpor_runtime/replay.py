@@ -120,7 +120,13 @@ def _reproduce_dpor_counterexample(
                     patch_sleep=patch_sleep,
                 )
                 if invariant is not None:
-                    inv_failed = not invariant(replay_state)
+                    # Use check_invariant so assert-style invariants (which
+                    # raise AssertionError) are scored as failures, matching
+                    # exploration (explore.py) and the async reproduction path.
+                    # Evaluating the invariant raw here would let AssertionError
+                    # escape into the broad ``except Exception: continue`` below,
+                    # scoring every replay as a non-reproduction.
+                    inv_failed, _ = check_invariant(invariant, replay_state)
             except DeadlockError:
                 deadlocked = True
             except Exception:
