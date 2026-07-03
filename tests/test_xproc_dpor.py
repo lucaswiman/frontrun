@@ -201,6 +201,45 @@ def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
     assert dpor.iterations < exhaustive.iterations
 
 
+def _ordered_locker(first: str, second: str):
+    def worker(proxy) -> None:
+        proxy.acquire_row_locks(0, [first])
+        proxy.report_and_wait(None, 0)
+        proxy.acquire_row_locks(0, [second])
+        proxy.report_and_wait(None, 0)
+        proxy.release_row_locks(0)
+
+    return worker
+
+
+def test_dpor_deadlock_does_not_claim_exhausted() -> None:
+    # Regression: a deadlock-aborted execution unwinds its workers via
+    # SchedulerAbort before their remaining accesses are reported, so the engine
+    # never seeds the wakeup tree from that trace and next_execution() returns
+    # False with deadlock-avoiding interleavings still unexplored. The coordinator
+    # must NOT then claim exhausted=True (over-claiming coverage) with
+    # stop_on_first=False; only max_executions/total_timeout previously demoted it.
+    row1, row2 = "sql:accounts:id=1", "sql:accounts:id=2"
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
+    result = coord.explore(
+        worker_set=ThreadLauncher([_ordered_locker(row1, row2), _ordered_locker(row2, row1)]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert result.failure_kind == "deadlock"
+    assert not result.exhausted  # search aborted at a deadlock; space not fully covered
+
+    # Control: same worker shape, same-order locking (no deadlock) explores >1
+    # interleaving, proving the deadlock run left reachable orderings unexplored.
+    control = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
+    control_result = control.explore(
+        worker_set=ThreadLauncher([_ordered_locker(row1, row2), _ordered_locker(row1, row2)]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert control_result.iterations > 1
+
+
 def test_dpor_no_race_when_safe() -> None:
     # Each worker does a single atomic increment under a scheduling point.
     db = _DB()
