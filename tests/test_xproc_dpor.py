@@ -229,11 +229,20 @@ def test_dpor_deadlock_does_not_claim_exhausted() -> None:
     assert result.failure_kind == "deadlock"
     assert not result.exhausted  # search aborted at a deadlock; space not fully covered
 
-    # Control: same worker shape, same-order locking (no deadlock) explores >1
-    # interleaving, proving the deadlock run left reachable orderings unexplored.
+    # Control: same-order locking (no deadlock) with a conflicting write inside
+    # the critical section explores >1 interleaving, proving the deadlock run
+    # left reachable orderings unexplored. Pure lock/unlock workers with no data
+    # accesses are all Mazurkiewicz-equivalent, so the write is what forces the
+    # engine to reverse the acquisition order.
+    def writing_locker(proxy) -> None:
+        proxy.acquire_row_locks(0, [row1])
+        proxy.io_report(row1, "write")
+        proxy.report_and_wait(None, 0)
+        proxy.release_row_locks(0)
+
     control = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
     control_result = control.explore(
-        worker_set=ThreadLauncher([_ordered_locker(row1, row2), _ordered_locker(row1, row2)]),
+        worker_set=ThreadLauncher([writing_locker, writing_locker]),
         setup=lambda: None,
         invariant=lambda: True,
     )
