@@ -36,6 +36,15 @@ def _release_execution_lock_safely(coordinator: Any) -> None:
 
 
 def _wait_for_marker(coordinator: Any, execution_name: str, marker_name: str) -> None:
+    if coordinator.error is not None:
+        # A previous marker already recorded a coordinator error (e.g. a
+        # schedule stall).  The worker frame keeps being traced (returning None
+        # from a 'line' event does not stop tracing), so a later marker
+        # re-enters here with the execution lock already released.  Releasing
+        # it again would raise RuntimeError('release unlocked lock') which,
+        # via report_error, would overwrite and mask the original diagnostic.
+        # Re-raise the existing error without touching the lock.
+        raise coordinator.error
     coordinator._execution_lock.release()
     coordinator.wait_for_turn(execution_name, marker_name, _reacquire_execution_lock=True)
     if coordinator.error:
