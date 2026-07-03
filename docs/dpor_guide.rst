@@ -582,7 +582,7 @@ the classic TOCTOU (check-then-act) race window.
 
 **What is independent (no conflict, no extra interleavings):**
 
-- Two reads on the same key (e.g. two ``GET``s).
+- Two reads on the same key (e.g. two ``GET`` commands).
 - Any operations on *different* keys, even on the same Redis server.
 - Server-level commands (``PING``, ``INFO``, ``CONFIG``, etc.) that carry no
   key-level semantics.
