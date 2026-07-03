@@ -285,11 +285,12 @@ def test_notify_does_not_overwake_unmanaged_waiter():
 
 
 def test_notify_caps_real_cond_to_actual():
-    """notify(n) must cap the real_cond.notify() call to the actual number of served tickets.
+    """notify(n) must cap real_cond.notify() to the served *unmanaged* tickets.
 
-    Bug: CooperativeCondition.notify() computes actual = min(n, unserved) to cap
-    the ticket advancement, but passes the uncapped `n` to self._real_cond.notify(n).
-    This wakes more non-cooperative threads than there are available tickets.
+    Bug: CooperativeCondition.notify() passes the raw `n` (or the total served
+    count) to self._real_cond.notify(), waking more non-cooperative threads
+    than there are unmanaged waiters whose tickets were served.  Only tickets
+    held by unmanaged (real_cond) waiters should drive real_cond.notify().
     """
     from unittest.mock import MagicMock
 
@@ -298,8 +299,11 @@ def test_notify_caps_real_cond_to_actual():
 
     lock.acquire()
 
+    # Two waiters: ticket 0 is unmanaged (blocked in real_cond), ticket 1 is a
+    # managed spinner.  Only the unmanaged one should drive real_cond.notify().
     cond._waiters = 2
     cond._next_ticket = 2
+    cond._real_cond_tickets = {0}
 
     mock_real_cond = MagicMock()
     mock_real_cond.__enter__ = MagicMock(return_value=mock_real_cond)
@@ -309,8 +313,7 @@ def test_notify_caps_real_cond_to_actual():
 
     cond.notify(5)
 
-    actual = min(5, 2)
-    assert actual == 2
-    mock_real_cond.notify.assert_called_once_with(actual)
+    # Both tickets served, but only 1 belongs to an unmanaged waiter.
+    mock_real_cond.notify.assert_called_once_with(1)
 
     lock.release()
