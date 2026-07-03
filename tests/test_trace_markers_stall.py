@@ -24,6 +24,34 @@ def _marker_worker():
     return x
 
 
+def _two_marker_worker():
+    x = 1  # frontrun: m
+    y = 2  # frontrun: n
+    return x + y
+
+
+def test_step_zero_stall_with_later_marker_reports_stall_not_masked():
+    """A stall must surface the stall TimeoutError, not a masked RuntimeError.
+
+    With a worker that hits two markers (``m`` then ``n``) under a schedule
+    that stalls at step 0 (expecting ``t2.m`` while only ``t1`` runs), the
+    first marker ``m`` stalls and sets ``coordinator.error``.  The frame keeps
+    being traced, so ``t1`` reaches its second marker ``n`` and re-enters
+    ``_wait_for_marker``; that must not release the already-released execution
+    lock (which would raise ``RuntimeError('release unlocked lock')`` and,
+    via ``report_error``, overwrite/mask the original stall diagnostic).
+    """
+    schedule = Schedule([Step("t2", "m"), Step("t1", "m"), Step("t1", "n")])
+
+    executor = TraceExecutor(schedule, deadlock_timeout=0.3)
+
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011
+        executor.run({"t1": _two_marker_worker}, timeout=5.0)
+
+    assert "stall" in str(excinfo.value).lower(), excinfo.value
+    assert isinstance(executor.coordinator.error, TimeoutError), executor.coordinator.error
+
+
 def test_step_zero_stall_surfaces_error():
     """A stall at step 0 (waiting for a thread that never runs) must raise.
 
