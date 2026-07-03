@@ -421,6 +421,28 @@ class TestClassifyPhantomRead:
         assert result.kind == "phantom_read"
         assert "products" in result.summary
 
+    def test_seq_membership_marker_insert_between_selects_is_phantom(self) -> None:
+        """Realistic phantom trace using the :seq membership marker.
+
+        A SELECT reports READ on the table and 'sql:<table>:seq'; a concurrent
+        INSERT reports WRITE on a new *row* resource and 'sql:<table>:seq'.
+        The only exact resource shared read-write-read is ':seq', which must
+        NOT be classified as non-repeatable read — the :seq marker exists
+        precisely to detect phantoms (INSERT/DELETE write it, SELECT/UPDATE
+        read it).
+        """
+        events = [
+            _sql_event(0, 0, "orders", "read"),  # SELECT #1 (table read)
+            _sql_event_row(1, 0, "orders", "seq", "read"),
+            _sql_event_row(2, 1, "orders", "(('id','5'),)", "write"),  # INSERT new row
+            _sql_event_row(3, 1, "orders", "seq", "write"),
+            _sql_event(4, 0, "orders", "read"),  # SELECT #2 (table read)
+            _sql_event_row(5, 0, "orders", "seq", "read"),
+        ]
+        result = classify_sql_anomaly(events)
+        assert result is not None
+        assert result.kind == "phantom_read", result.kind
+
 
 class TestRowLevelResourceIds:
     def test_different_rows_same_table(self) -> None:
