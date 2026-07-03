@@ -9,9 +9,11 @@ ThreadCoordinator``) continues to work.
 
 from __future__ import annotations
 
+import io
 import linecache
 import re
 import threading
+import tokenize
 from collections.abc import Callable
 from typing import Any
 
@@ -102,23 +104,36 @@ class MarkerRegistry:
             if filename in self._scanned_files:
                 return
 
-            # Read all lines from the file
+            # Read all lines from the file and tokenize so that marker-like
+            # text is only recognized inside real comments.  A bare regex over
+            # raw source would also match ``# frontrun: x`` embedded in a
+            # string literal on an executable line, registering a phantom
+            # marker that is never in the schedule and stalls the run.
             try:
                 # Use linecache to read the file
                 linecache.checkcache(filename)
+                lines: list[str] = []
                 line_num = 1
                 while True:
                     line = linecache.getline(filename, line_num)
                     if not line:
                         break
-
-                    # Check for marker comment
-                    match = MARKER_PATTERN.search(line)
-                    if match:
-                        marker_name = match.group(1)
-                        self._markers[(filename, line_num)] = marker_name
-
+                    lines.append(line)
                     line_num += 1
+
+                readline = io.StringIO("".join(lines)).readline
+                try:
+                    for tok in tokenize.generate_tokens(readline):
+                        if tok.type != tokenize.COMMENT:
+                            continue
+                        match = MARKER_PATTERN.search(tok.string)
+                        if match:
+                            marker_name = match.group(1)
+                            self._markers[(filename, tok.start[0])] = marker_name
+                except tokenize.TokenError:
+                    # Truncated/incomplete source: keep whatever markers were
+                    # tokenized before the error.
+                    pass
             except Exception:
                 # If we can't read the file, just skip it
                 pass
