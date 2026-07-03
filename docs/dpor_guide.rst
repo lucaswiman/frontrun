@@ -250,7 +250,7 @@ Interpreting results
    @dataclass
    class InterleavingResult:
        property_holds: bool                              # True if invariant held everywhere
-       counterexample: list[int] | None = None           # first failing schedule
+       counterexample: list[int] | Schedule | None = None  # first failing schedule
        num_explored: int = 0                             # total interleavings tried
        unique_interleavings: int = 0                     # distinct schedules (= num_explored for DPOR)
        failures: list[tuple[int, list[int]]] = ...       # all (execution_num, schedule) pairs

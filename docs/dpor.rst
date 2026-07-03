@@ -108,10 +108,9 @@ Happens-before and vector clocks
 
 .. seealso::
 
-   :doc:`vector-clocks` for a comprehensive treatment including the three
-   per-thread clocks (``dpor_vv``, ``io_vv``, ``causality``), the
-   ``VersionVec`` implementation, and worked examples with and without
-   synchronization.
+   :doc:`vector-clocks` for a comprehensive treatment including the two
+   per-thread clocks (``dpor_vv``, ``io_vv``), the ``VersionVec``
+   implementation, and worked examples with and without synchronization.
 
 Two operations are *concurrent* if neither `happens before
 <https://en.wikipedia.org/wiki/Happened-before>`_ the other. The happens-before
@@ -170,17 +169,19 @@ The key operations are:
 
 Each thread carries *two* vector clocks:
 
-``causality``
-    Tracks the program's semantic happens-before relation. Updated when
-    synchronization primitives (locks, joins, spawns) transfer ordering
-    information between threads.
-
 ``dpor_vv``
-    Tracks the scheduler's branch decisions. Incremented each time the thread
-    is scheduled, and merged (via the same component-wise-max ``join``
-    operation) on synchronization events just like ``causality``. This is the
-    clock used for DPOR dependency detection --- it tells us whether two
-    scheduling decisions were causally ordered or concurrent.
+    Tracks the happens-before relation the scheduler can rely on.
+    Incremented each time the thread is scheduled, and merged (via the
+    component-wise-max ``join`` operation) when synchronization primitives
+    (locks, spawns, joins) transfer ordering information between threads.
+    This is the clock used for DPOR dependency detection --- it tells us
+    whether two scheduling decisions were causally ordered or concurrent.
+
+``io_vv``
+    A second clock used for I/O conflict detection. It propagates across
+    spawn and join but deliberately ignores lock synchronization, so two
+    I/O operations on the same endpoint are still treated as racing even
+    when the surrounding Python code happens to be ordered by a lock.
 
 
 Conflict detection
@@ -231,8 +232,8 @@ conflicting operations.
 Synchronization events
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Synchronization primitives update the ``causality`` (and ``dpor_vv``) clocks so
-that accesses ordered by proper synchronization are not flagged as conflicts:
+Synchronization primitives update the ``dpor_vv`` clock so that accesses
+ordered by proper synchronization are not flagged as conflicts:
 
 **Lock acquire**
     The acquiring thread joins the vector clock that was stored when the lock
@@ -245,7 +246,7 @@ that accesses ordered by proper synchronization are not flagged as conflicts:
     This establishes that the acquire happens after the previous release.
 
 **Lock release**
-    The releasing thread's current causality clock is stored on the lock for
+    The releasing thread's current ``dpor_vv`` clock is stored on the lock for
     future acquirers:
 
     .. math::
@@ -253,8 +254,8 @@ that accesses ordered by proper synchronization are not flagged as conflicts:
        V_{\text{lock}} \leftarrow V_t
 
 **Thread join**
-    The joining thread joins both the causality and DPOR clocks of the joined
-    thread. All of the joined thread's operations now happen before the
+    The joining thread joins both the ``dpor_vv`` and ``io_vv`` clocks of the
+    joined thread. All of the joined thread's operations now happen before the
     joiner's subsequent operations:
 
     .. math::
@@ -262,8 +263,9 @@ that accesses ordered by proper synchronization are not flagged as conflicts:
        V_t \leftarrow V_t \sqcup V_{t'}
 
 **Thread spawn**
-    The child thread inherits the parent's causality and DPOR clocks. The
-    parent's operations before the spawn happen before the child's operations:
+    The child thread inherits the parent's ``dpor_vv`` and ``io_vv`` clocks.
+    The parent's operations before the spawn happen before the child's
+    operations:
 
     .. math::
 
@@ -488,7 +490,7 @@ found that a bound of 2 is sufficient to catch the vast majority of bugs in
 practice.
 
 When a backtrack point would create a preemption that exceeds the bound, the
-engine falls back to ``add_conservative_backtrack``: it walks backward through
+engine falls back to ``add_conservative_wakeup``: it walks backward through
 earlier branches looking for a point where the same thread can be explored
 without exceeding the preemption budget. This maintains soundness within the
 bounded exploration --- every execution with at most *k* preemptions that
@@ -703,10 +705,10 @@ The implementation is split across seven Rust modules in ``crates/dpor/src/``:
     the new access for race detection.
 
 ``thread.rs`` --- Thread state
-    ``Thread`` holds two vector clocks (``causality`` and ``dpor_vv``) plus
-    ``io_vv`` (for I/O operations, which omit lock-based happens-before so
-    that I/O always appears concurrent). ``ThreadStatus`` is the per-branch
-    status enum used by the exploration tree.
+    ``Thread`` holds two vector clocks: ``dpor_vv`` (scheduling/dependency
+    detection) and ``io_vv`` (for I/O operations, which omits lock-based
+    happens-before so that I/O always appears concurrent). ``ThreadStatus``
+    is the per-branch status enum used by the exploration tree.
 
 ``wakeup_tree.rs`` --- Wakeup trees
     ``WakeupTree`` and ``WakeupNode``: an ordered tree of thread-ID sequences

@@ -322,10 +322,10 @@ because the only meaningful ordering question is *which thread acquires the
 lock first*.  Compare the racy report against the locked report to see this
 directly.
 
-The ``stop_on_first=False`` parameter (used in all the examples above) tells
-DPOR to continue exploring after the first failure.  The default
-``stop_on_first=True`` stops as soon as a violation is found, which is usually
-what you want in a test suite.
+The ``stop_on_first=False`` parameter (used by the ``examples/dpor_*.py``
+scripts) tells DPOR to continue exploring after the first failure.  The
+default ``stop_on_first=True`` stops as soon as a violation is found, which
+is usually what you want in a test suite.
 
 
 Real-World Case Study: SQLAlchemy ORM

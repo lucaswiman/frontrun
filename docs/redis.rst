@@ -33,7 +33,8 @@ With Redis detection enabled, the data flows through three stages:
 
 **Stage 1 -- Command classification** (``_redis_parsing.py``).
 ``parse_redis_access(command, args)`` returns ``(read_keys, write_keys,
-is_transaction_control)``.  The parser covers all major Redis command groups:
+is_transaction_control, keyspace)`` --- the last field flags keyspace-wide
+commands like ``FLUSHDB``.  The parser covers all major Redis command groups:
 
 - String commands: ``GET`` (read), ``SET`` (write), ``INCR``/``INCRBY`` (read+write),
   ``GETSET``/``GETDEL`` (read+write), ``MGET`` (read, multiple keys), ``MSET``
@@ -73,12 +74,13 @@ back to a conservative read+write classification on all its key arguments.
 2. Suppresses the coarser endpoint-level socket I/O report for this call
    (sets a thread-local flag that the socket monkey-patch checks).
 3. Calls the real ``execute_command()`` to execute the command on Redis.
-4. Reports each read key as ``IoKind.Read`` on resource ID
-   ``redis:<key>@<host>:<port>`` and each write key as ``IoKind.Write`` via the
-   active ``IOReporter``.
+4. Reports each read key as a ``"read"`` and each write key as a ``"write"``
+   via the active ``IOReporter`` callback, on resource ID
+   ``redis:<key>:db=redis:<host>:<port>/<db>``.
 
-The ``@<host>:<port>`` suffix means keys on different Redis servers are always
-independent, even if they have the same name.
+The ``:db=`` suffix scopes each key to its server *and* database number, so
+keys on different Redis servers (or different logical databases of the same
+server) are always independent, even if they have the same name.
 
 **Stage 3 -- DPOR engine** (same Rust engine as for bytecode and SQL).
 The engine receives ``(thread_id, resource_id, access_kind)`` tuples and tracks
@@ -119,16 +121,17 @@ DPOR backtrack points from connection management code.
 Pipeline support
 -----------------
 
-Each command in a redis-py pipeline is intercepted individually as the pipeline
-is built.  The commands are batched and sent to Redis in one round trip, but
-DPOR sees each command's read/write set separately and can explore interleaving
-at the command level.
+Each command in a redis-py pipeline is intercepted individually when
+``pipe.execute()`` runs (the wrapper walks the accumulated command stack).
+The commands are batched and sent to Redis in one round trip, but DPOR sees
+each command's read/write set separately and can explore interleaving at the
+command level.
 
 .. code-block:: python
 
    pipe = r.pipeline()
-   pipe.get("balance")        # reported as Read on "redis:balance@..."
-   pipe.set("balance", 200)   # reported as Write on "redis:balance@..."
+   pipe.get("balance")        # reported as a read on "redis:balance:db=..."
+   pipe.set("balance", 200)   # reported as a write on "redis:balance:db=..."
    pipe.execute()
 
 
@@ -216,7 +219,7 @@ Known limitations
 - **Async DPOR excess paths**: when both opcode-level tracing and Redis
   key-level detection are active, shared Python state (e.g. a shared counter
   object) may still produce additional backtrack points beyond those from Redis
-  keys alone.  See ``ideas/KNOWN_ISSUES.md`` for details.
+  keys alone.
 - **coredis async client**: supported but less tested than ``redis.asyncio``.
 
 See also

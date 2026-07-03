@@ -1,8 +1,9 @@
 """SQL statement parsing for read/write table extraction.
 
 Provides ``parse_sql_access(sql)`` which returns a :class:`SqlAccessResult`
-for conflict detection. Uses a regex fast-path for simple statements and falls
-back to sqlglot for complex SQL (CTEs, subqueries, UNION, etc.).
+for conflict detection. All statements go through sqlglot AST analysis;
+string-based handling covers only constructs sqlglot cannot parse
+(LOCK TABLE, SAVEPOINT, PREPARE, etc.).
 """
 
 from __future__ import annotations

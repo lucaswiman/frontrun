@@ -195,8 +195,9 @@ a way that triggers the database-level race. It doesn't need to
 
 .. note::
 
-   The ``frontrun.explore`` calls in Demos 2 and 3 manage connections manually
-   (``engine.dispose()`` in ``setup``, one ``Session`` per worker). The
+   The exploration calls in Demos 2 (``frontrun.explore_random``) and 3
+   (``frontrun.explore``) manage sessions manually (a fresh ``Session`` per
+   worker, state reset in ``setup``). The
    :mod:`frontrun.contrib.sqlalchemy` module provides a ``sqlalchemy_dpor``
    helper that handles this boilerplate automatically. See
    :doc:`dpor_guide` for details.
