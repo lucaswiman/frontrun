@@ -488,8 +488,7 @@ class TestReaderLoopEOF:
             time.sleep(0.15)  # reader acquires lock -> BlockingIOError; must NOT break
 
             assert reader.is_alive(), (
-                "reader thread died on a concurrent drain (false EOF) while the "
-                "write end is still open"
+                "reader thread died on a concurrent drain (false EOF) while the write end is still open"
             )
 
             # Sanity: the reader still delivers subsequent events.

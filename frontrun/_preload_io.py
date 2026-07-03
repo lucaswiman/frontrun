@@ -286,7 +286,7 @@ class IOEventDispatcher:
                 pass
             self._read_fd = None
 
-    def _read_parse_dispatch(self) -> tuple[list[PreloadIOEvent], bool]:
+    def _read_parse_dispatch(self) -> tuple[list[PreloadIOEvent], bool, bool]:
         """Read pipe data, parse events, and dispatch to listeners — all under ``_pipe_lock``.
 
         Holding ``_pipe_lock`` across the entire read→parse→dispatch cycle
@@ -297,21 +297,32 @@ class IOEventDispatcher:
         to a later scheduling step and triggering exponential DPOR path
         explosion on free-threaded Python.
 
-        Returns ``(events, got_data)`` where *got_data* is True when at
-        least one byte was read from the pipe (used for EOF detection).
+        Returns ``(events, got_data, eof)`` where *got_data* is True when at
+        least one byte was read from the pipe, and *eof* is True only on a
+        genuine end-of-file (an empty ``os.read`` because the write end was
+        closed) or an unrecoverable read error.  A ``BlockingIOError`` — the
+        pipe was emptied by a concurrent ``poll()`` drain while the write end
+        is still open — is NOT EOF, so the reader must keep running.
         """
         with self._pipe_lock:
             assert self._read_fd is not None
             got_data = False
+            eof = False
             while True:
                 try:
                     chunk = os.read(self._read_fd, 65536)
                 except BlockingIOError:
+                    # Pipe currently empty (e.g. a concurrent poll() already
+                    # drained it).  The write end is still open — not EOF.
                     break
                 except OSError:
+                    # Hard read error (e.g. the fd was closed) — the reader
+                    # cannot continue.
+                    eof = True
                     break
                 if not chunk:
-                    break  # EOF
+                    eof = True  # write end closed → genuine EOF
+                    break
                 got_data = True
                 self._buf += chunk
             events: list[PreloadIOEvent] = []
@@ -330,7 +341,7 @@ class IOEventDispatcher:
                     listeners = list(self._listeners)
                 for listener in listeners:
                     listener(event)
-        return events, got_data
+        return events, got_data, eof
 
     def _reader_loop(self) -> None:
         """Background thread: wait for pipe data via select, then read and dispatch."""
@@ -343,10 +354,11 @@ class IOEventDispatcher:
                 break
             if not ready:
                 continue
-            events, got_data = self._read_parse_dispatch()
-            if not events and not got_data:
-                # select said the fd was ready but no bytes were read.
-                # On a non-blocking pipe this means EOF (write end closed).
+            _events, _got_data, eof = self._read_parse_dispatch()
+            if eof:
+                # Genuine EOF (write end closed) or an unrecoverable read
+                # error.  A concurrent poll() draining the pipe first yields
+                # BlockingIOError (eof=False), which must NOT stop the reader.
                 break
 
     def poll(self) -> None:
