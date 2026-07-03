@@ -303,8 +303,9 @@ def _traced_recvfrom(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
         _emit_socket_io(resource_id, "read")
         return _real_socket_recvfrom(self, *args, **kwargs)
     result = _real_socket_recvfrom(self, *args, **kwargs)
-    if isinstance(result, tuple) and len(result) >= 2:
-        _emit_socket_io(_address_resource_id(result[1]), "read")
+    # recvfrom returns (bytes, address); the sender address is the peer.
+    peer = result[1] if len(result) >= 2 else None
+    _emit_socket_io(_address_resource_id(peer), "read")
     return result
 
 

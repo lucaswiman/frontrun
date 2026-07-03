@@ -418,9 +418,7 @@ async def explore_async_random(
             # test harness is an error that must propagate, not a
             # "counterexample".  Only exceptions from the task bodies are turned
             # into findings.  (Mirrors _run_with_schedule_status construction.)
-            scheduler = AwaitScheduler(
-                schedule, num_tasks, deadlock_timeout=deadlock_timeout, detect_sql=detect_sql
-            )
+            scheduler = AwaitScheduler(schedule, num_tasks, deadlock_timeout=deadlock_timeout, detect_sql=detect_sql)
             runner = AsyncShuffler(scheduler)
             state = setup()
             funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
@@ -442,8 +440,7 @@ async def explore_async_random(
                 result.counterexample = schedule
                 result.unique_interleavings = len(seen_schedule_hashes)
                 result.explanation = (
-                    f"Task crash in execution {result.num_explored}: "
-                    f"{type(task_err).__name__}: {task_err}"
+                    f"Task crash in execution {result.num_explored}: {type(task_err).__name__}: {task_err}"
                 )
                 return result
             result.num_explored += 1

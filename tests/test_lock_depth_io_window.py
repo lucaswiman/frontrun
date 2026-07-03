@@ -133,8 +133,7 @@ class TestLockDepthIoWindow:
             _scheduler_tls._in_dpor_machinery = False
 
         assert seen == [True], (
-            "mark_done must set the _in_dpor_machinery guard around its "
-            "condition-holding critical section"
+            "mark_done must set the _in_dpor_machinery guard around its condition-holding critical section"
         )
 
     def test_skips_io_scheduling_point_when_all_other_threads_wait_on_held_locks(self) -> None:
