@@ -467,10 +467,8 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                 elif isinstance(node, (exp.Update, exp.Delete)):
                     if isinstance(node, exp.Update):
                         targets = _update_write_tables(node)
-                    elif isinstance(node, exp.Delete):
-                        targets = _delete_write_tables(node)
                     else:
-                        targets = set()
+                        targets = _delete_write_tables(node)
                     for name in targets:
                         write.add(name)
                         read.add(name)
