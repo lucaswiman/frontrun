@@ -226,7 +226,16 @@ class AsyncShuffler:
 
         self.timed_out = False
         try:
-            await self.scheduler.run_all(wrap_auto_paused_tasks(task_funcs, self.scheduler), timeout=timeout)
+            await self.scheduler.run_all(
+                wrap_auto_paused_tasks(task_funcs, self.scheduler),
+                timeout=timeout,
+                # Detect deadlocks formed entirely outside pause() — every
+                # unfinished task blocked on a stock asyncio primitive — so a
+                # genuine deadlock sets scheduler._error instead of surfacing
+                # as a bare wall-clock timeout that the exploration loop must
+                # skip as inconclusive (slow-but-correct runs look identical).
+                detect_external_deadlock=True,
+            )
         except TimeoutError:
             # A timeout (overall wall-clock or the scheduler's own
             # deadlock-timeout, which run_all now re-raises — finding F1)

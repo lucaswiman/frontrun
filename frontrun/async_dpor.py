@@ -547,6 +547,8 @@ class AsyncDporScheduler(InterleavedLoop):
         self,
         task_funcs: dict[Any, Callable[..., Awaitable[None]]] | list[Callable[..., Awaitable[None]]],
         timeout: float = 10.0,
+        *,
+        detect_external_deadlock: bool = False,
     ) -> None:
         """Run tasks with DPOR-controlled interleaving.
 
@@ -561,7 +563,7 @@ class AsyncDporScheduler(InterleavedLoop):
         wrapped = wrap_auto_paused_tasks(task_funcs, self)
         self._start_opcode_trace()
         try:
-            await super().run_all(wrapped, timeout=timeout)
+            await super().run_all(wrapped, timeout=timeout, detect_external_deadlock=detect_external_deadlock)
         finally:
             self._stop_opcode_trace()
             self._shadow_stacks.clear()

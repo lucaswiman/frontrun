@@ -69,6 +69,10 @@ class InterleavedLoop:
         self._tasks_done: set[Any] = set()
         self._num_tasks: int = 0  # set by run_all
         self._waiting_count: int = 0
+        # Monotonic progress counter: bumped on every pause() call and every
+        # task completion. Used by run_all's external-deadlock watchdog to
+        # tell "tasks blocked on unmanaged awaitables" from "tasks running".
+        self._progress: int = 0
         self.deadlock_timeout = deadlock_timeout
 
     # ------------------------------------------------------------------
@@ -132,6 +136,7 @@ class InterleavedLoop:
             task_id: Identity of the calling task.
             marker: Optional scheduling context.
         """
+        self._progress += 1
         async with self._condition:
             # First check before entering the waiting state.
             if self._finished or self._error:
@@ -199,6 +204,7 @@ class InterleavedLoop:
 
     async def _mark_done(self, task_id: Any) -> None:
         """Mark a task as finished and notify waiting tasks."""
+        self._progress += 1
         async with self._condition:
             self._tasks_done.add(task_id)
             self._condition.notify_all()
@@ -214,6 +220,8 @@ class InterleavedLoop:
         self,
         task_funcs: dict[Any, Callable[..., Awaitable[None]]] | list[Callable[..., Awaitable[None]]],
         timeout: float = 10.0,
+        *,
+        detect_external_deadlock: bool = False,
     ) -> None:
         """Run tasks with controlled interleaving.
 
@@ -222,6 +230,13 @@ class InterleavedLoop:
                 list of async callables (which get integer task_ids
                 0, 1, 2, ...).
             timeout: Maximum total time to wait for all tasks.
+            detect_external_deadlock: Also detect deadlocks where every
+                unfinished task is blocked on an *unmanaged* awaitable (e.g. a
+                stock ``asyncio.Lock``) rather than inside ``pause()``. Such
+                deadlocks are invisible to the pause-path detection; with this
+                flag, a full ``deadlock_timeout`` window with zero scheduler
+                progress records a deadlock in ``self._error`` before timing
+                out, so callers can tell it from a slow-but-correct run.
         """
         if isinstance(task_funcs, list):
             task_funcs = dict(enumerate(task_funcs))
@@ -243,10 +258,11 @@ class InterleavedLoop:
         tasks = [asyncio.create_task(_run(tid, func), name=str(tid)) for tid, func in task_funcs.items()]
 
         try:
-            await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=timeout,
-            )
+            gathered = asyncio.gather(*tasks, return_exceptions=True)
+            if detect_external_deadlock:
+                await self._wait_watching_progress(gathered, timeout)
+            else:
+                await asyncio.wait_for(gathered, timeout=timeout)
         except asyncio.TimeoutError:
             for t in tasks:
                 if not t.done():
@@ -265,6 +281,57 @@ class InterleavedLoop:
         # scheduler-timeout) just like the sync driver does.
         if self._error is not None:
             raise self._error
+
+    async def _wait_watching_progress(self, gathered: "asyncio.Future[Any]", timeout: float) -> None:
+        """Await *gathered* like ``asyncio.wait_for``, watching for deadlock.
+
+        If a full ``deadlock_timeout`` window passes with zero progress (no
+        pause() call and no task completion) while tasks remain unfinished,
+        every unfinished task is blocked on an awaitable the scheduler does
+        not manage — a deadlock. Record it in ``self._error`` and time out.
+
+        A CPU-bound task starves the event loop, so our wait can only fire at
+        the moment such a task yields — before its pause()/completion has had
+        a chance to run. Grant a few loop passes for queued continuations to
+        register progress before declaring deadlock.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            before = self._progress
+            done, _ = await asyncio.wait({gathered}, timeout=min(self.deadlock_timeout, remaining))
+            if done:
+                gathered.result()
+                return
+            if self._progress != before:
+                continue
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if self._progress != before or gathered.done():
+                    break
+            if gathered.done():
+                return
+            if self._progress == before:
+                async with self._condition:
+                    if self._error is None:
+                        self._error = TimeoutError(
+                            f"Deadlock: no task progressed for {self.deadlock_timeout}s and no task is "
+                            "inside the scheduler; unfinished tasks are blocked on unmanaged awaitables "
+                            "(e.g. stock asyncio locks)"
+                        )
+                    self._condition.notify_all()
+                break
+        # Mirror asyncio.wait_for's contract on timeout: cancel the awaited
+        # future (which cancels the still-pending tasks) before raising.
+        gathered.cancel()
+        try:
+            await gathered
+        except asyncio.CancelledError:
+            pass
+        raise asyncio.TimeoutError
 
     @property
     def had_error(self) -> bool:
