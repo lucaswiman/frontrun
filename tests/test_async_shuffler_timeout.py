@@ -66,6 +66,47 @@ def test_deadlock_is_surfaced_not_false_invariant() -> None:
     assert "deadlock" in result.explanation.lower(), result.explanation
 
 
+def test_slow_but_correct_run_is_inconclusive_not_deadlock() -> None:
+    """A slow-but-correct run that merely exceeds timeout_per_run must NOT be
+    reported as a deadlock counterexample.
+
+    The sync bytecode explorer treats a plain timeout as inconclusive (skips
+    it) and only surfaces a genuinely-detected deadlock.  explore_async_random
+    conflated the two, reporting *any* run over timeout_per_run as
+    property_holds=False "Deadlock detected" — a false counterexample for
+    correct-but-slow code.  Here the tasks are pure CPU work (no await), so the
+    scheduler never detects a deadlock; the run only exceeds the wall-clock
+    timeout.
+    """
+    import time
+
+    class State:
+        def __init__(self) -> None:
+            self.value = 0
+
+    async def slow_task(state: State) -> None:
+        # Correct, no deadlock: a pure CPU stretch that exceeds the tiny
+        # per-run timeout.  The scheduler never detects a deadlock.
+        deadline = time.perf_counter() + 0.5
+        while time.perf_counter() < deadline:
+            pass
+        state.value += 1
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=State,
+            tasks=[slow_task, slow_task],
+            invariant=lambda s: True,  # can never be violated
+            max_attempts=2,
+            timeout_per_run=0.1,
+            deadlock_timeout=5.0,
+            seed=1,
+        )
+    )
+
+    assert result.property_holds, result.explanation
+
+
 def test_detect_sql_reports_table_accesses() -> None:
     """F8: detect_sql=True in the random async shuffler must actually report.
 
