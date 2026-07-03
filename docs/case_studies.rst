@@ -20,13 +20,14 @@ same workflow that finds the lost update in the two-line counter on the front
 page works, without modification, on code you already depend on.
 
 Both write-ups include the complete test and the trace frontrun prints, verified
-against ``python-http-client`` 3.3.7 and ``python-socketio`` 5.16.3. To reproduce
-one yourself, put the test in a file and run it through the ``frontrun`` CLI
-(plain ``pytest`` skips ``frontrun.explore()`` tests — see :doc:`installation`):
+against ``python-http-client`` 3.3.7 (the HTTP layer inside ``sendgrid`` 6.12.5)
+and ``python-socketio`` 5.16.3. To reproduce one yourself, put the test in a file
+and run it through the ``frontrun`` CLI (plain ``pytest`` skips
+``frontrun.explore()`` tests — see :doc:`installation`):
 
 .. code-block:: bash
 
-   pip install frontrun python-http-client python-socketio
+   pip install frontrun python-http-client==3.3.7 python-socketio==5.16.3
    frontrun pytest test_case_studies.py
 
 .. contents::
@@ -37,9 +38,10 @@ one yourself, put the test in a file and run it through the ``frontrun`` CLI
 sendgrid: a reused API client corrupts one request's headers with another's
 ===========================================================================
 
-**Library:** `python_http_client <https://github.com/sendgrid/python-http-client>`_,
-the HTTP layer under the official `sendgrid <https://github.com/sendgrid/sendgrid-python>`_
-client (~10M downloads/month).
+**Library:** `python_http_client <https://github.com/sendgrid/python-http-client>`_
+3.3.7, the HTTP layer under the official
+`sendgrid <https://github.com/sendgrid/sendgrid-python>`_ client
+(6.12.5, ~10M downloads/month).
 
 **Category:** correctness / data-integrity.
 
@@ -139,7 +141,7 @@ python-socketio: a lost room registration under ``async_mode='threading'``
 ==========================================================================
 
 **Library:** `python-socketio <https://github.com/miguelgrinberg/python-socketio>`_
-(~5.6M downloads/month) — a Socket.IO server/client implementation.
+5.16.3 (~5.6M downloads/month) — a Socket.IO server/client implementation.
 
 **Category:** correctness / data-integrity (lost update).
 
