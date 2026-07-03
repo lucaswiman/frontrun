@@ -192,10 +192,15 @@ def _check_non_repeatable_read(ops: list[tuple[int, str, str, str]]) -> SqlAnoma
     # 1. Exact resource-level check (original logic): same exact resource_id read
     #    twice by focus_tid with another thread's write on that same resource_id
     #    between the two reads.  Fires regardless of the writer's other accesses.
+    #
+    #    The ``<table>:seq`` membership marker is excluded here: only INSERT/DELETE
+    #    write it (SELECT/UPDATE read it), so a read-write-read on ``:seq`` is
+    #    always a phantom, never a non-repeatable read.  Letting it match here
+    #    would shadow _check_phantom_read for every real INSERT/DELETE phantom.
     for focus_tid in sorted({tid for tid, _, _, _ in ops}):
         resource_read_positions: dict[str, list[int]] = {}
         for i, (tid, resource, _table, access) in enumerate(ops):
-            if tid == focus_tid and access == "read":
+            if tid == focus_tid and access == "read" and not resource.endswith(":seq"):
                 resource_read_positions.setdefault(resource, []).append(i)
 
         for resource, positions in resource_read_positions.items():

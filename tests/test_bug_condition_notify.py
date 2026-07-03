@@ -233,12 +233,64 @@ def test_notify_all_does_not_over_advance_served():
     lock.release()
 
 
-def test_notify_caps_real_cond_to_actual():
-    """notify(n) must cap the real_cond.notify() call to the actual number of served tickets.
+def test_notify_does_not_overwake_unmanaged_waiter():
+    """notify(1) for a managed waiter must not also wake an unmanaged waiter.
 
-    Bug: CooperativeCondition.notify() computes actual = min(n, unserved) to cap
-    the ticket advancement, but passes the uncapped `n` to self._real_cond.notify(n).
-    This wakes more non-cooperative threads than there are available tickets.
+    A managed waiter M holds the lowest ticket and spins on the ticket
+    system; an unmanaged waiter U (no scheduler context) holds a higher
+    ticket and blocks in the fallback ``real_cond.wait()``.  ``notify(1)``
+    must wake exactly one waiter — M, the longest-waiting — and must NOT also
+    wake U via ``real_cond``.  Waking both violates the "notify(n) wakes at
+    most n waiters" contract and leaves U's ticket as an un-served zombie
+    that later absorbs a genuine notification (a lost wakeup).
+    """
+    import threading
+    import time
+
+    cond = CooperativeCondition(CooperativeLock())
+
+    # Simulate a managed waiter M holding ticket 0 (spinning on the ticket
+    # system): advance _next_ticket past ticket 0 and record the waiter.
+    with cond:
+        cond._next_ticket = 1
+        cond._waiters = 1
+
+    # U: unmanaged (no scheduler context) — takes ticket 1 and blocks in the
+    # fallback real_cond.wait().
+    out: dict[str, bool] = {}
+
+    def u() -> None:
+        with cond:
+            out["served"] = cond.wait(timeout=2.0)
+
+    t = threading.Thread(target=u)
+    t.start()
+    time.sleep(0.3)  # let U enter real_cond.wait()
+
+    with cond:
+        cond.notify(1)  # meant for managed ticket 0 — must NOT wake U
+
+    t.join(0.5)
+    assert t.is_alive(), (
+        "notify(1) for the managed waiter (ticket 0) spuriously woke the "
+        "unmanaged waiter U (ticket 1) via real_cond — over-waking beyond n."
+    )
+
+    # Clean up: a second notify(1) serves U's ticket 1 and wakes it.
+    with cond:
+        cond.notify(1)
+    t.join(2.5)
+    assert not t.is_alive(), "U should wake once its own ticket is served."
+    assert out.get("served") is True
+
+
+def test_notify_caps_real_cond_to_actual():
+    """notify(n) must cap real_cond.notify() to the served *unmanaged* tickets.
+
+    Bug: CooperativeCondition.notify() passes the raw `n` (or the total served
+    count) to self._real_cond.notify(), waking more non-cooperative threads
+    than there are unmanaged waiters whose tickets were served.  Only tickets
+    held by unmanaged (real_cond) waiters should drive real_cond.notify().
     """
     from unittest.mock import MagicMock
 
@@ -247,8 +299,11 @@ def test_notify_caps_real_cond_to_actual():
 
     lock.acquire()
 
+    # Two waiters: ticket 0 is unmanaged (blocked in real_cond), ticket 1 is a
+    # managed spinner.  Only the unmanaged one should drive real_cond.notify().
     cond._waiters = 2
     cond._next_ticket = 2
+    cond._real_cond_tickets = {0}
 
     mock_real_cond = MagicMock()
     mock_real_cond.__enter__ = MagicMock(return_value=mock_real_cond)
@@ -258,8 +313,7 @@ def test_notify_caps_real_cond_to_actual():
 
     cond.notify(5)
 
-    actual = min(5, 2)
-    assert actual == 2
-    mock_real_cond.notify.assert_called_once_with(actual)
+    # Both tickets served, but only 1 belongs to an unmanaged waiter.
+    mock_real_cond.notify.assert_called_once_with(1)
 
     lock.release()

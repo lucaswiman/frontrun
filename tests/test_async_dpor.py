@@ -72,6 +72,83 @@ class TestAsyncDporBasic:
         assert result.property_holds, f"No race expected: {result.counterexample}"
         assert result.num_explored >= 1
 
+    @pytest.mark.xfail(
+        reason=(
+            "Async DPOR under-explores read-modify-write races: AsyncDporScheduler.on_proceed "
+            "commits engine.schedule for the successor BEFORE the granted block's shared-memory "
+            "accesses are reported (the opcode tracer reports them after pause() returns), so every "
+            "block's accesses land one committed step late, corrupting happens-before/backtracking. "
+            "explore returns property_holds=True in 3 executions for a program whose sync equivalent "
+            "finds the torn-read violation in 4 (finding: async_dpor.py:494 / on_proceed). "
+            "The faithful fix -- defer engine.schedule until the granted block's accesses are in, "
+            "mirroring the sync driver's report-then-schedule order (scheduler.py::_report_and_wait) -- "
+            "is correct for lock-free programs (this test then passes) but regresses the async LOCK "
+            "path: the cooperative asyncio.Lock reports lock_acquire/lock_release via engine.report_sync "
+            "with path_id=None, relying on the eager schedule to land the sync event at the right path "
+            "position. Deferring the schedule shifts every lock report_sync, which over-explores the "
+            "N-tasks-single-lock case (3! = 6 -> 10) and MISSES the lock-held-across-await violation "
+            "(a soundness REGRESSION). A complete fix must additionally restructure the async lock "
+            "synchronization path to pin report_sync/report_access path positions the way the sync "
+            "driver does (_dpor_tls._last_path_id / _saved_path_id), which is beyond a focused change "
+            "and cannot be derived-green here. See confirmed_findings index 4."
+        ),
+        strict=True,
+    )
+    def test_finds_read_modify_write_torn_read(self) -> None:
+        """DPOR must explore the read-modify-write interleaving where a checker
+        observes a value change across its own await (torn read).
+
+        Async DPOR reports ``property_holds=True`` in only 3 executions because
+        ``on_proceed`` commits ``engine.schedule`` for the successor *before*
+        the granted block's shared-memory accesses are reported, so every
+        block's accesses reach the engine one committed step late — corrupting
+        happens-before/backtracking and missing the reachable ``torn`` class.
+        The equivalent sync workers find the violation.
+
+        Reachable interleaving: checker reads value=0, inc runs read+write (→1),
+        checker resumes, observes value != tmp, sets torn=True.
+
+        Marked xfail(strict): see the class-level decorator reason — the
+        faithful fix regresses the async lock path and is out of focused scope.
+        """
+        require_active("test_async_dpor_rmw_torn_read")
+
+        class C:
+            def __init__(self) -> None:
+                self.value = 0
+                self.torn = False
+
+        async def inc(c: C) -> None:
+            tmp = c.value
+            await asyncio.sleep(0)
+            c.value = tmp + 1
+
+        async def checker(c: C) -> None:
+            tmp = c.value
+            await asyncio.sleep(0)
+            if c.value != tmp:
+                c.torn = True
+            c.value = tmp + 1
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=C,
+                workers=[inc, checker],
+                invariant=lambda c: not c.torn,
+                max_executions=1000,
+                preemption_bound=None,
+                stop_on_first=False,
+                strategy="dpor",
+                detect_io=False,
+                deadlock_timeout=5.0,
+            )
+        )
+
+        assert not result.property_holds, (
+            f"reachable torn read must be found, got property_holds=True "
+            f"in {result.num_explored} executions (under-exploration bug)"
+        )
+
     def test_tracks_stale_read_across_await(self) -> None:
         """DPOR should catch a stale read carried across an await boundary."""
         require_active("test_async_dpor_stale_read_across_await")

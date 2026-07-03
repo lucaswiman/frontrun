@@ -65,17 +65,32 @@ def _setup_relay_tls(scheduler: DporScheduler, worker_id: int) -> list[tuple[int
     return pending_io
 
 
-def _flush_orphan_pending_io(
+def _flush_relay_pending_io(
     scheduler: DporScheduler,
     worker_id: int,
     pending_io: list[tuple[int, str, bool]],
 ) -> None:
-    """Report accesses buffered after the worker's last scheduling point.
+    """Report this relay's buffered accesses to the engine, then clear the buffer.
 
-    A worker's final access (e.g. the write of a read-modify-write) is buffered
-    with no subsequent ``report_and_wait`` to flush it, so it would be dropped —
-    mirroring ``DporBytecodeRunner._teardown_dpor_tls``, flush it to the engine
-    on relay teardown so the DPOR search sees every access.
+    A worker's access (e.g. the write of a read-modify-write) is buffered with no
+    subsequent ``report_and_wait`` to flush it, so it would either be dropped or
+    attributed at the wrong point. Report each buffered access to the engine now,
+    under ``scheduler._engine_lock`` (mirroring ``DporBytecodeRunner``).
+
+    Called at two flush points where the buffered accesses must reach the engine
+    before something else advances the thread's happens-before state:
+
+    * on relay teardown, so the DPOR search sees every access; and
+    * before ``acquire_row_locks`` reports ``lock_acquire`` to the engine, so an
+      unlocked access is recorded OUTSIDE the critical section it precedes rather
+      than being folded into the lock's happens-before (which would make two
+      workers' unlocked writes look lock-synchronized and prune the real race).
+
+    Unlike ``DporScheduler._flush_pending_io_for_unlocked`` (whose ``_unlocked``
+    contract requires the caller to already hold ``self._condition``), this runs
+    from the relay thread without the condition lock — safe because it only
+    touches this worker's own buffer and serialises the engine calls on
+    ``_engine_lock``.
     """
     if not pending_io:
         return
@@ -149,6 +164,26 @@ def _relay_loop(
                 if not granted:
                     break
             elif kind == proto.ACQUIRE_LOCKS:
+                # Flush any access buffered before this acquire so it is recorded
+                # with the thread's PRE-lock happens-before. acquire_row_locks
+                # reports 'lock_acquire' to the engine; a still-buffered access
+                # flushed only at the next report_and_wait would otherwise be
+                # attributed inside the critical section, making two workers'
+                # unlocked writes look lock-synchronized and pruning the race.
+                _flush_relay_pending_io(scheduler, worker_id, pending_io)
+                # Take the scheduling turn BEFORE acquiring. acquire_row_locks
+                # itself only waits for the row lock, not for the engine's
+                # pick: in-process that is safe because the opcode tracer means
+                # the acquiring thread already holds the turn, but relays have
+                # no opcode tracing, so two workers' ACQUIRE_LOCKS frames would
+                # race and the winner's lock_acquire lands at a step the
+                # engine committed to the other thread — desynchronizing the
+                # recorded schedule from the actual executor and corrupting
+                # backtracking (reachable acquisition-order reversals get
+                # silently pruned while still claiming exhausted=True).
+                if not scheduler.report_and_wait(None, worker_id):
+                    _reply(sock, False)
+                    break
                 try:
                     scheduler.acquire_row_locks(worker_id, list(msg["res"]))
                 except SchedulerAbort:
@@ -184,7 +219,7 @@ def _relay_loop(
         if not clean:
             with accesses_lock:
                 unclean.add(worker_id)
-        _flush_orphan_pending_io(scheduler, worker_id, pending_io)
+        _flush_relay_pending_io(scheduler, worker_id, pending_io)
         _teardown_relay_tls(scheduler, worker_id)
         scheduler.mark_done(worker_id)
 
@@ -374,6 +409,17 @@ class DporCrossProcessCoordinator:
                         return result
                     if first_failure is None:
                         first_failure = result
+                    # An aborted execution (deadlock or worker error) unwinds its
+                    # workers via SchedulerAbort before their remaining accesses
+                    # are reported, so the engine never seeds the wakeup tree from
+                    # this trace and next_execution() can return False with
+                    # interleavings still unexplored. Demote exhausted rather than
+                    # over-claim coverage (mirrors _evaluate building these results
+                    # with exhausted=False; an invariant failure completes fully so
+                    # it does NOT demote). Only max_executions/total_timeout were
+                    # previously handled, in the for..else below.
+                    if result.failure_kind in ("deadlock", "worker_error"):
+                        exhausted = False
 
                 # In reuse mode a worker aborted mid-iteration leaves stray
                 # frames on its persistent socket; sending the next ITER_START

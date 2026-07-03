@@ -187,6 +187,34 @@ def test_explore_async_random_finds_race():
     assert not result.property_holds
 
 
+def test_explore_routes_async_callable_instances_to_async():
+    """Workers passed as class instances with an async ``__call__`` must route
+    to the async engine.
+
+    ``any_async`` used ``inspect.iscoroutinefunction`` directly, which returns
+    False for a callable object whose ``__call__`` is async, so such workers
+    were misrouted to the synchronous strategy and their coroutines were never
+    awaited (a silent false ``property_holds=True``).
+    """
+    import inspect
+
+    class AsyncWorker:
+        async def __call__(self, c: AsyncCounter) -> None:
+            v = c.value
+            await asyncio.sleep(0)  # yield to scheduler
+            c.value = v + 1
+
+    coro = frontrun.explore(
+        setup=AsyncCounter,
+        workers=[AsyncWorker(), AsyncWorker()],
+        invariant=lambda c: c.value == 2,
+        strategy="dpor",
+    )
+    assert inspect.iscoroutine(coro), "async callable instances must route to the async engine"
+    result = asyncio.run(coro)
+    assert not result.property_holds
+
+
 # ---------------------------------------------------------------------------
 # (c) workers=fn, count=N shorthand
 # ---------------------------------------------------------------------------

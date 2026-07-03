@@ -1513,15 +1513,19 @@ def setup_opcode_monitoring(
                     f"by {held_by!r} and is not owned by frontrun; refusing to steal it. "
                     "Stop the other monitoring tool before running frontrun."
                 ) from None
-            if _owner_thread_alive(prior):
+            if prior != threading.get_ident() and _owner_thread_alive(prior):
                 # A concurrent frontrun run in another live thread owns it.
                 raise RuntimeError(
                     f"sys.monitoring tool id {tool_id} ({tool_kind}) is in use by a "
                     f"concurrent frontrun run (thread {prior}); "
                     "frontrun runs that share a tool-id slot cannot overlap."
                 ) from None
-            # Genuinely stale: a previous frontrun run that finished/died
-            # without tearing down (e.g. pytest-timeout kill).  Force-free.
+            # Genuinely stale — either the owning thread has died, or the owner
+            # is THIS very thread (a previous run on this same sequential thread
+            # leaked the slot without tearing down, e.g. a launch failure
+            # bypassed the teardown callback).  A single thread cannot overlap
+            # with itself, so a same-ident owner is always a stale slot, not a
+            # live concurrent holder.  Force-free and reclaim.
             _force_free_tool_id(tool_id)
             mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
 

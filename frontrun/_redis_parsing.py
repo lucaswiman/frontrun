@@ -26,6 +26,24 @@ from frontrun._redis_command_data import (
     _KeySpec,
 )
 
+# Pub/sub commands operate on channels, not keyspace keys.  Channels are stored
+# in read_keys/write_keys with a "channel:" sentinel prefix, so keyspace
+# classification must key off the command name (not the prefix) — otherwise a
+# real data key literally named "channel:..." is mistaken for a channel.
+_PUBSUB_CMDS = frozenset(
+    {
+        "PUBLISH",
+        "SPUBLISH",
+        "SUBSCRIBE",
+        "PSUBSCRIBE",
+        "SSUBSCRIBE",
+        "UNSUBSCRIBE",
+        "PUNSUBSCRIBE",
+        "SUNSUBSCRIBE",
+    }
+)
+
+
 # ---------------------------------------------------------------------------
 # Public result type
 # ---------------------------------------------------------------------------
@@ -211,11 +229,12 @@ def _keyspace_kind(upper: str, result: RedisAccessResult) -> str | None:
         return "write"
     if upper in _KEYSPACE_READ_CMDS:
         return "read"
-    # Pub/sub channels are not keyspace operations; ``channel:`` keys are a
-    # disjoint namespace, so only real key accesses imply a keyspace read.
-    if any(not k.startswith("channel:") for k in result.read_keys):
-        return "read"
-    if any(not k.startswith("channel:") for k in result.write_keys):
+    # Pub/sub channels are not keyspace operations.  Identify them by command
+    # name rather than by the ``channel:`` sentinel prefix on their keys, so a
+    # real data key literally named ``channel:...`` still takes a keyspace read.
+    if upper in _PUBSUB_CMDS:
+        return None
+    if result.read_keys or result.write_keys:
         return "read"
     return None
 

@@ -934,7 +934,17 @@ class _IOAnchoredReplayScheduler(DporScheduler):
         self._current_thread = io_schedule[0][0] if io_schedule else 0
 
     def _schedule_next(self) -> int | None:
-        """Override to use IO schedule instead of DPOR engine."""
+        """Override to use IO schedule instead of DPOR engine.
+
+        Skip anchors whose thread has already finished (a state-dependent
+        early return — the exact divergence this scheduler exists to tolerate,
+        see defect #16). Such a thread will never reach that I/O boundary, so
+        advancing ``_io_index`` past it lets replay proceed to the next live
+        anchor instead of busy-spinning on the done thread. Anchors of live
+        threads are still enforced in order.
+        """
+        while self._io_index < len(self._io_schedule) and self._io_schedule[self._io_index][0] in self._threads_done:
+            self._io_index += 1
         if self._io_index >= len(self._io_schedule):
             active = [t for t in range(self.num_threads) if t not in self._threads_done]
             return active[0] if active else None

@@ -613,6 +613,24 @@ class TestMultiTableUpdate:
 
 
 # ---------------------------------------------------------------------------
+# Multi-table DELETE (MySQL: DELETE t1, t2 FROM ...)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiTableDelete:
+    @pytest.fixture(autouse=True)
+    def _require_sqlglot(self):
+        pytest.importorskip("sqlglot")
+
+    def test_mysql_multi_table_delete_writes_all_targets(self):
+        # MySQL multi-table DELETE deletes rows from every table listed
+        # before FROM, so both t1 and t2 are write/delete targets.
+        result = parse_sql_access("DELETE t1, t2 FROM t1 JOIN t2 ON t1.id=t2.id")
+        assert "t2" in result.write_tables, result.write_tables
+        assert result.delete_tables is not None and "t2" in result.delete_tables, result.delete_tables
+
+
+# ---------------------------------------------------------------------------
 # LOCK TABLES (MySQL spelling, finding 10a)
 # ---------------------------------------------------------------------------
 

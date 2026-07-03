@@ -398,6 +398,60 @@ class TestExploreDpor:
         assert len(result.failures) > 0
         assert result.counterexample is not None
 
+    def test_assert_style_invariant_reproduces_like_boolean(self) -> None:
+        """An assert-style invariant must reproduce a DPOR counterexample as
+        reliably as the equivalent boolean invariant.
+
+        The sync reproduction loop evaluated the invariant raw instead of via
+        ``check_invariant``, so an assert-style invariant raised
+        ``AssertionError`` which the broad ``except Exception: continue``
+        swallowed, scoring every replay as a non-reproduction (0/N) even though
+        the counterexample is a real, deterministic failure.
+        """
+        from frontrun._dpor_runtime.replay import _reproduce_dpor_counterexample
+
+        class State:
+            def __init__(self) -> None:
+                self.counter = 0
+
+        def setup() -> State:
+            return State()
+
+        def worker(s: State) -> None:
+            x = s.counter
+            s.counter = x
+
+        threads = [worker, worker]
+        schedule = [0, 1, 0, 1, 0, 1, 0, 1]
+
+        def inv_bool(s: State) -> bool:
+            return s.counter == 2  # always False for this schedule -> "fails"
+
+        def inv_assert(s: State) -> None:
+            assert s.counter == 2  # always raises AssertionError
+
+        def reproduce(invariant) -> tuple[int, int]:
+            return _reproduce_dpor_counterexample(
+                schedule_list=schedule,
+                setup=setup,
+                threads=threads,
+                timeout_per_run=5.0,
+                deadlock_timeout=2.0,
+                reproduce_on_failure=5,
+                lock_timeout=None,
+                invariant=invariant,
+                detect_io=False,
+            )
+
+        bool_attempts, bool_successes = reproduce(inv_bool)
+        assert_attempts, assert_successes = reproduce(inv_assert)
+
+        assert bool_successes > 0
+        # Same deterministic failing state: reproduction must not depend on
+        # whether the invariant returns False or raises AssertionError.
+        assert assert_successes == bool_successes
+        assert assert_attempts == bool_attempts
+
     def test_lost_update_via_getter_setter(self) -> None:
         """Lost update through getter/setter methods.
 

@@ -14,6 +14,7 @@ state.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -64,6 +65,98 @@ def test_deadlock_is_surfaced_not_false_invariant() -> None:
     assert not result.property_holds, "deadlock should be surfaced, not scored as a pass"
     assert result.explanation is not None
     assert "deadlock" in result.explanation.lower(), result.explanation
+
+
+def test_lock_deadlock_with_no_task_in_pause_is_detected() -> None:
+    """A deadlock where every task is blocked on a real asyncio lock — none of
+    them inside the scheduler's pause() — must still be detected as a deadlock.
+
+    The pause-path detection (all-waiting check + per-wait deadlock_timeout)
+    only sees tasks blocked *inside* pause().  With the alternating schedule
+    below, both tasks are granted straight into their second lock acquisition
+    and block on stock ``asyncio.Lock`` futures instead: no task ever waits in
+    pause(), so no pause timeout fires, ``scheduler.had_error`` stays False,
+    and the run surfaces as a bare wall-clock timeout — indistinguishable from
+    a slow-but-correct run, which the exploration loop rightly skips as
+    inconclusive.  A genuine lock-order-inversion deadlock is then silently
+    dropped (whether ``test_deadlock_is_surfaced_not_false_invariant`` above
+    catches this depends on which schedule flavors the seed happens to
+    generate — Python-version-dependent).
+    """
+    from frontrun.async_shuffler import _patch_async_runtime, _run_with_schedule_status
+
+    class State:
+        def __init__(self) -> None:
+            self.lock_a = asyncio.Lock()
+            self.lock_b = asyncio.Lock()
+            self.done = 0
+
+    async def task_ab(state: State) -> None:
+        async with state.lock_a:
+            await asyncio.sleep(0)
+            async with state.lock_b:
+                state.done += 1
+
+    async def task_ba(state: State) -> None:
+        async with state.lock_b:
+            await asyncio.sleep(0)
+            async with state.lock_a:
+                state.done += 1
+
+    async def run() -> tuple[Any, Any]:
+        # Alternate grants so each task takes its first lock, then both block
+        # acquiring the other's — a deadlock formed entirely outside pause().
+        with _patch_async_runtime(detect_sql=False):
+            return await _run_with_schedule_status(
+                [0, 1] * 20, State, [task_ab, task_ba], timeout=2.0, deadlock_timeout=0.5
+            )
+
+    state, runner = asyncio.run(run())
+    assert state.done == 0  # genuinely deadlocked: neither task finished
+    assert runner.timed_out
+    assert runner.scheduler.had_error, "lock-blocked deadlock must set the scheduler error, not just time out"
+    assert "deadlock" in str(runner.scheduler._error).lower()
+
+
+def test_slow_but_correct_run_is_inconclusive_not_deadlock() -> None:
+    """A slow-but-correct run that merely exceeds timeout_per_run must NOT be
+    reported as a deadlock counterexample.
+
+    The sync bytecode explorer treats a plain timeout as inconclusive (skips
+    it) and only surfaces a genuinely-detected deadlock.  explore_async_random
+    conflated the two, reporting *any* run over timeout_per_run as
+    property_holds=False "Deadlock detected" — a false counterexample for
+    correct-but-slow code.  Here the tasks are pure CPU work (no await), so the
+    scheduler never detects a deadlock; the run only exceeds the wall-clock
+    timeout.
+    """
+    import time
+
+    class State:
+        def __init__(self) -> None:
+            self.value = 0
+
+    async def slow_task(state: State) -> None:
+        # Correct, no deadlock: a pure CPU stretch that exceeds the tiny
+        # per-run timeout.  The scheduler never detects a deadlock.
+        deadline = time.perf_counter() + 0.5
+        while time.perf_counter() < deadline:
+            pass
+        state.value += 1
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=State,
+            tasks=[slow_task, slow_task],
+            invariant=lambda s: True,  # can never be violated
+            max_attempts=2,
+            timeout_per_run=0.1,
+            deadlock_timeout=5.0,
+            seed=1,
+        )
+    )
+
+    assert result.property_holds, result.explanation
 
 
 def test_detect_sql_reports_table_accesses() -> None:
