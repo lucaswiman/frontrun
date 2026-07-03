@@ -12,13 +12,26 @@ if TYPE_CHECKING:
     from frontrun._sql_anomaly import SqlAnomaly
 
 
+def _is_async_callable(fn: Any) -> bool:
+    """Return True if calling *fn* produces a coroutine.
+
+    Handles plain ``async def`` functions as well as callable *objects* whose
+    ``__call__`` is a coroutine function (e.g. an async worker passed as a
+    class instance), which ``inspect.iscoroutinefunction`` does not detect
+    when applied to the instance itself.
+    """
+    if inspect.iscoroutinefunction(fn):
+        return True
+    return inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+
+
 def any_async(fns: Iterable[Any]) -> bool:
     """Return True if any element is a coroutine function.
 
     Non-callables are ignored so callers can pass dicts of ``name -> value``
     directly.
     """
-    return any(inspect.iscoroutinefunction(fn) for fn in fns if callable(fn))
+    return any(_is_async_callable(fn) for fn in fns if callable(fn))
 
 
 def check_invariant(invariant: Callable[[Any], Any], state: Any) -> tuple[bool, str | None]:
