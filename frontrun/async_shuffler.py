@@ -414,14 +414,35 @@ async def explore_async_random(
                 break
             schedule = random_round_robin_schedule(rng, num_tasks, max_ops)
 
-            state, runner = await _run_with_schedule_status(
-                schedule,
-                setup,
-                tasks,
-                timeout=timeout_per_run,
-                deadlock_timeout=deadlock_timeout,
-                detect_sql=detect_sql,
-            )
+            # setup() runs OUTSIDE the crash handler below: a broken setup or
+            # test harness is an error that must propagate, not a
+            # "counterexample".  Only exceptions from the task bodies are turned
+            # into findings.  (Mirrors _run_with_schedule_status construction.)
+            scheduler = AwaitScheduler(schedule, num_tasks, deadlock_timeout=deadlock_timeout, detect_sql=detect_sql)
+            runner = AsyncShuffler(scheduler)
+            state = setup()
+            funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
+                lambda s=state, t=t: t(s)  # type: ignore[misc]
+                for t in tasks
+            ]
+
+            try:
+                await runner.run(funcs, timeout=timeout_per_run)
+            except Exception as task_err:  # noqa: BLE001
+                # A task raised under this interleaving.  That is a legitimate
+                # counterexample (IndexError/KeyError/AssertionError in the task
+                # body is a common way a race manifests), not a fatal error that
+                # should abort exploration.  Surface it the same way the DPOR
+                # path does instead of letting it propagate.
+                result.num_explored += 1
+                seen_schedule_hashes.add(hash(tuple(schedule)))
+                result.property_holds = False
+                result.counterexample = schedule
+                result.unique_interleavings = len(seen_schedule_hashes)
+                result.explanation = (
+                    f"Task crash in execution {result.num_explored}: {type(task_err).__name__}: {task_err}"
+                )
+                return result
             result.num_explored += 1
             seen_schedule_hashes.add(hash(tuple(schedule)))
 

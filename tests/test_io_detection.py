@@ -272,6 +272,40 @@ def test_socket_connect_reports_write():
     server.close()
 
 
+def test_socket_sendto_recvfrom_unconnected_udp_reports():
+    """On an unconnected UDP socket, ``getpeername()`` fails, so the peer must
+    come from the ``sendto`` destination argument / the ``recvfrom`` return
+    value.  Without that fallback the access is silently dropped and two
+    workers racing on the same UDP endpoint are never seen as conflicting.
+    """
+    log = IOLog()
+    set_io_reporter(log)
+    patch_io()
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+    server.settimeout(5.0)
+    port = server.getsockname()[1]
+
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # never connected
+    log.clear()
+    client.sendto(b"ping", ("127.0.0.1", port))
+    data, _addr = server.recvfrom(1024)
+
+    assert data == b"ping"
+    write_events = [r for r, k in log.events if k == "write"]
+    read_events = [r for r, k in log.events if k == "read"]
+    assert any(f"127.0.0.1:{port}" in r for r in write_events), (
+        f"sendto to an unconnected UDP socket must report the destination; got writes={write_events}"
+    )
+    assert any("127.0.0.1" in r for r in read_events), (
+        f"recvfrom on an unconnected UDP socket must report the peer; got reads={read_events}"
+    )
+
+    client.close()
+    server.close()
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: file IO reporting
 # ---------------------------------------------------------------------------

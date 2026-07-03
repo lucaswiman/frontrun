@@ -214,16 +214,35 @@ _real_socket_recv_into = socket.socket.recv_into
 _real_socket_recvfrom = socket.socket.recvfrom
 
 
-def _report_socket_io(sock: socket.socket, kind: str) -> None:
-    """Report a socket I/O event to the per-thread reporter, if installed."""
+def _address_resource_id(addr: Any) -> str | None:
+    """Derive a resource ID from an explicit peer address.
+
+    Used for connectionless (UDP) sockets where ``getpeername()`` fails, so the
+    peer must come from the ``sendto`` destination argument or the ``recvfrom``
+    return value instead.
+    """
+    if isinstance(addr, tuple) and len(addr) >= 2:
+        return f"socket:{addr[0]}:{addr[1]}"
+    if addr is None:
+        return None
+    return f"socket:{addr}"
+
+
+def _emit_socket_io(resource_id: str | None, kind: str) -> None:
+    """Report a resolved socket resource ID to the per-thread reporter."""
+    if resource_id is None:
+        return
     # Skip if SQL-level or Redis-level detection already reported for this call
     if getattr(_io_tls, "_sql_suppress", False) or getattr(_io_tls, "_redis_suppress", False):
         return
     reporter = get_io_reporter()
     if reporter is not None:
-        resource_id = _socket_resource_id(sock)
-        if resource_id is not None:
-            reporter(resource_id, kind)
+        reporter(resource_id, kind)
+
+
+def _report_socket_io(sock: socket.socket, kind: str) -> None:
+    """Report a socket I/O event to the per-thread reporter, if installed."""
+    _emit_socket_io(_socket_resource_id(sock), kind)
 
 
 def _make_traced_socket_method(
@@ -254,10 +273,40 @@ def _make_traced_socket_method(
 _traced_connect = _make_traced_socket_method(_real_socket_connect, "write", report_after=True)
 _traced_send = _make_traced_socket_method(_real_socket_send, "write")
 _traced_sendall = _make_traced_socket_method(_real_socket_sendall, "write")
-_traced_sendto = _make_traced_socket_method(_real_socket_sendto, "write")
 _traced_recv = _make_traced_socket_method(_real_socket_recv, "read")
 _traced_recv_into = _make_traced_socket_method(_real_socket_recv_into, "read")
-_traced_recvfrom = _make_traced_socket_method(_real_socket_recvfrom, "read")
+
+
+def _traced_sendto(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
+    """Traced ``socket.sendto`` — handles unconnected UDP sockets.
+
+    ``getpeername()`` fails on an unconnected socket, so fall back to the
+    destination address (``sendto``'s last positional arg); otherwise the write
+    is silently dropped and UDP-endpoint races are never explored.
+    """
+    resource_id = _socket_resource_id(self)
+    if resource_id is None and args:
+        resource_id = _address_resource_id(args[-1])
+    _emit_socket_io(resource_id, "write")
+    return _real_socket_sendto(self, *args, **kwargs)
+
+
+def _traced_recvfrom(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
+    """Traced ``socket.recvfrom`` — handles unconnected UDP sockets.
+
+    When the socket is connected, report before the read (like the generic read
+    wrapper).  When it is not, the peer is only known from the return value, so
+    read first and report the sender address afterward.
+    """
+    resource_id = _socket_resource_id(self)
+    if resource_id is not None:
+        _emit_socket_io(resource_id, "read")
+        return _real_socket_recvfrom(self, *args, **kwargs)
+    result = _real_socket_recvfrom(self, *args, **kwargs)
+    # recvfrom returns (bytes, address); the sender address is the peer.
+    peer = result[1] if len(result) >= 2 else None
+    _emit_socket_io(_address_resource_id(peer), "read")
+    return result
 
 
 # ---------------------------------------------------------------------------

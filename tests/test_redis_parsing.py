@@ -850,3 +850,41 @@ class TestCompoundNoKeyCmds:
         result = parse_redis_access("SCRIPT EXISTS", ("abc123",))
         assert result.read_keys == []
         assert result.write_keys == []
+
+
+class TestReplaySchedulingPoint:
+    """Replay must recreate a scheduling point for every command that made one
+    during exploration, including keyspace-only commands (FLUSHDB, KEYS, SCAN,
+    ...) which carry a keyspace intent-lock but no read/write keys.
+    """
+
+    def test_keyspace_only_commands_need_replay_scheduling_point(self):
+        from frontrun._redis_client import _replay_needs_scheduling_point
+
+        for cmd, args in [
+            ("FLUSHDB", ()),
+            ("FLUSHALL", ()),
+            ("KEYS", ("*",)),
+            ("SCAN", ("0",)),
+        ]:
+            access = parse_redis_access(cmd, args)
+            # Sanity: these carry a keyspace lock but no key-level access.
+            assert access.keyspace is not None
+            assert not access.read_keys and not access.write_keys
+            assert _replay_needs_scheduling_point(access), (
+                f"{cmd} carries a keyspace intent-lock and gets a scheduling point "
+                f"during exploration, so replay must recreate one too"
+            )
+
+    def test_key_commands_still_need_replay_scheduling_point(self):
+        from frontrun._redis_client import _replay_needs_scheduling_point
+
+        assert _replay_needs_scheduling_point(parse_redis_access("GET", ("k",)))
+        assert _replay_needs_scheduling_point(parse_redis_access("SET", ("k", "v")))
+
+    def test_connection_setup_commands_skip_replay_scheduling_point(self):
+        from frontrun._redis_client import _replay_needs_scheduling_point
+
+        # AUTH/SELECT carry no key or keyspace intent-lock.
+        access = parse_redis_access("AUTH", ("pw",))
+        assert not _replay_needs_scheduling_point(access)

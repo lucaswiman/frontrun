@@ -499,6 +499,14 @@ class CooperativeRLock:
             # (same guard as CooperativeLock.release — see defect #7 / #11).
             if _in_dpor_machinery():
                 self._lock.release()
+                # Still scrub the holding edge for a normally-acquired lock
+                # (owner_tid set): a lock released here but left in the
+                # wait-for graph can fabricate a deadlock cycle through a lock
+                # nobody actually holds.  Mirrors CooperativeLock.release().
+                if owner_tid is not None:
+                    graph = get_wait_for_graph()
+                    if graph is not None:
+                        graph.remove_holding(owner_tid, self._object_id)
                 return
             self._lock.release()
             if acquired_during_dpor_machinery:

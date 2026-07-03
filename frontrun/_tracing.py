@@ -40,7 +40,12 @@ def _filename_to_module(filename: str) -> str | None:
     path separators to dots.  Returns ``None`` for non-``.py`` files or
     files outside site-packages.
     """
-    for skip_dir in _SKIP_DIRS:
+    # Longest prefix wins: on stock layouts a stdlib dir and its site-packages
+    # child are both in _SKIP_DIRS, so a file can match two prefixes.  Sorting
+    # by length (descending) makes the mapping deterministic and picks the most
+    # specific package name — iterating the frozenset directly would depend on
+    # PYTHONHASHSEED and silently break trace_packages filtering run-to-run.
+    for skip_dir in sorted(_SKIP_DIRS, key=len, reverse=True):
         if filename.startswith(skip_dir):
             rel = filename[len(skip_dir) :]
             if rel.startswith(os.sep):

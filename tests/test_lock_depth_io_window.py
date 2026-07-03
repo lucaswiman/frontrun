@@ -106,6 +106,36 @@ class TestLockDepthIoWindow:
         assert scheduler._pending_io_by_thread[0] == []
         assert _dpor_tls.pending_io == []
 
+    def test_mark_done_sets_dpor_machinery_guard(self) -> None:
+        """``mark_done`` holds the (non-reentrant) scheduler condition while
+        finalizing a thread at teardown — exactly when GC ``__del__`` chains
+        fire.  It must set the ``_in_dpor_machinery`` guard for its critical
+        section (like ``_report_and_wait``/``before_io`` do) so a cooperative
+        lock released by such a ``__del__`` falls back to the real lock instead
+        of re-entering the scheduler and self-deadlocking (defect #7).
+        """
+        from frontrun._cooperative import _in_dpor_machinery, _scheduler_tls
+
+        seen: list[bool] = []
+
+        class _SpyExecution(_FakeExecution):
+            def finish_thread(self, thread_id: int) -> None:
+                # Runs inside mark_done's critical section.
+                seen.append(_in_dpor_machinery())
+
+        engine = _FakeEngine()
+        execution = _SpyExecution([0])
+        scheduler = DporScheduler(engine, execution, num_threads=1)
+
+        try:
+            scheduler.mark_done(0)
+        finally:
+            _scheduler_tls._in_dpor_machinery = False
+
+        assert seen == [True], (
+            "mark_done must set the _in_dpor_machinery guard around its condition-holding critical section"
+        )
+
     def test_skips_io_scheduling_point_when_all_other_threads_wait_on_held_locks(self) -> None:
         engine = _FakeEngine()
         execution = _FakeExecution([0, 1])

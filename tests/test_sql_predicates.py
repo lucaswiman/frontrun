@@ -63,6 +63,31 @@ class TestExtractRowLevelAccess:
         rows = extract_row_level_access(sql)
         assert rows == [[EqualityPredicate("id", "1")], [EqualityPredicate("id", "2")]]
 
+    def test_where_clause_negative_literal(self):
+        # sqlglot parses ``-5`` as Neg(Literal(5)), not Literal("-5").  The
+        # extractor must unwrap it so negative keys keep row-level precision
+        # instead of collapsing to a table-level resource.
+        rows = extract_row_level_access("SELECT * FROM users WHERE id = -5")
+        assert rows == [[EqualityPredicate("id", "-5")]]
+
+    def test_where_clause_negative_literal_distinct_rows(self):
+        # Two disjoint negative keys must not be treated as the same row.
+        assert extract_row_level_access("SELECT * FROM t WHERE id = -5") != extract_row_level_access(
+            "SELECT * FROM t WHERE id = -6"
+        )
+
+    def test_in_list_with_negative_literals(self):
+        rows = extract_row_level_access("SELECT * FROM t WHERE id IN (-1, -2, 3)")
+        assert rows == [
+            [EqualityPredicate("id", "-1")],
+            [EqualityPredicate("id", "-2")],
+            [EqualityPredicate("id", "3")],
+        ]
+
+    def test_insert_negative_value(self):
+        rows = extract_row_level_access("INSERT INTO t (id, bal) VALUES (5, -100)")
+        assert rows == [[EqualityPredicate("id", "5"), EqualityPredicate("bal", "-100")]]
+
 
 # ---------------------------------------------------------------------------
 # extract_equality_predicates
