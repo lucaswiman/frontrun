@@ -32,6 +32,7 @@ contend on shared external state (SQL and Redis).
    installation
    quickstart
    approaches
+   case_studies
    dpor_guide
    dpor
    vector-clocks
