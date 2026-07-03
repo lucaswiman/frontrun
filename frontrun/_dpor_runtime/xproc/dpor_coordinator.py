@@ -171,6 +171,19 @@ def _relay_loop(
                 # attributed inside the critical section, making two workers'
                 # unlocked writes look lock-synchronized and pruning the race.
                 _flush_relay_pending_io(scheduler, worker_id, pending_io)
+                # Take the scheduling turn BEFORE acquiring. acquire_row_locks
+                # itself only waits for the row lock, not for the engine's
+                # pick: in-process that is safe because the opcode tracer means
+                # the acquiring thread already holds the turn, but relays have
+                # no opcode tracing, so two workers' ACQUIRE_LOCKS frames would
+                # race and the winner's lock_acquire lands at a step the
+                # engine committed to the other thread — desynchronizing the
+                # recorded schedule from the actual executor and corrupting
+                # backtracking (reachable acquisition-order reversals get
+                # silently pruned while still claiming exhausted=True).
+                if not scheduler.report_and_wait(None, worker_id):
+                    _reply(sock, False)
+                    break
                 try:
                     scheduler.acquire_row_locks(worker_id, list(msg["res"]))
                 except SchedulerAbort:
