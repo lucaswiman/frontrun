@@ -65,17 +65,32 @@ def _setup_relay_tls(scheduler: DporScheduler, worker_id: int) -> list[tuple[int
     return pending_io
 
 
-def _flush_orphan_pending_io(
+def _flush_relay_pending_io(
     scheduler: DporScheduler,
     worker_id: int,
     pending_io: list[tuple[int, str, bool]],
 ) -> None:
-    """Report accesses buffered after the worker's last scheduling point.
+    """Report this relay's buffered accesses to the engine, then clear the buffer.
 
-    A worker's final access (e.g. the write of a read-modify-write) is buffered
-    with no subsequent ``report_and_wait`` to flush it, so it would be dropped —
-    mirroring ``DporBytecodeRunner._teardown_dpor_tls``, flush it to the engine
-    on relay teardown so the DPOR search sees every access.
+    A worker's access (e.g. the write of a read-modify-write) is buffered with no
+    subsequent ``report_and_wait`` to flush it, so it would either be dropped or
+    attributed at the wrong point. Report each buffered access to the engine now,
+    under ``scheduler._engine_lock`` (mirroring ``DporBytecodeRunner``).
+
+    Called at two flush points where the buffered accesses must reach the engine
+    before something else advances the thread's happens-before state:
+
+    * on relay teardown, so the DPOR search sees every access; and
+    * before ``acquire_row_locks`` reports ``lock_acquire`` to the engine, so an
+      unlocked access is recorded OUTSIDE the critical section it precedes rather
+      than being folded into the lock's happens-before (which would make two
+      workers' unlocked writes look lock-synchronized and prune the real race).
+
+    Unlike ``DporScheduler._flush_pending_io_for_unlocked`` (whose ``_unlocked``
+    contract requires the caller to already hold ``self._condition``), this runs
+    from the relay thread without the condition lock — safe because it only
+    touches this worker's own buffer and serialises the engine calls on
+    ``_engine_lock``.
     """
     if not pending_io:
         return
@@ -149,6 +164,13 @@ def _relay_loop(
                 if not granted:
                     break
             elif kind == proto.ACQUIRE_LOCKS:
+                # Flush any access buffered before this acquire so it is recorded
+                # with the thread's PRE-lock happens-before. acquire_row_locks
+                # reports 'lock_acquire' to the engine; a still-buffered access
+                # flushed only at the next report_and_wait would otherwise be
+                # attributed inside the critical section, making two workers'
+                # unlocked writes look lock-synchronized and pruning the race.
+                _flush_relay_pending_io(scheduler, worker_id, pending_io)
                 try:
                     scheduler.acquire_row_locks(worker_id, list(msg["res"]))
                 except SchedulerAbort:
@@ -184,7 +206,7 @@ def _relay_loop(
         if not clean:
             with accesses_lock:
                 unclean.add(worker_id)
-        _flush_orphan_pending_io(scheduler, worker_id, pending_io)
+        _flush_relay_pending_io(scheduler, worker_id, pending_io)
         _teardown_relay_tls(scheduler, worker_id)
         scheduler.mark_done(worker_id)
 
