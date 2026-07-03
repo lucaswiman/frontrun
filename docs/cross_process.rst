@@ -201,7 +201,8 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
    * - ``failure``
      - Human-readable description of the first violation, or ``None``.
    * - ``failure_kind``
-     - One of ``"invariant"``, ``"worker_error"``, ``"deadlock"``, or ``None``.
+     - One of ``"invariant"``, ``"worker_error"``, ``"deadlock"``,
+       ``"nondeterministic"``, or ``None``.
    * - ``failing_schedule``
      - The interleaving (a list of worker ids) that triggered the failure.
    * - ``iterations``

@@ -411,12 +411,3 @@ if __name__ == "__main__":
     print("\n=== Reproduction ===")
     test_reproduce()
 ```
-
----
-
-## Case Studies
-
-See **docs/CASE_STUDIES.rst** for ten worked examples:
-TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3,
-SQLAlchemy pool, amqtt, and pykka. All demonstrate **20/20 seed detection**
-with deterministic 10/10 reproduction.

@@ -33,10 +33,13 @@ different tables.
 With SQL detection enabled, the data flows through six stages:
 
 **Stage 1 -- SQL parsing** (``_sql_parsing.py``).
-``parse_sql_access(sql)`` returns ``(read_tables, write_tables,
-lock_intent, tx_op)``.  A regex fast-path handles ~90% of ORM-generated
-SQL (single-table SELECT/INSERT/UPDATE/DELETE).  Complex SQL (CTEs,
-subqueries, UNION, MERGE) falls back to sqlglot for full AST analysis.
+``parse_sql_access(sql)`` returns a ``SqlAccessResult`` whose main fields
+are ``read_tables``, ``write_tables``, ``lock_intent``, and ``tx_op``
+(plus ``temporal_clauses``, ``delete_tables``, and the parsed ``ast``).
+All statements go through sqlglot for full AST analysis; string-based
+handling exists only for constructs sqlglot cannot parse (``LOCK TABLE``,
+``SAVEPOINT``, ``PREPARE``, and similar).  Statements that fail to parse
+entirely return empty sets, falling back to endpoint-level detection.
 Transaction control statements (BEGIN, COMMIT, ROLLBACK, SAVEPOINT) are
 detected and returned as ``tx_op`` with no table sets.
 
@@ -77,7 +80,8 @@ FOR UPDATE maps to ``Write``.  The Rust engine's
 ``ObjectState::dependent_accesses`` implements the standard conflict
 rules: Read-Read is independent, everything else (RW, WR, WW) conflicts.
 
-**Stage 6 -- Endpoint suppression** (``_sql_cursor.py``).
+**Stage 6 -- Endpoint suppression** (``_sql_endpoint_suppression.py``,
+invoked from ``_sql_cursor.py``).
 While the original ``cursor.execute()`` runs, a context manager sets
 ``_sql_suppress = True`` in thread-local storage and adds the OS thread
 ID to a shared ``_suppress_tids`` set.  This prevents the coarser

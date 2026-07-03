@@ -295,7 +295,8 @@ HTTP libraries, and anything else that calls libc I/O functions.
 
 **Intercepted libc functions:** ``connect``, ``send``, ``sendto``,
 ``sendmsg``, ``write``, ``writev``, ``recv``, ``recvfrom``, ``recvmsg``,
-``read``, ``readv``, ``close``.
+``read``, ``readv``, ``close``, plus ``dup2``/``dup3`` (to drop the stale
+fd-map entry for the overwritten target descriptor).
 
 **Platform notes:**
 
@@ -649,8 +650,14 @@ exploration loop.
 - Deadlocks that occur entirely inside a C extension without going through
   the row-lock registry (e.g. two threads sharing a single psycopg2
   connection object, which is unsupported anyway).
-- ``LOCK TABLE`` or advisory locks --- only ``SELECT FOR UPDATE`` /
-  ``SELECT FOR SHARE`` row locks are intercepted by the SQL cursor layer.
+- Deadlocks arbitrated by the database server itself rather than the
+  row-lock registry. The SQL cursor layer *does* intercept more than
+  ``SELECT FOR UPDATE`` / ``SELECT FOR SHARE``: ``LOCK TABLE`` /
+  ``LOCK TABLES``, PostgreSQL advisory locks
+  (``pg_advisory_lock`` and variants), and writes inside an open
+  transaction (INSERT/UPDATE/DELETE) all feed the registry --- but locks
+  taken by SQL frontrun cannot parse fall through to endpoint-level
+  detection only.
 
 
 The DPOR algorithm in detail
@@ -973,9 +980,10 @@ interleaving.  **Resource group coalescing** addresses this.
 
 Each SQL resource reported to the engine can be registered with a
 **resource group** (typically the table name, hashed to a ``u64``).
-The Python-side ``_io_reporter`` callback in ``dpor.py`` automatically
-extracts the table name from SQL resource IDs (e.g. ``sql:versions:...``
-→ group ``hash("sql:versions")``) and calls
+The Python-side ``_io_reporter`` callback in
+``_dpor_runtime/runner.py`` automatically extracts the table name from
+SQL resource IDs (e.g. ``sql:versions:...`` → group
+``hash("sql:versions")``) and calls
 ``engine.register_resource_group(object_key, group_key)``.
 
 When a race is detected in ``process_synced_io_access()``, the engine

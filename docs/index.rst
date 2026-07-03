@@ -7,7 +7,9 @@ Race conditions are hard to test because they depend on timing. A test that
 passes 95% of the time is worse than a test that always fails, because it
 breeds false confidence. Frontrun replaces timing-dependent thread interleaving
 with deterministic scheduling, so race conditions either always happen or
-never happen.
+never happen. Free-threaded Python (3.13t, 3.14t) raises the stakes: races the
+GIL kept narrow become real, and frontrun --- which supports free-threaded
+builds --- exists to enumerate those interleavings and prove which one is buggy.
 
 Four approaches, in order of decreasing interpretability:
 
@@ -32,6 +34,7 @@ contend on shared external state (SQL and Redis).
    installation
    quickstart
    approaches
+   case_studies
    dpor_guide
    dpor
    vector-clocks
@@ -44,48 +47,39 @@ contend on shared external state (SQL and Redis).
    trace_filtering
    internals
    api_reference
-   CASE_STUDIES
 
 
 Getting Started
 ---------------
 
-The simplest entry point is **trace markers** --- comment-based synchronization
-points that let you force a specific execution order:
+The front door is :func:`frontrun.explore` --- point it at shared state, some
+workers, and an invariant, and DPOR explores every meaningfully different
+interleaving, no annotations needed:
 
 .. code-block:: python
 
-   from frontrun.common import Schedule, Step
-   from frontrun.trace_markers import TraceExecutor
+   import frontrun
 
    class Counter:
        def __init__(self):
            self.value = 0
 
        def increment(self):
-           temp = self.value  # frontrun: read_value
-           temp += 1
-           self.value = temp  # frontrun: write_value
+           temp = self.value
+           self.value = temp + 1
 
-   def test_counter_lost_update():
-       counter = Counter()
-       schedule = Schedule([
-           Step("thread1", "read_value"),
-           Step("thread2", "read_value"),
-           Step("thread1", "write_value"),
-           Step("thread2", "write_value"),
-       ])
+   def test_increment_is_atomic():
+       result = frontrun.explore(
+           setup=Counter,
+           workers=Counter.increment,
+           count=2,
+           invariant=lambda c: c.value == 2,
+       )
+       result.assert_holds()  # fails with the exact racy interleaving
 
-       executor = TraceExecutor(schedule)
-       executor.run({
-           "thread1": counter.increment,
-           "thread2": counter.increment,
-       }, timeout=5.0)
-
-       assert counter.value == 1  # One increment lost
-
-For automatic race finding without manual markers, see :doc:`dpor_guide` (systematic)
-or :doc:`approaches` (random bytecode exploration).
+Start with :doc:`quickstart`, then :doc:`dpor_guide` for systematic race
+finding. For races frontrun has found in real, unmodified PyPI packages, see
+:doc:`case_studies`.
 
 
 Indices and Tables

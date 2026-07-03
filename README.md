@@ -1,126 +1,16 @@
 # Frontrun
 
-A library for deterministic concurrency testing.
+Deterministic concurrency testing for Python.
 
 ```bash
 pip install frontrun
 ```
 
-## Overview
+Frontrun runs your concurrent code under a scheduler it controls, explores the ways threads (or asyncio tasks, or OS processes) can interleave, and — when an interleaving breaks your invariant — hands you a deterministic, replayable counterexample plus a causal explanation of exactly which operations conflicted. Races either reproduce every time or are proven absent at the explored granularity: no `sleep()` tuning, no stress loops, no flaky retries. In the spirit of Rust's [loom](https://github.com/tokio-rs/loom), for Python.
 
-Frontrun is named after the insider trading crime where someone uses insider information to make a timed trade for maximum profit. The principle is the same here, except you use insider information about event ordering for maximum concurrency bugs.
+## Sixty seconds: find a race and prove it
 
-The core problem: race conditions are hard to test because they depend on timing. A test that passes 95% of the time is worse than a test that always fails, because it breeds false confidence. Frontrun replaces timing-dependent thread interleaving with deterministic scheduling, so race conditions either always happen or never happen.
-
-Four approaches, in order of decreasing interpretability:
-
-1. **DPOR** — Systematically explores every meaningfully different interleaving. When it finds a race, it tells you exactly which shared-memory accesses conflicted and in what order. Powered by a Rust engine using vector clocks to prune redundant orderings.
-
-2. **Bytecode exploration** — Generates random opcode-level schedules and checks an invariant under each one. Often finds races very efficiently (sometimes on the first attempt), and can catch races that are invisible to DPOR (e.g. shared state inside C extensions). The trade-off: error traces show *what happened* but not *why* — you get the interleaving that broke the invariant, not a causal explanation.
-
-3. **Marker schedule exploration** — Exhaustive exploration of all interleavings at the `# frontrun:` marker level. Much smaller search space than bytecode exploration, with completeness guarantees.
-
-4. **Trace markers** — Comment-based synchronization points (`# frontrun: marker_name`) that let you force a specific execution order. Useful when you already know the race window and want to reproduce it deterministically in a test.
-
-All four have async variants. A C-level `LD_PRELOAD` library intercepts libc I/O for database drivers and other opaque extensions.
-
-The DPOR engine also drives **cross-process exploration**: the same `frontrun.explore(...)` interface applied to separate Python processes that contend on shared external state (SQL and Redis). See [Cross-Process Exploration](#cross-process-exploration) below.
-
-### DPOR deadlock detection (dining philosophers)
-
-DPOR explores thread interleavings and detects deadlocks via wait-for-graph cycle analysis. Here it finds the circular wait in the classic 3-philosopher dining problem:
-
-![Deadlock diagram showing DPOR exploration of the dining philosophers problem. Three threads each acquire one fork (lock) then block waiting for the next, forming a cycle.](docs/_static/deadlock-diagram.png)
-
-The timeline shows each thread's lock acquisitions (green), context switches (pink arrows), and the point where the deadlock is detected. Run `make screenshot` to regenerate this image from `examples/dpor_dining_philosophers.py`.
-
-## Quick Start: Bank Account Race Condition
-
-A pytest test that uses trace markers to trigger a lost-update race:
-
-```python
-from frontrun.common import Schedule, Step
-from frontrun.trace_markers import TraceExecutor
-
-class BankAccount:
-    def __init__(self, balance=0):
-        self.balance = balance
-
-    def transfer(self, amount):
-        current = self.balance  # frontrun: read_balance
-        new_balance = current + amount
-        self.balance = new_balance  # frontrun: write_balance
-
-def test_transfer_lost_update():
-    account = BankAccount(balance=100)
-
-    # Both threads read before either writes
-    schedule = Schedule([
-        Step("thread1", "read_balance"),    # T1 reads 100
-        Step("thread2", "read_balance"),    # T2 reads 100 (both see same value!)
-        Step("thread1", "write_balance"),   # T1 writes 150
-        Step("thread2", "write_balance"),   # T2 writes 150 (overwrites T1's update!)
-    ])
-
-    executor = TraceExecutor(schedule)
-    executor.run({
-        "thread1": lambda: account.transfer(50),
-        "thread2": lambda: account.transfer(50),
-    }, timeout=5.0)
-
-    # One update was lost: balance is 150, not 200
-    assert account.balance == 150
-```
-
-## Case Studies
-
-46 concurrency bugs found across 12 libraries by running bytecode exploration directly against unmodified library code: TPool, threadpoolctl, cachetools, PyDispatcher, pydis, pybreaker, urllib3, SQLAlchemy, amqtt, pykka, and tenacity. See [detailed case studies](docs/CASE_STUDIES.rst).
-
-## Usage Approaches
-
-### 1. Trace Markers
-
-Trace markers are special comments (`# frontrun: <marker-name>`) that mark synchronization points in multithreaded or async code. A [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback pauses each thread at its markers and waits for a schedule to grant the next execution turn. This gives deterministic control over execution order without modifying code semantics — markers are just comments.
-
-A marker **gates** the code that follows it: the thread pauses at the marker and only executes the gated code after the scheduler says so. Name markers after the operation they gate (e.g. `read_value`, `write_balance`) rather than with temporal prefixes like `before_` or `after_`.
-
-```python
-from frontrun.common import Schedule, Step
-from frontrun.trace_markers import TraceExecutor
-
-class Counter:
-    def __init__(self):
-        self.value = 0
-
-    def increment(self):
-        temp = self.value  # frontrun: read_value
-        temp += 1
-        self.value = temp  # frontrun: write_value
-
-def test_counter_lost_update():
-    counter = Counter()
-
-    schedule = Schedule([
-        Step("thread1", "read_value"),
-        Step("thread2", "read_value"),
-        Step("thread1", "write_value"),
-        Step("thread2", "write_value"),
-    ])
-
-    executor = TraceExecutor(schedule)
-    executor.run({
-        "thread1": counter.increment,
-        "thread2": counter.increment,
-    }, timeout=5.0)
-
-    assert counter.value == 1  # One increment lost
-```
-
-### 2. DPOR (Systematic Exploration)
-
-DPOR (Dynamic Partial Order Reduction) *systematically* explores every meaningfully different thread interleaving. It automatically detects shared-memory accesses at the bytecode level — attribute reads/writes, subscript accesses, lock operations — and uses vector clocks to determine which orderings are equivalent. Two interleavings that differ only in the order of independent operations (two reads of different objects, say) produce the same outcome, so DPOR runs only one representative from each equivalence class.
-
-When a race is found, the error trace shows the exact sequence of conflicting accesses and which threads were involved:
+This counter is not atomic. Frontrun finds the interleaving that proves it — no markers, no annotations, no code changes:
 
 ```python
 import frontrun
@@ -143,7 +33,7 @@ def test_counter_is_atomic():
     result.assert_holds()
 ```
 
-This test fails because `Counter.increment` is not atomic. The `result.explanation` shows the conflict:
+The test fails, and the failure message is the deliverable — a causal trace of the conflicting accesses:
 
 ```
 Race condition found after 2 interleavings.
@@ -162,13 +52,53 @@ Race condition found after 2 interleavings.
   Reproduced 10/10 times (100%)
 ```
 
-DPOR explored exactly 2 interleavings out of the 6 possible (the other 4 are equivalent to one of the first two). For a detailed walkthrough of how this works, see the [DPOR algorithm documentation](docs/dpor.rst).
+Behind that output: frontrun detected the shared-memory accesses at the bytecode level, used DPOR (dynamic partial order reduction, powered by a Rust engine with vector clocks) to prune the 6 possible interleavings down to the 2 meaningfully different ones, found the lost update, and replayed the counterexample schedule 10 more times to confirm it reproduces deterministically. For a detailed walkthrough of how this works, see the [DPOR algorithm documentation](docs/dpor.rst).
+
+## Not just toy counters: real, unmodified libraries
+
+The counter above is deliberately small so the mechanics are clear, but the same `frontrun.explore()` workflow runs unchanged against code you already depend on — no forks, no injected `sleep()`, no rewritten internals. Two worked examples, each reproduced 10/10 against the released package, both in libraries whose *documented* usage is to share one object across threads (see [case studies](docs/case_studies.rst) for the full traces and reproduction commands):
+
+- **[sendgrid](docs/case_studies.rst)** (6.12.5, via python-http-client 3.3.7; ~10M downloads/month) — the docs' own pattern is a module-level `SendGridAPIClient` reused across requests. That client's `request_headers` dict is shared and mutated without a lock, so two concurrent requests setting per-call headers race, and one request's outgoing headers (`Authorization` override, subuser, custom `X-`) are built from the other's. DPOR points at the shared `request_headers.update()` in `client.py:145`.
+- **[python-socketio](docs/case_studies.rst)** (5.16.3, ~5.6M downloads/month) — under `async_mode='threading'`, two clients entering rooms in the same fresh namespace both pass the `namespace not in self.rooms` check before either writes, so the second `self.rooms[namespace] = {}` overwrites the first and a client's room registration is silently lost. DPOR reports the write-write conflict on the shared dict at `base_manager.py:116`.
+
+These are ordinary check-then-act and read-modify-write patterns — easy to write, hard to see in review, and narrow enough under the GIL that they usually pass. frontrun makes the losing interleaving deterministic and hands you a replayable counterexample.
+
+## Why deterministic scheduling?
+
+Race conditions are hard to test because they depend on timing. A test that fails 5% of the time is worse than a test that always fails — it breeds false confidence, gets retried until green, and ships the bug. Frontrun replaces timing-dependent thread interleaving with deterministic scheduling, so a race either always happens or never happens, and a found counterexample is a constructive proof: run these operations in this exact order and the invariant fails.
+
+**Free-threaded Python raises the stakes.** The GIL never made `+=` atomic — it just kept race windows narrow enough that tests usually pass. On free-threaded builds (3.13t, 3.14t), threads run truly concurrently and the races the GIL used to hide become real. Frontrun supports free-threaded Python and exists for exactly this transition: enumerate the interleavings your code can experience, and prove which one is buggy before it ships.
+
+*About the name:* front-running is the insider-trading crime of using advance knowledge of order flow to time trades for maximum profit. The principle is the same here, except you use insider information about event ordering for maximum concurrency bugs.
+
+## Choosing an approach
+
+| Approach | What you get | Reach for it when |
+|---|---|---|
+| **DPOR** (`strategy="dpor"`, the default) | Systematic coverage of every meaningfully different interleaving, causal conflict explanations, deadlock detection | You want thoroughness and an explanation of *why* the race happens |
+| **Random bytecode exploration** (`strategy="random"`) | Fast probabilistic search over opcode-level schedules, no annotations needed | You want quick fuzzing, or the shared state lives where DPOR can't see it (e.g. inside C extensions) |
+| **Marker schedule exploration** (`explore_marker_interleavings`) | Exhaustive search over all interleavings of your `# frontrun:` markers | You can annotate the critical sections and want completeness at that granularity |
+| **Trace markers** (`TraceExecutor`) | One exact, hand-scripted interleaving | You already know the race window and want a deterministic regression test |
+
+All approaches have async variants, and `frontrun.explore()` detects async workers automatically. The DPOR engine also drives [cross-process exploration](#cross-process-exploration) — the same interface applied to separate Python processes contending on shared SQL/Redis state — and a C-level `LD_PRELOAD` library extends conflict detection into opaque C extensions like database drivers.
+
+## Usage Approaches
+
+### 1. DPOR (Systematic Exploration)
+
+DPOR (Dynamic Partial Order Reduction) *systematically* explores every meaningfully different thread interleaving. It automatically detects shared-memory accesses at the bytecode level — attribute reads/writes, subscript accesses, lock operations — and uses vector clocks to determine which orderings are equivalent. Two interleavings that differ only in the order of independent operations (two reads of different objects, say) produce the same outcome, so DPOR runs only one representative from each equivalence class. The quick-start example above uses DPOR: it explored exactly 2 interleavings out of the 6 possible, because the other 4 are equivalent to one of the first two.
+
+DPOR also detects deadlocks, via wait-for-graph cycle analysis. Here it finds the circular wait in the classic 3-philosopher dining problem:
+
+![Deadlock diagram showing DPOR exploration of the dining philosophers problem. Three threads each acquire one fork (lock) then block waiting for the next, forming a cycle.](docs/_static/deadlock-diagram.png)
+
+The timeline shows each thread's lock acquisitions (green), context switches (pink arrows), and the point where the deadlock is detected. Run `make screenshot` to regenerate this image from `examples/dpor_dining_philosophers.py`.
 
 **Search strategies:** The default DFS strategy is optimal for **exhaustive exploration** (`stop_on_first=False`) — it produces the minimum number of executions. When the trace space is very large and you have a limited execution budget (`stop_on_first=True` or a low `max_executions`), use a non-DFS strategy like `search="bit-reversal"` to spread exploration across diverse conflict points early, finding bugs faster on average. See [search strategy documentation](docs/search.rst) for details.
 
 **Scope and limitations:** DPOR tracks Python bytecode-level conflicts (attribute and subscript reads/writes, lock operations) plus I/O. Redis key-level conflicts are detected by intercepting redis-py's `execute_command()`; activate with `detect_io=True` (works in both sync and async from 0.5). SQL conflicts are detected by intercepting DBAPI `cursor.execute()`. These key/table-level detectors are important: raw socket detection uses `host:port` as the resource ID, so every send and recv to the same server appears to conflict — without key-level or SQL-level refinement this causes a combinatorial explosion of spurious interleavings. C-extension shared state (NumPy arrays, etc.) is not tracked at all. The `frontrun` CLI adds C-level socket interception via `LD_PRELOAD` for opaque drivers, also at the coarse `host:port` level.
 
-### 3. Bytecode Exploration (Random Strategy)
+### 2. Bytecode Exploration (Random Strategy)
 
 Bytecode exploration generates random opcode-level schedules and checks an invariant under each one, in the style of [Hypothesis](https://hypothesis.readthedocs.io/). Each thread fires a [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback at every bytecode instruction, pausing to wait for its scheduler turn. No markers or annotations needed.
 
@@ -223,6 +153,67 @@ Race condition found after 1 interleavings.
 The `reproduce_on_failure` parameter (default 10) controls how many times the counterexample schedule is replayed to measure reproducibility. Set to 0 to skip.
 
 > **Note:** Opcode-level schedules are not stable across Python versions. CPython does not guarantee bytecode compatibility between releases, so a counterexample from Python 3.12 may not reproduce on 3.13. Treat counterexample schedules as ephemeral debugging artifacts.
+
+### 3. Trace Markers
+
+Trace markers are special comments (`# frontrun: <marker-name>`) that mark synchronization points in multithreaded or async code. A [`sys.settrace`](https://docs.python.org/3/library/sys.html#sys.settrace) callback pauses each thread at its markers and waits for a schedule to grant the next execution turn. This gives deterministic control over execution order without modifying code semantics — markers are just comments.
+
+A marker **gates** the code that follows it: the thread pauses at the marker and only executes the gated code after the scheduler says so. Name markers after the operation they gate (e.g. `read_balance`, `write_balance`) rather than with temporal prefixes like `before_` or `after_`.
+
+Use trace markers when you already know the race window and want to reproduce it deterministically in a regression test — here, a classic lost-update on a bank account:
+
+```python
+from frontrun.common import Schedule, Step
+from frontrun.trace_markers import TraceExecutor
+
+class BankAccount:
+    def __init__(self, balance=0):
+        self.balance = balance
+
+    def transfer(self, amount):
+        current = self.balance  # frontrun: read_balance
+        new_balance = current + amount
+        self.balance = new_balance  # frontrun: write_balance
+
+def test_transfer_lost_update():
+    account = BankAccount(balance=100)
+
+    # Both threads read before either writes
+    schedule = Schedule([
+        Step("thread1", "read_balance"),    # T1 reads 100
+        Step("thread2", "read_balance"),    # T2 reads 100 (both see same value!)
+        Step("thread1", "write_balance"),   # T1 writes 150
+        Step("thread2", "write_balance"),   # T2 writes 150 (overwrites T1's update!)
+    ])
+
+    executor = TraceExecutor(schedule)
+    executor.run({
+        "thread1": lambda: account.transfer(50),
+        "thread2": lambda: account.transfer(50),
+    }, timeout=5.0)
+
+    # One update was lost: balance is 150, not 200
+    assert account.balance == 150
+```
+
+### 4. Marker Schedule Exploration
+
+When you've annotated the critical sections with markers but don't want to hand-write the losing schedule, `explore_marker_interleavings` generates *every* valid interleaving of the declared markers (preserving per-thread order) and checks the invariant under each one. The search space at marker granularity is small enough to explore exhaustively — completeness guarantees without opcode-level cost:
+
+```python
+from frontrun.trace_markers import explore_marker_interleavings
+
+def test_transfer_has_no_lost_update():
+    result = explore_marker_interleavings(
+        setup=lambda: BankAccount(balance=100),
+        threads={
+            "thread1": (lambda account: account.transfer(50), ["read_balance", "write_balance"]),
+            "thread2": (lambda account: account.transfer(50), ["read_balance", "write_balance"]),
+        },
+        invariant=lambda account: account.balance == 200,
+    )
+    result.assert_holds()  # fails, reporting the schedule that loses an update
+```
 
 ### Automatic I/O Detection
 
@@ -365,32 +356,9 @@ if not result.ok:
 
 ### C-Level I/O Interception
 
-When run under the `frontrun` CLI, a native `LD_PRELOAD` library (`libfrontrun_io.so`) intercepts libc I/O functions directly. This covers opaque C extensions — database drivers (libpq, mysqlclient), Redis clients, HTTP libraries, and anything else that calls libc's `send()`, `recv()`, `read()`, `write()`, etc.
+When run under the `frontrun` CLI, a native `LD_PRELOAD` library (`libfrontrun_io.so`) intercepts libc I/O functions directly — `connect`, `send`, `sendto`, `sendmsg`, `write`, `writev`, `recv`, `recvfrom`, `recvmsg`, `read`, `readv`, `close`. This covers opaque C extensions that Python-level patching can't see: database drivers (libpq, mysqlclient), Redis clients, HTTP libraries, and anything else that does its own I/O in C.
 
-**Intercepted functions:** `connect`, `send`, `sendto`, `sendmsg`, `write`, `writev`, `recv`, `recvfrom`, `recvmsg`, `read`, `readv`, `close`
-
-The library maintains a process-global file-descriptor → resource map:
-
-```
-connect(fd, sockaddr{127.0.0.1:5432}, ...)  →  record fd=7 → "socket:127.0.0.1:5432"
-send(fd=7, ...)                              →  report write to "socket:127.0.0.1:5432"
-recv(fd=7, ...)                              →  report read from "socket:127.0.0.1:5432"
-close(fd=7)                                  →  remove fd=7 from map
-```
-
-Events are transmitted to the Python side via one of two channels:
-
-- **Pipe (preferred):** `IOEventDispatcher` creates an `os.pipe()` and sets `FRONTRUN_IO_FD` to the write-end fd.  The Rust library writes directly to the pipe (no open/close overhead per event), and a Python reader thread dispatches events to registered listener callbacks in arrival order.  The pipe's FIFO ordering provides a natural total order without timestamps.
-- **Log file (legacy):** `FRONTRUN_IO_LOG` points to a temp file.  Events are appended per-call (open + write + close each time) and read back in batch after execution.
-
-```python
-from frontrun._preload_io import IOEventDispatcher
-
-with IOEventDispatcher() as dispatcher:
-    dispatcher.add_listener(lambda ev: print(f"{ev.kind} {ev.resource_id}"))
-    # ... run code under LD_PRELOAD / DYLD_INSERT_LIBRARIES ...
-# all events are also available as dispatcher.events
-```
+The library maintains a process-global map from file descriptor to resource ID (e.g. `connect(fd, 127.0.0.1:5432)` records `fd=7 → "socket:127.0.0.1:5432"`), so every subsequent `send`/`recv` on that descriptor is reported as a read or write on a stable resource the scheduler can reason about. Events stream to the Python side over a pipe in arrival order. See [How It Works Under the Hood](docs/internals.rst) for the transport details and the `IOEventDispatcher` API.
 
 ### Trace Filtering (`trace_packages`)
 
