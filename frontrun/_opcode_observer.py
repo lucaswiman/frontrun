@@ -23,6 +23,7 @@ import sys
 import threading
 import types
 from collections import deque
+from collections.abc import Callable
 from typing import Any, Literal
 
 from frontrun._cooperative import CooperativeLock as _CooperativeLock
@@ -516,6 +517,55 @@ def _register_object_key(key: int, obj: Any, name: Any) -> None:
         rmap[key] = f"{type_name}.{name_str}" if name_str else type_name
 
 
+# ---------------------------------------------------------------------------
+# Per-thread access sink (access-anchored replay support)
+# ---------------------------------------------------------------------------
+#
+# When set, every shared-memory access reported by ``_report_access`` is also
+# forwarded to the sink as ``(thread_id, obj, name, kind_str, key)``.  The
+# DPOR exploration scheduler uses this to record an access trace of the
+# failing execution; the replay scheduler uses it to gate accesses to racing
+# objects on the recorded order (access-anchored replay), which is robust to
+# the positional schedule drift caused by run-varying opcode counts (e.g. a
+# real subprocess between a racing write and read).
+
+_access_sink_tls = threading.local()
+
+AccessSink = Callable[[int, Any, Any, str, int], None]
+
+
+def set_access_sink(sink: AccessSink | None) -> None:
+    """Install (or clear) the per-thread access sink."""
+    _access_sink_tls.sink = sink
+
+
+def _get_access_sink() -> AccessSink | None:
+    return getattr(_access_sink_tls, "sink", None)
+
+
+# Builtin container types whose accesses are too generic to serve as replay
+# anchors (labels like ``dict.__cmethods__`` match unrelated objects).
+_ANCHOR_GENERIC_TYPES = frozenset(
+    {"dict", "list", "set", "frozenset", "tuple", "deque", "defaultdict", "OrderedDict", "Counter"}
+)
+
+
+def anchor_label(obj: Any, name: Any) -> str | None:
+    """A run-stable label for an access, or ``None`` if too generic to anchor.
+
+    Uses ``TypeName.attr`` — unlike engine object keys (which depend on
+    first-touch stable-ID assignment order and therefore differ between the
+    exploration run and each replay run), this is comparable across runs.
+    """
+    type_name = type(obj).__name__
+    if type_name in _ANCHOR_GENERIC_TYPES:
+        return None
+    name_str = str(name) if name is not None else ""
+    if not name_str.isidentifier() or name_str.startswith("__"):
+        return None
+    return f"{type_name}.{name_str}"
+
+
 # Access-reporting kinds.
 #
 # - ``read``/``write``: ordinary accesses routed to ``engine.report_access``.
@@ -565,6 +615,11 @@ def _report_access(
     method_name, kind_str = _REPORT_DISPATCH[kind]
     key = _make_object_key(stable_ids.get(obj), name)
     _register_object_key(key, obj, name)
+    # Forward to the per-thread access sink (outside the engine lock — the
+    # replay sink may block to enforce access-anchored ordering).
+    sink = _get_access_sink()
+    if sink is not None:
+        sink(thread_id, obj, name, kind_str, key)
     with lock:
         getattr(engine, method_name)(execution, thread_id, key, kind_str)
 

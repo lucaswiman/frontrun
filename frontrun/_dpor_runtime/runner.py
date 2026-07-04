@@ -8,6 +8,7 @@ from frontrun._dpor_core.worker import WorkerTarget
 from frontrun._opcode_observer import (
     OpcodeTraceHandle,
     install_thread_opcode_trace,
+    set_access_sink,
     start_opcode_trace,
     stop_opcode_trace,
     uninstall_thread_opcode_trace,
@@ -271,6 +272,10 @@ class DporBytecodeRunner:
                 _scheduler_tls._in_dpor_machinery = False
 
         set_sync_reporter(_sync_reporter)
+        # Access sink: exploration records the access trace for possible
+        # access-anchored replay; replay schedulers gate racing accesses on
+        # the recorded order (defect #20).
+        set_access_sink(self.scheduler.on_traced_access)
         # DPOR-specific TLS for _process_opcode (shadow stacks, etc.)
         _dpor_tls.scheduler = self.scheduler
         _dpor_tls.thread_id = thread_id
@@ -373,6 +378,7 @@ class DporBytecodeRunner:
         set_dpor_thread_id(None)
         clear_context()
         set_sync_reporter(None)
+        set_access_sink(None)
         _dpor_tls.scheduler = None
         _dpor_tls.thread_id = None
         _dpor_tls.engine = None

@@ -11,6 +11,7 @@ from frontrun._dpor_core import (
     apply_lock_blocked_override,
     extend_replay_schedule,
 )
+from frontrun._opcode_observer import anchor_label as _anchor_label
 
 from ._shared import *
 from ._shared import _dpor_tls, _get_instructions, _process_opcode
@@ -90,6 +91,13 @@ class DporScheduler:
         # IO trace: records (thread_id, resource_id) in IO execution order.
         # Populated by after_io() under the condition lock.  See defect #16.
         self._io_trace: list[tuple[int, str]] = []
+        # Access trace for access-anchored replay (defect #20): records
+        # (thread_id, label, kind) for every anchorable shared-memory access,
+        # in execution order.  ``_access_key_labels`` maps engine object keys
+        # to those labels so that, on failure, the racing objects reported by
+        # ``engine.pending_races()`` can be resolved to run-stable labels.
+        self._access_trace: list[tuple[int, str, str]] = []
+        self._access_key_labels: dict[int, str] = {}
         # Explicit Python-level I/O boundary currently in progress. While set,
         # the owning thread keeps the scheduler turn until after_io() runs.
         self._active_io_thread: int | None = None
@@ -549,6 +557,37 @@ class DporScheduler:
             finally:
                 _scheduler_tls._in_dpor_machinery = False
 
+    def on_traced_access(self, thread_id: int, obj: Any, name: Any, kind: str, key: int) -> None:
+        """Access-sink callback: record an anchorable access (exploration).
+
+        Overridden by :class:`_ReplayDporScheduler` to *gate* accesses to
+        racing objects on the recorded order instead (defect #20).
+        """
+        label = _anchor_label(obj, name)
+        if label is None:
+            return
+        self._access_trace.append((thread_id, label, kind))
+        if key not in self._access_key_labels:
+            self._access_key_labels[key] = label
+
+    def racing_access_schedule(self, raced_object_keys: set[int]) -> list[tuple[int, str, str]] | None:
+        """Anchor schedule for access-anchored replay (defect #20).
+
+        Filters the recorded access trace to the labels of the objects in
+        *raced_object_keys* and collapses consecutive duplicate entries
+        (one opcode can report the same access at several scheduling
+        points; the replay gate re-matches such runs against the last
+        consumed anchor).  Returns ``None`` when nothing anchorable raced.
+        """
+        watched = {self._access_key_labels[k] for k in raced_object_keys if k in self._access_key_labels}
+        if not watched:
+            return None
+        anchors: list[tuple[int, str, str]] = []
+        for entry in self._access_trace:
+            if entry[1] in watched and (not anchors or anchors[-1] != entry):
+                anchors.append(entry)
+        return anchors or None
+
     def report_error(self, error: Exception) -> None:
         with self._condition:
             if self._error is None:
@@ -808,7 +847,18 @@ class DporScheduler:
 
 
 class _ReplayDporScheduler(DporScheduler):
-    """Replay a fixed DPOR schedule using the DPOR runner and SQL row-lock logic."""
+    """Replay a fixed DPOR schedule using the DPOR runner and SQL row-lock logic.
+
+    When *access_schedule* is provided, accesses to the racing objects are
+    additionally gated on the recorded access order (access-anchored replay,
+    defect #20).  The positional bytecode schedule drifts when the code under
+    test executes a run-varying number of traced opcodes between scheduling
+    points (e.g. a real ``gpg`` subprocess between a racing write and read);
+    the access anchors re-enforce the orderings that actually matter — the
+    conflicting accesses themselves.  On anchor-stream mismatch the gate
+    disables itself after ``deadlock_timeout`` and replay degrades to the
+    positional-only behavior.
+    """
 
     def __init__(
         self,
@@ -818,10 +868,17 @@ class _ReplayDporScheduler(DporScheduler):
         deadlock_timeout: float = 5.0,
         trace_recorder: TraceRecorder | None = None,
         detect_io: bool = False,
+        access_schedule: list[tuple[int, str, str]] | None = None,
     ) -> None:
         self._replay_schedule = list(schedule)
         self._replay_index = 0
         self._replay_max_ops = len(self._replay_schedule) * 10 + 10_000
+        self._access_anchors = list(access_schedule) if access_schedule else []
+        self._anchor_enabled = bool(self._access_anchors)
+        self._watched_labels = {label for _, label, _ in self._access_anchors}
+        self._anchor_index = 0
+        self._last_anchor: tuple[int, str, str] | None = None
+        self._gate_waiters = 0
         super().__init__(
             _ReplayEngine(),  # type: ignore[arg-type]
             _ReplayExecution(),  # type: ignore[arg-type]
@@ -830,6 +887,64 @@ class _ReplayDporScheduler(DporScheduler):
             trace_recorder=trace_recorder,
             detect_io=detect_io,
         )
+
+    def on_traced_access(self, thread_id: int, obj: Any, name: Any, kind: str, key: int) -> None:
+        """Gate accesses to racing objects on the recorded anchor order."""
+        if not self._anchor_enabled:
+            return
+        label = _anchor_label(obj, name)
+        if label is None or label not in self._watched_labels:
+            return
+        self._gate_access((thread_id, label, kind))
+
+    def _gate_access(self, entry: tuple[int, str, str]) -> None:
+        from frontrun._cooperative import _scheduler_tls
+
+        with self._condition:
+            _prev_machinery = getattr(_scheduler_tls, "_in_dpor_machinery", False)
+            _scheduler_tls._in_dpor_machinery = True
+            waiting = False
+            try:
+                while True:
+                    if self._finished or self._error or not self._anchor_enabled:
+                        return
+                    idx = self._anchor_index
+                    # Skip anchors owned by threads that already finished
+                    # (their remaining recorded accesses can never happen).
+                    while idx < len(self._access_anchors) and self._access_anchors[idx][0] in self._threads_done:
+                        idx += 1
+                    self._anchor_index = idx
+                    if idx >= len(self._access_anchors):
+                        return
+                    if self._access_anchors[idx] == entry:
+                        self._anchor_index = idx + 1
+                        self._last_anchor = entry
+                        self._condition.notify_all()
+                        return
+                    if self._last_anchor == entry:
+                        # Continuation of the anchor just consumed (one opcode
+                        # can report the same access at several scheduling
+                        # points) — let it through without consuming.
+                        return
+                    # Not this access's turn: wait for anchor progress.  While
+                    # any thread gate-waits, _wait_for_turn suspends positional
+                    # gating so the anchor-owning thread can reach its access.
+                    if not waiting:
+                        waiting = True
+                        self._gate_waiters += 1
+                        self._condition.notify_all()
+                    if not self._condition.wait(timeout=self.deadlock_timeout):
+                        # Anchor stream desynchronised (the replay run took a
+                        # different path).  Give up on anchors; degrade to
+                        # positional-only replay rather than deadlocking.
+                        self._anchor_enabled = False
+                        self._condition.notify_all()
+                        return
+            finally:
+                if waiting:
+                    self._gate_waiters -= 1
+                    self._condition.notify_all()
+                _scheduler_tls._in_dpor_machinery = _prev_machinery
 
     def _extend_schedule(self) -> bool:
         return extend_replay_schedule(
@@ -867,6 +982,14 @@ class _ReplayDporScheduler(DporScheduler):
             while True:
                 if self._finished or self._error:
                     return False
+
+                # While any thread is blocked on an access anchor, suspend
+                # positional gating: the anchor-owning thread must be able to
+                # reach its recorded access regardless of the (drifted)
+                # positional schedule.  The anchors carry the ordering that
+                # matters; the positional layer resumes once gates clear.
+                if self._gate_waiters > 0:
+                    return True
 
                 if self._current_thread in self._threads_done:
                     self._current_thread = self._schedule_next()
@@ -944,6 +1067,55 @@ class _IOAnchoredReplayScheduler(DporScheduler):
         self._io_index = 0
         # Set initial current_thread to the first IO schedule entry.
         self._current_thread = io_schedule[0][0] if io_schedule else 0
+        # Bijective rebinding of run-specific Redis keys (defect: redis-om
+        # style ORMs generate a fresh random primary key in every setup()
+        # call, so the key embedded in a recorded anchor never reappears
+        # in the replay run).  Maps recorded key -> replay key, bound
+        # greedily on first sight; see _anchors_match().
+        self._anchor_key_bindings: dict[str, str] = {}
+        self._anchor_bound_keys: set[str] = set()
+
+    def _anchors_match(self, expected: str, got: str) -> bool:
+        """Whether a replay I/O anchor matches the recorded one.
+
+        Exact string equality, with one relaxation: Redis anchors of the
+        form ``redis\\x1f<cmd>\\x1f<key>\\x1f<db_scope>`` may differ in the
+        *key* field when the key embeds run-specific random values (e.g. a
+        redis-om ULID primary key created fresh by each replay's setup()).
+        In that case the command and db scope must still match exactly and
+        the recorded key is bound to the replay key bijectively — once
+        bound, the same recorded key must always map to the same replay key
+        (and no other recorded key may map to it), preserving cross-command
+        key consistency (a thread's GET and SET of one object stay on one
+        object).
+        """
+        exp_parts = expected.split("\x1f")
+        got_parts = got.split("\x1f")
+        if expected == got:
+            # Record an identity binding for exact redis-anchor matches so
+            # a deterministic key (e.g. "counter") can never later become
+            # the image of a *different* recorded key.
+            if len(exp_parts) == 4 and exp_parts[0] == "redis":
+                key = exp_parts[2]
+                if key not in self._anchor_key_bindings and key not in self._anchor_bound_keys:
+                    self._anchor_key_bindings[key] = key
+                    self._anchor_bound_keys.add(key)
+            return True
+        if len(exp_parts) != 4 or len(got_parts) != 4:
+            return False
+        if exp_parts[0] != "redis" or got_parts[0] != "redis":
+            return False
+        if exp_parts[1] != got_parts[1] or exp_parts[3] != got_parts[3]:
+            return False  # different command or db scope
+        exp_key, got_key = exp_parts[2], got_parts[2]
+        bound = self._anchor_key_bindings.get(exp_key)
+        if bound is not None:
+            return bound == got_key
+        if got_key in self._anchor_bound_keys:
+            return False  # already the image of a different recorded key
+        self._anchor_key_bindings[exp_key] = got_key
+        self._anchor_bound_keys.add(got_key)
+        return True
 
     def _schedule_next(self) -> int | None:
         """Override to use IO schedule instead of DPOR engine.
@@ -1001,7 +1173,7 @@ class _IOAnchoredReplayScheduler(DporScheduler):
                             return
 
                         expected_tid, expected_resource_id = self._io_schedule[self._io_index]
-                        if expected_tid != thread_id or expected_resource_id != resource_id:
+                        if expected_tid != thread_id or not self._anchors_match(expected_resource_id, resource_id):
                             self._error = RuntimeError(
                                 "DPOR IO-anchored replay desynchronised: "
                                 f"expected {(expected_tid, expected_resource_id)!r}, "
