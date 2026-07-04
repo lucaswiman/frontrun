@@ -26,6 +26,13 @@ use crate::vv::VersionVec;
 pub enum SyncEvent {
     LockAcquire { lock_id: u64 },
     LockRelease { lock_id: u64 },
+    /// A non-blocking (`blocking=False`) acquire *attempt*, successful or not.
+    ///
+    /// Unlike a blocking acquire, a failed trylock is observable behavior:
+    /// the caller takes a different branch instead of waiting.  The engine
+    /// must therefore explore "attempt while held" vs "attempt after
+    /// release" orderings (see `process_deferred_lock_releases`).
+    LockAttempt { lock_id: u64, acquired: bool },
     ThreadJoin { joined_thread: usize },
     ThreadSpawn { child_thread: usize },
 }
@@ -81,6 +88,7 @@ impl Execution {
 struct DeferredLockRelease {
     thread_id: usize,
     path_id: usize,
+    lock_id: u64,
 }
 
 /// A lock acquire event recorded during execution for deferred backtracking.
@@ -88,6 +96,21 @@ struct DeferredLockRelease {
 struct DeferredLockAcquire {
     thread_id: usize,
     path_id: usize,
+}
+
+/// A non-blocking acquire attempt (trylock) recorded during execution.
+///
+/// Used by `process_deferred_lock_releases` to insert backtracks at the
+/// release position of the same lock: reversing (release, attempt) lets the
+/// attempting thread run while the lock is still held, so its trylock FAILS
+/// and the failure branch (e.g. "assume the holder will drain the queue")
+/// gets explored.  Without this, lost-wakeup races behind
+/// `acquire(blocking=False)` are invisible to DPOR.
+#[derive(Clone, Debug)]
+struct DeferredLockAttempt {
+    thread_id: usize,
+    path_id: usize,
+    lock_id: u64,
 }
 
 pub struct DporEngine {
@@ -107,6 +130,9 @@ pub struct DporEngine {
     /// Lock acquires collected during the current execution.
     /// Used to determine whether a release should trigger backtracking.
     deferred_lock_acquires: Vec<DeferredLockAcquire>,
+    /// Non-blocking acquire attempts collected during the current execution.
+    /// Used by release backtracking to explore trylock-failure branches.
+    deferred_lock_attempts: Vec<DeferredLockAttempt>,
     /// Resource group mapping: object_id → group_id.
     ///
     /// Objects in the same resource group (e.g., same SQL table) are related;
@@ -137,6 +163,7 @@ impl DporEngine {
             pending_races: Vec::new(),
             deferred_lock_releases: Vec::new(),
             deferred_lock_acquires: Vec::new(),
+            deferred_lock_attempts: Vec::new(),
             resource_groups: HashMap::new(),
         }
     }
@@ -422,6 +449,29 @@ impl DporEngine {
                     path_id: pid,
                 });
             }
+            SyncEvent::LockAttempt { lock_id, acquired } => {
+                let pid = path_id.unwrap_or_else(|| self.path.current_position().saturating_sub(1));
+                if !acquired {
+                    // A failed trylock is still an operation on the lock:
+                    // give it a synthetic Write access so it races with
+                    // other threads' acquires (exploring the success branch
+                    // via the ordinary race-reversal machinery).  Successful
+                    // attempts already get this access from the accompanying
+                    // LockAcquire event.
+                    let lock_obj_id = lock_id ^ Self::LOCK_OBJECT_XOR;
+                    self.process_io_access_at(
+                        execution, thread_id, lock_obj_id, AccessKind::Write, pid, AccessOrigin::LockSynthetic,
+                    );
+                }
+                // Record for deferred release→attempt backtracking (both
+                // outcomes): a later release of this lock must explore the
+                // ordering where the attempt happens while the lock is held.
+                self.deferred_lock_attempts.push(DeferredLockAttempt {
+                    thread_id,
+                    path_id: pid,
+                    lock_id,
+                });
+            }
             SyncEvent::LockRelease { lock_id } => {
                 let vv = execution.threads[thread_id].dpor_vv.clone();
                 execution.lock_release_vv.insert(lock_id, vv);
@@ -447,6 +497,7 @@ impl DporEngine {
                 self.deferred_lock_releases.push(DeferredLockRelease {
                     thread_id,
                     path_id: pid,
+                    lock_id,
                 });
             }
             SyncEvent::ThreadJoin { joined_thread } => {
@@ -513,6 +564,7 @@ impl DporEngine {
     fn process_deferred_lock_releases(&mut self) {
         let releases = std::mem::take(&mut self.deferred_lock_releases);
         let acquires = std::mem::take(&mut self.deferred_lock_acquires);
+        let attempts = std::mem::take(&mut self.deferred_lock_attempts);
 
         for release in &releases {
             let has_later_acquire = acquires.iter().any(|acq| {
@@ -526,6 +578,35 @@ impl DporEngine {
                     if tid != release.thread_id {
                         self.path.insert_wakeup(pid, tid, None);
                     }
+                }
+            }
+
+            // Trylock-aware backtracking: if another thread performed a
+            // non-blocking acquire attempt of the SAME lock after this
+            // release, reverse the (release, attempt) pair — schedule the
+            // attempting thread at the release position, where its trylock
+            // fails and the failure branch executes.  A blocking acquire
+            // would merely wait there (pointless to explore, hence the
+            // acquire-only rule above), but a trylock failure is observable
+            // behavior: e.g. the lost-wakeup pattern
+            //   q.append(x); if not lock.acquire(blocking=False): return
+            // silently drops x when the attempt lands inside the holder's
+            // critical section after its final queue-empty check.
+            for attempt in &attempts {
+                if attempt.lock_id == release.lock_id
+                    && attempt.thread_id != release.thread_id
+                    && attempt.path_id > release.path_id
+                {
+                    // The release event is attributed to the scheduling
+                    // position created *after* the holder's last traced
+                    // opcode preceding the release; the release itself
+                    // executes within the holder's preceding quantum.  To
+                    // preempt BEFORE the release actually happens, the
+                    // attempting thread must be scheduled one position
+                    // earlier (instead of the holder's final in-lock
+                    // opcode).
+                    let pid = release.path_id.saturating_sub(1);
+                    self.path.insert_wakeup(pid, attempt.thread_id, None);
                 }
             }
         }

@@ -131,7 +131,8 @@ impl PyDporEngine {
     }
 
     /// Report a synchronization event.
-    /// event_type: "lock_acquire", "lock_release", "thread_join", "thread_spawn"
+    /// event_type: "lock_acquire", "lock_release", "lock_attempt_ok",
+    /// "lock_attempt_fail", "thread_join", "thread_spawn"
     /// sync_id: identifier for the sync primitive or thread
     /// path_id: optional path position for lock events (free-threaded fix)
     #[pyo3(signature = (execution, thread_id, event_type, sync_id, path_id=None))]
@@ -146,6 +147,8 @@ impl PyDporEngine {
         let event = match event_type {
             "lock_acquire" => SyncEvent::LockAcquire { lock_id: sync_id },
             "lock_release" => SyncEvent::LockRelease { lock_id: sync_id },
+            "lock_attempt_ok" => SyncEvent::LockAttempt { lock_id: sync_id, acquired: true },
+            "lock_attempt_fail" => SyncEvent::LockAttempt { lock_id: sync_id, acquired: false },
             "thread_join" => SyncEvent::ThreadJoin {
                 joined_thread: sync_id as usize,
             },
