@@ -170,9 +170,7 @@ class TestNonAtomicRaceStillDetected:
             invariant=invariant,
             detect_io=True,
         )
-        assert not result.property_holds, (
-            "OVER-SUPPRESSION: the non-atomic GET-then-INCR TOCTOU race was not detected"
-        )
+        assert not result.property_holds, "OVER-SUPPRESSION: the non-atomic GET-then-INCR TOCTOU race was not detected"
         assert result.reproduction_attempts == 10
         assert result.reproduction_successes == 10, (
             f"real race must reproduce deterministically, got "

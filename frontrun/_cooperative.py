@@ -153,7 +153,9 @@ def _check_lock_cycle(graph: Any, thread_id: int, object_id: int, scheduler: Any
         raise SchedulerAbort(desc)
 
 
-def _timed_acquire_state(timeout: float, scheduler: Any = None, thread_id: int | None = None) -> tuple[float | None, Any, Any]:
+def _timed_acquire_state(
+    timeout: float, scheduler: Any = None, thread_id: int | None = None
+) -> tuple[float | None, Any, Any]:
     """Return ``(deadline, graph, clock)`` for a contended acquire (finding 7).
 
     A timed acquire (``timeout >= 0``) cannot participate in a deadlock: it
@@ -1336,7 +1338,7 @@ def _cooperative_sleep(seconds: float) -> None:
     scheduler, thread_id = ctx
     clock = getattr(scheduler, "virtual_clock", None)
     sleep_until = getattr(scheduler, "sleep_until", None)
-    if clock is not None and sleep_until is not None and seconds is not None and seconds > 0:
+    if clock is not None and sleep_until is not None and seconds > 0:
         sleep_until(thread_id, clock.now() + seconds)
         return
     scheduler.wait_for_turn(thread_id)

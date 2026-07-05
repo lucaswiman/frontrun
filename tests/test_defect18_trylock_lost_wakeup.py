@@ -93,8 +93,7 @@ def test_real_lock_finds_lost_wakeup():
     result = _explore(_thread.allocate_lock)
     assert not result.property_holds, "DPOR missed the lost-wakeup race with a real lock"
     assert result.reproduction_successes >= 8, (
-        f"lost-wakeup counterexample replayed only "
-        f"{result.reproduction_successes}/{result.reproduction_attempts}"
+        f"lost-wakeup counterexample replayed only {result.reproduction_successes}/{result.reproduction_attempts}"
     )
 
 
@@ -106,8 +105,7 @@ def test_cooperative_lock_finds_lost_wakeup():
         f"explored {result.num_explored} interleavings, all green"
     )
     assert result.reproduction_successes >= 8, (
-        f"lost-wakeup counterexample replayed only "
-        f"{result.reproduction_successes}/{result.reproduction_attempts}"
+        f"lost-wakeup counterexample replayed only {result.reproduction_successes}/{result.reproduction_attempts}"
     )
 
 

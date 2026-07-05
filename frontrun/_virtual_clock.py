@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Literal
@@ -114,7 +114,7 @@ def _active_virtual_clock() -> VirtualClock | None:
 
 
 @contextmanager
-def clock_scope(clock: VirtualClock | None) -> Iterator[None]:
+def clock_scope(clock: VirtualClock | None) -> Generator[None, None, None]:
     """Register *clock* for the current thread for the duration of the block.
 
     Used by exploration drivers around ``setup()`` and invariant evaluation so
@@ -137,7 +137,7 @@ def clock_scope(clock: VirtualClock | None) -> Iterator[None]:
 
 
 @contextmanager
-def clock_context(clock: VirtualClock | None) -> Iterator[None]:
+def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
     """Set :data:`_clock_var` for the current *context* (async exploration).
 
     asyncio tasks created inside the block inherit the contextvar (task
