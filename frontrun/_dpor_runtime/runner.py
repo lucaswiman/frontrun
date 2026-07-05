@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+from frontrun._dpor_core import event_wake_sync_id as _event_wake_sync_id
 from frontrun._dpor_core.worker import WorkerTarget
 from frontrun._opcode_observer import (
     OpcodeTraceHandle,
@@ -268,6 +269,51 @@ class DporBytecodeRunner:
                     # Wake threads that may now be schedulable
                     with scheduler._condition:
                         scheduler._condition.notify_all()
+                    return
+                # Cooperative Event machinery (see CooperativeEvent): waiters
+                # engine-block until set().  Wake happens-before edges use
+                # per-waiter sync ids (like the virtual clock's wake edges) so
+                # each of N waiters gets its own release/acquire pair, and the
+                # lock_depth bookkeeping above is deliberately not touched.
+                if event == "event_wait":
+                    with engine_lock:
+                        if lock_obj.is_set():  # type: ignore[attr-defined]
+                            # set() already ran (serialized by engine_lock):
+                            # blocking now would be a lost wakeup.
+                            return
+                        scheduler._lock_waiters.setdefault(stable_lock_id, set()).add(thread_id)
+                        execution.block_thread(thread_id)
+                    return
+                if event == "event_set":
+                    with engine_lock:
+                        waiters = scheduler._lock_waiters.pop(stable_lock_id, set())
+                        _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
+                        for waiter in sorted(waiters):
+                            execution.unblock_thread(waiter)
+                            engine.report_sync(
+                                execution,
+                                thread_id,
+                                "lock_release",
+                                _event_wake_sync_id(stable_lock_id, waiter),
+                                _saved_path_id,
+                            )
+                    with scheduler._condition:
+                        scheduler._condition.notify_all()
+                    return
+                if event == "event_wake":
+                    with engine_lock:
+                        waiter_set = scheduler._lock_waiters.get(stable_lock_id)
+                        if waiter_set is not None:
+                            waiter_set.discard(thread_id)
+                        execution.unblock_thread(thread_id)
+                        _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
+                        engine.report_sync(
+                            execution,
+                            thread_id,
+                            "lock_acquire",
+                            _event_wake_sync_id(stable_lock_id, thread_id),
+                            _saved_path_id,
+                        )
                     return
                 with engine_lock:
                     _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)

@@ -10,6 +10,7 @@ from frontrun._dpor_core import (
     advance_replay_index,
     apply_lock_blocked_override,
     extend_replay_schedule,
+    wake_sync_id,
 )
 from frontrun._opcode_observer import anchor_label as _anchor_label
 from frontrun._virtual_clock import VirtualClock
@@ -19,13 +20,6 @@ from ._shared import _dpor_tls, _get_instructions, _process_opcode
 from .preload_bridge import _PreloadBridge
 
 _SENTINEL = object()
-
-# High bits XORed with a thread id to form the sync-object id of that thread's
-# virtual-clock wake edge ("WAKE" in ASCII).  The clock actor reports a
-# ``lock_release`` on this object when it wakes a sleeper; the woken thread
-# reports the matching ``lock_acquire``, giving the engine the happens-before
-# edge "clock advanced → sleeper resumed".
-_WAKE_SYNC_BASE = 0x57414B45_00000000
 
 
 class DporScheduler:
@@ -74,6 +68,11 @@ class DporScheduler:
         # stays in its spin loop; the clock advance unblocks it in the engine
         # so it can observe the expired deadline and give up).
         self._timed_waits: dict[int, float] = {}
+        # Replay only: clock-actor schedule entries reached before any
+        # deadline was registered (schedule drift).  The owed advance is
+        # performed at the next deadline registration instead of being lost
+        # (losing it costs a full deadlock_timeout per reproduction attempt).
+        self._pending_clock_advances = 0
         self.deadlock_timeout = deadlock_timeout
         self.trace_recorder = trace_recorder
         self._preload_bridge = preload_bridge
@@ -184,7 +183,7 @@ class DporScheduler:
     # ------------------------------------------------------------------
 
     def _wake_sync_id(self, thread_id: int) -> int:
-        return _WAKE_SYNC_BASE ^ thread_id
+        return wake_sync_id(thread_id)
 
     def _has_pending_deadlines(self) -> bool:
         return bool(self._sleepers or self._timed_waits)
@@ -231,6 +230,12 @@ class DporScheduler:
                     self._wake_sync_id(tid),
                     self._last_scheduled_path_id,
                 )
+        # Timed-wait wakes deliberately carry no happens-before edge: the
+        # waiter re-reports lock_wait (re-blocking itself) before it can
+        # observe expiry, and the give-up path ends in clear_engine_block —
+        # its subsequent steps are ordered by the lock machinery itself, not
+        # by this advance.  Sleeper wakes (above) do need the edge because a
+        # sleeper's next step has no other synchronization with the advance.
         for tid, dl in sorted(self._timed_waits.items(), key=lambda kv: (kv[1], kv[0])):
             if dl <= now:
                 del self._timed_waits[tid]
@@ -242,6 +247,13 @@ class DporScheduler:
         with self._engine_lock:
             self._timed_waits[thread_id] = deadline
             self._sync_clock_actor_locked()
+        if self._pending_clock_advances > 0:
+            # Replay owed us an actor step (see _pending_clock_advances).
+            with self._condition:
+                if self._pending_clock_advances > 0:
+                    self._pending_clock_advances -= 1
+                    self._replay_advance_clock_to()
+                    self._condition.notify_all()
 
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""
@@ -258,6 +270,8 @@ class DporScheduler:
         with self._condition:
             with self._engine_lock:
                 self.execution.unblock_thread(thread_id)
+            # A thread waits on at most one resource at a time, so scrubbing
+            # it from every waiter set is equivalent to knowing the lock id.
             for waiters in self._lock_waiters.values():
                 waiters.discard(thread_id)
             self._condition.notify_all()
@@ -283,6 +297,11 @@ class DporScheduler:
                     self._sleepers[thread_id] = deadline
                     self.execution.block_thread(thread_id)
                     self._sync_clock_actor_locked()
+                if self._pending_clock_advances > 0:
+                    # Replay owed us an actor step that arrived before this
+                    # registration (drift): perform it now.
+                    self._pending_clock_advances -= 1
+                    self._replay_advance_clock_to()
                 if self._current_thread == thread_id:
                     next_thread = self._schedule_next()
                     self._current_thread = next_thread
@@ -302,6 +321,8 @@ class DporScheduler:
                     if self._finished or self._error:
                         _abort_sleep()
                         return
+                    if self._replay_sleep_self_wake(thread_id):
+                        continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         if self._current_thread in self._threads_done:
                             next_thread = self._schedule_next()
@@ -998,6 +1019,18 @@ class DporScheduler:
             if dl <= now:
                 del self._timed_waits[tid]
 
+    def _replay_sleep_self_wake(self, thread_id: int) -> bool:
+        """Replay-only escape from ``sleep_until`` phase 1 (base: no-op).
+
+        During exploration the clock advance must stay an engine choice, so
+        the base class never self-wakes.  ``_ReplayDporScheduler`` overrides
+        this: when the positional walk is suspended (access-gate waiters) or
+        points at this very sleeper, only a clock advance can move the run
+        forward — without it, each reproduction attempt burns a
+        ``deadlock_timeout``.
+        """
+        return False
+
     def _wake_scheduled_sleeper(self) -> bool:
         """Advance the clock when replay schedules a deadline-blocked thread.
 
@@ -1247,6 +1280,25 @@ class _ReplayDporScheduler(DporScheduler):
             self._threads_done,
         )
 
+    def _replay_sleep_self_wake(self, thread_id: int) -> bool:
+        """Advance the clock to our own deadline when nothing else can.
+
+        Two replay situations leave the sleeper as the only possible mover:
+        the positional walk is suspended because other threads wait on access
+        gates (they need *our* later writes), or the walk points at this very
+        sleeper.  Caller (``sleep_until`` phase 1) holds ``_condition``.
+        """
+        if self.virtual_clock is None:
+            return False
+        deadline = self._sleepers.get(thread_id)
+        if deadline is None:
+            return False
+        if self._gate_waiters > 0 or self._current_thread == thread_id:
+            self._replay_advance_clock_to(deadline)
+            self._condition.notify_all()
+            return True
+        return False
+
     def _schedule_next(self) -> int | None:
         while True:
             self._replay_index, next_actor = advance_replay_index(
@@ -1258,7 +1310,13 @@ class _ReplayDporScheduler(DporScheduler):
             if next_actor is not None and self._clock_actor_id is not None and next_actor == self._clock_actor_id:
                 # Recorded clock-actor step: advance to the earliest pending
                 # deadline (waking its sleepers) and keep walking the schedule.
-                self._replay_advance_clock_to()
+                if self._sleepers or self._timed_waits:
+                    self._replay_advance_clock_to()
+                else:
+                    # Positional drift: the sleeper has not registered its
+                    # deadline yet.  Owe the advance — sleep_until /
+                    # add_timed_wait perform it on registration.
+                    self._pending_clock_advances += 1
                 continue
             return next_actor
 

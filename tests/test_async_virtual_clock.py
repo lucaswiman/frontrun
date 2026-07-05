@@ -213,3 +213,76 @@ def test_async_wait_for_stays_on_wall_clock() -> None:
         )
     )
     assert result.property_holds, result.explanation
+
+
+class _AsyncHoldAndSleep:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.a_sleep_virtual = 0.0
+        self.b_acquired = False
+
+
+def test_async_sleep_while_holding_lock() -> None:
+    """A task sleeping while holding an asyncio.Lock must autojump, not die
+    by deadlock timeout (regression: the run was scored as a false deadlock
+    counterexample — the blocked contender has no scheduling points, so
+    nothing ever asked the engine to reschedule)."""
+
+    async def a(s: _AsyncHoldAndSleep) -> None:
+        async with s.lock:
+            start = time.monotonic()
+            await asyncio.sleep(1.0)
+            s.a_sleep_virtual = time.monotonic() - start
+
+    async def b(s: _AsyncHoldAndSleep) -> None:
+        await asyncio.sleep(0)
+        async with s.lock:
+            s.b_acquired = True
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_AsyncHoldAndSleep,
+            workers=[a, b],
+            invariant=lambda s: s.b_acquired and s.a_sleep_virtual >= 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"async lock+sleep took {wall_elapsed:.1f}s (deadlock-timeout stall?)"
+
+
+def test_async_random_lock_sleep_quiescence_rescue() -> None:
+    """Random strategy cannot see tasks parked on a raw asyncio.Lock; the
+    quiescence heuristic must advance the clock instead of letting the run
+    die by wall timeout."""
+
+    async def a(s: _AsyncHoldAndSleep) -> None:
+        async with s.lock:
+            start = time.monotonic()
+            await asyncio.sleep(1.0)
+            s.a_sleep_virtual = time.monotonic() - start
+
+    async def b(s: _AsyncHoldAndSleep) -> None:
+        await asyncio.sleep(0)
+        async with s.lock:
+            s.b_acquired = True
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_AsyncHoldAndSleep,
+            workers=[a, b],
+            invariant=lambda s: s.b_acquired and s.a_sleep_virtual >= 1.0,
+            strategy="random",
+            clock="virtual",
+            max_attempts=3,
+            seed=7,
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 10.0, f"async random lock+sleep took {wall_elapsed:.1f}s"

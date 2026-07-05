@@ -59,6 +59,8 @@ from frontrun.explore import explore
 from frontrun.trace_markers import TraceExecutor
 
 if TYPE_CHECKING:
+    from frontrun._virtual_clock import VIRTUAL_EPOCH as VIRTUAL_EPOCH
+    from frontrun._virtual_clock import ClockMode as ClockMode
     from frontrun.async_shuffler import explore_async_random as explore_async_random
     from frontrun.bytecode import explore_random as explore_random
     from frontrun.cross_process import Subprocess as Subprocess
@@ -75,6 +77,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "explore_async_random": ("frontrun.async_shuffler", "explore_async_random"),
     "explore_processes": ("frontrun.cross_process", "explore_processes"),
     "Subprocess": ("frontrun.cross_process", "Subprocess"),
+    "ClockMode": ("frontrun._virtual_clock", "ClockMode"),
+    "VIRTUAL_EPOCH": ("frontrun._virtual_clock", "VIRTUAL_EPOCH"),
 }
 
 
@@ -92,9 +96,11 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "ClockMode",
     "NondeterministicSQLError",
     "Subprocess",
     "TraceExecutor",
+    "VIRTUAL_EPOCH",
     "__version__",
     "explore",
     "explore_async_random",

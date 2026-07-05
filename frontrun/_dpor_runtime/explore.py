@@ -10,7 +10,7 @@ from frontrun._dpor_core import (
     make_dpor_engine,
     record_dpor_failure,
 )
-from frontrun._virtual_clock import VirtualClock, clock_scope, validate_clock
+from frontrun._virtual_clock import ClockMode, VirtualClock, clock_scope, validate_clock_options
 
 from ._shared import *
 from ._shared import _require_frontrun_env, _set_active_trace_filter, _TraceFilter
@@ -52,7 +52,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
     patch_sleep: bool = True,
     serializable_invariant: Callable[[T], Any] | bool = False,
     error_on_any_race: bool = False,
-    clock: str = "real",
+    clock: ClockMode = "real",
 ) -> InterleavingResult:
     """Systematically explore interleavings using DPOR.
 
@@ -161,16 +161,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
        automatically skipped.
     """
     _require_frontrun_env("frontrun.explore")
-    clock = validate_clock(clock)
-    if clock != "real":
-        if not patch_sleep:
-            raise ValueError("clock='virtual'/'explored' requires patch_sleep=True (sleeps become virtual deadlines)")
-        if serializable_invariant is not False:
-            raise ValueError(
-                "clock='virtual'/'explored' cannot be combined with serializable_invariant: "
-                "the sequential baseline runs execute outside the scheduler, so their sleeps "
-                "and clock reads would use real wall-clock time"
-            )
+    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 

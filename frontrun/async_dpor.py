@@ -73,6 +73,7 @@ from frontrun._dpor_core import (
     make_deadline,
     make_dpor_engine,
     record_dpor_failure,
+    wake_sync_id,
 )
 from frontrun._opcode_observer import (
     OpcodeTraceHandle,
@@ -91,12 +92,13 @@ from frontrun._threaded_runner import PatchScope
 from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._virtual_clock import (
+    ClockMode,
     VirtualClock,
     clock_context,
     patch_time,
     real_monotonic,
     unpatch_time,
-    validate_clock,
+    validate_clock_options,
 )
 from frontrun.async_scheduler import InterleavedLoop
 from frontrun.common import (
@@ -255,6 +257,14 @@ class _CooperativeAsyncLock:
             depth = _in_scheduler_pause.get()
             _in_scheduler_pause.set(depth + 1)
             try:
+                # If blocking ourselves left nothing engine-runnable (the
+                # holder may be parked in sleep_until with no scheduling
+                # points until the clock advances), hand the turn onward now
+                # — otherwise no one ever calls _schedule_next and the run
+                # dies by deadlock timeout: a false deadlock counterexample.
+                kick = getattr(scheduler, "kick_stalled_schedule", None)
+                if kick is not None:
+                    await kick(task_id)
                 result = await self._lock.acquire()
             finally:
                 _in_scheduler_pause.set(depth)
@@ -352,10 +362,6 @@ def _unpatch_asyncio_lock() -> None:
 _real_asyncio_sleep = asyncio.sleep
 _async_sleep_patched = False
 
-# High bits XORed with a task id to form the sync-object id of that task's
-# virtual-clock wake edge (mirrors _dpor_runtime.scheduler._WAKE_SYNC_BASE).
-_WAKE_SYNC_BASE = 0x57414B45_00000000
-
 
 async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # noqa: ANN401
     """No-delay replacement for ``asyncio.sleep`` during exploration.
@@ -438,8 +444,11 @@ class AsyncDporScheduler(InterleavedLoop):
         self.virtual_clock = virtual_clock
         self._clock_mode = clock_mode
         self._clock_actor_id = clock_actor_id
+        # task_id → virtual deadline for tasks parked in sleep_until().  No
+        # async analogue of the sync _timed_waits exists: asyncio.Lock.acquire
+        # has no timeout parameter (asyncio timeouts stay on the wall clock;
+        # see docs/virtual_clock.rst).
         self._sleepers: dict[int, float] = {}
-        self._timed_waits: dict[int, float] = {}
         self._current_task: int | None = None
         self._detect_sql = detect_sql
         self._detect_redis = detect_redis
@@ -474,7 +483,7 @@ class AsyncDporScheduler(InterleavedLoop):
     # -- Virtual clock ---------------------------------------------------
 
     def _has_pending_deadlines(self) -> bool:
-        return bool(self._sleepers or self._timed_waits)
+        return bool(self._sleepers)
 
     def _sync_clock_actor(self) -> None:
         """Keep the clock actor's enabledness in step with pending deadlines."""
@@ -490,7 +499,7 @@ class AsyncDporScheduler(InterleavedLoop):
         clock = self.virtual_clock
         if clock is None:
             return
-        pending = list(self._sleepers.values()) + list(self._timed_waits.values())
+        pending = list(self._sleepers.values())
         if not pending:
             self._sync_clock_actor()
             return
@@ -500,11 +509,7 @@ class AsyncDporScheduler(InterleavedLoop):
             if dl <= now:
                 del self._sleepers[tid]
                 self.execution.unblock_thread(tid)
-                self.engine.report_sync(self.execution, self._clock_actor_id, "lock_release", _WAKE_SYNC_BASE ^ tid)
-        for tid, dl in sorted(self._timed_waits.items(), key=lambda kv: (kv[1], kv[0])):
-            if dl <= now:
-                del self._timed_waits[tid]
-                self.execution.unblock_thread(tid)
+                self.engine.report_sync(self.execution, self._clock_actor_id, "lock_release", wake_sync_id(tid))
         self._sync_clock_actor()
 
     async def sleep_until(self, task_id: int, deadline: float) -> None:
@@ -527,7 +532,13 @@ class AsyncDporScheduler(InterleavedLoop):
                 self._sleepers[task_id] = deadline
                 self.execution.block_thread(task_id)
                 self._sync_clock_actor()
-                if self._current_task == task_id:
+                # Reschedule if we held the turn — or if nothing is engine-
+                # runnable anymore (e.g. every other task is parked on an
+                # asyncio.Lock we hold: they have no scheduling points, so
+                # no one else will ever call _schedule_next and the run
+                # would die by deadlock timeout instead of autojumping).
+                cur = self._current_task
+                if cur == task_id or cur is None or not self.execution.runnable_threads():
                     next_task = self._schedule_next()
                     if next_task is not None:
                         self._current_task = next_task
@@ -561,9 +572,30 @@ class AsyncDporScheduler(InterleavedLoop):
                 if self._finished or self._error:
                     return
                 # Close the wake happens-before edge (clock advance → resume).
-                self.engine.report_sync(self.execution, task_id, "lock_acquire", _WAKE_SYNC_BASE ^ task_id)
+                self.engine.report_sync(self.execution, task_id, "lock_acquire", wake_sync_id(task_id))
         finally:
             _in_scheduler_pause.set(depth)
+
+    async def kick_stalled_schedule(self, task_id: int) -> None:
+        """Hand the turn onward after *task_id* engine-blocked itself.
+
+        Called by ``_CooperativeAsyncLock.acquire`` right after it blocks the
+        task, because the blocked task parks in the real lock acquire with no
+        further scheduling points: if it held the turn — or if nothing is
+        engine-runnable anymore — no other code path would ever call
+        ``_schedule_next`` (whose runnable-empty branch performs the
+        virtual-clock autojump).
+        """
+        async with self._condition:
+            if self._finished or self._error:
+                return
+            cur = self._current_task
+            if cur != task_id and cur is not None and self.execution.runnable_threads():
+                return
+            next_task = self._schedule_next()
+            if next_task is not None:
+                self._current_task = next_task
+            self._condition.notify_all()
 
     def _schedule_next(self) -> int | None:
         """Ask the DPOR engine which task to run next.
@@ -752,7 +784,6 @@ class AsyncDporScheduler(InterleavedLoop):
             # clock actor once every real task finished.
             if self.virtual_clock is not None:
                 self._sleepers.pop(task_id, None)
-                self._timed_waits.pop(task_id, None)
                 self._sync_clock_actor()
             if self._clock_actor_id is not None and len(self._tasks_done) >= self._num_engine_tasks:
                 self.execution.unblock_thread(self._clock_actor_id)
@@ -1042,16 +1073,20 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         self._clock_mode = clock_mode
         self._clock_actor_id = clock_actor_id
         self._sleepers: dict[int, float] = {}
-        self._timed_waits: dict[int, float] = {}
+        # Recorded actor entries reached before any deadline was registered
+        # (drift): the owed advance is performed at the next registration.
+        self._pending_clock_advances = 0
         self._current_task: int | None = None
         if schedule:
             first = schedule[0]
             if clock_actor_id is not None and first == clock_actor_id:
                 # A leading actor entry cannot advance anything yet (no
-                # deadlines registered); just skip it.
+                # deadlines registered — a stale wakeup-tree step); skip it
+                # without owing an advance.
                 self._current_task = None
                 self._replay_index = 0
                 self._advance()
+                self._pending_clock_advances = 0
             else:
                 self._current_task = first
         # Stubs so the patched cooperative asyncio.Lock can call
@@ -1076,7 +1111,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         clock = self.virtual_clock
         if clock is None:
             return
-        pending = list(self._sleepers.values()) + list(self._timed_waits.values())
+        pending = list(self._sleepers.values())
         if not pending:
             return
         clock.advance_to(min(pending) if target is None else target)
@@ -1084,9 +1119,6 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         for tid, dl in list(self._sleepers.items()):
             if dl <= now:
                 del self._sleepers[tid]
-        for tid, dl in list(self._timed_waits.items()):
-            if dl <= now:
-                del self._timed_waits[tid]
 
     def _advance(self) -> None:
         """Advance ``_replay_index`` and ``_current_task`` to the next live actor."""
@@ -1099,7 +1131,12 @@ class _ReplayAsyncScheduler(InterleavedLoop):
             )
             if next_actor is not None and self._clock_actor_id is not None and next_actor == self._clock_actor_id:
                 # Recorded clock-actor step: advance the clock and keep going.
-                self._replay_advance_clock()
+                if self._sleepers:
+                    self._replay_advance_clock()
+                else:
+                    # Drift: the sleeper has not registered yet — owe the
+                    # advance and perform it on registration (sleep_until).
+                    self._pending_clock_advances += 1
                 continue
             break
         self._current_task = next_actor
@@ -1117,6 +1154,11 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                 if self._finished or self._error:
                     return
                 self._sleepers[task_id] = deadline
+                if self._pending_clock_advances > 0:
+                    # Replay owed us an actor step that arrived before this
+                    # registration (drift): perform it now.
+                    self._pending_clock_advances -= 1
+                    self._replay_advance_clock()
                 if self._current_task == task_id:
                     self._advance()
                 self._condition.notify_all()
@@ -1214,7 +1256,7 @@ async def _reproduce_async_counterexample(
     reproduce_on_failure: int,
     timeout_per_run: float,
     deadlock_timeout: float,
-    clock: str = "real",
+    clock: ClockMode = "real",
 ) -> tuple[int, int]:
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
@@ -1293,7 +1335,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     patch_sleep: bool = True,
     serializable_invariant: Callable[[T], Any] | bool = False,
     error_on_any_race: bool = False,
-    clock: str = "real",
+    clock: ClockMode = "real",
 ) -> InterleavingResult:
     """Systematically explore async interleavings using DPOR.
 
@@ -1349,20 +1391,21 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             scheduler from deadlocking when two tasks contend on the
             same PostgreSQL row lock.  Value is in milliseconds;
             2000 (2 seconds) is a good default.
+        patch_sleep: If True (default), ``asyncio.sleep`` yields to the
+            scheduler instead of waiting.  Required for ``clock != "real"``.
+        serializable_invariant: Check serializability against sequential
+            runs.  Cannot be combined with a virtual clock.
+        error_on_any_race: Treat unsynchronized races as failures.
+        clock: ``"real"`` (default), ``"virtual"`` (autojump virtual clock),
+            or ``"explored"`` (clock advances become schedulable DPOR steps
+            via a synthetic clock-actor task).  ``asyncio.wait_for`` /
+            ``asyncio.timeout`` stay on the wall clock.  See
+            :doc:`/virtual_clock`.
 
     Returns:
         InterleavingResult with exploration statistics and any counterexample.
     """
-    clock = validate_clock(clock)
-    if clock != "real":
-        if not patch_sleep:
-            raise ValueError("clock='virtual'/'explored' requires patch_sleep=True (sleeps become virtual deadlines)")
-        if serializable_invariant is not False:
-            raise ValueError(
-                "clock='virtual'/'explored' cannot be combined with serializable_invariant: "
-                "the sequential baseline runs execute outside the scheduler, so their sleeps "
-                "and clock reads would use real wall-clock time"
-            )
+    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 

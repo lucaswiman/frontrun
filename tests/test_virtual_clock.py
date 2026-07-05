@@ -55,8 +55,7 @@ def test_process_execution_rejects_virtual_clock() -> None:
 
 
 def test_time_functions_restored_after_exploration() -> None:
-    saved_monotonic = time.monotonic
-    saved_time = time.time
+    saved = (time.time, time.monotonic, time.perf_counter, time.time_ns, time.monotonic_ns, time.perf_counter_ns)
 
     class State:
         pass
@@ -69,8 +68,68 @@ def test_time_functions_restored_after_exploration() -> None:
         reproduce_on_failure=0,
     )
     assert result.property_holds
+    assert (
+        time.time,
+        time.monotonic,
+        time.perf_counter,
+        time.time_ns,
+        time.monotonic_ns,
+        time.perf_counter_ns,
+    ) == saved
+
+
+def test_time_functions_restored_after_worker_exception() -> None:
+    saved_monotonic = time.monotonic
+
+    class State:
+        pass
+
+    def worker(s: State) -> None:
+        time.sleep(1.0)
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
     assert time.monotonic is saved_monotonic
-    assert time.time is saved_time
+
+
+def test_invariant_sees_virtual_time() -> None:
+    """The invariant is documented to see the same virtual time as workers.
+
+    Regression: invariant evaluation happens after the workers' patch scope
+    unwinds, so clock_scope must own the time.* patch itself.
+    """
+    observed: list[tuple[float, float]] = []
+
+    class State:
+        def __init__(self) -> None:
+            self.worker_saw = 0.0
+
+    def worker(s: State) -> None:
+        time.sleep(5.0)
+        s.worker_saw = time.monotonic()
+
+    def invariant(s: State) -> bool:
+        observed.append((s.worker_saw, time.monotonic()))
+        return True
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=invariant,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+    worker_saw, invariant_saw = observed[0]
+    assert worker_saw >= 1_000_000.0  # VIRTUAL_EPOCH
+    assert invariant_saw >= worker_saw  # both virtual, monotonic
 
 
 # ---------------------------------------------------------------------------
@@ -206,14 +265,114 @@ def test_explored_clock_finds_timer_between_read_and_write() -> None:
     """With clock="explored" the clock advance is a schedulable DPOR step:
     the engine must find the interleaving where the delayed write fires
     between the RMW worker's read and write (final x == 1, not 100)."""
+    wall_start = time.monotonic()
     result = frontrun.explore(
         setup=_RetryRace,
         workers=[_rmw_worker, _delayed_writer],
         invariant=lambda s: s.x == 100,
         clock="explored",
     )
+    wall_elapsed = time.monotonic() - wall_start
     assert not result.property_holds
     assert result.counterexample is not None
+    # The recorded schedule contains clock-actor steps; replay must perform
+    # the same advances without stalling on the deadlock timeout.
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+    assert wall_elapsed < 30.0, f"exploration + 10 replays took {wall_elapsed:.1f}s (replay clock stall?)"
+
+
+# ---------------------------------------------------------------------------
+# Sleeping while holding a lock / signalling via events
+# ---------------------------------------------------------------------------
+
+
+class _HoldAndSleep:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.a_has_lock = threading.Event()
+        self.a_sleep_virtual = 0.0
+        self.b_acquired = False
+
+
+def _hold_sleep_a(s: _HoldAndSleep) -> None:
+    with s.lock:
+        s.a_has_lock.set()
+        start = time.monotonic()
+        time.sleep(1.0)
+        s.a_sleep_virtual = time.monotonic() - start
+
+
+def _hold_sleep_b(s: _HoldAndSleep) -> None:
+    s.a_has_lock.wait()
+    with s.lock:
+        s.b_acquired = True
+
+
+def test_sleep_while_holding_lock_dpor() -> None:
+    """A worker sleeping while holding a lock must not stall or deadlock:
+    the contender engine-blocks (event wait + lock wait) and the clock
+    autojumps.  Regression for the Event.wait spin that let DPOR schedule
+    the waiter unboundedly (one burned deadlock timeout per branch)."""
+    wall_start = time.monotonic()
+    result = frontrun.explore(
+        setup=_HoldAndSleep,
+        workers=[_hold_sleep_a, _hold_sleep_b],
+        invariant=lambda s: s.b_acquired and s.a_sleep_virtual >= 1.0,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"lock+sleep exploration took {wall_elapsed:.1f}s (deadlock-timeout stall?)"
+
+
+def test_random_sleep_while_holding_lock() -> None:
+    """Random strategy: an untimed lock spinner must not block the autojump
+    (regression: sleep(1.0) silently returned with 0 virtual seconds)."""
+    result = frontrun.explore(
+        setup=_HoldAndSleep,
+        workers=[_hold_sleep_a, _hold_sleep_b],
+        invariant=lambda s: s.b_acquired and s.a_sleep_virtual >= 1.0,
+        strategy="random",
+        clock="virtual",
+        max_attempts=3,
+        seed=42,
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_event_deadlock_detected_exactly() -> None:
+    """Two workers each waiting on the other's event is a genuine deadlock:
+    with a virtual clock and no pending deadline it must be reported via
+    exact detection, not by burning the wall-clock fallback timeout."""
+
+    class State:
+        def __init__(self) -> None:
+            self.e1 = threading.Event()
+            self.e2 = threading.Event()
+
+    def w1(s: State) -> None:
+        s.e1.wait()
+        s.e2.set()
+
+    def w2(s: State) -> None:
+        s.e2.wait()
+        s.e1.set()
+
+    wall_start = time.monotonic()
+    result = frontrun.explore(
+        setup=State,
+        workers=[w1, w2],
+        invariant=lambda s: True,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert not result.property_holds
+    assert "deadlock" in str(result.explanation).lower()
+    assert wall_elapsed < 4.0, f"deadlock took {wall_elapsed:.1f}s to report (wall-clock fallback?)"
 
 
 # ---------------------------------------------------------------------------

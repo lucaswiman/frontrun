@@ -56,12 +56,14 @@ from frontrun._async_autopause import (
 from frontrun._random_schedules import fair_schedule_strategy, random_round_robin_schedule
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
+    ClockMode,
     VirtualClock,
+    _real_monotonic,
     clock_context,
     patch_time,
     real_monotonic,
     unpatch_time,
-    validate_clock,
+    validate_clock_options,
 )
 from frontrun.async_dpor import _real_asyncio_sleep, _sql_async_available, patch_sql_async, unpatch_sql_async
 from frontrun.async_scheduler import InterleavedLoop
@@ -70,6 +72,12 @@ from frontrun.common import (
     check_invariant,
     check_serializability_violation,
 )
+
+#: How long the schedule must be quiescent (no pauses, no schedule progress,
+#: no task completions) before a sleeper concludes that the remaining tasks
+#: are parked on something the scheduler cannot see (e.g. an unpatched
+#: asyncio.Lock) and autojumps the virtual clock.
+_QUIESCENCE_SLICE = 0.25
 
 
 class AwaitScheduler(InterleavedLoop):
@@ -139,6 +147,7 @@ class AwaitScheduler(InterleavedLoop):
                 self._sleepers[task_id] = deadline
                 self._condition.notify_all()
                 try:
+                    wait_started = _real_monotonic()
                     while task_id in self._sleepers:
                         if self._finished or self._error:
                             return
@@ -148,14 +157,26 @@ class AwaitScheduler(InterleavedLoop):
                             self._advance_clock_to(min(self._sleepers[t] for t in alive))
                             self._condition.notify_all()
                             continue
+                        snapshot = (self._progress, self._index, len(self._tasks_done))
                         try:
-                            await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                            await asyncio.wait_for(self._condition.wait(), timeout=_QUIESCENCE_SLICE)
                         except asyncio.TimeoutError:
-                            self._error = TimeoutError(
-                                f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
-                            )
-                            self._condition.notify_all()
-                            return
+                            if (self._progress, self._index, len(self._tasks_done)) == snapshot:
+                                # Quiescent: the remaining tasks are parked on
+                                # something the scheduler can't see (e.g. an
+                                # unpatched asyncio.Lock whose holder is this
+                                # sleeper).  Advancing time is the only way
+                                # forward; without it the run dies by wall
+                                # timeout — a false deadlock.
+                                self._advance_clock_to(min(self._sleepers.values()))
+                                self._condition.notify_all()
+                                continue
+                            if _real_monotonic() - wait_started > self.deadlock_timeout:
+                                self._error = TimeoutError(
+                                    f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
+                                )
+                                self._condition.notify_all()
+                                return
                 finally:
                     self._sleepers.pop(task_id, None)
         finally:
@@ -454,7 +475,7 @@ async def explore_async_random(
     serializable_invariant: Callable[[Any], Any] | bool = False,
     error_on_any_race: bool = False,
     total_timeout: float | None = None,
-    clock: str = "real",
+    clock: ClockMode = "real",
 ) -> InterleavingResult:
     """Search for async interleavings that violate an invariant.
 
@@ -487,6 +508,20 @@ async def explore_async_random(
         trace_packages: Accepted for API compatibility but not used.
             The async shuffler operates at await-point granularity and
             does not perform file-level tracing.
+        patch_sleep: If True (default), ``asyncio.sleep`` yields to the
+            scheduler instead of waiting.  Required for ``clock != "real"``.
+        serializable_invariant: Check serializability against sequential
+            runs.  Cannot be combined with a virtual clock.
+        error_on_any_race: Not supported here — requires the DPOR strategy.
+        clock: ``"real"`` (default), ``"virtual"`` (autojump virtual clock:
+            time reads are virtual, ``asyncio.sleep`` costs zero wall time),
+            or ``"explored"`` (schedule entries landing on a sleeping task
+            advance the clock, exploring early timer firings).  Tasks that
+            block on primitives the scheduler cannot see (e.g. a raw
+            ``asyncio.Lock``) are handled by a quiescence heuristic; prefer
+            the DPOR strategy for lock-heavy async code.  ``asyncio.wait_for``
+            / ``asyncio.timeout`` stay on the wall clock.  See
+            :doc:`/virtual_clock`.
 
     Returns:
         InterleavingResult with the outcome.  The ``unique_interleavings``
@@ -494,16 +529,7 @@ async def explore_async_random(
     """
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    clock = validate_clock(clock)
-    if clock != "real":
-        if not patch_sleep:
-            raise ValueError("clock='virtual'/'explored' requires patch_sleep=True (sleeps become virtual deadlines)")
-        if serializable_invariant is not False:
-            raise ValueError(
-                "clock='virtual'/'explored' cannot be combined with serializable_invariant: "
-                "the sequential baseline runs execute outside the scheduler, so their sleeps "
-                "and clock reads would use real wall-clock time"
-            )
+    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
 
     from frontrun._dpor_core import compute_serializable_baseline_async
 

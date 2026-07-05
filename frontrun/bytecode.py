@@ -82,11 +82,13 @@ from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun._virtual_clock import (
+    ClockMode,
     VirtualClock,
     clock_scope,
     patch_time,
     unpatch_time,
     validate_clock,
+    validate_clock_options,
 )
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import (
@@ -143,6 +145,14 @@ class OpcodeScheduler:
         self.clock_mode = clock_mode
         self._sleepers: dict[int, float] = {}
         self._timed_waits: dict[int, float] = {}
+        # thread_id → resource id for threads spinning on an *untimed*
+        # cooperative acquire/wait (lock, event, semaphore).  Without this,
+        # a spinner blocks the "every live thread is deadline-blocked"
+        # autojump forever: the sleeper never wakes, the schedule extends to
+        # max_ops, and sleep(d) silently returns with 0 virtual seconds
+        # elapsed.  Entries are cleared on release/set of the resource so a
+        # freshly-unblocked spinner re-probes before counting as hopeless.
+        self._spin_waiters: dict[int, int] = {}
         self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10000
         # Deterministic RNG for dynamic schedule extension.  Seeded from the
         # initial schedule so the extension is reproducible for a given run
@@ -216,7 +226,7 @@ class OpcodeScheduler:
                     and scheduled_tid == thread_id
                     and thread_id in self._timed_waits
                     and all(
-                        t in self._sleepers
+                        t in self._sleepers or t in self._spin_waiters
                         for t in range(self.num_threads)
                         if t != thread_id and t not in self._threads_done
                     )
@@ -256,6 +266,7 @@ class OpcodeScheduler:
             self._threads_done.add(thread_id)
             self._sleepers.pop(thread_id, None)
             self._timed_waits.pop(thread_id, None)
+            self._spin_waiters.pop(thread_id, None)
             self._condition.notify_all()
 
     # -- Virtual clock support (see class docstring fields) ---------------
@@ -292,9 +303,16 @@ class OpcodeScheduler:
                     if self._finished or self._error:
                         return
                     alive = [t for t in range(self.num_threads) if t not in self._threads_done]
-                    if alive and all(t in self._sleepers for t in alive):
-                        # Every live thread is asleep: only time can move.
-                        self._advance_clock_to(min(self._sleepers[t] for t in alive))
+                    blocked = [
+                        t for t in alive if t in self._sleepers or t in self._timed_waits or t in self._spin_waiters
+                    ]
+                    if alive and len(blocked) == len(alive):
+                        # Every live thread is asleep, in a timed wait, or
+                        # spinning on a resource nothing can release before
+                        # time passes: only the clock can move.
+                        deadlines = [self._sleepers[t] for t in alive if t in self._sleepers]
+                        deadlines += [self._timed_waits[t] for t in alive if t in self._timed_waits]
+                        self._advance_clock_to(min(deadlines))
                         self._condition.notify_all()
                         continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
@@ -307,6 +325,29 @@ class OpcodeScheduler:
                         return
             finally:
                 self._sleepers.pop(thread_id, None)
+
+    def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool) -> None:
+        """Flag *thread_id* as spinning on an untimed cooperative wait.
+
+        Cooperative primitives set the flag after a failed probe and clear it
+        once they acquire (or give up); release/set of the resource clears it
+        via :meth:`note_spin_release` so the spinner re-probes before being
+        counted as blocked by the autojump check in :meth:`sleep_until`.
+        """
+        with self._condition:
+            if waiting:
+                self._spin_waiters[thread_id] = resource_id
+            else:
+                self._spin_waiters.pop(thread_id, None)
+            self._condition.notify_all()
+
+    def note_spin_release(self, resource_id: int) -> None:
+        """Clear spin flags for *resource_id* (it may now be acquirable)."""
+        with self._condition:
+            for tid, res in list(self._spin_waiters.items()):
+                if res == resource_id:
+                    del self._spin_waiters[tid]
+            self._condition.notify_all()
 
     def add_timed_wait(self, thread_id: int, deadline: float) -> None:
         """Register a virtual deadline for a timed lock acquire."""
@@ -643,7 +684,7 @@ def run_with_schedule(
     deadlock_timeout: float = 5.0,
     trace_recorder: TraceRecorder | None = None,
     patch_sleep: bool = True,
-    clock: str = "real",
+    clock: ClockMode = "real",
     _virtual_clock: VirtualClock | None = None,
 ) -> T:
     """Run one interleaving and return the state object.
@@ -671,6 +712,8 @@ def run_with_schedule(
         The state object after execution.
     """
     clock = validate_clock(clock)
+    if _virtual_clock is not None and clock == "real":
+        raise ValueError("_virtual_clock requires clock='virtual' or clock='explored'")
     virtual_clock = _virtual_clock if _virtual_clock is not None else (VirtualClock() if clock != "real" else None)
     scheduler = OpcodeScheduler(
         schedule,
@@ -733,7 +776,7 @@ def explore_random(
     patch_sleep: bool = True,
     serializable_invariant: Callable[[T], Any] | bool = False,
     error_on_any_race: bool = False,
-    clock: str = "real",
+    clock: ClockMode = "real",
 ) -> InterleavingResult:
     """Search for interleavings that violate an invariant.
 
@@ -781,6 +824,17 @@ def explore_random(
             trace in addition to user code.  By default, code in
             site-packages is skipped.  Use this to include specific
             installed packages, e.g. ``["django_*", "mylib.*"]``.
+        patch_sleep: If True (default), ``time.sleep`` yields to the
+            scheduler instead of blocking.  Required for ``clock != "real"``.
+        serializable_invariant: Check serializability against sequential
+            runs.  Cannot be combined with a virtual clock.
+        error_on_any_race: Not supported here — requires the DPOR strategy.
+        clock: ``"real"`` (default), ``"virtual"`` (autojump virtual clock:
+            time reads are virtual, sleeps cost zero wall time and jump the
+            clock when nothing else can run), or ``"explored"`` (schedule
+            entries landing on a sleeping thread advance the clock, so the
+            random sampler also explores early timer firings).  See
+            :doc:`/virtual_clock`.
 
     Returns:
         InterleavingResult with the outcome.  The ``unique_interleavings``
@@ -790,16 +844,7 @@ def explore_random(
     _require_frontrun_env("explore_random")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    clock = validate_clock(clock)
-    if clock != "real":
-        if not patch_sleep:
-            raise ValueError("clock='virtual'/'explored' requires patch_sleep=True (sleeps become virtual deadlines)")
-        if serializable_invariant is not False:
-            raise ValueError(
-                "clock='virtual'/'explored' cannot be combined with serializable_invariant: "
-                "the sequential baseline runs execute outside the scheduler, so their sleeps "
-                "and clock reads would use real wall-clock time"
-            )
+    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
     try:

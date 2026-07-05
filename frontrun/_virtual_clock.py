@@ -29,10 +29,10 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Literal
+from typing import Any, Literal
 
 from frontrun import _real_threading as _rt
 
@@ -62,6 +62,30 @@ def validate_clock(clock: str) -> ClockMode:
     if clock not in _CLOCK_MODES:
         raise ValueError(f"unknown clock={clock!r}; must be one of 'real', 'virtual', 'explored'")
     return clock  # type: ignore[return-value]
+
+
+def validate_clock_options(
+    clock: str,
+    *,
+    patch_sleep: bool = True,
+    serializable_invariant: object = False,
+) -> ClockMode:
+    """Validate ``clock=`` against the options it constrains.
+
+    Shared by every exploration entry point so the error text is identical
+    everywhere.  Returns the typed mode.
+    """
+    mode = validate_clock(clock)
+    if mode != "real":
+        if not patch_sleep:
+            raise ValueError("clock='virtual'/'explored' requires patch_sleep=True (sleeps become virtual deadlines)")
+        if serializable_invariant is not False:
+            raise ValueError(
+                "clock='virtual'/'explored' cannot be combined with serializable_invariant: "
+                "the sequential baseline runs execute outside the scheduler, so their sleeps "
+                "and clock reads would use real wall-clock time"
+            )
+    return mode
 
 
 class VirtualClock:
@@ -104,11 +128,20 @@ _thread_clocks: dict[int, VirtualClock] = {}
 _clock_var: ContextVar[VirtualClock | None] = ContextVar("frontrun_virtual_clock", default=None)
 
 
+# One-time lazy bind of _cooperative.get_context (function-level import would
+# cost ~1µs per patched time.* call; module-level would be an import cycle).
+_get_context: Callable[[], tuple[Any, int] | None] | None = None
+
+
 def _active_virtual_clock() -> VirtualClock | None:
     """Return the virtual clock for the calling thread/context, if any."""
-    from frontrun._cooperative import get_context
+    global _get_context  # noqa: PLW0603
+    if _get_context is None:
+        from frontrun._cooperative import get_context as _get_context_impl
 
-    ctx = get_context()
+        _get_context = _get_context_impl
+
+    ctx = _get_context()
     if ctx is not None:
         clock = getattr(ctx[0], "virtual_clock", None)
         if clock is not None:
@@ -126,6 +159,10 @@ def clock_scope(clock: VirtualClock | None) -> Generator[None, None, None]:
     Used by exploration drivers around ``setup()`` and invariant evaluation so
     that state created / inspected on the driver thread sees the same virtual
     time as the workers.  A ``None`` clock makes this a no-op.
+
+    Owns the ``time.*`` patch for its duration (reference-counted), so it works
+    even outside a runner's patch scope — invariant evaluation happens after
+    the workers' patch scope has already been unwound.
     """
     if clock is None:
         yield
@@ -133,9 +170,11 @@ def clock_scope(clock: VirtualClock | None) -> Generator[None, None, None]:
     ident = threading.get_ident()
     prev = _thread_clocks.get(ident)
     _thread_clocks[ident] = clock
+    patch_time()
     try:
         yield
     finally:
+        unpatch_time()
         if prev is None:
             _thread_clocks.pop(ident, None)
         else:
@@ -150,14 +189,18 @@ def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
     contexts copy the creating context), while the event loop's own
     ``_run_once`` machinery — which runs in the loop's base context — keeps
     seeing real time, so loop timers stay on the wall clock.
+
+    Like :func:`clock_scope`, owns the ``time.*`` patch for its duration.
     """
     if clock is None:
         yield
         return
     token = _clock_var.set(clock)
+    patch_time()
     try:
         yield
     finally:
+        unpatch_time()
         _clock_var.reset(token)
 
 
@@ -244,4 +287,5 @@ __all__ = [
     "real_monotonic",
     "unpatch_time",
     "validate_clock",
+    "validate_clock_options",
 ]
