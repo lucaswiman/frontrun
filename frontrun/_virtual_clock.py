@@ -34,6 +34,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Literal
 
+from frontrun import _real_threading as _rt
+
 ClockMode = Literal["real", "virtual", "explored"]
 
 _CLOCK_MODES: tuple[str, ...] = ("real", "virtual", "explored")
@@ -74,7 +76,11 @@ class VirtualClock:
 
     def __init__(self, epoch: float = VIRTUAL_EPOCH) -> None:
         self._now = epoch
-        self._lock = threading.Lock()
+        # A *real* lock, never the cooperative replacement: advance_to() runs
+        # inside scheduler machinery (often while holding the scheduler
+        # condition), and a patched threading.Lock would report sync events
+        # back into the scheduler — a reentrant self-deadlock.
+        self._lock = _rt.lock()
 
     def now(self) -> float:
         return self._now
@@ -191,7 +197,7 @@ def _virtual_perf_counter_ns() -> int:
 
 
 _time_patch_count = 0
-_time_patch_lock = threading.Lock()
+_time_patch_lock = _rt.lock()
 
 
 def patch_time() -> None:
