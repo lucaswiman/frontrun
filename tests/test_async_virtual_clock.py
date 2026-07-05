@@ -215,6 +215,110 @@ def test_async_wait_for_stays_on_wall_clock() -> None:
     assert result.property_holds, result.explanation
 
 
+class _CrossEventState:
+    def __init__(self) -> None:
+        self.e1 = asyncio.Event()
+        self.e2 = asyncio.Event()
+
+
+def test_async_event_deadlock_detected_exactly() -> None:
+    """Two tasks each waiting on the other's event is a genuine deadlock:
+    with a virtual clock and no pending deadline it must be reported via
+    exact detection, not by burning the wall-clock fallback timeout."""
+
+    async def w1(s: _CrossEventState) -> None:
+        await s.e1.wait()
+        s.e2.set()
+
+    async def w2(s: _CrossEventState) -> None:
+        await s.e2.wait()
+        s.e1.set()
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_CrossEventState,
+            workers=[w1, w2],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert not result.property_holds
+    assert "deadlock" in str(result.explanation).lower()
+    assert wall_elapsed < 4.0, f"deadlock took {wall_elapsed:.1f}s to report (wall-clock fallback?)"
+
+
+class _EventHandoffState:
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.flag = False
+        self.observed = False
+
+
+def test_async_event_wait_explores_cleanly() -> None:
+    """A plain setter/waiter handoff must explore without false deadlocks:
+    branches that schedule the waiter before the setter must block the waiter
+    in the engine and hand the turn onward, not stall until the wall
+    timeout scores a bogus deadlock counterexample."""
+
+    async def waiter(s: _EventHandoffState) -> None:
+        await s.event.wait()
+        s.observed = s.flag
+
+    async def setter(s: _EventHandoffState) -> None:
+        s.flag = True
+        s.event.set()
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_EventHandoffState,
+            workers=[waiter, setter],
+            invariant=lambda s: s.observed,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"event handoff took {wall_elapsed:.1f}s (deadlock-timeout stall?)"
+
+
+def test_async_event_wait_with_virtual_sleeper_autojumps() -> None:
+    """An event waiter plus a virtual sleeper that eventually sets the event:
+    the waiter parking on the event must not stop the autojump — the clock
+    advances, the sleeper wakes and sets, and the run completes fast."""
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.woke = False
+
+    async def waiter(s: State) -> None:
+        await s.event.wait()
+        s.woke = True
+
+    async def sleeper(s: State) -> None:
+        await asyncio.sleep(1.0)
+        s.event.set()
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, sleeper],
+            invariant=lambda s: s.woke,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"event+sleeper took {wall_elapsed:.1f}s (autojump stall?)"
+
+
 class _AsyncHoldAndSleep:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
