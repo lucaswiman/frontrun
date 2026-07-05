@@ -136,6 +136,25 @@ def clock_scope(clock: VirtualClock | None) -> Iterator[None]:
             _thread_clocks[ident] = prev
 
 
+@contextmanager
+def clock_context(clock: VirtualClock | None) -> Iterator[None]:
+    """Set :data:`_clock_var` for the current *context* (async exploration).
+
+    asyncio tasks created inside the block inherit the contextvar (task
+    contexts copy the creating context), while the event loop's own
+    ``_run_once`` machinery — which runs in the loop's base context — keeps
+    seeing real time, so loop timers stay on the wall clock.
+    """
+    if clock is None:
+        yield
+        return
+    token = _clock_var.set(clock)
+    try:
+        yield
+    finally:
+        _clock_var.reset(token)
+
+
 # ---------------------------------------------------------------------------
 # time.* patching (reference-counted, like patch_sleep in _cooperative)
 # ---------------------------------------------------------------------------
@@ -213,6 +232,7 @@ __all__ = [
     "VIRTUAL_EPOCH",
     "ClockMode",
     "VirtualClock",
+    "clock_context",
     "clock_scope",
     "patch_time",
     "real_monotonic",

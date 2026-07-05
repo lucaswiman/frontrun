@@ -90,6 +90,14 @@ from frontrun._sql_insert_tracker import check_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope
 from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
+from frontrun._virtual_clock import (
+    VirtualClock,
+    clock_context,
+    patch_time,
+    real_monotonic,
+    unpatch_time,
+    validate_clock,
+)
 from frontrun.async_scheduler import InterleavedLoop
 from frontrun.common import (
     InterleavingResult,
@@ -344,13 +352,30 @@ def _unpatch_asyncio_lock() -> None:
 _real_asyncio_sleep = asyncio.sleep
 _async_sleep_patched = False
 
+# High bits XORed with a task id to form the sync-object id of that task's
+# virtual-clock wake edge (mirrors _dpor_runtime.scheduler._WAKE_SYNC_BASE).
+_WAKE_SYNC_BASE = 0x57414B45_00000000
+
 
 async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # noqa: ANN401
     """No-delay replacement for ``asyncio.sleep`` during exploration.
 
     Yields to the event loop (``await asyncio.sleep(0)``) so it remains
     a scheduling point, but skips the actual delay.
+
+    When the active async scheduler owns a virtual clock, a positive sleep
+    becomes a *timed block*: the task registers a virtual deadline and
+    suspends until the scheduler advances the clock to it.
+    ``asyncio.sleep(0)`` stays a pure yield, matching stock semantics.
     """
+    scheduler = _scheduler_var.get()
+    task_id = _task_id_var.get()
+    if scheduler is not None and task_id is not None and delay and delay > 0:
+        clock = getattr(scheduler, "virtual_clock", None)
+        sleep_until = getattr(scheduler, "sleep_until", None)
+        if clock is not None and sleep_until is not None:
+            await sleep_until(task_id, clock.now() + delay)
+            return result
     await _real_asyncio_sleep(0)
     return result
 
@@ -397,11 +422,24 @@ class AsyncDporScheduler(InterleavedLoop):
         detect_sql: bool = False,
         detect_redis: bool = False,
         stable_ids: StableObjectIds | None = None,
+        virtual_clock: VirtualClock | None = None,
+        clock_mode: str = "real",
+        clock_actor_id: int | None = None,
     ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
         self.engine = engine
         self.execution = execution
         self._num_engine_tasks = num_tasks
+        # Virtual clock (ideas/virtual_clock.md), mirroring the sync
+        # DporScheduler: an extra engine thread (the clock actor) whose steps
+        # advance the clock to the earliest pending deadline.  "virtual" =
+        # autojump (actor enabled only when nothing is runnable); "explored" =
+        # the advance is a schedulable choice whenever a deadline is pending.
+        self.virtual_clock = virtual_clock
+        self._clock_mode = clock_mode
+        self._clock_actor_id = clock_actor_id
+        self._sleepers: dict[int, float] = {}
+        self._timed_waits: dict[int, float] = {}
         self._current_task: int | None = None
         self._detect_sql = detect_sql
         self._detect_redis = detect_redis
@@ -425,8 +463,107 @@ class AsyncDporScheduler(InterleavedLoop):
         self._task_row_locks: dict[int, set[str]] = self._row_lock_registry._task_row_locks
         self._row_lock_ids: dict[str, int] = self._row_lock_registry._row_lock_ids
 
+        # The clock actor starts blocked; it becomes runnable only when a
+        # deadline is pending (see _sync_clock_actor / _schedule_next).
+        if self._clock_actor_id is not None:
+            self.execution.block_thread(self._clock_actor_id)
+
         # Request the first scheduling decision
         self._current_task = self._schedule_next()
+
+    # -- Virtual clock ---------------------------------------------------
+
+    def _has_pending_deadlines(self) -> bool:
+        return bool(self._sleepers or self._timed_waits)
+
+    def _sync_clock_actor(self) -> None:
+        """Keep the clock actor's enabledness in step with pending deadlines."""
+        if self._clock_actor_id is None:
+            return
+        if self._clock_mode == "explored" and self._has_pending_deadlines():
+            self.execution.unblock_thread(self._clock_actor_id)
+        else:
+            self.execution.block_thread(self._clock_actor_id)
+
+    def _advance_virtual_clock(self) -> None:
+        """One clock-actor step: jump to the earliest deadline, wake sleepers."""
+        clock = self.virtual_clock
+        if clock is None:
+            return
+        pending = list(self._sleepers.values()) + list(self._timed_waits.values())
+        if not pending:
+            self._sync_clock_actor()
+            return
+        clock.advance_to(min(pending))
+        now = clock.now()
+        for tid, dl in sorted(self._sleepers.items(), key=lambda kv: (kv[1], kv[0])):
+            if dl <= now:
+                del self._sleepers[tid]
+                self.execution.unblock_thread(tid)
+                self.engine.report_sync(self.execution, self._clock_actor_id, "lock_release", _WAKE_SYNC_BASE ^ tid)
+        for tid, dl in sorted(self._timed_waits.items(), key=lambda kv: (kv[1], kv[0])):
+            if dl <= now:
+                del self._timed_waits[tid]
+                self.execution.unblock_thread(tid)
+        self._sync_clock_actor()
+
+    async def sleep_until(self, task_id: int, deadline: float) -> None:
+        """Block *task_id* until the virtual clock reaches *deadline*.
+
+        Mirrors the sync ``DporScheduler.sleep_until``: register the
+        deadline, block in the engine, release the turn, then wait for the
+        clock-actor advance and for the engine to schedule us again.
+        """
+        depth = _in_scheduler_pause.get()
+        _in_scheduler_pause.set(depth + 1)
+        try:
+            # Let any previously-notified tasks process their wakeups first
+            # (same fairness yield as pause()).
+            await _real_asyncio_sleep(0)
+            self._progress += 1
+            async with self._condition:
+                if self._finished or self._error:
+                    return
+                self._sleepers[task_id] = deadline
+                self.execution.block_thread(task_id)
+                self._sync_clock_actor()
+                if self._current_task == task_id:
+                    next_task = self._schedule_next()
+                    if next_task is not None:
+                        self._current_task = next_task
+                self._condition.notify_all()
+                # Phase 1: wait for the clock advance that removes us.
+                while task_id in self._sleepers:
+                    if self._finished or self._error:
+                        self._sleepers.pop(task_id, None)
+                        self.execution.unblock_thread(task_id)
+                        self._sync_clock_actor()
+                        return
+                    try:
+                        await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                    except asyncio.TimeoutError:
+                        self._error = TimeoutError(
+                            f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
+                        )
+                        self._condition.notify_all()
+                        self._sleepers.pop(task_id, None)
+                        return
+                # Phase 2: woken — wait until the engine schedules us again.
+                while not (self._finished or self._error) and self._current_task != task_id:
+                    try:
+                        await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                    except asyncio.TimeoutError:
+                        self._error = TimeoutError(
+                            f"Deadlock: task {task_id} woke at t={deadline} but was never rescheduled"
+                        )
+                        self._condition.notify_all()
+                        return
+                if self._finished or self._error:
+                    return
+                # Close the wake happens-before edge (clock advance → resume).
+                self.engine.report_sync(self.execution, task_id, "lock_acquire", _WAKE_SYNC_BASE ^ task_id)
+        finally:
+            _in_scheduler_pause.set(depth)
 
     def _schedule_next(self) -> int | None:
         """Ask the DPOR engine which task to run next.
@@ -435,15 +572,32 @@ class AsyncDporScheduler(InterleavedLoop):
         the decision to schedule the lock holder instead.  This prevents
         the scheduler from cycling between a blocked task and the event
         loop, causing false deadlock timeouts.
+
+        Clock-actor steps are handled inline: when the engine schedules the
+        actor, the clock advances to the earliest deadline and the loop asks
+        the engine again (see the sync DporScheduler._schedule_next).
         """
-        runnable = self.execution.runnable_threads()
-        if not runnable:
-            return None
-        scheduled = self.engine.schedule(self.execution)
-        # Shared with the sync scheduler: redirect to the lock holder when the
-        # engine picks a lock-blocked task, or drop a stale entry whose holder
-        # has finished.
-        return apply_lock_blocked_override(scheduled, self._lock_blocked, self._tasks_done)
+        while True:
+            runnable = self.execution.runnable_threads()
+            if not runnable:
+                if (
+                    self.virtual_clock is not None
+                    and self._clock_actor_id is not None
+                    and self._has_pending_deadlines()
+                ):
+                    # Autojump: everything is blocked and timers are pending —
+                    # the clock advance is the only possible transition.
+                    self.execution.unblock_thread(self._clock_actor_id)
+                    continue
+                return None
+            scheduled = self.engine.schedule(self.execution)
+            if scheduled is not None and scheduled == self._clock_actor_id:
+                self._advance_virtual_clock()
+                continue
+            # Shared with the sync scheduler: redirect to the lock holder when the
+            # engine picks a lock-blocked task, or drop a stale entry whose holder
+            # has finished.
+            return apply_lock_blocked_override(scheduled, self._lock_blocked, self._tasks_done)
 
     # -- InterleavedLoop policy -----------------------------------------
 
@@ -594,6 +748,15 @@ class AsyncDporScheduler(InterleavedLoop):
         # If this was the current task, schedule the next one
         async with self._condition:
             self._tasks_done.add(task_id)
+            # Drop stale virtual-clock deadlines (safety net) and retire the
+            # clock actor once every real task finished.
+            if self.virtual_clock is not None:
+                self._sleepers.pop(task_id, None)
+                self._timed_waits.pop(task_id, None)
+                self._sync_clock_actor()
+            if self._clock_actor_id is not None and len(self._tasks_done) >= self._num_engine_tasks:
+                self.execution.unblock_thread(self._clock_actor_id)
+                self.execution.finish_thread(self._clock_actor_id)
             if self._current_task == task_id:
                 next_task = self._schedule_next()
                 self._current_task = next_task
@@ -857,14 +1020,40 @@ def _format_async_trace(schedule: list[int], num_tasks: int) -> str:
 class _ReplayAsyncScheduler(InterleavedLoop):
     """Replay a fixed schedule for async counterexample reproduction."""
 
-    def __init__(self, schedule: list[int], num_tasks: int, *, deadlock_timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        schedule: list[int],
+        num_tasks: int,
+        *,
+        deadlock_timeout: float = 5.0,
+        virtual_clock: VirtualClock | None = None,
+        clock_mode: str = "real",
+        clock_actor_id: int | None = None,
+    ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
         self._replay_schedule = list(schedule)
         # Start at index 1 because schedule[0] is consumed as the initial _current_task.
         self._replay_index = 1 if schedule else 0
         self._replay_max_ops = len(self._replay_schedule) * 10 + 10_000
-        self._current_task: int | None = schedule[0] if schedule else None
         self._num_replay_tasks = num_tasks
+        # Virtual clock replay state (see AsyncDporScheduler): recorded
+        # clock-actor entries in the schedule become clock advances.
+        self.virtual_clock = virtual_clock
+        self._clock_mode = clock_mode
+        self._clock_actor_id = clock_actor_id
+        self._sleepers: dict[int, float] = {}
+        self._timed_waits: dict[int, float] = {}
+        self._current_task: int | None = None
+        if schedule:
+            first = schedule[0]
+            if clock_actor_id is not None and first == clock_actor_id:
+                # A leading actor entry cannot advance anything yet (no
+                # deadlines registered); just skip it.
+                self._current_task = None
+                self._replay_index = 0
+                self._advance()
+            else:
+                self._current_task = first
         # Stubs so the patched cooperative asyncio.Lock can call
         # engine.report_sync / execution.block_thread without crashing during
         # replay (finding F3).  _lock_blocked mirrors the DPOR scheduler's
@@ -882,19 +1071,85 @@ class _ReplayAsyncScheduler(InterleavedLoop):
             self._tasks_done,
         )
 
+    def _replay_advance_clock(self, target: float | None = None) -> None:
+        """Advance the virtual clock during replay and wake due deadlines."""
+        clock = self.virtual_clock
+        if clock is None:
+            return
+        pending = list(self._sleepers.values()) + list(self._timed_waits.values())
+        if not pending:
+            return
+        clock.advance_to(min(pending) if target is None else target)
+        now = clock.now()
+        for tid, dl in list(self._sleepers.items()):
+            if dl <= now:
+                del self._sleepers[tid]
+        for tid, dl in list(self._timed_waits.items()):
+            if dl <= now:
+                del self._timed_waits[tid]
+
     def _advance(self) -> None:
         """Advance ``_replay_index`` and ``_current_task`` to the next live actor."""
-        self._replay_index, next_actor = advance_replay_index(
-            self._replay_schedule,
-            self._replay_index,
-            self._extend_schedule,
-            self._tasks_done,
-        )
+        while True:
+            self._replay_index, next_actor = advance_replay_index(
+                self._replay_schedule,
+                self._replay_index,
+                self._extend_schedule,
+                self._tasks_done,
+            )
+            if next_actor is not None and self._clock_actor_id is not None and next_actor == self._clock_actor_id:
+                # Recorded clock-actor step: advance the clock and keep going.
+                self._replay_advance_clock()
+                continue
+            break
         self._current_task = next_actor
         if next_actor is None:
             self._finished = True
 
+    async def sleep_until(self, task_id: int, deadline: float) -> None:
+        """Replay counterpart of ``AsyncDporScheduler.sleep_until``."""
+        depth = _in_scheduler_pause.get()
+        _in_scheduler_pause.set(depth + 1)
+        try:
+            await _real_asyncio_sleep(0)
+            self._progress += 1
+            async with self._condition:
+                if self._finished or self._error:
+                    return
+                self._sleepers[task_id] = deadline
+                if self._current_task == task_id:
+                    self._advance()
+                self._condition.notify_all()
+                try:
+                    while task_id in self._sleepers:
+                        if self._finished or self._error:
+                            return
+                        alive = [t for t in range(self._num_replay_tasks) if t not in self._tasks_done]
+                        if alive and all(t in self._sleepers for t in alive):
+                            # Every live task is asleep: only time can move.
+                            self._replay_advance_clock()
+                            self._condition.notify_all()
+                            continue
+                        try:
+                            await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                        except asyncio.TimeoutError:
+                            self._error = TimeoutError(
+                                f"Replay deadlock: task {task_id} sleeping until t={deadline} was never woken"
+                            )
+                            self._condition.notify_all()
+                            return
+                finally:
+                    self._sleepers.pop(task_id, None)
+        finally:
+            _in_scheduler_pause.set(depth)
+
     def should_proceed(self, task_id: Any, marker: Any = None) -> bool:
+        # Schedule-drift safety net: if replay scheduled a sleeping task,
+        # time must pass before it can move — jump to its deadline.
+        cur = self._current_task
+        if cur is not None and self.virtual_clock is not None and cur in self._sleepers:
+            self._replay_advance_clock(self._sleepers[cur])
+            self._condition.notify_all()
         if self._current_task is None:
             self._finished = True
             return True
@@ -959,6 +1214,7 @@ async def _reproduce_async_counterexample(
     reproduce_on_failure: int,
     timeout_per_run: float,
     deadlock_timeout: float,
+    clock: str = "real",
 ) -> tuple[int, int]:
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
@@ -966,8 +1222,17 @@ async def _reproduce_async_counterexample(
         # Clear cooperative-lock global state before EACH replay attempt (F5).
         _reset_async_lock_state()
 
-        scheduler = _ReplayAsyncScheduler(schedule_list, num_tasks, deadlock_timeout=deadlock_timeout)
-        state = setup()
+        replay_clock = VirtualClock() if clock != "real" else None
+        scheduler = _ReplayAsyncScheduler(
+            schedule_list,
+            num_tasks,
+            deadlock_timeout=deadlock_timeout,
+            virtual_clock=replay_clock,
+            clock_mode=clock,
+            clock_actor_id=num_tasks if clock != "real" else None,
+        )
+        with clock_context(replay_clock):
+            state = setup()
         task_funcs: dict[int, Callable[..., Awaitable[None]]] = {}
         for i, task in enumerate(tasks):
 
@@ -983,7 +1248,8 @@ async def _reproduce_async_counterexample(
 
         deadlocked = False
         try:
-            await scheduler.run_all(task_funcs, timeout=timeout_per_run)
+            with clock_context(replay_clock):
+                await scheduler.run_all(task_funcs, timeout=timeout_per_run)
         except DeadlockError:
             deadlocked = True
         except TimeoutError:
@@ -998,9 +1264,10 @@ async def _reproduce_async_counterexample(
             # The user's task body raised: the run produced no usable state,
             # so this attempt did not reproduce the counterexample.
             continue
-        inv_failed, _ = (
-            check_invariant(invariant, state) if (invariant is not None and not deadlocked) else (False, None)
-        )
+        with clock_context(replay_clock):
+            inv_failed, _ = (
+                check_invariant(invariant, state) if (invariant is not None and not deadlocked) else (False, None)
+            )
         if is_reproduction_run(deadlocked=deadlocked, has_invariant=invariant is not None, invariant_failed=inv_failed):
             successes += 1
     return reproduce_on_failure, successes
@@ -1026,6 +1293,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     patch_sleep: bool = True,
     serializable_invariant: Callable[[T], Any] | bool = False,
     error_on_any_race: bool = False,
+    clock: str = "real",
 ) -> InterleavingResult:
     """Systematically explore async interleavings using DPOR.
 
@@ -1085,6 +1353,16 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     Returns:
         InterleavingResult with exploration statistics and any counterexample.
     """
+    clock = validate_clock(clock)
+    if clock != "real":
+        if not patch_sleep:
+            raise ValueError("clock='virtual'/'explored' requires patch_sleep=True (sleeps become virtual deadlines)")
+        if serializable_invariant is not False:
+            raise ValueError(
+                "clock='virtual'/'explored' cannot be combined with serializable_invariant: "
+                "the sequential baseline runs execute outside the scheduler, so their sleeps "
+                "and clock reads would use real wall-clock time"
+            )
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 
@@ -1094,8 +1372,11 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     )
 
     num_tasks = len(tasks)
+    # With a virtual clock the engine gets one extra thread — the clock actor
+    # (id == num_tasks); see AsyncDporScheduler.
+    clock_actor_id = num_tasks if clock != "real" else None
     engine = make_dpor_engine(
-        num_threads=num_tasks,
+        num_threads=num_tasks + (1 if clock_actor_id is not None else 0),
         preemption_bound=preemption_bound,
         max_branches=max_branches,
         max_executions=max_executions,
@@ -1127,6 +1408,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             reproduce_on_failure=reproduce_on_failure,
             timeout_per_run=timeout_per_run,
             deadlock_timeout=deadlock_timeout,
+            clock=clock,
         )
         result.reproduction_attempts = attempts
         result.reproduction_successes = successes
@@ -1136,12 +1418,27 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     # across the sync (threading.Lock) and async drivers.
     engine_lock = NoOpLock()
 
+    # With a virtual clock, pin the event loop's own clock to real monotonic
+    # time.  ``BaseEventLoop.time()`` calls ``time.monotonic()``, which is
+    # patched; without the pin, a loop timer scheduled from a task context
+    # (where the contextvar-gated patch resolves to virtual time) would carry
+    # a virtual ``when`` that the loop compares against wall-clock time —
+    # deadlock-timeout timers would then never fire.  Loop timers (and
+    # therefore asyncio.wait_for / asyncio.timeout deadlines) deliberately
+    # stay on the wall clock; see docs/virtual_clock.rst.
+    _loop = asyncio.get_running_loop()
+    _loop_time_pinned = False
+    if clock != "real":
+        _loop.time = real_monotonic  # type: ignore[method-assign]
+        _loop_time_pinned = True
+
     try:
         with PatchScope() as patch_scope:
             patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
             patch_scope.add(patch_redis_async, unpatch_redis_async, enabled=detect_redis and _redis_async_available)
             patch_scope.add(_patch_asyncio_lock, _unpatch_asyncio_lock)
             patch_scope.add(_patch_asyncio_sleep, _unpatch_asyncio_sleep, enabled=patch_sleep)
+            patch_scope.add(patch_time, unpatch_time, enabled=clock != "real")
 
             for step in dpor_exploration_iter(
                 engine=engine,
@@ -1154,6 +1451,9 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                 # Clear wait-for graph and held-locks tracking between executions
                 _reset_async_lock_state()
 
+                # Fresh virtual clock per execution so every interleaving
+                # starts from the same deterministic epoch.
+                virtual_clock = VirtualClock() if clock != "real" else None
                 scheduler = AsyncDporScheduler(
                     engine,
                     execution,
@@ -1162,9 +1462,13 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                     detect_sql=detect_sql,
                     detect_redis=detect_redis,
                     stable_ids=stable_ids,
+                    virtual_clock=virtual_clock,
+                    clock_mode=clock,
+                    clock_actor_id=clock_actor_id,
                 )
 
-                state = setup()
+                with clock_context(virtual_clock):
+                    state = setup()
                 stable_ids.pre_register(state)
 
                 task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
@@ -1176,7 +1480,10 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                 task_error: Exception | None = None
                 timed_out = False
                 try:
-                    await scheduler.run_all(task_funcs, timeout=timeout_per_run)  # type: ignore[arg-type]
+                    # clock_context propagates to the worker tasks: contexts
+                    # copy at create_task time (inside run_all).
+                    with clock_context(virtual_clock):
+                        await scheduler.run_all(task_funcs, timeout=timeout_per_run)  # type: ignore[arg-type]
                 except DeadlockError as e:
                     deadlock_error = e
                 except TimeoutError:
@@ -1264,7 +1571,8 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                             return result
 
                 if not is_deadlock and task_error is None:
-                    invariant_failed, assertion_msg = check_invariant(invariant, state)
+                    with clock_context(virtual_clock):
+                        invariant_failed, assertion_msg = check_invariant(invariant, state)
                     if invariant_failed:
                         schedule_list = list(execution.schedule_trace)
                         trace_explanation = _format_async_trace(schedule_list, num_tasks)
@@ -1281,5 +1589,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         if trace_packages is not None:
             _set_active_trace_filter(None)
         set_lock_timeout(prev_lock_timeout)
+        if _loop_time_pinned:
+            del _loop.time  # restore BaseEventLoop.time
 
     return result

@@ -55,7 +55,15 @@ from frontrun._async_autopause import (
 )
 from frontrun._random_schedules import fair_schedule_strategy, random_round_robin_schedule
 from frontrun._threaded_runner import PatchScope
-from frontrun.async_dpor import _sql_async_available, patch_sql_async, unpatch_sql_async
+from frontrun._virtual_clock import (
+    VirtualClock,
+    clock_context,
+    patch_time,
+    real_monotonic,
+    unpatch_time,
+    validate_clock,
+)
+from frontrun.async_dpor import _real_asyncio_sleep, _sql_async_available, patch_sql_async, unpatch_sql_async
 from frontrun.async_scheduler import InterleavedLoop
 from frontrun.common import (
     InterleavingResult,
@@ -75,22 +83,103 @@ class AwaitScheduler(InterleavedLoop):
     scheduling as its policy.
     """
 
-    def __init__(self, schedule: list[int], num_tasks: int, *, deadlock_timeout: float = 5.0, detect_sql: bool = False):
+    def __init__(
+        self,
+        schedule: list[int],
+        num_tasks: int,
+        *,
+        deadlock_timeout: float = 5.0,
+        detect_sql: bool = False,
+        virtual_clock: VirtualClock | None = None,
+        clock_mode: str = "real",
+    ):
         super().__init__(deadlock_timeout=deadlock_timeout)
         self.schedule = schedule
         self.num_tasks = num_tasks
         self._index = 0
         self._detect_sql = detect_sql
+        # Virtual clock (ideas/virtual_clock.md), mirroring the sync
+        # OpcodeScheduler: schedule entries landing on a sleeping task are
+        # skipped ("virtual") or advance the clock to that task's deadline
+        # ("explored" — the random "maybe advance time" branch); when every
+        # live task is deadline-blocked, sleep_until autojumps.
+        self.virtual_clock = virtual_clock
+        self.clock_mode = clock_mode
+        self._sleepers: dict[int, float] = {}
         # Table/row accesses observed via SQL interception, in arrival order.
         # Exposed so callers can inspect cross-task table conflicts.
         self.sql_accesses: list[tuple[int, str, str]] = []
 
+    # -- Virtual clock ---------------------------------------------------
+
+    def _advance_clock_to(self, target: float) -> None:
+        """Jump the clock to *target* and wake every due sleeper.
+
+        Caller must hold ``self._condition``.
+        """
+        clock = self.virtual_clock
+        if clock is None:
+            return
+        clock.advance_to(target)
+        now = clock.now()
+        for tid, dl in list(self._sleepers.items()):
+            if dl <= now:
+                del self._sleepers[tid]
+
+    async def sleep_until(self, task_id: int, deadline: float) -> None:
+        """Block *task_id* until the virtual clock reaches *deadline*."""
+        depth = _in_scheduler_pause.get()
+        _in_scheduler_pause.set(depth + 1)
+        try:
+            await _real_asyncio_sleep(0)
+            self._progress += 1
+            async with self._condition:
+                if self._finished or self._error:
+                    return
+                self._sleepers[task_id] = deadline
+                self._condition.notify_all()
+                try:
+                    while task_id in self._sleepers:
+                        if self._finished or self._error:
+                            return
+                        alive = [t for t in range(self.num_tasks) if t not in self._tasks_done]
+                        if alive and all(t in self._sleepers for t in alive):
+                            # Every live task is asleep: only time can move.
+                            self._advance_clock_to(min(self._sleepers[t] for t in alive))
+                            self._condition.notify_all()
+                            continue
+                        try:
+                            await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                        except asyncio.TimeoutError:
+                            self._error = TimeoutError(
+                                f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
+                            )
+                            self._condition.notify_all()
+                            return
+                finally:
+                    self._sleepers.pop(task_id, None)
+        finally:
+            _in_scheduler_pause.set(depth)
+
     # -- InterleavedLoop policy -----------------------------------------
 
     def should_proceed(self, task_id: Any, marker: Any = None) -> bool:
-        # Skip past done tasks
+        # Skip past done tasks (and resolve entries for sleeping tasks)
         while self._index < len(self.schedule):
-            if self.schedule[self._index] in self._tasks_done:
+            entry = self.schedule[self._index]
+            if entry in self._tasks_done:
+                self._index += 1
+                continue
+            if self.virtual_clock is not None and entry in self._sleepers:
+                if self.clock_mode == "explored":
+                    # "Maybe advance": the random schedule picked a sleeping
+                    # task — let time pass to its deadline; the woken task
+                    # then consumes this entry.
+                    self._advance_clock_to(self._sleepers[entry])
+                    self._condition.notify_all()
+                    break
+                # Autojump semantics: a sleeping task cannot run before the
+                # clock advances; skip its slot.
                 self._index += 1
                 continue
             break
@@ -245,14 +334,25 @@ class AsyncShuffler:
 
 
 @contextmanager
-def _patch_async_runtime(*, detect_sql: bool = False, patch_sleep: bool = False):
+def _patch_async_runtime(
+    *, detect_sql: bool = False, patch_sleep: bool = False, virtual_time: bool = False, pin_loop_time: Any = None
+):
     with PatchScope() as patch_scope:
         patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
         if patch_sleep:
             from frontrun.async_dpor import _patch_asyncio_sleep, _unpatch_asyncio_sleep
 
             patch_scope.add(_patch_asyncio_sleep, _unpatch_asyncio_sleep)
-        yield
+        patch_scope.add(patch_time, unpatch_time, enabled=virtual_time)
+        # Pin the loop's own clock to real monotonic time while time.monotonic
+        # is patched (see the matching comment in async_dpor._explore_async_dpor).
+        if pin_loop_time is not None:
+            pin_loop_time.time = real_monotonic
+        try:
+            yield
+        finally:
+            if pin_loop_time is not None:
+                del pin_loop_time.time  # restore BaseEventLoop.time
 
 
 @asynccontextmanager
@@ -354,6 +454,7 @@ async def explore_async_random(
     serializable_invariant: Callable[[Any], Any] | bool = False,
     error_on_any_race: bool = False,
     total_timeout: float | None = None,
+    clock: str = "real",
 ) -> InterleavingResult:
     """Search for async interleavings that violate an invariant.
 
@@ -393,6 +494,16 @@ async def explore_async_random(
     """
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
+    clock = validate_clock(clock)
+    if clock != "real":
+        if not patch_sleep:
+            raise ValueError("clock='virtual'/'explored' requires patch_sleep=True (sleeps become virtual deadlines)")
+        if serializable_invariant is not False:
+            raise ValueError(
+                "clock='virtual'/'explored' cannot be combined with serializable_invariant: "
+                "the sequential baseline runs execute outside the scheduler, so their sleeps "
+                "and clock reads would use real wall-clock time"
+            )
 
     from frontrun._dpor_core import compute_serializable_baseline_async
 
@@ -400,7 +511,12 @@ async def explore_async_random(
         setup, tasks, serializable_invariant
     )
 
-    with _patch_async_runtime(detect_sql=detect_sql, patch_sleep=patch_sleep):
+    with _patch_async_runtime(
+        detect_sql=detect_sql,
+        patch_sleep=patch_sleep,
+        virtual_time=clock != "real",
+        pin_loop_time=asyncio.get_running_loop() if clock != "real" else None,
+    ):
         import time
 
         rng = random.Random(seed)
@@ -418,16 +534,26 @@ async def explore_async_random(
             # test harness is an error that must propagate, not a
             # "counterexample".  Only exceptions from the task bodies are turned
             # into findings.  (Mirrors _run_with_schedule_status construction.)
-            scheduler = AwaitScheduler(schedule, num_tasks, deadlock_timeout=deadlock_timeout, detect_sql=detect_sql)
+            attempt_clock = VirtualClock() if clock != "real" else None
+            scheduler = AwaitScheduler(
+                schedule,
+                num_tasks,
+                deadlock_timeout=deadlock_timeout,
+                detect_sql=detect_sql,
+                virtual_clock=attempt_clock,
+                clock_mode=clock,
+            )
             runner = AsyncShuffler(scheduler)
-            state = setup()
+            with clock_context(attempt_clock):
+                state = setup()
             funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
                 lambda s=state, t=t: t(s)  # type: ignore[misc]
                 for t in tasks
             ]
 
             try:
-                await runner.run(funcs, timeout=timeout_per_run)
+                with clock_context(attempt_clock):
+                    await runner.run(funcs, timeout=timeout_per_run)
             except Exception as task_err:  # noqa: BLE001
                 # A task raised under this interleaving.  That is a legitimate
                 # counterexample (IndexError/KeyError/AssertionError in the task
@@ -480,7 +606,8 @@ async def explore_async_random(
                     result.explanation = explanation
                     return result
 
-            invariant_failed, assertion_msg = check_invariant(invariant, state)
+            with clock_context(attempt_clock):
+                invariant_failed, assertion_msg = check_invariant(invariant, state)
             if invariant_failed:
                 result.property_holds = False
                 result.counterexample = schedule
