@@ -45,7 +45,9 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
+import weakref
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
@@ -66,6 +68,7 @@ from frontrun._dpor_core import (
     apply_lock_blocked_override,
     compute_serializable_baseline_async,
     dpor_exploration_iter,
+    event_wake_sync_id,
     extend_replay_schedule,
     format_race_failure_explanation,
     group_schedule_runs,
@@ -100,7 +103,7 @@ from frontrun._virtual_clock import (
     unpatch_time,
     validate_clock_options,
 )
-from frontrun.async_scheduler import InterleavedLoop
+from frontrun.async_scheduler import InterleavedLoop, _in_frontrun_timer, frontrun_wait_for
 from frontrun.common import (
     InterleavingResult,
     check_invariant,
@@ -193,6 +196,7 @@ def _reset_async_lock_state() -> None:
         _async_wait_graph.clear()
     _async_lock_owners.clear()
     _async_task_held_locks.clear()
+    _async_parked_events.clear()
 
 
 class _CooperativeAsyncLock:
@@ -356,6 +360,164 @@ def _unpatch_asyncio_lock() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cooperative asyncio.Event
+# ---------------------------------------------------------------------------
+
+_real_asyncio_event = asyncio.Event
+
+# Cooperative events that currently have at least one task parked in wait().
+# When exact deadlock detection aborts a run, these waiters must be woken
+# (by setting the real event) so the tasks free-run to completion and
+# run_all can surface the DeadlockError instead of hanging to the timeout.
+_async_parked_events: set[_CooperativeAsyncEvent] = set()
+
+
+def _wake_parked_async_event_waiters() -> None:
+    for event in list(_async_parked_events):
+        event._event.set()
+
+
+class _CooperativeAsyncEvent:
+    """Drop-in asyncio.Event replacement that engine-blocks its waiters.
+
+    A task parked on a stock ``asyncio.Event`` is invisible to the DPOR
+    engine: it still looks runnable, so the scheduler keeps picking it, no
+    other task ever gets the turn, and the run dies by wall timeout — scored
+    as a false deadlock counterexample (the event analogue of a task parked
+    on an ``asyncio.Lock``).  Blocking the waiter in the engine hands the
+    turn onward, and ``set()`` / wake report the ``set() → wait()-return``
+    happens-before edge (mirroring the sync ``CooperativeEvent``).
+    """
+
+    def __init__(self) -> None:
+        self._event = _real_asyncio_event()
+        # task_ids currently engine-blocked in wait(), in park order.
+        self._waiters: list[int] = []
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def clear(self) -> None:
+        self._event.clear()
+
+    async def wait(self) -> bool:
+        task_id = _task_id_var.get()
+        scheduler = _scheduler_var.get()
+
+        # Same scheduling point as _CooperativeAsyncLock.acquire: without it
+        # the set()/wait() ordering on an already-set event is never a DPOR
+        # choice (Event.wait on a set event completes synchronously).
+        if scheduler is not None and task_id is not None and _in_scheduler_pause.get() == 0:
+            await scheduler.pause(task_id, ("event_wait", id(self)))
+
+        if self._event.is_set():
+            return True
+        # A scheduler-detected deadlock/timeout aborts the run: tasks free-run
+        # to completion (see InterleavedLoop.run_all), so waiting here would
+        # hang until the outer wall timeout.
+        if scheduler is not None and scheduler._error is not None:
+            return True
+
+        engine = getattr(scheduler, "engine", None)
+        if scheduler is None or task_id is None or engine is None:
+            return await self._event.wait()
+
+        # Between the is_set() probe above and block_thread below there are
+        # no awaits, and async DPOR is single-threaded — no set() can slip
+        # in unobserved (the sync CooperativeEvent needs an engine-lock
+        # dance for the same guarantee).
+        self._waiters.append(task_id)
+        _async_parked_events.add(self)
+        scheduler.execution.block_thread(task_id)
+        depth = _in_scheduler_pause.get()
+        _in_scheduler_pause.set(depth + 1)
+        try:
+            # Blocking ourselves may have left nothing engine-runnable
+            # (see _CooperativeAsyncLock.acquire): hand the turn onward.
+            kick = getattr(scheduler, "kick_stalled_schedule", None)
+            if kick is not None:
+                await kick(task_id)
+            result = await self._event.wait()
+        finally:
+            _in_scheduler_pause.set(depth)
+            if task_id in self._waiters:
+                self._waiters.remove(task_id)
+            if not self._waiters:
+                _async_parked_events.discard(self)
+            scheduler.execution.unblock_thread(task_id)
+        # Close the set() → wake happens-before edge (skip if the run was
+        # aborted — the free-run's events are not part of the exploration).
+        if scheduler._error is None:
+            engine.report_sync(scheduler.execution, task_id, "lock_acquire", event_wake_sync_id(id(self), task_id))
+        return result
+
+    def set(self) -> None:
+        task_id = _task_id_var.get()
+        scheduler = _scheduler_var.get()
+        engine = getattr(scheduler, "engine", None)
+        if scheduler is not None and engine is not None and task_id is not None and scheduler._error is None:
+            for waiter in list(self._waiters):
+                engine.report_sync(scheduler.execution, task_id, "lock_release", event_wake_sync_id(id(self), waiter))
+                scheduler.execution.unblock_thread(waiter)
+        self._event.set()
+
+    def __repr__(self) -> str:
+        return f"<_CooperativeAsyncEvent set={self.is_set()}>"
+
+
+def _patch_asyncio_event() -> None:
+    asyncio.Event = _CooperativeAsyncEvent  # type: ignore[assignment,misc]
+
+
+def _unpatch_asyncio_event() -> None:
+    asyncio.Event = _real_asyncio_event  # type: ignore[assignment,misc]
+    _async_parked_events.clear()
+
+
+# ---------------------------------------------------------------------------
+# Frontrun-internal loop timer tagging (exact deadlock detection)
+# ---------------------------------------------------------------------------
+
+
+def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Callable[[], None]]:
+    """Wrap ``loop.call_at`` so frontrun's own watchdog timers are tagged.
+
+    Exact deadlock detection may only fire when every pending loop timer is
+    one of frontrun's own (a pending *user* timer — e.g. a wall-clock
+    ``asyncio.wait_for`` — may still wake a parked task, so the state is not
+    a proven deadlock).  Timers created while ``_in_frontrun_timer`` is set
+    (see ``frontrun_wait_for``) are collected in a WeakSet; everything else
+    counts as a user timer.
+
+    Returns ``(user_timers_pending, uninstall)``.  ``user_timers_pending``
+    is conservative: if the loop's timer heap cannot be inspected (a
+    non-standard loop without ``_scheduled``), it reports True so exact
+    detection stays off and the wall-clock fallback applies.
+    """
+    tagged: weakref.WeakSet[Any] = weakref.WeakSet()
+    orig_call_at = loop.call_at
+
+    def _tagging_call_at(when: float, callback: Any, *args: Any, context: Any = None) -> Any:
+        handle = orig_call_at(when, callback, *args, context=context)
+        if _in_frontrun_timer.get():
+            tagged.add(handle)
+        return handle
+
+    loop.call_at = _tagging_call_at
+
+    def _user_timers_pending() -> bool:
+        scheduled = getattr(loop, "_scheduled", None)
+        if scheduled is None:
+            return True
+        return any(not handle.cancelled() and handle not in tagged for handle in scheduled)
+
+    def _uninstall() -> None:
+        del loop.call_at
+
+    return _user_timers_pending, _uninstall
+
+
+# ---------------------------------------------------------------------------
 # asyncio.sleep patching
 # ---------------------------------------------------------------------------
 
@@ -431,11 +593,18 @@ class AsyncDporScheduler(InterleavedLoop):
         virtual_clock: VirtualClock | None = None,
         clock_mode: str = "real",
         clock_actor_id: int | None = None,
+        user_timers_pending: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
         self.engine = engine
         self.execution = execution
         self._num_engine_tasks = num_tasks
+        # Exact deadlock detection (virtual clock only): a pending confirm
+        # task re-checks a "nobody engine-runnable, no deadline pending"
+        # observation after the loop's in-flight wake callbacks have drained.
+        self._user_timers_pending = user_timers_pending
+        self._deadlock_confirm_pending = False
+        self._deadlock_confirm_task: asyncio.Task[None] | None = None
         # Virtual clock (ideas/virtual_clock.md), mirroring the sync
         # DporScheduler: an extra engine thread (the clock actor) whose steps
         # advance the clock to the earliest pending deadline.  "virtual" =
@@ -551,7 +720,7 @@ class AsyncDporScheduler(InterleavedLoop):
                         self._sync_clock_actor()
                         return
                     try:
-                        await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                        await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                     except asyncio.TimeoutError:
                         self._error = TimeoutError(
                             f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
@@ -562,7 +731,7 @@ class AsyncDporScheduler(InterleavedLoop):
                 # Phase 2: woken — wait until the engine schedules us again.
                 while not (self._finished or self._error) and self._current_task != task_id:
                     try:
-                        await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                        await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                     except asyncio.TimeoutError:
                         self._error = TimeoutError(
                             f"Deadlock: task {task_id} woke at t={deadline} but was never rescheduled"
@@ -597,6 +766,58 @@ class AsyncDporScheduler(InterleavedLoop):
                 self._current_task = next_task
             self._condition.notify_all()
 
+    def _maybe_confirm_exact_deadlock(self) -> None:
+        """Arm a deferred exact-deadlock check (virtual clock only).
+
+        Called from ``_schedule_next`` when nothing is engine-runnable and no
+        deadline is pending.  That state is a *candidate* deadlock, not a
+        proven one: engine-unblock happens lazily when a woken task resumes
+        (in the lock/event wrappers' ``finally``), so a wake callback may
+        still be sitting in the loop's ready queue.  The confirm task yields
+        twice to drain in-flight wakes, then re-checks under the condition.
+        """
+        if self.virtual_clock is None or self._deadlock_confirm_pending:
+            return
+        if self._error is not None or self._finished:
+            return
+        if len(self._tasks_done) >= self._num_engine_tasks:
+            return
+        self._deadlock_confirm_pending = True
+        self._deadlock_confirm_task = asyncio.get_running_loop().create_task(self._confirm_exact_deadlock())
+
+    async def _confirm_exact_deadlock(self) -> None:
+        try:
+            for _ in range(2):
+                await _real_asyncio_sleep(0)
+            async with self._condition:
+                if self._error is not None or self._finished:
+                    return
+                if len(self._tasks_done) >= self._num_engine_tasks:
+                    return
+                if self.execution.runnable_threads():
+                    return
+                if self._has_pending_deadlines():
+                    return
+                checker = self._user_timers_pending
+                if checker is None or checker():
+                    # A pending user timer (e.g. a wall-clock asyncio.wait_for
+                    # around a blocked await) may still wake a parked task —
+                    # not a proven deadlock; leave it to the wall fallback.
+                    return
+                desc = (
+                    "all live tasks are blocked and no virtual-clock deadline is pending "
+                    f"(sleepers={sorted(self._sleepers)}, done={sorted(self._tasks_done)})"
+                )
+                self._error = DeadlockError(f"Deadlock detected by virtual clock: {desc}", desc)
+                # Wake tasks parked on cooperative events so they free-run to
+                # completion and run_all can raise the DeadlockError (tasks
+                # parked on cooperative locks unstick when their holders
+                # finish and force-release).
+                _wake_parked_async_event_waiters()
+                self._condition.notify_all()
+        finally:
+            self._deadlock_confirm_pending = False
+
     def _schedule_next(self) -> int | None:
         """Ask the DPOR engine which task to run next.
 
@@ -621,6 +842,7 @@ class AsyncDporScheduler(InterleavedLoop):
                     # the clock advance is the only possible transition.
                     self.execution.unblock_thread(self._clock_actor_id)
                     continue
+                self._maybe_confirm_exact_deadlock()
                 return None
             scheduled = self.engine.schedule(self.execution)
             if scheduled is not None and scheduled == self._clock_actor_id:
@@ -750,7 +972,23 @@ class AsyncDporScheduler(InterleavedLoop):
         self._start_opcode_trace()
         try:
             await super().run_all(wrapped, timeout=timeout, detect_external_deadlock=detect_external_deadlock)
+        except DeadlockError:
+            raise
+        except Exception:
+            # An exact-deadlock abort makes the remaining tasks free-run to
+            # completion under false pretenses (parked event waits return on
+            # an unset event); anything they raise while free-running is an
+            # artifact, and the base run_all surfaces task errors before
+            # self._error — reassert the DeadlockError's priority.
+            if isinstance(self._error, DeadlockError):
+                raise self._error from None
+            raise
         finally:
+            confirm = self._deadlock_confirm_task
+            if confirm is not None and not confirm.done():
+                confirm.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await confirm
             self._stop_opcode_trace()
             self._shadow_stacks.clear()
 
@@ -1173,7 +1411,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                             self._condition.notify_all()
                             continue
                         try:
-                            await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                            await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                         except asyncio.TimeoutError:
                             self._error = TimeoutError(
                                 f"Replay deadlock: task {task_id} sleeping until t={deadline} was never woken"
@@ -1471,15 +1709,21 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     # stay on the wall clock; see docs/virtual_clock.rst.
     _loop = asyncio.get_running_loop()
     _loop_time_pinned = False
+    _user_timers_check: Callable[[], bool] | None = None
+    _untag_timers: Callable[[], None] | None = None
     if clock != "real":
         _loop.time = real_monotonic  # type: ignore[method-assign]
         _loop_time_pinned = True
+        # Tag frontrun's own watchdog timers so exact deadlock detection can
+        # tell them apart from user timers (see _install_frontrun_timer_tagging).
+        _user_timers_check, _untag_timers = _install_frontrun_timer_tagging(_loop)
 
     try:
         with PatchScope() as patch_scope:
             patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
             patch_scope.add(patch_redis_async, unpatch_redis_async, enabled=detect_redis and _redis_async_available)
             patch_scope.add(_patch_asyncio_lock, _unpatch_asyncio_lock)
+            patch_scope.add(_patch_asyncio_event, _unpatch_asyncio_event)
             patch_scope.add(_patch_asyncio_sleep, _unpatch_asyncio_sleep, enabled=patch_sleep)
             patch_scope.add(patch_time, unpatch_time, enabled=clock != "real")
 
@@ -1508,6 +1752,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                     virtual_clock=virtual_clock,
                     clock_mode=clock,
                     clock_actor_id=clock_actor_id,
+                    user_timers_pending=_user_timers_check,
                 )
 
                 with clock_context(virtual_clock):
@@ -1632,6 +1877,8 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         if trace_packages is not None:
             _set_active_trace_filter(None)
         set_lock_timeout(prev_lock_timeout)
+        if _untag_timers is not None:
+            _untag_timers()
         if _loop_time_pinned:
             del _loop.time  # restore BaseEventLoop.time
 

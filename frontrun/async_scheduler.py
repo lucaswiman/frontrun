@@ -40,8 +40,27 @@ Example — a simple round-robin scheduler:
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from typing import Any
+import contextvars
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, TypeVar
+
+_T = TypeVar("_T")
+
+# True while a frontrun-internal timed wait is creating its loop timer.
+# Exact async deadlock detection must tell the scheduler's own watchdog
+# timers apart from user timers (a pending user timer means a parked task
+# may still be woken, so it is not a proven deadlock); the async DPOR
+# driver tags timers created under this flag via a loop.call_at wrapper.
+_in_frontrun_timer: contextvars.ContextVar[bool] = contextvars.ContextVar("frontrun_in_frontrun_timer", default=False)
+
+
+async def frontrun_wait_for(awaitable: Coroutine[Any, Any, _T] | Awaitable[_T], timeout: float) -> _T:
+    """``asyncio.wait_for`` whose timeout timer is tagged as frontrun-internal."""
+    token = _in_frontrun_timer.set(True)
+    try:
+        return await asyncio.wait_for(awaitable, timeout)
+    finally:
+        _in_frontrun_timer.reset(token)
 
 
 class InterleavedLoop:
@@ -162,7 +181,7 @@ class InterleavedLoop:
 
                 while True:
                     try:
-                        await asyncio.wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                        await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                     except asyncio.TimeoutError:
                         self._handle_timeout(task_id, marker)
                         return
@@ -262,7 +281,7 @@ class InterleavedLoop:
             if detect_external_deadlock:
                 await self._wait_watching_progress(gathered, timeout)
             else:
-                await asyncio.wait_for(gathered, timeout=timeout)
+                await frontrun_wait_for(gathered, timeout=timeout)
         except asyncio.TimeoutError:
             for t in tasks:
                 if not t.done():
@@ -302,7 +321,11 @@ class InterleavedLoop:
             if remaining <= 0:
                 break
             before = self._progress
-            done, _ = await asyncio.wait({gathered}, timeout=min(self.deadlock_timeout, remaining))
+            token = _in_frontrun_timer.set(True)
+            try:
+                done, _ = await asyncio.wait({gathered}, timeout=min(self.deadlock_timeout, remaining))
+            finally:
+                _in_frontrun_timer.reset(token)
             if done:
                 gathered.result()
                 return
