@@ -17,6 +17,14 @@ from this proposal:
   virtualised timeouts cover `sleep` and timed lock acquires (phase 4 done).
 - `serializable_invariant` is rejected with a virtual clock (the sequential
   baseline runs execute outside the scheduler).
+- Post-review hardening: cooperative `Event.wait()` engine-blocks under DPOR
+  (a spinner is indistinguishable from useful work, so branches scheduling
+  the waiter before the setter ran unboundedly); the random scheduler tracks
+  untimed lock/event spinners so autojump still fires; `clock_scope` owns the
+  `time.*` patch so invariants see virtual time; replay defers recorded
+  clock-actor steps that arrive before their sleeper registers (drift);
+  async random uses a quiescence heuristic for tasks parked on unpatched
+  asyncio primitives.
 
 ## Problem statement
 

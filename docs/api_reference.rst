@@ -20,6 +20,14 @@ Unified Exploration Entry Points
 .. autofunction:: frontrun.explore_async_random
 
 
+Virtual Clock
+-------------
+
+See :doc:`virtual_clock` for a guide. ``frontrun.explore(..., clock="virtual")``
+/ ``clock="explored"`` control time as a scheduled quantity; there is no
+separate entry point.
+
+
 Cross-Process Exploration
 -------------------------
 

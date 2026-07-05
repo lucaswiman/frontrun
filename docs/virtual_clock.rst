@@ -12,17 +12,35 @@ Enable it with the ``clock=`` parameter of :func:`frontrun.explore`:
 
 .. code-block:: python
 
+    import time
     import frontrun
 
+    class Cache:
+        def __init__(self):
+            self.expires_at = time.monotonic() + 60.0
+
+        def expired(self):
+            return time.monotonic() >= self.expires_at
+
+    def worker(cache):
+        time.sleep(120.0)              # zero wall time under clock="virtual"
+        assert cache.expired()         # TTL expiry is actually reachable
+
     result = frontrun.explore(
-        setup=...,
-        workers=[...],
-        invariant=...,
-        clock="virtual",      # default "real"; "explored" adds the clock actor
+        setup=Cache,
+        workers=[worker],
+        invariant=lambda c: c.expired(),
+        clock="virtual",               # default "real"
     )
+    assert result.property_holds
 
 Both sync (threads) and async (asyncio tasks) workers are supported, with
 ``strategy="dpor"`` and ``strategy="random"``.
+
+Rule of thumb: use ``"virtual"`` to make timeout/TTL logic reachable
+deterministically at zero wall cost; use ``"explored"`` when the *timing*
+of a timer firing is itself the race you are hunting — it makes the clock
+advance a scheduling choice the engine explores.
 
 What a virtual clock changes
 ----------------------------
@@ -47,9 +65,11 @@ arbitrary epoch (1,000,000.0 seconds), owned by the scheduler:
   finished or deadline-blocked, the clock jumps to the *earliest* pending
   deadline and wakes its sleepers.  This is the "autojump" model
   (prior art: ``trio.testing.MockClock(autojump_threshold=0)``).
-* **Deadlocks are detected exactly.** All workers blocked with *no*
-  pending deadline is a genuine deadlock, reported immediately instead of
-  via the wall-clock fallback timeout.
+* **Deadlocks are detected exactly (sync DPOR).** All workers blocked with
+  *no* pending deadline is a genuine deadlock; the sync DPOR scheduler
+  reports it immediately instead of via the wall-clock fallback timeout.
+  The async and random schedulers still fall back to the wall-clock
+  ``deadlock_timeout`` in this situation.
 
 ``clock="explored"``: timer firings as interleaving choices
 -----------------------------------------------------------
@@ -131,6 +151,19 @@ Semantics and limitations
 * Timed waits on ``Event`` / ``Condition`` / ``Queue`` keep wall-clock
   timeouts (they spin-yield exactly as with ``clock="real"``).  Fully
   virtualised timeouts currently cover ``sleep`` and lock acquires.
+  Untimed ``Event.wait()`` is fully supported (under DPOR the waiter
+  blocks in the engine until ``set()``, with a proper happens-before
+  edge).
+* **Captured references bypass the patch.** ``from time import monotonic``
+  (or storing ``time.monotonic`` in a local/default argument) captures the
+  real function before patching; such call sites keep reading wall-clock
+  time.  Call through the module (``time.monotonic()``) in code under
+  test.
+* ``strategy="random"`` with *async* workers cannot see tasks blocked on
+  raw ``asyncio`` primitives (e.g. ``asyncio.Lock``); a quiescence
+  heuristic advances the clock when nothing has progressed for a short
+  interval.  Prefer ``strategy="dpor"`` for lock-heavy async code — it
+  patches ``asyncio.Lock`` and needs no heuristic.
 * C-level sleeps (e.g. inside database drivers) are invisible to the
   clock — the same boundary as the existing ``deadlock_timeout``
   caveat for unmanaged C code.

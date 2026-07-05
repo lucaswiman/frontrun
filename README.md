@@ -80,7 +80,7 @@ Race conditions are hard to test because they depend on timing. A test that fail
 | **Marker schedule exploration** (`explore_marker_interleavings`) | Exhaustive search over all interleavings of your `# frontrun:` markers | You can annotate the critical sections and want completeness at that granularity |
 | **Trace markers** (`TraceExecutor`) | One exact, hand-scripted interleaving | You already know the race window and want a deterministic regression test |
 
-All approaches have async variants, and `frontrun.explore()` detects async workers automatically. The DPOR engine also drives [cross-process exploration](#cross-process-exploration) — the same interface applied to separate Python processes contending on shared SQL/Redis state — and a C-level `LD_PRELOAD` library extends conflict detection into opaque C extensions like database drivers.
+All approaches have async variants, and `frontrun.explore()` detects async workers automatically. The DPOR engine also drives [cross-process exploration](#cross-process-exploration) — the same interface applied to separate Python processes contending on shared SQL/Redis state — and a C-level `LD_PRELOAD` library extends conflict detection into opaque C extensions like database drivers. For timeout, retry, and TTL races, the [virtual clock](#virtual-clock-timeout-retry-and-ttl-races) (`clock="virtual"` / `clock="explored"`) makes time itself a scheduled quantity.
 
 ## Usage Approaches
 
@@ -356,7 +356,7 @@ if not result.ok:
 
 ### Virtual Clock: Timeout, Retry, and TTL Races
 
-Races involving timeouts, retries with backoff, TTL caches, and rate limiters depend on *when a timer fires*, which a wall-clock scheduler cannot control. Pass `clock="virtual"` and frontrun gives each execution a scheduler-owned virtual clock: `time.time()` / `time.monotonic()` / `time.perf_counter()` return virtual time in explored code, `time.sleep()` / `asyncio.sleep()` become zero-wall-time virtual deadlines, timed `Lock.acquire(timeout=...)` calls resolve deterministically, and the clock autojumps to the earliest pending deadline when nothing is runnable (the same model as Trio's autojump `MockClock`). Deadlocks with no pending timer are reported exactly instead of via a wall-clock fallback.
+Races involving timeouts, retries with backoff, TTL caches, and rate limiters depend on *when a timer fires*, which a wall-clock scheduler cannot control. Pass `clock="virtual"` and frontrun gives each execution a scheduler-owned virtual clock: `time.time()` / `time.monotonic()` / `time.perf_counter()` return virtual time in explored code, `time.sleep()` / `asyncio.sleep()` become zero-wall-time virtual deadlines, timed `Lock.acquire(timeout=...)` calls resolve deterministically, and the clock autojumps to the earliest pending deadline when nothing is runnable (the same model as Trio's autojump `MockClock`). Under sync DPOR, deadlocks with no pending timer are reported exactly instead of via a wall-clock fallback.
 
 `clock="explored"` goes further: the clock advance itself becomes a schedulable DPOR step (a synthetic "clock actor"), so "the retry fired exactly between your read and your write" is explored — and replayed — like any other interleaving:
 
