@@ -44,6 +44,7 @@ contend on shared external state (SQL and Redis).
    sql-technical-details
    redis
    cross_process
+   virtual_clock
    trace_filtering
    internals
    api_reference

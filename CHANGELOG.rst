@@ -6,6 +6,28 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+* **Virtual clock: timeout, retry, and TTL races.** ``frontrun.explore(...)``
+  gains a ``clock=`` parameter (default ``"real"``). With ``clock="virtual"``
+  each execution gets a scheduler-owned virtual clock: explored code reads
+  virtual time from ``time.time()`` / ``time.monotonic()`` /
+  ``time.perf_counter()`` (+ ``_ns`` variants), ``time.sleep()`` /
+  ``asyncio.sleep()`` become zero-wall-time virtual deadlines, contended
+  ``Lock.acquire(timeout=...)`` calls time out deterministically instead of
+  racing the host clock, and the clock autojumps to the earliest pending
+  deadline when no worker is runnable (Trio ``MockClock``-style). Deadlocks
+  with no pending timer are reported exactly instead of via the wall-clock
+  fallback timeout. With ``clock="explored"``, the clock advance is modelled
+  as a synthetic DPOR actor whose steps the engine schedules like any other
+  transition — "the retry fired between your read and your write" becomes an
+  explorable, replayable interleaving (recorded schedules include the clock
+  steps, and counterexample replay performs the same advances). The random
+  strategies gain the equivalent "maybe advance time" branch. Supported for
+  sync and async workers with ``strategy="dpor"`` and ``strategy="random"``;
+  rejected for ``execution="process"`` and with ``patch_sleep=False`` or
+  ``serializable_invariant``. Async event-loop timers (``asyncio.wait_for`` /
+  ``asyncio.timeout``) deliberately stay on the wall clock. See
+  :doc:`virtual_clock`.
+
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,
   interleaving separate processes that contend on shared external state (SQL and

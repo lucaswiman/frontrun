@@ -354,6 +354,39 @@ if not result.ok:
 
 `strategy="dpor"` (default) prunes equivalent interleavings and detects deadlocks; `strategy="exhaustive"` brute-forces every interleaving as a reduction-free cross-check. `reuse_workers=True` keeps workers alive across iterations (available on both entry points). Cross-process tests spawn real processes and are marked with the pytest `e2e` marker — run them via `make test-e2e-3.14` or `pytest -m e2e`. (Cross-process mode installs its interception in Python, so it does not need the `frontrun` CLI wrapper.)
 
+### Virtual Clock: Timeout, Retry, and TTL Races
+
+Races involving timeouts, retries with backoff, TTL caches, and rate limiters depend on *when a timer fires*, which a wall-clock scheduler cannot control. Pass `clock="virtual"` and frontrun gives each execution a scheduler-owned virtual clock: `time.time()` / `time.monotonic()` / `time.perf_counter()` return virtual time in explored code, `time.sleep()` / `asyncio.sleep()` become zero-wall-time virtual deadlines, timed `Lock.acquire(timeout=...)` calls resolve deterministically, and the clock autojumps to the earliest pending deadline when nothing is runnable (the same model as Trio's autojump `MockClock`). Deadlocks with no pending timer are reported exactly instead of via a wall-clock fallback.
+
+`clock="explored"` goes further: the clock advance itself becomes a schedulable DPOR step (a synthetic "clock actor"), so "the retry fired exactly between your read and your write" is explored — and replayed — like any other interleaving:
+
+```python
+import time
+import frontrun
+
+class State:
+    def __init__(self):
+        self.x = 0
+
+def rmw_worker(s):        # read-modify-write over two statements
+    tmp = s.x
+    s.x = tmp + 1
+
+def delayed_writer(s):    # a retry/timer firing one virtual second later
+    time.sleep(1.0)
+    s.x = 100
+
+result = frontrun.explore(
+    setup=State,
+    workers=[rmw_worker, delayed_writer],
+    invariant=lambda s: s.x == 100,
+    clock="explored",
+)
+assert not result.property_holds  # found: the timer fired inside the RMW window
+```
+
+Works for sync and async workers with both `strategy="dpor"` and `strategy="random"`. Async loop timers (`asyncio.wait_for` deadlines) deliberately stay on the wall clock. See [Virtual clock](docs/virtual_clock.rst) for semantics and limitations.
+
 ### C-Level I/O Interception
 
 When run under the `frontrun` CLI, a native `LD_PRELOAD` library (`libfrontrun_io.so`) intercepts libc I/O functions directly — `connect`, `send`, `sendto`, `sendmsg`, `write`, `writev`, `recv`, `recvfrom`, `recvmsg`, `read`, `readv`, `close`. This covers opaque C extensions that Python-level patching can't see: database drivers (libpq, mysqlclient), Redis clients, HTTP libraries, and anything else that does its own I/O in C.

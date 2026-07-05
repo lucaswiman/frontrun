@@ -1,6 +1,22 @@
 # Virtual Clock: Making Timeout, Retry, and TTL Races Explorable
 
-**Status:** Proposal (2026-06-12). Not implemented.
+**Status:** Implemented (2026-07-05) — `frontrun.explore(clock="virtual"|"explored")`,
+sync + async, DPOR + random. See `docs/virtual_clock.rst`. Implementation deltas
+from this proposal:
+
+- One mechanism serves both modes: the clock actor exists in v1 too, but is
+  *enabled* only when nothing else is runnable (autojump) vs. whenever a
+  deadline is pending (explored). Wake edges are reported as
+  `lock_release` (actor) / `lock_acquire` (woken worker) sync events.
+- The async `loop.time()` spike concluded **against** virtualising loop time:
+  the scheduler's own deadlock-timeout timers share the loop's timer heap, so
+  a clock jump would fire them spuriously. `asyncio.wait_for` / `asyncio.timeout`
+  therefore stay wall-clock (documented); wrapping them over virtual deadlines
+  remains future work.
+- `Event`/`Condition`/`Queue` timed waits keep wall-clock timeouts; fully
+  virtualised timeouts cover `sleep` and timed lock acquires (phase 4 done).
+- `serializable_invariant` is rejected with a virtual clock (the sequential
+  baseline runs execute outside the scheduler).
 
 ## Problem statement
 
