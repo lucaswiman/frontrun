@@ -58,7 +58,10 @@ dev = [
     "hypothesis>=6.0",
     "sphinx>=4.0",
     "furo",
-    "ruff>=0.1.0",
+    # Pinned: ruff's formatter output changes across minor versions (e.g. how
+    # implicit string concatenations are joined), and `make check` runs
+    # `ruff format --check`, so an unpinned ruff breaks lint on unrelated files.
+    "ruff==0.15.20",
     "pyright>=1.1.0",
     "sqlglot>=20.0",
     "aiosqlite>=0.17.0",
