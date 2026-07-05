@@ -14,10 +14,11 @@ Unreleased
   ``asyncio.sleep()`` become zero-wall-time virtual deadlines, contended
   ``Lock.acquire(timeout=...)`` calls time out deterministically instead of
   racing the host clock, and the clock autojumps to the earliest pending
-  deadline when no worker is runnable (Trio ``MockClock``-style). Under sync
-  DPOR, deadlocks with no pending timer are reported exactly instead of via
-  the wall-clock fallback timeout. With ``clock="explored"``, the clock
-  advance is modelled
+  deadline when no worker is runnable (Trio ``MockClock``-style). Under DPOR
+  (sync and async), deadlocks with no pending timer are reported exactly
+  instead of via the wall-clock fallback timeout; the async check declines
+  when a pending user loop timer or an unmanaged awaitable could still wake
+  a parked task. With ``clock="explored"``, the clock advance is modelled
   as a synthetic DPOR actor whose steps the engine schedules like any other
   transition — "the retry fired between your read and your write" becomes an
   explorable, replayable interleaving (recorded schedules include the clock
@@ -27,11 +28,13 @@ Unreleased
   rejected for ``execution="process"`` and with ``patch_sleep=False`` or
   ``serializable_invariant``. Async event-loop timers (``asyncio.wait_for`` /
   ``asyncio.timeout``) deliberately stay on the wall clock. As part of this
-  work, an untimed cooperative ``Event.wait()`` under DPOR now blocks the
-  waiter in the engine until ``set()`` (with a proper happens-before edge)
-  instead of spin-probing — exploration branches that schedule the waiter
-  before the setter no longer burn a deadlock timeout, with or without a
-  virtual clock. See :doc:`virtual_clock`.
+  work, an untimed ``Event.wait()`` under DPOR — ``threading.Event`` and
+  ``asyncio.Event`` alike — now blocks the waiter in the engine until
+  ``set()`` (with a proper happens-before edge) instead of spin-probing or
+  parking invisibly: exploration branches that schedule the waiter before
+  the setter no longer burn a deadlock timeout or get scored as false
+  deadlock counterexamples, with or without a virtual clock. See
+  :doc:`virtual_clock`.
 
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,

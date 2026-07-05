@@ -65,11 +65,15 @@ arbitrary epoch (1,000,000.0 seconds), owned by the scheduler:
   finished or deadline-blocked, the clock jumps to the *earliest* pending
   deadline and wakes its sleepers.  This is the "autojump" model
   (prior art: ``trio.testing.MockClock(autojump_threshold=0)``).
-* **Deadlocks are detected exactly (sync DPOR).** All workers blocked with
-  *no* pending deadline is a genuine deadlock; the sync DPOR scheduler
-  reports it immediately instead of via the wall-clock fallback timeout.
-  The async and random schedulers still fall back to the wall-clock
-  ``deadlock_timeout`` in this situation.
+* **Deadlocks are detected exactly (sync and async DPOR).** All workers
+  blocked with *no* pending deadline is a genuine deadlock; the DPOR
+  schedulers report it immediately instead of via the wall-clock fallback
+  timeout.  The async scheduler additionally requires that no *user* loop
+  timer is pending (a wall-clock ``asyncio.wait_for`` may still wake a
+  parked task) and that every parked task is on a frontrun-managed
+  primitive — tasks parked on unmanaged awaitables (``asyncio.Queue``,
+  ``asyncio.Condition``, bare futures) fall back to the wall-clock
+  ``deadlock_timeout``, as do the random schedulers.
 
 ``clock="explored"``: timer firings as interleaving choices
 -----------------------------------------------------------
@@ -151,9 +155,16 @@ Semantics and limitations
 * Timed waits on ``Event`` / ``Condition`` / ``Queue`` keep wall-clock
   timeouts (they spin-yield exactly as with ``clock="real"``).  Fully
   virtualised timeouts currently cover ``sleep`` and lock acquires.
-  Untimed ``Event.wait()`` is fully supported (under DPOR the waiter
-  blocks in the engine until ``set()``, with a proper happens-before
-  edge).
+  Untimed ``Event.wait()`` is fully supported, sync and async (under
+  DPOR the waiter blocks in the engine until ``set()``, with a proper
+  happens-before edge).  Async ``Queue`` / ``Condition`` waiters are not
+  yet engine-visible: they behave correctly but a deadlock through them
+  is reported via the wall-clock fallback, not exactly.
+* An async ``Event.set()`` issued from outside the explored tasks (a
+  loop callback or a foreign thread) is invisible to exact deadlock
+  detection; if all tasks are otherwise blocked it may be reported as a
+  deadlock.  Setters inside explored tasks — the normal case — are fully
+  tracked.
 * **Captured references bypass the patch.** ``from time import monotonic``
   (or storing ``time.monotonic`` in a local/default argument) captures the
   real function before patching; such call sites keep reading wall-clock

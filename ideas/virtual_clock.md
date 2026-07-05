@@ -25,6 +25,14 @@ from this proposal:
   clock-actor steps that arrive before their sleeper registers (drift);
   async random uses a quiescence heuristic for tasks parked on unpatched
   asyncio primitives.
+- Exact deadlock detection covers async DPOR too: `asyncio.Event` is patched
+  (waiters engine-block with wake happens-before edges, like `asyncio.Lock`),
+  and a "nobody runnable, no deadline pending" observation is confirmed after
+  draining in-flight loop wakes and checking that no *user* loop timer is
+  pending (frontrun's own watchdog timers are tagged via a `loop.call_at`
+  wrapper). Tasks parked on unmanaged awaitables (`asyncio.Queue` /
+  `Condition` / bare futures) still look runnable to the engine, so the check
+  safely declines and the wall fallback applies.
 
 ## Problem statement
 
