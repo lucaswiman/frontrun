@@ -443,6 +443,15 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
 
                 # Replay the counterexample to measure reproducibility
                 if reproduce_on_failure > 0 and result.reproduction_attempts == 0:
+                    # Access-anchored replay (defect #20): resolve the racing
+                    # objects of this failing execution to run-stable labels
+                    # and extract their recorded access order, so the bytecode
+                    # replay can enforce the orderings that matter even when
+                    # the positional schedule drifts (e.g. a real subprocess
+                    # between the racing write and read).
+                    with engine_lock:
+                        _raced_keys = {r[3] for r in engine.pending_races() if r[3] is not None}
+                    access_schedule = scheduler.racing_access_schedule(_raced_keys) if _raced_keys else None
                     attempts, successes = _reproduce_dpor_counterexample(
                         schedule_list=schedule_list,
                         setup=setup,
@@ -455,6 +464,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                         detect_io=detect_io,
                         io_schedule=list(scheduler._io_trace) if detect_io and scheduler._io_trace else None,
                         patch_sleep=patch_sleep,
+                        access_schedule=access_schedule,
                     )
                     result.reproduction_attempts = attempts
                     result.reproduction_successes = successes

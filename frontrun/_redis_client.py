@@ -260,12 +260,18 @@ def _intercept_execute_command(
         access = parse_redis_access(cmd_name, cmd_args)
         needs_scheduling_point = _replay_needs_scheduling_point(access)
 
-    # Build a structured resource ID for IO-anchored replay.
+    # Build a structured resource ID for IO-anchored replay.  Fields are
+    # joined with the unit separator (\x1f) so the replay scheduler can
+    # split them unambiguously (keys and db scopes may contain colons).
+    # The key field may embed run-specific random values (UUIDs, ULIDs
+    # from e.g. redis-om primary keys); _IOAnchoredReplayScheduler
+    # canonicalises it via bijective rebinding so replays whose setup()
+    # generates fresh keys still match the recorded anchors.
     resource_id = ""
     if needs_scheduling_point:
         db_scope = _get_redis_db_scope(self) or ""
         first_key = str(cmd_args[0]) if cmd_args else ""
-        resource_id = f"redis:{cmd_name}:{first_key}:{db_scope}"
+        resource_id = "\x1f".join(("redis", cmd_name, first_key, db_scope))
 
     return _run_sync_dpor_envelope(
         lambda: original_method(self, *args, **kwargs),

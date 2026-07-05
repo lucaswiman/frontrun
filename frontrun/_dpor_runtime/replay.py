@@ -20,6 +20,7 @@ def _run_dpor_schedule(
     trace_recorder: TraceRecorder | None = None,
     io_schedule: list[tuple[int, str]] | None = None,
     patch_sleep: bool = True,
+    access_schedule: list[tuple[int, str, str]] | None = None,
 ) -> T:
     """Replay a DPOR schedule using the DPOR runner rather than OpcodeScheduler.
 
@@ -27,6 +28,10 @@ def _run_dpor_schedule(
     IO-anchored replay scheduler (defect #16) which only enforces the
     schedule at IO boundaries, tolerating state-dependent changes in
     opcode-level scheduling points.
+
+    When *access_schedule* is provided, the bytecode replay additionally
+    gates accesses to the racing objects on the recorded access order
+    (access-anchored replay, defect #20).
     """
     if io_schedule is not None and detect_io:
         scheduler: DporScheduler = _IOAnchoredReplayScheduler(
@@ -43,6 +48,7 @@ def _run_dpor_schedule(
             deadlock_timeout=deadlock_timeout,
             trace_recorder=trace_recorder,
             detect_io=detect_io,
+            access_schedule=access_schedule,
         )
     runner = DporBytecodeRunner(scheduler, detect_io=detect_io)
 
@@ -78,6 +84,7 @@ def _reproduce_dpor_counterexample(
     detect_io: bool = True,
     io_schedule: list[tuple[int, str]] | None = None,
     patch_sleep: bool = True,
+    access_schedule: list[tuple[int, str, str]] | None = None,
 ) -> tuple[int, int]:
     """Measure how often a DPOR counterexample reproduces under the DPOR runner.
 
@@ -118,6 +125,7 @@ def _reproduce_dpor_counterexample(
                     deadlock_timeout=deadlock_timeout,
                     io_schedule=io_schedule,
                     patch_sleep=patch_sleep,
+                    access_schedule=access_schedule,
                 )
                 if invariant is not None:
                     # Use check_invariant so assert-style invariants (which

@@ -217,6 +217,15 @@ class CooperativeLock:
             result = self._lock.acquire(blocking=False)
             if result:
                 self._set_owner_and_report("lock_acquire")
+                # Mark this acquire as a trylock so the DPOR engine's
+                # release backtracking explores the ordering where the
+                # attempt lands while the lock is still held (and fails).
+                self._report("lock_attempt_ok")
+            else:
+                # A failed trylock is observable behavior (the caller takes
+                # a different branch); report it so DPOR can explore the
+                # orderings a real C-level lock would admit.
+                self._report("lock_attempt_fail")
             return result
 
         # Fast path: uncontested
@@ -400,7 +409,9 @@ class CooperativeRLock:
                 self._owner = me
                 self._count = 1
                 self._set_owner_and_report("lock_acquire")
+                self._report("lock_attempt_ok")
                 return True
+            self._report("lock_attempt_fail")
             return False
 
         # Fast path
@@ -622,9 +633,16 @@ class CooperativeSemaphore:
         # Fast path: try to decrement counter
         if self._try_acquire():
             self._report("lock_acquire")
+            if not blocking:
+                # Mark as a trylock so DPOR release backtracking explores
+                # the ordering where the attempt fails (see CooperativeLock).
+                self._report("lock_attempt_ok")
             return True
 
         if not blocking:
+            # A failed trylock is observable behavior; make it visible to
+            # the DPOR engine (see CooperativeLock.acquire).
+            self._report("lock_attempt_fail")
             return False
 
         ctx = get_context()
