@@ -81,6 +81,13 @@ from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
 from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._tracing import should_trace_file as _should_trace_file
+from frontrun._virtual_clock import (
+    VirtualClock,
+    clock_scope,
+    patch_time,
+    unpatch_time,
+    validate_clock,
+)
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import (
     InterleavingResult,
@@ -119,10 +126,23 @@ class OpcodeScheduler:
         deadlock_timeout: float = 5.0,
         max_ops: int = 0,
         trace_recorder: TraceRecorder | None = None,
+        virtual_clock: VirtualClock | None = None,
+        clock_mode: str = "real",
     ):
         self.schedule = list(schedule)  # mutable copy for dynamic extension
         self.num_threads = num_threads
         self.deadlock_timeout = deadlock_timeout
+        # Virtual clock (ideas/virtual_clock.md).  Random exploration has no
+        # DPOR engine, so the clock advance rules live directly here:
+        # - a schedule entry for a sleeping thread is skipped ("virtual") or
+        #   advances the clock to that thread's deadline ("explored" — the
+        #   random sampler's "maybe advance time" branch);
+        # - when every live thread is deadline-blocked, the clock autojumps
+        #   to the earliest deadline (see sleep_until).
+        self.virtual_clock = virtual_clock
+        self.clock_mode = clock_mode
+        self._sleepers: dict[int, float] = {}
+        self._timed_waits: dict[int, float] = {}
         self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10000
         # Deterministic RNG for dynamic schedule extension.  Seeded from the
         # initial schedule so the extension is reproducible for a given run
@@ -178,6 +198,36 @@ class OpcodeScheduler:
                     self._condition.notify_all()
                     continue
 
+                if self.virtual_clock is not None and scheduled_tid in self._sleepers:
+                    if self.clock_mode == "explored":
+                        # "Maybe advance": the random schedule picked a
+                        # sleeping thread, so let time pass to its deadline;
+                        # the woken thread then consumes this entry.
+                        self._advance_clock_to(self._sleepers[scheduled_tid])
+                    else:
+                        # Autojump semantics: a sleeping thread cannot run
+                        # before the clock advances; skip its slot.
+                        self._index += 1
+                    self._condition.notify_all()
+                    continue
+
+                if (
+                    self.virtual_clock is not None
+                    and scheduled_tid == thread_id
+                    and thread_id in self._timed_waits
+                    and all(
+                        t in self._sleepers
+                        for t in range(self.num_threads)
+                        if t != thread_id and t not in self._threads_done
+                    )
+                ):
+                    # This thread spins on a timed lock acquire and every
+                    # other live thread is deadline-blocked: nothing can
+                    # release the lock before time passes, so advance to the
+                    # earliest pending deadline (which may be our own).
+                    deadlines = list(self._sleepers.values()) + list(self._timed_waits.values())
+                    self._advance_clock_to(min(deadlines))
+
                 if scheduled_tid == thread_id:
                     self._index += 1
                     self._condition.notify_all()
@@ -204,7 +254,74 @@ class OpcodeScheduler:
         """Mark a thread as finished."""
         with self._condition:
             self._threads_done.add(thread_id)
+            self._sleepers.pop(thread_id, None)
+            self._timed_waits.pop(thread_id, None)
             self._condition.notify_all()
+
+    # -- Virtual clock support (see class docstring fields) ---------------
+
+    def _advance_clock_to(self, target: float) -> None:
+        """Jump the clock to *target* and wake every due deadline.
+
+        Caller must hold ``self._condition``.
+        """
+        clock = self.virtual_clock
+        if clock is None:
+            return
+        clock.advance_to(target)
+        now = clock.now()
+        for tid, dl in list(self._sleepers.items()):
+            if dl <= now:
+                del self._sleepers[tid]
+        for tid, dl in list(self._timed_waits.items()):
+            if dl <= now:
+                del self._timed_waits[tid]
+
+    def sleep_until(self, thread_id: int, deadline: float) -> None:
+        """Block *thread_id* until the virtual clock reaches *deadline*.
+
+        Wakes when another thread's scheduling advances the clock past the
+        deadline, or — when every live thread is deadline-blocked — by
+        autojumping to the earliest pending deadline directly.
+        """
+        with self._condition:
+            self._sleepers[thread_id] = deadline
+            self._condition.notify_all()
+            try:
+                while thread_id in self._sleepers:
+                    if self._finished or self._error:
+                        return
+                    alive = [t for t in range(self.num_threads) if t not in self._threads_done]
+                    if alive and all(t in self._sleepers for t in alive):
+                        # Every live thread is asleep: only time can move.
+                        self._advance_clock_to(min(self._sleepers[t] for t in alive))
+                        self._condition.notify_all()
+                        continue
+                    if not self._condition.wait(timeout=self.deadlock_timeout):
+                        if self._finished or self._error:
+                            return
+                        self._error = TimeoutError(
+                            f"Deadlock: thread {thread_id} sleeping until t={deadline} was never woken"
+                        )
+                        self._condition.notify_all()
+                        return
+            finally:
+                self._sleepers.pop(thread_id, None)
+
+    def add_timed_wait(self, thread_id: int, deadline: float) -> None:
+        """Register a virtual deadline for a timed lock acquire."""
+        with self._condition:
+            self._timed_waits[thread_id] = deadline
+            self._condition.notify_all()
+
+    def remove_timed_wait(self, thread_id: int) -> None:
+        """Deregister a timed-acquire deadline (acquired or gave up)."""
+        with self._condition:
+            self._timed_waits.pop(thread_id, None)
+            self._condition.notify_all()
+
+    def clear_engine_block(self, thread_id: int) -> None:
+        """No-op: the random scheduler has no engine-level blocked state."""
 
     def report_error(self, error: Exception):
         """Report an error and unblock all threads."""
@@ -293,11 +410,14 @@ class BytecodeShuffler:
             unpatch_io()
             self._io_patched = False
 
-    def patch_scope(self, *, patch_sleep: bool = True) -> PatchScope:
+    def patch_scope(self, *, patch_sleep: bool = True, virtual_time: bool = False) -> PatchScope:
         scope = PatchScope()
         scope.add(self._patch_locks, self._unpatch_locks)
         scope.add(self._patch_io, self._unpatch_io)
         scope.add(self._patch_sleep, self._unpatch_sleep, enabled=patch_sleep)
+        # Route time.time/monotonic/perf_counter through the scheduler's
+        # virtual clock (gated per-thread; see frontrun._virtual_clock).
+        scope.add(patch_time, unpatch_time, enabled=virtual_time)
         return scope
 
     def _start_opcode_trace(self) -> None:
@@ -523,6 +643,8 @@ def run_with_schedule(
     deadlock_timeout: float = 5.0,
     trace_recorder: TraceRecorder | None = None,
     patch_sleep: bool = True,
+    clock: str = "real",
+    _virtual_clock: VirtualClock | None = None,
 ) -> T:
     """Run one interleaving and return the state object.
 
@@ -539,18 +661,31 @@ def run_with_schedule(
         trace_recorder: Optional recorder for capturing trace events.
             When provided, records shared-state accesses for later
             formatting into human-readable explanations.
+        clock: ``"real"`` (default), ``"virtual"`` (autojump virtual clock),
+            or ``"explored"`` (schedule entries landing on a sleeping thread
+            advance the clock — the random "maybe advance time" branch).
+        _virtual_clock: Internal — the clock instance to drive, so callers
+            (``explore_random``) can evaluate invariants against it.
 
     Returns:
         The state object after execution.
     """
+    clock = validate_clock(clock)
+    virtual_clock = _virtual_clock if _virtual_clock is not None else (VirtualClock() if clock != "real" else None)
     scheduler = OpcodeScheduler(
-        schedule, len(threads), deadlock_timeout=deadlock_timeout, trace_recorder=trace_recorder
+        schedule,
+        len(threads),
+        deadlock_timeout=deadlock_timeout,
+        trace_recorder=trace_recorder,
+        virtual_clock=virtual_clock,
+        clock_mode=clock,
     )
     runner = BytecodeShuffler(scheduler, detect_io=detect_io)
 
     # Patch locks BEFORE setup() so any locks created there are cooperative
-    with runner.patch_scope(patch_sleep=patch_sleep):
-        state = setup()
+    with runner.patch_scope(patch_sleep=patch_sleep, virtual_time=virtual_clock is not None):
+        with clock_scope(virtual_clock):
+            state = setup()
 
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:
@@ -598,6 +733,7 @@ def explore_random(
     patch_sleep: bool = True,
     serializable_invariant: Callable[[T], Any] | bool = False,
     error_on_any_race: bool = False,
+    clock: str = "real",
 ) -> InterleavingResult:
     """Search for interleavings that violate an invariant.
 
@@ -654,6 +790,16 @@ def explore_random(
     _require_frontrun_env("explore_random")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
+    clock = validate_clock(clock)
+    if clock != "real":
+        if not patch_sleep:
+            raise ValueError("clock='virtual'/'explored' requires patch_sleep=True (sleeps become virtual deadlines)")
+        if serializable_invariant is not False:
+            raise ValueError(
+                "clock='virtual'/'explored' cannot be combined with serializable_invariant: "
+                "the sequential baseline runs execute outside the scheduler, so their sleeps "
+                "and clock reads would use real wall-clock time"
+            )
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
     try:
@@ -676,6 +822,7 @@ def explore_random(
             if debug:
                 print(f"Running with {schedule=} {threads=}", flush=True)
             recorder = TraceRecorder()
+            attempt_clock = VirtualClock() if clock != "real" else None
             try:
                 state = run_with_schedule(
                     schedule,
@@ -687,6 +834,8 @@ def explore_random(
                     deadlock_timeout=deadlock_timeout,
                     trace_recorder=recorder,
                     patch_sleep=patch_sleep,
+                    clock=clock,
+                    _virtual_clock=attempt_clock,
                 )
             except DeadlockError as dl_err:
                 result.num_explored += 1
@@ -726,7 +875,8 @@ def explore_random(
                     result.explanation = explanation
                     return result
 
-            invariant_failed, assertion_msg = check_invariant(invariant, state)
+            with clock_scope(attempt_clock):
+                invariant_failed, assertion_msg = check_invariant(invariant, state)
             if invariant_failed:
                 result.property_holds = False
                 result.counterexample = schedule
@@ -737,6 +887,7 @@ def explore_random(
                     successes = 0
                     for _ in range(reproduce_on_failure):
                         try:
+                            replay_clock = VirtualClock() if clock != "real" else None
                             replay_state = run_with_schedule(
                                 schedule,
                                 setup,
@@ -745,8 +896,11 @@ def explore_random(
                                 detect_io=detect_io,
                                 deadlock_timeout=deadlock_timeout,
                                 patch_sleep=patch_sleep,
+                                clock=clock,
+                                _virtual_clock=replay_clock,
                             )
-                            replay_failed, _ = check_invariant(invariant, replay_state)
+                            with clock_scope(replay_clock):
+                                replay_failed, _ = check_invariant(invariant, replay_state)
                             if replay_failed:
                                 successes += 1
                         except Exception:

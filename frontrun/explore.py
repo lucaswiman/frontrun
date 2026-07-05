@@ -35,6 +35,7 @@ from frontrun.common import any_async
 
 Strategy = Literal["dpor", "random"]
 Execution = Literal["thread", "process"]
+Clock = Literal["real", "virtual", "explored"]
 
 
 def explore(
@@ -64,6 +65,7 @@ def explore(
     patch_sleep: bool = True,
     serializable_invariant: Callable[[Any], Any] | bool = False,
     error_on_any_race: bool = False,
+    clock: Clock = "real",
     # Random-specific kwargs
     max_attempts: int = 200,
     max_ops: int | None = None,
@@ -122,6 +124,17 @@ def explore(
         patch_sleep: Replace ``time.sleep`` / ``asyncio.sleep`` with no-op.
         serializable_invariant: Check serializability against sequential runs.
         error_on_any_race: Treat unsynchronized races as failures (DPOR only).
+        clock: ``"real"`` (default) leaves time untouched. ``"virtual"`` gives
+            each execution a scheduler-owned virtual clock: explored code reads
+            virtual time from ``time.time()`` / ``time.monotonic()`` /
+            ``time.perf_counter()``, sleeps become zero-wall-time virtual
+            deadlines, timed lock acquires time out deterministically, and the
+            clock autojumps to the earliest pending deadline when nothing is
+            runnable. ``"explored"`` additionally makes the clock advance a
+            schedulable choice, so timer firings are explored against other
+            operations ("the retry fired between the read and the write").
+            Requires ``patch_sleep=True``; thread execution only. See
+            :doc:`/virtual_clock`.
         max_attempts: Random schedule samples to try (random strategy only).
         max_ops: Maximum schedule length per attempt (random strategy only).
         seed: RNG seed for reproducibility (random strategy only).
@@ -137,6 +150,12 @@ def explore(
             ``count <= 0``, or ``strategy`` is unrecognised.
     """
     worker_list = _resolve_workers(workers, count)
+
+    from frontrun._virtual_clock import validate_clock
+
+    validate_clock(clock)
+    if clock != "real" and not patch_sleep:
+        raise ValueError("explore(): clock='virtual'/'explored' requires patch_sleep=True")
 
     # A deadlock_timeout left unset resolves per execution mode: process spawn is
     # slow, so it gets a longer default than in-process threads.
@@ -178,6 +197,10 @@ def explore(
                 ("max_ops", max_ops is not None),
                 ("seed", seed is not None),
                 ("debug", debug),
+                # The virtual clock lives in the in-process scheduler; worker
+                # processes read real time, so a non-default value is a
+                # correctness footgun rather than a silent no-op.
+                ("clock", clock != "real"),
             )
             if is_set
         ]
@@ -229,6 +252,7 @@ def explore(
         "patch_sleep": patch_sleep,
         "serializable_invariant": serializable_invariant,
         "error_on_any_race": error_on_any_race,
+        "clock": clock,
         "max_attempts": max_attempts,
         "max_ops": max_ops,
         "seed": seed,

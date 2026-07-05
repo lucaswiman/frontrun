@@ -34,6 +34,7 @@ from typing import Any
 
 from frontrun import _real_threading as _rt
 from frontrun._deadlock import DeadlockError, SchedulerAbort, format_cycle
+from frontrun._virtual_clock import real_monotonic as _real_monotonic
 
 # ---------------------------------------------------------------------------
 # Real (non-cooperative) factories, saved before any patching happens.
@@ -152,8 +153,8 @@ def _check_lock_cycle(graph: Any, thread_id: int, object_id: int, scheduler: Any
         raise SchedulerAbort(desc)
 
 
-def _timed_acquire_state(timeout: float) -> tuple[float | None, Any]:
-    """Return ``(deadline, graph)`` for a contended acquire (finding 7).
+def _timed_acquire_state(timeout: float, scheduler: Any = None, thread_id: int | None = None) -> tuple[float | None, Any, Any]:
+    """Return ``(deadline, graph, clock)`` for a contended acquire (finding 7).
 
     A timed acquire (``timeout >= 0``) cannot participate in a deadlock: it
     gives up after its deadline, which releases whatever locks the caller
@@ -162,12 +163,55 @@ def _timed_acquire_state(timeout: float) -> tuple[float | None, Any]:
     cycle) and must honor the deadline by returning ``False``.  ``graph`` is
     therefore ``None`` for timed acquires, suppressing all wait-edge
     bookkeeping in the spin loop.
+
+    When the active scheduler owns a :class:`~frontrun._virtual_clock.VirtualClock`,
+    the deadline is *virtual*: it is registered with the scheduler as a timed
+    wait so the clock can advance to it when nothing else is runnable, making
+    the timeout deterministic instead of host-speed-dependent.  ``clock`` is
+    the virtual clock in that case (``None`` for wall-clock acquires).
     """
     from frontrun._deadlock import get_wait_for_graph
 
     if timeout >= 0:
-        return time.monotonic() + timeout, None
-    return None, get_wait_for_graph()
+        clock = getattr(scheduler, "virtual_clock", None) if scheduler is not None else None
+        if clock is not None and thread_id is not None:
+            deadline = clock.now() + timeout
+            add_timed_wait = getattr(scheduler, "add_timed_wait", None)
+            if add_timed_wait is not None:
+                add_timed_wait(thread_id, deadline)
+            else:
+                clock = None  # scheduler cannot advance to the deadline; stay wall-clock
+                deadline = _real_monotonic() + timeout
+            return deadline, None, clock
+        return _real_monotonic() + timeout, None, None
+    return None, get_wait_for_graph(), None
+
+
+def _timed_acquire_expired(deadline: float | None, clock: Any) -> bool:
+    """Whether a timed acquire's deadline has passed (virtual or wall clock)."""
+    if deadline is None:
+        return False
+    now = clock.now() if clock is not None else _real_monotonic()
+    return now >= deadline
+
+
+def _timed_acquire_cleanup(scheduler: Any, thread_id: int, clock: Any, *, gave_up: bool) -> None:
+    """Deregister a virtual timed wait; on give-up, clear any engine block.
+
+    A DPOR lock waiter is marked blocked in the engine (via the ``lock_wait``
+    sync event); a waiter that acquires the lock is unblocked by the
+    ``lock_acquire`` event, but one that *gives up* must unblock itself or the
+    engine would never schedule it again.
+    """
+    if clock is None:
+        return
+    remove_timed_wait = getattr(scheduler, "remove_timed_wait", None)
+    if remove_timed_wait is not None:
+        remove_timed_wait(thread_id)
+    if gave_up:
+        clear_engine_block = getattr(scheduler, "clear_engine_block", None)
+        if clear_engine_block is not None:
+            clear_engine_block(thread_id)
 
 
 def _record_holding(thread_id: int, object_id: int) -> None:
@@ -249,19 +293,21 @@ class CooperativeLock:
         # Register waiting edge in the wait-for graph; raises SchedulerAbort on
         # cycle.  Skipped (graph is None) for timed acquires — see
         # _timed_acquire_state.
-        deadline, graph = _timed_acquire_state(timeout)
+        deadline, graph, clock = _timed_acquire_state(timeout, scheduler, thread_id)
         if graph is not None:
             _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
 
         try:
             while True:
-                if deadline is not None and time.monotonic() >= deadline:
+                if _timed_acquire_expired(deadline, clock):
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
                     return False
                 if before_sync_retry is not None:
                     assert after_sync_retry is not None
                     if not before_sync_retry(thread_id):
                         if graph is not None:
                             graph.remove_waiting(thread_id, self._object_id)
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         result = self._lock.acquire(blocking=blocking, timeout=1.0)
                         if result:
                             self._set_owner_and_report("lock_acquire")
@@ -276,6 +322,7 @@ class CooperativeLock:
                     if scheduler._finished or scheduler._error:
                         if graph is not None:
                             graph.remove_waiting(thread_id, self._object_id)
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         result = self._lock.acquire(blocking=blocking, timeout=1.0)
                         if result:
                             self._set_owner_and_report("lock_acquire")
@@ -286,11 +333,13 @@ class CooperativeLock:
         except BaseException:
             if graph is not None:
                 graph.remove_waiting(thread_id, self._object_id)
+            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             raise
 
         # Acquired — update graph: remove waiting edge, add holding edge
         if graph is not None:
             graph.remove_waiting(thread_id, self._object_id)
+        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
         _record_holding(thread_id, self._object_id)
 
         self._owner_thread_id = thread_id
@@ -438,19 +487,21 @@ class CooperativeRLock:
         # Register waiting edge in the wait-for graph; raises SchedulerAbort on
         # cycle.  Skipped (graph is None) for timed acquires — see
         # _timed_acquire_state.
-        deadline, graph = _timed_acquire_state(timeout)
+        deadline, graph, clock = _timed_acquire_state(timeout, scheduler, thread_id)
         if graph is not None:
             _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
 
         try:
             while True:
-                if deadline is not None and time.monotonic() >= deadline:
+                if _timed_acquire_expired(deadline, clock):
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
                     return False
                 if before_sync_retry is not None:
                     assert after_sync_retry is not None
                     if not before_sync_retry(thread_id):
                         if graph is not None:
                             graph.remove_waiting(thread_id, self._object_id)
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         result = self._lock.acquire(blocking=blocking, timeout=1.0)
                         if result:
                             self._owner = me
@@ -467,6 +518,7 @@ class CooperativeRLock:
                     if scheduler._finished or scheduler._error:
                         if graph is not None:
                             graph.remove_waiting(thread_id, self._object_id)
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         result = self._lock.acquire(blocking=blocking, timeout=1.0)
                         if result:
                             self._owner = me
@@ -479,11 +531,13 @@ class CooperativeRLock:
         except BaseException:
             if graph is not None:
                 graph.remove_waiting(thread_id, self._object_id)
+            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             raise
 
         # Acquired — update graph
         if graph is not None:
             graph.remove_waiting(thread_id, self._object_id)
+        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
         _record_holding(thread_id, self._object_id)
 
         self._owner = me
@@ -622,7 +676,7 @@ class CooperativeSemaphore:
 
     def _drain_until(self, deadline: float) -> bool:
         """Spin on ``_try_acquire`` until *deadline*; report on success."""
-        while time.monotonic() < deadline:
+        while _real_monotonic() < deadline:
             if self._try_acquire():
                 self._report("lock_acquire")
                 return True
@@ -649,12 +703,12 @@ class CooperativeSemaphore:
         if ctx is None:
             # Unmanaged thread: spin with real sleep.  A single loop handles
             # both timeout and no-timeout via a sentinel (math.inf) deadline.
-            deadline = time.monotonic() + timeout if timeout is not None else math.inf
+            deadline = _real_monotonic() + timeout if timeout is not None else math.inf
             while True:
                 if self._try_acquire():
                     self._report("lock_acquire")
                     return True
-                if time.monotonic() >= deadline:
+                if _real_monotonic() >= deadline:
                     return False
                 time.sleep(0.001)
 
@@ -670,7 +724,7 @@ class CooperativeSemaphore:
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
                 if scheduler._finished:
-                    return self._drain_until(time.monotonic() + 1.0)
+                    return self._drain_until(_real_monotonic() + 1.0)
                 if not before_sync_retry(thread_id):
                     return False
                 if self._try_acquire():
@@ -690,7 +744,7 @@ class CooperativeSemaphore:
                 self._report("lock_acquire")
                 return True
             if scheduler._finished:
-                return self._drain_until(time.monotonic() + 1.0)
+                return self._drain_until(_real_monotonic() + 1.0)
             scheduler.wait_for_turn(thread_id)
 
     def release(self, n: int = 1) -> None:
@@ -766,13 +820,13 @@ class CooperativeEvent:
             return self._event.wait(timeout=timeout)
 
         scheduler, thread_id = ctx
-        deadline = time.monotonic() + timeout if timeout is not None else math.inf
+        deadline = _real_monotonic() + timeout if timeout is not None else math.inf
         while not self._event.is_set():
             if scheduler._error:
                 raise SchedulerAbort("scheduler aborted")
             if scheduler._finished:
                 return self._event.wait(timeout=1.0)
-            if time.monotonic() >= deadline:
+            if _real_monotonic() >= deadline:
                 return False
             scheduler.wait_for_turn(thread_id)
         return True
@@ -955,7 +1009,7 @@ class CooperativeCondition:
             # _served is monotonically increasing: a stale read can
             # only cause one extra spin iteration, never a missed wakeup.
 
-            deadline = time.monotonic() + timeout if timeout is not None else math.inf
+            deadline = _real_monotonic() + timeout if timeout is not None else math.inf
             while my_ticket >= self._served:
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
@@ -966,12 +1020,12 @@ class CooperativeCondition:
                     # per-branch behaviour: timeout case slept once for
                     # min(0.01, remaining); no-timeout case polled for up
                     # to 1s.  We unify with a bounded poll loop.
-                    end = time.monotonic() + min(1.0, max(0.0, deadline - time.monotonic()))
-                    while my_ticket >= self._served and time.monotonic() < end:
+                    end = _real_monotonic() + min(1.0, max(0.0, deadline - _real_monotonic()))
+                    while my_ticket >= self._served and _real_monotonic() < end:
                         time.sleep(0.001)
                     served = my_ticket < self._served
                     return served
-                if time.monotonic() >= deadline:
+                if _real_monotonic() >= deadline:
                     served = False
                     return False
                 scheduler.wait_for_turn(thread_id)
@@ -1004,9 +1058,9 @@ class CooperativeCondition:
         if result or timeout == 0:
             return result
         if timeout is not None:
-            deadline = time.monotonic() + timeout
+            deadline = _real_monotonic() + timeout
             while not result:
-                remaining = deadline - time.monotonic()
+                remaining = deadline - _real_monotonic()
                 if remaining <= 0:
                     break
                 self.wait(timeout=remaining)
@@ -1102,7 +1156,7 @@ class CooperativeQueue:
             return self._queue.get(block=True, timeout=timeout)
 
         scheduler, thread_id = ctx
-        deadline = time.monotonic() + timeout if timeout is not None else math.inf
+        deadline = _real_monotonic() + timeout if timeout is not None else math.inf
         while True:
             if scheduler._error:
                 raise SchedulerAbort("scheduler aborted")
@@ -1112,7 +1166,7 @@ class CooperativeQueue:
                 pass
             if scheduler._finished:
                 return self._queue.get(block=True, timeout=1.0)
-            if time.monotonic() >= deadline:
+            if _real_monotonic() >= deadline:
                 raise queue.Empty
             scheduler.wait_for_turn(thread_id)
 
@@ -1131,7 +1185,7 @@ class CooperativeQueue:
             return
 
         scheduler, thread_id = ctx
-        deadline = time.monotonic() + timeout if timeout is not None else math.inf
+        deadline = _real_monotonic() + timeout if timeout is not None else math.inf
         while True:
             if scheduler._error:
                 raise SchedulerAbort("scheduler aborted")
@@ -1143,7 +1197,7 @@ class CooperativeQueue:
             if scheduler._finished:
                 self._queue.put(item, block=True, timeout=1.0)
                 return
-            if time.monotonic() >= deadline:
+            if _real_monotonic() >= deadline:
                 raise queue.Full
             scheduler.wait_for_turn(thread_id)
 
@@ -1263,18 +1317,29 @@ _sleep_patch_count = 0
 _sleep_patch_lock = real_lock()
 
 
-def _cooperative_sleep(seconds: float) -> None:  # noqa: ARG001
-    """No-op replacement for ``time.sleep`` during exploration.
+def _cooperative_sleep(seconds: float) -> None:
+    """Replacement for ``time.sleep`` during exploration.
 
-    Acts as a scheduling point: if a cooperative scheduler context is
-    active, yields a turn so other threads can run.  The actual delay
-    is skipped entirely — sleeping during interleaving exploration would
-    make execution extremely slow.
+    Without a virtual clock this is a no-op scheduling point: if a
+    cooperative scheduler context is active, yields a turn so other threads
+    can run.  The actual delay is skipped entirely — sleeping during
+    interleaving exploration would make execution extremely slow.
+
+    When the scheduler owns a :class:`~frontrun._virtual_clock.VirtualClock`,
+    a positive sleep becomes a *timed block*: the thread registers a virtual
+    deadline and blocks until the scheduler advances the clock to it.
+    ``time.sleep(0)`` stays a pure yield, matching real Python semantics.
     """
     ctx = get_context()
-    if ctx is not None:
-        scheduler, thread_id = ctx
-        scheduler.wait_for_turn(thread_id)
+    if ctx is None:
+        return
+    scheduler, thread_id = ctx
+    clock = getattr(scheduler, "virtual_clock", None)
+    sleep_until = getattr(scheduler, "sleep_until", None)
+    if clock is not None and sleep_until is not None and seconds is not None and seconds > 0:
+        sleep_until(thread_id, clock.now() + seconds)
+        return
+    scheduler.wait_for_turn(thread_id)
 
 
 def patch_sleep() -> None:

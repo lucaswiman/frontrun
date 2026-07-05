@@ -14,6 +14,7 @@ from frontrun._opcode_observer import (
     uninstall_thread_opcode_trace,
 )
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
+from frontrun._virtual_clock import patch_time, unpatch_time
 
 from ._shared import *
 from ._shared import (
@@ -86,11 +87,14 @@ class DporBytecodeRunner:
             unpatch_io()
             self._io_patched = False
 
-    def patch_scope(self, *, patch_sleep: bool = True) -> PatchScope:
+    def patch_scope(self, *, patch_sleep: bool = True, virtual_time: bool = False) -> PatchScope:
         scope = PatchScope()
         scope.add(self._patch_locks, self._unpatch_locks)
         scope.add(self._patch_io, self._unpatch_io)
         scope.add(self._patch_sleep, self._unpatch_sleep, enabled=patch_sleep)
+        # Route time.time/monotonic/perf_counter through the scheduler's
+        # virtual clock (gated per-thread; see frontrun._virtual_clock).
+        scope.add(patch_time, unpatch_time, enabled=virtual_time)
         return scope
 
     def _start_opcode_trace(self) -> None:
