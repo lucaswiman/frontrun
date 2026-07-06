@@ -26,6 +26,7 @@ from frontrun._opcode_observer import (
     _process_opcode,
     _report_access,
     clear_instr_cache,
+    process_opcode_with_coarsening,
 )
 
 _PY = sys.version_info[:2]
@@ -338,6 +339,63 @@ class _SchedulerStub:
 
     def get_shadow_stack(self, _frame_id: int) -> ShadowStack:
         return self._shadow
+
+
+class _CoarseningSchedulerStub(_SchedulerStub):
+    """Scheduler stub that records yielded opcodes."""
+
+    def __init__(self, engine: _EngineRecorder) -> None:
+        super().__init__(engine)
+        self.yielded_opnames: list[str] = []
+
+    def report_and_wait(self, frame: Any, _thread_id: int) -> bool:
+        instr = _get_instructions(frame.f_code).get(frame.f_lasti)
+        if instr is not None:
+            self.yielded_opnames.append(instr.opname)
+        _process_opcode(frame, self, _thread_id)
+        return True
+
+
+def _walk_with_coarsening(fn: Any, f_locals: dict[str, Any] | None = None) -> _CoarseningSchedulerStub:
+    engine = _EngineRecorder()
+    scheduler = _CoarseningSchedulerStub(engine)
+    frame = SimpleNamespace(
+        f_code=fn.__code__,
+        f_locals=f_locals or {},
+        f_globals=fn.__globals__,
+        f_builtins=builtins.__dict__,
+        f_lasti=0,
+    )
+    for instr in dis.get_instructions(fn):
+        frame.f_lasti = instr.offset
+        process_opcode_with_coarsening(fn.__code__, instr.offset, frame, scheduler, 1, detect_io=False)
+    return scheduler
+
+
+class TestIteratorCoarsening:
+    def test_range_loop_iter_opcodes_do_not_yield(self) -> None:
+        """Iteration over range() is thread-local and should not create DPOR turns."""
+
+        def target() -> None:
+            for _ in range(3):
+                pass
+
+        scheduler = _walk_with_coarsening(target)
+
+        assert "GET_ITER" not in scheduler.yielded_opnames
+        assert "FOR_ITER" not in scheduler.yielded_opnames
+
+    def test_list_loop_iter_opcodes_still_yield(self) -> None:
+        """Iteration over a mutable container still reports reads and yields."""
+
+        def target(items: list[int]) -> None:
+            for _ in items:
+                pass
+
+        scheduler = _walk_with_coarsening(target, {"items": [1, 2]})
+
+        assert "GET_ITER" in scheduler.yielded_opnames
+        assert "FOR_ITER" in scheduler.yielded_opnames
 
 
 class TestProcessOpcode:

@@ -159,7 +159,7 @@ _BUILTIN_METHOD_TYPE = type(len)  # builtin_function_or_method
 _WRAPPER_DESCRIPTOR_TYPE = type(object.__setattr__)  # wrapper_descriptor
 _METHOD_WRAPPER_TYPE = type("".__str__)  # method-wrapper
 
-_IMMUTABLE_TYPES = (str, bytes, int, float, bool, complex, tuple, frozenset, type(None), types.ModuleType)
+_IMMUTABLE_TYPES = (str, bytes, int, float, bool, complex, tuple, frozenset, range, type(None), types.ModuleType)
 
 # File-backed I/O types whose conflicts are tracked by the I/O detection layer
 # (LD_PRELOAD + _traced_open) keyed by file path.  DPOR skips Python-level
@@ -760,6 +760,19 @@ def _call_might_report_access(shadow: ShadowStack, argc: int) -> bool:
                 return True
 
     return False
+
+
+def _is_iter_source_marker(item: Any) -> bool:
+    return isinstance(item, list) and len(item) == 3 and item[0] == "__iter_source__"
+
+
+def _get_iter_might_report_access(shadow: ShadowStack) -> bool:
+    iterable = shadow.peek()
+    return iterable is not None and not isinstance(iterable, _IMMUTABLE_TYPES)
+
+
+def _for_iter_might_report_access(shadow: ShadowStack) -> bool:
+    return _is_iter_source_marker(shadow.peek())
 
 
 def _is_shared_opcode(code: Any, instruction_offset: int) -> bool:
@@ -1657,9 +1670,23 @@ def process_opcode_with_coarsening(
     Returns True if ``report_and_wait`` was called (the thread may have
     waited), False if only shadow-stack processing occurred.
     """
+    instrs = _get_instructions(code)
+    instr = instrs.get(offset)
+    if instr is not None and instr.opname == "GET_ITER":
+        shadow = scheduler.get_shadow_stack(id(frame))
+        if _get_iter_might_report_access(shadow):
+            scheduler.report_and_wait(frame, thread_id)
+            return True
+        _process_opcode(frame, scheduler, thread_id)
+        return False
+    if instr is not None and instr.opname == "FOR_ITER":
+        shadow = scheduler.get_shadow_stack(id(frame))
+        if _for_iter_might_report_access(shadow):
+            scheduler.report_and_wait(frame, thread_id)
+            return True
+        _process_opcode(frame, scheduler, thread_id)
+        return False
     if not _is_shared_opcode(code, offset):
-        instrs = _get_instructions(code)
-        instr = instrs.get(offset)
         if instr is not None and instr.opname in _CALL_OPCODES:
             if detect_io:
                 scheduler.report_and_wait(frame, thread_id)
