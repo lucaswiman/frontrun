@@ -449,6 +449,27 @@ def test_event_deadlock_detected_exactly() -> None:
     assert wall_elapsed < 4.0, f"deadlock took {wall_elapsed:.1f}s to report (wall-clock fallback?)"
 
 
+def test_queue_deadlock_detected_exactly() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.q: queue.Queue[str] = queue.Queue()
+
+    def worker(s: State) -> None:
+        s.q.get()
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker, worker],
+        invariant=lambda s: True,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert not result.property_holds
+    assert "deadlock" in str(result.explanation).lower()
+
+
 def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
     from frontrun._cooperative import _real_time_sleep
 
