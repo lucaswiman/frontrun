@@ -539,6 +539,34 @@ def test_random_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
     assert state.slept_virtual >= 1.0
 
 
+def test_dpor_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.q: queue.Queue[str] = queue.Queue()
+            self.got: str | None = None
+            self.slept_virtual = 0.0
+
+    def producer(s: State) -> None:
+        start = time.monotonic()
+        time.sleep(1.0)
+        s.slept_virtual = time.monotonic() - start
+        s.q.put("x")
+
+    def consumer(s: State) -> None:
+        s.got = s.q.get()
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[consumer, producer],
+        invariant=lambda s: s.got == "x" and s.slept_virtual >= 1.0,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_random_scheduler_autojumps_when_all_live_threads_are_timed_waits() -> None:
     clock = VirtualClock()
     scheduler = OpcodeScheduler([0], 2, virtual_clock=clock, clock_mode="virtual")

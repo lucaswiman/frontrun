@@ -12,6 +12,7 @@ import asyncio
 import time
 
 import frontrun
+from frontrun.common import InterleavingResult
 
 
 class _SleepObserver:
@@ -346,6 +347,34 @@ def test_async_event_deadlock_detected_exactly() -> None:
     assert not result.property_holds
     assert "deadlock" in str(result.explanation).lower()
     assert wall_elapsed < 4.0, f"deadlock took {wall_elapsed:.1f}s to report (wall-clock fallback?)"
+
+
+def test_async_event_deadlock_rechecks_after_unrelated_user_timer() -> None:
+    async def w1(s: _CrossEventState) -> None:
+        await s.e1.wait()
+
+    async def w2(s: _CrossEventState) -> None:
+        await s.e2.wait()
+
+    async def scenario() -> tuple[InterleavingResult, float]:
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.05, lambda: None)
+        wall_start = time.monotonic()
+        result = await frontrun.explore(
+            setup=_CrossEventState,
+            workers=[w1, w2],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+            timeout_per_run=1.0,
+            deadlock_timeout=0.2,
+        )
+        return result, time.monotonic() - wall_start
+
+    result, wall_elapsed = asyncio.run(scenario())
+    assert not result.property_holds
+    assert "deadlock" in str(result.explanation).lower()
+    assert wall_elapsed < 0.5, f"deadlock waited for timeout_per_run ({wall_elapsed:.1f}s)"
 
 
 class _EventHandoffState:
