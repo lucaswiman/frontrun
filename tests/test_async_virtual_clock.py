@@ -215,6 +215,41 @@ def test_async_wait_for_stays_on_wall_clock() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_async_wait_for_lock_timeout_is_not_scored_as_deadlock() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.lock = asyncio.Lock()
+            self.release = asyncio.Event()
+            self.timed_out = False
+            self.holder_done = False
+
+    async def holder(s: State) -> None:
+        async with s.lock:
+            await s.release.wait()
+        s.holder_done = True
+
+    async def waiter(s: State) -> None:
+        await asyncio.sleep(0)
+        try:
+            await asyncio.wait_for(s.lock.acquire(), timeout=0.05)
+        except (TimeoutError, asyncio.TimeoutError):
+            s.timed_out = True
+            s.release.set()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[holder, waiter],
+            invariant=lambda s: s.timed_out and s.holder_done,
+            clock="virtual",
+            reproduce_on_failure=0,
+            deadlock_timeout=0.2,
+            timeout_per_run=1.0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_timer_tagging_restores_loop_call_at_instance_override() -> None:
     from frontrun.async_dpor import _install_frontrun_timer_tagging
 

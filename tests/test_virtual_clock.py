@@ -425,6 +425,28 @@ def test_timed_acquire_times_out_on_virtual_deadline() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_timed_semaphore_acquire_times_out_without_false_deadlock() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.sem = threading.Semaphore(0)
+            self.acquire_result: bool | None = None
+            self.waited_virtual = 0.0
+
+    def worker(s: State) -> None:
+        start = time.monotonic()
+        s.acquire_result = s.sem.acquire(timeout=1.0)
+        s.waited_virtual = time.monotonic() - start
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=lambda s: s.acquire_result is False and s.waited_virtual >= 1.0,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
 # ---------------------------------------------------------------------------
 # Random strategy
 # ---------------------------------------------------------------------------
