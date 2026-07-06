@@ -187,6 +187,9 @@ class OpcodeScheduler:
         self.schedule.extend(appended[:remaining])
         return True
 
+    def _blocks_clock_progress(self, thread_id: int) -> bool:
+        return thread_id in self._sleepers or thread_id in self._timed_waits or thread_id in self._spin_waiters
+
     def wait_for_turn(self, thread_id: int) -> bool:
         """Block until it's this thread's turn. Returns False when done."""
         with self._condition:
@@ -225,7 +228,7 @@ class OpcodeScheduler:
                     and scheduled_tid == thread_id
                     and thread_id in self._timed_waits
                     and all(
-                        t in self._sleepers or t in self._spin_waiters
+                        self._blocks_clock_progress(t)
                         for t in range(self.num_threads)
                         if t != thread_id and t not in self._threads_done
                     )
@@ -302,9 +305,7 @@ class OpcodeScheduler:
                     if self._finished or self._error:
                         return
                     alive = [t for t in range(self.num_threads) if t not in self._threads_done]
-                    blocked = [
-                        t for t in alive if t in self._sleepers or t in self._timed_waits or t in self._spin_waiters
-                    ]
+                    blocked = [t for t in alive if self._blocks_clock_progress(t)]
                     if alive and len(blocked) == len(alive):
                         # Every live thread is asleep, in a timed wait, or
                         # spinning on a resource nothing can release before
