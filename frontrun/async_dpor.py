@@ -456,8 +456,10 @@ class _CooperativeAsyncEvent:
         report_task_access = getattr(scheduler, "report_task_access", None)
         if report_task_access is not None:
             report_task_access(task_id, self._state_key(scheduler), kind)
-        else:
-            engine.report_access(scheduler.execution, task_id, self._state_key(scheduler), kind)
+            return
+        report_access = getattr(engine, "report_access", None)
+        if report_access is not None:
+            report_access(scheduler.execution, task_id, self._state_key(scheduler), kind)
 
     async def wait(self) -> bool:
         task_id = _task_id_var.get()
