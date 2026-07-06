@@ -659,6 +659,57 @@ def test_dpor_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_dpor_queue_put_nowait_wakes_blocked_getter() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.q: queue.Queue[str] = queue.Queue()
+            self.got: str | None = None
+
+    def consumer(s: State) -> None:
+        s.got = s.q.get()
+
+    def producer(s: State) -> None:
+        s.q.put_nowait("x")
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[consumer, producer],
+        invariant=lambda s: s.got == "x",
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_dpor_queue_get_nowait_wakes_blocked_putter() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.q: queue.Queue[str] = queue.Queue(maxsize=1)
+            self.q.put_nowait("old")
+            self.got: str | None = None
+            self.put_completed = False
+
+    def producer(s: State) -> None:
+        s.q.put("new")
+        s.put_completed = True
+
+    def consumer(s: State) -> None:
+        s.got = s.q.get_nowait()
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[producer, consumer],
+        invariant=lambda s: s.got == "old" and s.put_completed,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_random_scheduler_autojumps_when_all_live_threads_are_timed_waits() -> None:
     clock = VirtualClock()
     scheduler = OpcodeScheduler([0], 2, virtual_clock=clock, clock_mode="virtual")
