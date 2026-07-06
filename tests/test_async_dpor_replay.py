@@ -15,8 +15,12 @@ DeadlockError or phantom ownership in later replays.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from frontrun._async_autopause import wrap_auto_paused_tasks
+from frontrun._async_autopause import _scheduler_var, _task_id_var
+from frontrun._dpor_core import event_wake_sync_id
+from frontrun._opcode_observer import StableObjectIds
 from frontrun.async_dpor import (
     _ReplayAsyncScheduler,
     _patch_asyncio_event,
@@ -163,3 +167,49 @@ def test_event_blocked_replay_skips_drifted_waiter_slots() -> None:
             _reset_async_lock_state()
 
     assert asyncio.run(scenario()) == ["setter", "waiter"]
+
+
+def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
+    """Event wake edges must be keyed by stable event id, not raw id(event)."""
+
+    class Engine:
+        def __init__(self) -> None:
+            self.syncs: list[tuple[int, str, int]] = []
+
+        def report_sync(self, execution: Any, task_id: int, event: str, object_id: int) -> None:
+            self.syncs.append((task_id, event, object_id))
+
+    class Execution:
+        def __init__(self) -> None:
+            self.unblocked: list[int] = []
+
+        def unblock_thread(self, task_id: int) -> None:
+            self.unblocked.append(task_id)
+
+    class Scheduler:
+        def __init__(self) -> None:
+            self.engine = Engine()
+            self.execution = Execution()
+            self._stable_ids = StableObjectIds()
+            self._error = None
+
+    _patch_asyncio_event()
+    try:
+        event = asyncio.Event()
+        scheduler = Scheduler()
+        stable_event_id = scheduler._stable_ids.get(event)
+        event._waiters.append(1)  # type: ignore[attr-defined]
+
+        scheduler_token = _scheduler_var.set(scheduler)
+        task_token = _task_id_var.set(0)
+        try:
+            event.set()
+        finally:
+            _task_id_var.reset(task_token)
+            _scheduler_var.reset(scheduler_token)
+
+        assert scheduler.engine.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
+        assert scheduler.execution.unblocked == [1]
+    finally:
+        _unpatch_asyncio_event()
+        _reset_async_lock_state()
