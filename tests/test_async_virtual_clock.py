@@ -215,6 +215,42 @@ def test_async_wait_for_stays_on_wall_clock() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_timer_tagging_restores_loop_call_at_instance_override() -> None:
+    from frontrun.async_dpor import _install_frontrun_timer_tagging
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+
+        def custom_call_at(when: float, callback: object, *args: object, context: object = None) -> object:
+            raise AssertionError("not called")
+
+        setattr(loop, "call_at", custom_call_at)
+        _check_user_timers, uninstall = _install_frontrun_timer_tagging(loop)
+        uninstall()
+
+        assert getattr(loop, "call_at") is custom_call_at
+
+    asyncio.run(scenario())
+
+
+def test_async_runtime_pin_restores_loop_time_instance_override() -> None:
+    from frontrun.async_shuffler import _patch_async_runtime
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+
+        def custom_time() -> float:
+            return 123.0
+
+        setattr(loop, "time", custom_time)
+        with _patch_async_runtime(virtual_time=True, pin_loop_time=loop):
+            assert getattr(loop, "time") is not custom_time
+
+        assert getattr(loop, "time") is custom_time
+
+    asyncio.run(scenario())
+
+
 class _CrossEventState:
     def __init__(self) -> None:
         self.e1 = asyncio.Event()
