@@ -12,9 +12,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from frontrun._dpor_core.worker import WorkerTarget
-from frontrun._threaded_runner import join_threads_with_deadline
-
-_POST_TIMEOUT_CLEANUP_JOIN_SECONDS = 0.5
+from frontrun._threaded_runner import _POST_TIMEOUT_CLEANUP_JOIN_SECONDS, join_threads_with_deadline
 
 
 class ThreadWorkerSet:
