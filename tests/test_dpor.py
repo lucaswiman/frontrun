@@ -230,6 +230,12 @@ def test_dpor_runner_cleans_up_runtime_state_after_error(monkeypatch) -> None:
         def mark_done(self, thread_id: int) -> None:
             self.done.append(thread_id)
 
+        def register_worker_thread(self) -> None:
+            pass
+
+        def unregister_worker_thread(self) -> None:
+            pass
+
     scheduler = _StubScheduler()
     runner = DporBytecodeRunner(scheduler)  # type: ignore[arg-type]
     events: list[str] = []
@@ -268,6 +274,12 @@ def test_dpor_runner_swallows_scheduler_abort(monkeypatch) -> None:
 
         def mark_done(self, thread_id: int) -> None:
             self.done.append(thread_id)
+
+        def register_worker_thread(self) -> None:
+            pass
+
+        def unregister_worker_thread(self) -> None:
+            pass
 
     scheduler = _StubScheduler()
     runner = DporBytecodeRunner(scheduler)  # type: ignore[arg-type]
