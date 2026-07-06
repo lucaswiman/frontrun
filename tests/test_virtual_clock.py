@@ -10,6 +10,7 @@ Covers the design in ``ideas/virtual_clock.md``:
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 
@@ -388,6 +389,43 @@ def test_event_deadlock_detected_exactly() -> None:
     assert wall_elapsed < 4.0, f"deadlock took {wall_elapsed:.1f}s to report (wall-clock fallback?)"
 
 
+def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
+    from frontrun._cooperative import _real_time_sleep
+
+    setter_threads: list[threading.Thread] = []
+
+    class State:
+        def __init__(self) -> None:
+            self.event = threading.Event()
+            self.woke = False
+
+    def worker(s: State) -> None:
+        def setter() -> None:
+            _real_time_sleep(0.05)
+            s.event.set()
+
+        t = threading.Thread(target=setter)
+        setter_threads.append(t)
+        t.start()
+        s.woke = s.event.wait()
+        t.join(timeout=1.0)
+
+    try:
+        result = frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.woke,
+            clock="virtual",
+            reproduce_on_failure=0,
+            deadlock_timeout=0.2,
+            timeout_per_run=1.0,
+        )
+    finally:
+        for thread in setter_threads:
+            thread.join(timeout=1.0)
+    assert result.property_holds, result.explanation
+
+
 # ---------------------------------------------------------------------------
 # Timed lock acquires
 # ---------------------------------------------------------------------------
@@ -471,6 +509,34 @@ def test_random_strategy_virtual_sleep_zero_wall_time() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert wall_elapsed < 60.0
+
+
+def test_random_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.q: queue.Queue[str] = queue.Queue()
+            self.got: str | None = None
+            self.slept_virtual = 0.0
+
+    def producer(s: State) -> None:
+        start = time.monotonic()
+        time.sleep(1.0)
+        s.slept_virtual = time.monotonic() - start
+        s.q.put("x")
+
+    def consumer(s: State) -> None:
+        s.got = s.q.get()
+
+    state = run_with_schedule(
+        [0, 1] * 20,
+        setup=State,
+        threads=[consumer, producer],
+        clock="virtual",
+        timeout=1.0,
+        deadlock_timeout=0.05,
+    )
+    assert state.got == "x"
+    assert state.slept_virtual >= 1.0
 
 
 def test_random_scheduler_autojumps_when_all_live_threads_are_timed_waits() -> None:

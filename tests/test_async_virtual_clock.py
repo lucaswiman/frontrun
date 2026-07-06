@@ -215,6 +215,31 @@ def test_async_wait_for_stays_on_wall_clock() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_uncaught_async_wait_for_timeout_is_task_crash_not_deadlock() -> None:
+    class State:
+        pass
+
+    async def worker(s: State) -> None:
+        await asyncio.wait_for(asyncio.Event().wait(), timeout=0.05)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+            deadlock_timeout=0.2,
+            timeout_per_run=1.0,
+        )
+    )
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Task crash" in result.explanation
+    assert "TimeoutError" in result.explanation
+    assert "Deadlock detected" not in result.explanation
+
+
 def test_async_wait_for_lock_timeout_is_not_scored_as_deadlock() -> None:
     class State:
         def __init__(self) -> None:
@@ -461,3 +486,32 @@ def test_async_random_lock_sleep_quiescence_rescue() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert wall_elapsed < 10.0, f"async random lock+sleep took {wall_elapsed:.1f}s"
+
+
+def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() -> None:
+    async def a(s: _AsyncHoldAndSleep) -> None:
+        async with s.lock:
+            start = time.monotonic()
+            await asyncio.sleep(1.0)
+            s.a_sleep_virtual = time.monotonic() - start
+
+    async def b(s: _AsyncHoldAndSleep) -> None:
+        await asyncio.sleep(0)
+        async with s.lock:
+            s.b_acquired = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_AsyncHoldAndSleep,
+            workers=[a, b],
+            invariant=lambda s: s.b_acquired and s.a_sleep_virtual >= 1.0,
+            strategy="random",
+            clock="virtual",
+            max_attempts=3,
+            seed=7,
+            deadlock_timeout=0.05,
+            timeout_per_run=1.0,
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
