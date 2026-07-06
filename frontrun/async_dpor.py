@@ -428,9 +428,13 @@ class _CooperativeAsyncEvent:
         # dance for the same guarantee).
         self._waiters.append(task_id)
         _async_parked_events.add(self)
+        event_blocked = getattr(scheduler, "_event_blocked", None)
+        if event_blocked is not None:
+            event_blocked.add(task_id)
         scheduler.execution.block_thread(task_id)
         depth = _in_scheduler_pause.get()
         _in_scheduler_pause.set(depth + 1)
+        unblocked = False
         try:
             # Blocking ourselves may have left nothing engine-runnable
             # (see _CooperativeAsyncLock.acquire): hand the turn onward.
@@ -438,18 +442,35 @@ class _CooperativeAsyncEvent:
             if kick is not None:
                 await kick(task_id)
             result = await self._event.wait()
+            if task_id in self._waiters:
+                self._waiters.remove(task_id)
+            if not self._waiters:
+                _async_parked_events.discard(self)
+            scheduler.execution.unblock_thread(task_id)
+            unblocked = True
+            if event_blocked is not None:
+                event_blocked.discard(task_id)
+            # A real event wake is only the physical unblock.  The task must
+            # still wait for the DPOR/replay scheduler to select it before
+            # returning to user code after ``await event.wait()``.
+            wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
+            if scheduler._error is None and wait_scheduled is not None:
+                await wait_scheduled(task_id, "event wait")
+            # Close the set() → wake happens-before edge (skip if the run was
+            # aborted — the free-run's events are not part of the exploration).
+            if scheduler._error is None:
+                engine.report_sync(scheduler.execution, task_id, "lock_acquire", event_wake_sync_id(id(self), task_id))
+            return result
         finally:
             _in_scheduler_pause.set(depth)
             if task_id in self._waiters:
                 self._waiters.remove(task_id)
             if not self._waiters:
                 _async_parked_events.discard(self)
-            scheduler.execution.unblock_thread(task_id)
-        # Close the set() → wake happens-before edge (skip if the run was
-        # aborted — the free-run's events are not part of the exploration).
-        if scheduler._error is None:
-            engine.report_sync(scheduler.execution, task_id, "lock_acquire", event_wake_sync_id(id(self), task_id))
-        return result
+            if event_blocked is not None:
+                event_blocked.discard(task_id)
+            if not unblocked:
+                scheduler.execution.unblock_thread(task_id)
 
     def set(self) -> None:
         task_id = _task_id_var.get()
@@ -633,6 +654,10 @@ class AsyncDporScheduler(InterleavedLoop):
         # Track tasks blocked on asyncio.Lock: task_id → lock-holder task_id.
         # When DPOR schedules a blocked task, override to run the holder.
         self._lock_blocked: dict[int, int] = {}
+        # Tasks parked inside cooperative asyncio.Event.wait().  Exploration
+        # uses execution.block_thread(), but replay also needs this set to skip
+        # drifted positional slots that point at a parked waiter.
+        self._event_blocked: set[int] = set()
 
         # Row lock tracking: state and _row_lock_int_id() live in RowLockRegistry;
         # alias dicts into this namespace so the rest of the class is unchanged.
@@ -765,6 +790,23 @@ class AsyncDporScheduler(InterleavedLoop):
             if next_task is not None:
                 self._current_task = next_task
             self._condition.notify_all()
+
+    async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
+        """Wait for a physically-woken blocked task to be scheduled again."""
+        async with self._condition:
+            while not (self._finished or self._error) and self._current_task != task_id:
+                if self._current_task is None:
+                    next_task = self._schedule_next()
+                    if next_task is not None:
+                        self._current_task = next_task
+                        self._condition.notify_all()
+                        continue
+                try:
+                    await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                except asyncio.TimeoutError:
+                    self._error = TimeoutError(f"Deadlock: task {task_id} woke from {reason} but was never scheduled")
+                    self._condition.notify_all()
+                    return
 
     def _maybe_confirm_exact_deadlock(self) -> None:
         """Arm a deferred exact-deadlock check (virtual clock only).
@@ -1314,6 +1356,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         # Recorded actor entries reached before any deadline was registered
         # (drift): the owed advance is performed at the next registration.
         self._pending_clock_advances = 0
+        self._event_blocked: set[int] = set()
         self._current_task: int | None = None
         if schedule:
             first = schedule[0]
@@ -1341,7 +1384,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
             self._replay_index,
             self._replay_max_ops,
             self._num_replay_tasks,
-            self._tasks_done,
+            self._tasks_done | self._event_blocked,
         )
 
     def _replay_advance_clock(self, target: float | None = None) -> None:
@@ -1365,7 +1408,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                 self._replay_schedule,
                 self._replay_index,
                 self._extend_schedule,
-                self._tasks_done,
+                self._tasks_done | self._event_blocked,
             )
             if next_actor is not None and self._clock_actor_id is not None and next_actor == self._clock_actor_id:
                 # Recorded clock-actor step: advance the clock and keep going.
@@ -1427,6 +1470,10 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         # Schedule-drift safety net: if replay scheduled a sleeping task,
         # time must pass before it can move — jump to its deadline.
         cur = self._current_task
+        if cur in self._event_blocked:
+            self._advance()
+            self._condition.notify_all()
+            cur = self._current_task
         if cur is not None and self.virtual_clock is not None and cur in self._sleepers:
             self._replay_advance_clock(self._sleepers[cur])
             self._condition.notify_all()
@@ -1446,6 +1493,32 @@ class _ReplayAsyncScheduler(InterleavedLoop):
             if holder == task_id:
                 return True
         return False
+
+    async def kick_stalled_schedule(self, task_id: int) -> None:
+        """Advance replay if a task parked while the schedule still points at it."""
+        async with self._condition:
+            if self._finished or self._error:
+                return
+            if self._current_task == task_id or self._current_task in self._event_blocked:
+                self._advance()
+                self._condition.notify_all()
+
+    async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
+        """After a physical wake, wait until replay reaches this task."""
+        async with self._condition:
+            while not (self._finished or self._error) and self._current_task != task_id:
+                if self._current_task in self._event_blocked:
+                    self._advance()
+                    self._condition.notify_all()
+                    continue
+                try:
+                    await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                except asyncio.TimeoutError:
+                    self._error = TimeoutError(
+                        f"Replay deadlock: task {task_id} woke from {reason} but was never scheduled"
+                    )
+                    self._condition.notify_all()
+                    return
 
     def on_proceed(self, task_id: Any, marker: Any = None) -> None:
         self._advance()
