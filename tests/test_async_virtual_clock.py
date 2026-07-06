@@ -446,6 +446,28 @@ def test_async_event_wait_explores_cleanly() -> None:
     assert wall_elapsed < 4.0, f"event handoff took {wall_elapsed:.1f}s (deadlock-timeout stall?)"
 
 
+def test_async_event_set_clear_race_is_detected_without_waiters() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def clearer(s: State) -> None:
+        s.event.clear()
+
+    async def setter(s: State) -> None:
+        s.event.set()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[clearer, setter],
+            invariant=lambda s: s.event.is_set(),
+            reproduce_on_failure=0,
+        )
+    )
+    assert not result.property_holds, "Async DPOR missed the set/clear race on Event state"
+
+
 def test_async_event_wait_with_virtual_sleeper_autojumps() -> None:
     """An event waiter plus a virtual sleeper that eventually sets the event:
     the waiter parking on the event must not stop the autojump — the clock

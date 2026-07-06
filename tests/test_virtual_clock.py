@@ -470,6 +470,27 @@ def test_queue_deadlock_detected_exactly() -> None:
     assert "deadlock" in str(result.explanation).lower()
 
 
+def test_event_set_clear_race_is_detected_without_waiters() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = threading.Event()
+
+    def clearer(s: State) -> None:
+        s.event.clear()
+
+    def setter(s: State) -> None:
+        s.event.set()
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[clearer, setter],
+        invariant=lambda s: s.event.is_set(),
+        detect_io=False,
+        reproduce_on_failure=0,
+    )
+    assert not result.property_holds, "DPOR missed the set/clear race on Event state"
+
+
 def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
     from frontrun._cooperative import _real_time_sleep
 
