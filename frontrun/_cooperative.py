@@ -219,6 +219,24 @@ def _timed_acquire_cleanup(scheduler: Any, thread_id: int, clock: Any, *, gave_u
             clear_engine_block(thread_id)
 
 
+def _timed_wait_deadline(timeout: float | None, scheduler: Any, thread_id: int) -> tuple[float, Any]:
+    """Return ``(deadline, clock)`` for Event/Condition/Queue waits."""
+    if timeout is None:
+        return math.inf, None
+    if timeout < 0:
+        return _real_monotonic() + timeout, None
+    deadline, _, clock = _timed_acquire_state(timeout, scheduler, thread_id)
+    assert deadline is not None
+    return deadline, clock
+
+
+def _spin_hook_for_wait(scheduler: Any, timeout: float | None, clock: Any) -> Any | None:
+    """Untimed waits and virtual timed waits must be visible as blocked spins."""
+    if timeout is None or clock is not None:
+        return _spin_note_hook(scheduler)
+    return None
+
+
 def _spin_note_hook(scheduler: Any) -> Any | None:
     """``note_blocking_spin`` hook, if the scheduler has one *and* runs a
     virtual clock (random-strategy autojump needs to know about untimed
@@ -966,27 +984,32 @@ class CooperativeEvent:
                 self._engine_blocked.pop(thread_id, None)
 
         # Bytecode/marker schedulers, and timed waits: spin-yield, probing
-        # after each turn.  Timed waits stay on the wall clock (documented
-        # virtual-clock limitation).
-        deadline = _real_monotonic() + timeout if timeout is not None else math.inf
-        note_spin = _spin_note_hook(scheduler) if timeout is None else None
+        # after each turn.  Under a virtual-clock scheduler, timed waits
+        # register a virtual deadline so timeout branches are schedulable.
+        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
+        note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
         try:
             while not self._event.is_set():
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
                 if scheduler._finished:
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     return self._event.wait(timeout=1.0)
-                if _real_monotonic() >= deadline:
+                if _timed_acquire_expired(deadline, clock):
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
                     return False
                 if note_spin is not None:
                     # Flag the spin for the virtual-clock autojump, then
                     # re-probe: a set() just before the flag must win.
                     note_spin(thread_id, self._object_id, True)
                     if self._event.is_set():
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         return True
                 scheduler.wait_for_turn(thread_id)
+            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             return True
         finally:
+            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             if note_spin is not None:
                 note_spin(thread_id, self._object_id, False)
 
@@ -1173,14 +1196,14 @@ class CooperativeCondition:
                     return served
 
             scheduler, thread_id = ctx
-            note_spin = _spin_note_hook(scheduler) if timeout is None else None
+            deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
+            note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
 
             # The spin-loop reads of _served below are intentionally
             # done WITHOUT holding self._lock.  This is safe because
             # _served is monotonically increasing: a stale read can
             # only cause one extra spin iteration, never a missed wakeup.
 
-            deadline = _real_monotonic() + timeout if timeout is not None else math.inf
             try:
                 while my_ticket >= self._served:
                     if scheduler._error:
@@ -1192,13 +1215,16 @@ class CooperativeCondition:
                         # per-branch behaviour: timeout case slept once for
                         # min(0.01, remaining); no-timeout case polled for up
                         # to 1s.  We unify with a bounded poll loop.
-                        end = _real_monotonic() + min(1.0, max(0.0, deadline - _real_monotonic()))
+                        now = clock.now() if clock is not None else _real_monotonic()
+                        end = _real_monotonic() + min(1.0, max(0.0, deadline - now))
                         while my_ticket >= self._served and _real_monotonic() < end:
                             time.sleep(0.001)
                         served = my_ticket < self._served
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         return served
-                    if _real_monotonic() >= deadline:
+                    if _timed_acquire_expired(deadline, clock):
                         served = False
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
                         return False
                     if note_spin is not None:
                         note_spin(thread_id, self._object_id, True)
@@ -1206,6 +1232,7 @@ class CooperativeCondition:
                             break
                     scheduler.wait_for_turn(thread_id)
             finally:
+                _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                 if note_spin is not None:
                     note_spin(thread_id, self._object_id, False)
             served = True
@@ -1340,32 +1367,37 @@ class CooperativeQueue:
             return self._queue.get(block=True, timeout=timeout)
 
         scheduler, thread_id = ctx
-        deadline = _real_monotonic() + timeout if timeout is not None else math.inf
-        note_spin = _spin_note_hook(scheduler) if timeout is None else None
+        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
+        note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
         try:
             while True:
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
                 try:
                     item = self._queue.get(block=False)
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     _note_spin_release(self._object_id)
                     return item
                 except queue.Empty:
                     pass
                 if scheduler._finished:
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     return self._queue.get(block=True, timeout=1.0)
-                if _real_monotonic() >= deadline:
+                if _timed_acquire_expired(deadline, clock):
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
                     raise queue.Empty
                 if note_spin is not None:
                     note_spin(thread_id, self._object_id, True)
                     try:
                         item = self._queue.get(block=False)
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         _note_spin_release(self._object_id)
                         return item
                     except queue.Empty:
                         pass
                 scheduler.wait_for_turn(thread_id)
         finally:
+            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             if note_spin is not None:
                 note_spin(thread_id, self._object_id, False)
 
@@ -1385,34 +1417,39 @@ class CooperativeQueue:
             return
 
         scheduler, thread_id = ctx
-        deadline = _real_monotonic() + timeout if timeout is not None else math.inf
-        note_spin = _spin_note_hook(scheduler) if timeout is None else None
+        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
+        note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
         try:
             while True:
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
                 try:
                     self._queue.put(item, block=False)
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     _note_spin_release(self._object_id)
                     return
                 except queue.Full:
                     pass
                 if scheduler._finished:
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     self._queue.put(item, block=True, timeout=1.0)
                     _note_spin_release(self._object_id)
                     return
-                if _real_monotonic() >= deadline:
+                if _timed_acquire_expired(deadline, clock):
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
                     raise queue.Full
                 if note_spin is not None:
                     note_spin(thread_id, self._object_id, True)
                     try:
                         self._queue.put(item, block=False)
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         _note_spin_release(self._object_id)
                         return
                     except queue.Full:
                         pass
                 scheduler.wait_for_turn(thread_id)
         finally:
+            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             if note_spin is not None:
                 note_spin(thread_id, self._object_id, False)
 
