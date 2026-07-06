@@ -674,6 +674,34 @@ def test_timed_condition_wait_expires_on_virtual_deadline() -> None:
     _assert_timed_wait_expires(waiter, notifier)
 
 
+def test_condition_wait_for_timeout_uses_virtual_deadline() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.cond = threading.Condition()
+            self.wait_result = True
+            self.waited_virtual = 0.0
+
+    def waiter(s: State) -> None:
+        with s.cond:
+            start = time.monotonic()
+            s.wait_result = s.cond.wait_for(lambda: False, timeout=0.25)
+            s.waited_virtual = time.monotonic() - start
+
+    wall_start = time.monotonic()
+    result = frontrun.explore(
+        setup=State,
+        workers=[waiter],
+        invariant=lambda s: not s.wait_result and s.waited_virtual >= 0.25,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.05,
+        timeout_per_run=1.0,
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 0.15, f"wait_for burned wall time instead of virtual time ({wall_elapsed:.3f}s)"
+
+
 def test_timed_queue_get_expires_on_virtual_deadline() -> None:
     def consumer(s: _TimedWaitState) -> None:
         start = time.monotonic()
