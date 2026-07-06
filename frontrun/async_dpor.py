@@ -150,6 +150,7 @@ except ImportError:
 
 
 T = TypeVar("T")
+_MISSING = object()
 
 
 # Guards against re-entering async opcode tracing while _process_opcode()
@@ -529,7 +530,7 @@ def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Call
             tagged.add(handle)
         return handle
 
-    loop.call_at = _tagging_call_at
+    restore_call_at = _patch_loop_instance_attr(loop, "call_at", _tagging_call_at)
 
     def _user_timers_pending() -> bool:
         scheduled = getattr(loop, "_scheduled", None)
@@ -538,9 +539,27 @@ def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Call
         return any(not handle.cancelled() and handle not in tagged for handle in scheduled)
 
     def _uninstall() -> None:
-        del loop.call_at
+        restore_call_at()
 
     return _user_timers_pending, _uninstall
+
+
+def _patch_loop_instance_attr(loop: Any, name: str, value: Any) -> Callable[[], None]:
+    previous = getattr(loop, "__dict__", {}).get(name, _MISSING)
+    setattr(loop, name, value)
+
+    def restore() -> None:
+        if previous is _MISSING:
+            with contextlib.suppress(AttributeError):
+                delattr(loop, name)
+        else:
+            setattr(loop, name, previous)
+
+    return restore
+
+
+def _pin_loop_time(loop: Any) -> Callable[[], None]:
+    return _patch_loop_instance_attr(loop, "time", real_monotonic)
 
 
 # ---------------------------------------------------------------------------
@@ -1786,12 +1805,11 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     # therefore asyncio.wait_for / asyncio.timeout deadlines) deliberately
     # stay on the wall clock; see docs/virtual_clock.rst.
     _loop = asyncio.get_running_loop()
-    _loop_time_pinned = False
+    _restore_loop_time: Callable[[], None] | None = None
     _user_timers_check: Callable[[], bool] | None = None
     _untag_timers: Callable[[], None] | None = None
     if clock != "real":
-        _loop.time = real_monotonic  # type: ignore[method-assign]
-        _loop_time_pinned = True
+        _restore_loop_time = _pin_loop_time(_loop)
         # Tag frontrun's own watchdog timers so exact deadlock detection can
         # tell them apart from user timers (see _install_frontrun_timer_tagging).
         _user_timers_check, _untag_timers = _install_frontrun_timer_tagging(_loop)
@@ -1957,7 +1975,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         set_lock_timeout(prev_lock_timeout)
         if _untag_timers is not None:
             _untag_timers()
-        if _loop_time_pinned:
-            del _loop.time  # restore BaseEventLoop.time
+        if _restore_loop_time is not None:
+            _restore_loop_time()
 
     return result

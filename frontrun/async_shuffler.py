@@ -61,11 +61,16 @@ from frontrun._virtual_clock import (
     _real_monotonic,
     clock_context,
     patch_time,
-    real_monotonic,
     unpatch_time,
     validate_clock_options,
 )
-from frontrun.async_dpor import _real_asyncio_sleep, _sql_async_available, patch_sql_async, unpatch_sql_async
+from frontrun.async_dpor import (
+    _pin_loop_time,
+    _real_asyncio_sleep,
+    _sql_async_available,
+    patch_sql_async,
+    unpatch_sql_async,
+)
 from frontrun.async_scheduler import InterleavedLoop
 from frontrun.common import (
     InterleavingResult,
@@ -358,6 +363,7 @@ class AsyncShuffler:
 def _patch_async_runtime(
     *, detect_sql: bool = False, patch_sleep: bool = False, virtual_time: bool = False, pin_loop_time: Any = None
 ):
+    restore_loop_time: Callable[[], None] | None = None
     with PatchScope() as patch_scope:
         patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
         if patch_sleep:
@@ -368,12 +374,12 @@ def _patch_async_runtime(
         # Pin the loop's own clock to real monotonic time while time.monotonic
         # is patched (see the matching comment in async_dpor._explore_async_dpor).
         if pin_loop_time is not None:
-            pin_loop_time.time = real_monotonic
+            restore_loop_time = _pin_loop_time(pin_loop_time)
         try:
             yield
         finally:
-            if pin_loop_time is not None:
-                del pin_loop_time.time  # restore BaseEventLoop.time
+            if restore_loop_time is not None:
+                restore_loop_time()
 
 
 @asynccontextmanager
