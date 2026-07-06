@@ -17,13 +17,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from frontrun._async_autopause import wrap_auto_paused_tasks
-from frontrun._async_autopause import _scheduler_var, _task_id_var
+from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
 from frontrun.async_dpor import (
-    _ReplayAsyncScheduler,
     _patch_asyncio_event,
+    _ReplayAsyncScheduler,
     _reset_async_lock_state,
     _unpatch_asyncio_event,
 )
