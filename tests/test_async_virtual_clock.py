@@ -148,6 +148,39 @@ def test_async_explored_clock_finds_timer_between_read_and_write() -> None:
     assert result.counterexample is not None
 
 
+class _TimerCascadeRace:
+    def __init__(self) -> None:
+        self.x = 0
+
+
+async def _early_timer_increments(s: _TimerCascadeRace) -> None:
+    await asyncio.sleep(1.0)
+    s.x += 1
+
+
+async def _later_timer_writes(s: _TimerCascadeRace) -> None:
+    await asyncio.sleep(2.0)
+    s.x = 100
+
+
+def test_async_explored_clock_can_fire_later_timer_before_earlier_sleeper_resumes() -> None:
+    """The async clock actor must stay schedulable after waking the first
+    deadline so DPOR can explore a later timer firing before that sleeper
+    resumes."""
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_TimerCascadeRace,
+            workers=[_early_timer_increments, _later_timer_writes],
+            invariant=lambda s: s.x == 100,
+            clock="explored",
+        )
+    )
+    assert not result.property_holds
+    assert result.counterexample is not None
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
 def test_async_random_virtual_sleep_zero_wall_time() -> None:
     async def worker(s: _SleepObserver) -> None:
         s.start = time.monotonic()

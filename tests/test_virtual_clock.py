@@ -13,6 +13,8 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -296,6 +298,64 @@ def test_explored_clock_finds_timer_between_read_and_write() -> None:
     assert wall_elapsed < 30.0, f"exploration + 10 replays took {wall_elapsed:.1f}s (replay clock stall?)"
 
 
+class _TimerCascadeRace:
+    def __init__(self) -> None:
+        self.x = 0
+
+
+def _early_timer_increments(s: _TimerCascadeRace) -> None:
+    time.sleep(1.0)
+    s.x += 1
+
+
+def _later_timer_writes(s: _TimerCascadeRace) -> None:
+    time.sleep(2.0)
+    s.x = 100
+
+
+def test_explored_clock_can_fire_later_timer_before_earlier_sleeper_resumes() -> None:
+    """After the first deadline wakes a sleeper, the clock actor must remain
+    schedulable while later deadlines are still pending. Otherwise DPOR misses
+    races where a later timer fires before an earlier sleeper gets CPU."""
+    result = frontrun.explore(
+        setup=_TimerCascadeRace,
+        workers=[_early_timer_increments, _later_timer_writes],
+        invariant=lambda s: s.x == 100,
+        clock="explored",
+    )
+    assert not result.property_holds
+    assert result.counterexample is not None
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
+class _EqualDeadlineRace:
+    def __init__(self) -> None:
+        self.x = 0
+
+
+def _equal_deadline_rmw(s: _EqualDeadlineRace) -> None:
+    time.sleep(1.0)
+    tmp = s.x
+    s.x = tmp + 1
+
+
+def test_equal_deadline_sleepers_remain_raceable_after_wake() -> None:
+    """Waking equal-deadline sleepers in one clock step must not serialize
+    their continuations by worker id; their post-wake shared-state accesses
+    still need normal DPOR race exploration."""
+    result = frontrun.explore(
+        setup=_EqualDeadlineRace,
+        workers=[_equal_deadline_rmw, _equal_deadline_rmw],
+        invariant=lambda s: s.x == 2,
+        clock="explored",
+    )
+    assert not result.property_holds
+    assert result.counterexample is not None
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
 # ---------------------------------------------------------------------------
 # Sleeping while holding a lock / signalling via events
 # ---------------------------------------------------------------------------
@@ -457,6 +517,38 @@ def test_timed_acquire_times_out_on_virtual_deadline() -> None:
         setup=_TimedAcquireState,
         workers=[holder, contender],
         invariant=lambda s: s.acquire_result is False and s.waited_virtual >= 1.0,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.parametrize("lock_factory", [threading.Lock, threading.RLock])
+def test_timed_acquire_succeeds_before_virtual_deadline(lock_factory: Callable[[], Any]) -> None:
+    class State:
+        def __init__(self) -> None:
+            self.lock = lock_factory()
+            self.holder_has_lock = threading.Event()
+            self.acquire_result: bool | None = None
+            self.waited_virtual = 0.0
+
+    def holder(s: State) -> None:
+        with s.lock:
+            s.holder_has_lock.set()
+            time.sleep(1.0)
+
+    def contender(s: State) -> None:
+        s.holder_has_lock.wait()
+        start = time.monotonic()
+        s.acquire_result = s.lock.acquire(timeout=5.0)
+        s.waited_virtual = time.monotonic() - start
+        if s.acquire_result:
+            s.lock.release()
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[holder, contender],
+        invariant=lambda s: s.acquire_result is True and 1.0 <= s.waited_virtual < 5.0,
         clock="virtual",
         reproduce_on_failure=0,
     )
