@@ -16,6 +16,7 @@ import time
 import pytest
 
 import frontrun
+from frontrun.bytecode import run_with_schedule
 
 # ---------------------------------------------------------------------------
 # Plumbing
@@ -38,6 +39,17 @@ def test_virtual_clock_requires_patch_sleep() -> None:
             setup=lambda: None,
             workers=[lambda s: None],
             invariant=lambda s: True,
+            clock="virtual",
+            patch_sleep=False,
+        )
+
+
+def test_run_with_schedule_virtual_clock_requires_patch_sleep() -> None:
+    with pytest.raises(ValueError, match="patch_sleep"):
+        run_with_schedule(
+            [0],
+            setup=lambda: None,
+            threads=[lambda s: None],
             clock="virtual",
             patch_sleep=False,
         )
