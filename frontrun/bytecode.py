@@ -426,7 +426,7 @@ class BytecodeShuffler:
             self._lock_patched = False
 
     def _patch_sleep(self):
-        """Replace time.sleep with a cooperative no-op."""
+        """Replace time.sleep with the cooperative scheduler hook."""
         patch_sleep()
         self._sleep_patched = True
 

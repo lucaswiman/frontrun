@@ -2,10 +2,10 @@
 
 Covers the design in ``ideas/virtual_clock.md``:
 
-- v1 autojump: sleeps cost zero wall time, TTL expiry is reachable, wake
-  order follows deadlines, timed lock acquires resolve virtually.
-- v2 explored clock actor: "the timer fired between your read and your
-  write" becomes a schedulable interleaving that DPOR can find.
+- autojump: sleeps cost zero wall time, TTL expiry is reachable, wake order
+  follows deadlines, and timed lock acquires resolve virtually.
+- explored clock actor: "the timer fired between your read and your write"
+  becomes a schedulable interleaving that DPOR can find.
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ def test_invariant_sees_virtual_time() -> None:
 
 
 # ---------------------------------------------------------------------------
-# v1 autojump — sync DPOR
+# Autojump — sync DPOR
 # ---------------------------------------------------------------------------
 
 
@@ -197,7 +197,7 @@ class _TTLCache:
 
 
 def test_ttl_cache_expiry_is_reachable() -> None:
-    """Sleeping past a TTL must actually expire the entry (proposal phase 1)."""
+    """Sleeping past a TTL must actually expire the entry."""
 
     def worker(cache: _TTLCache) -> None:
         cache.set("k", "v", ttl=1.0)
@@ -240,7 +240,7 @@ def test_sleepers_wake_in_deadline_order() -> None:
 
 
 # ---------------------------------------------------------------------------
-# v2 explored clock actor — the timer fires *between* a read and a write
+# Explored clock actor — the timer fires *between* a read and a write
 # ---------------------------------------------------------------------------
 
 
@@ -389,7 +389,7 @@ def test_event_deadlock_detected_exactly() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Timed lock acquires (proposal phase 4)
+# Timed lock acquires
 # ---------------------------------------------------------------------------
 
 

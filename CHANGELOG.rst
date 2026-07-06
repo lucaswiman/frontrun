@@ -6,57 +6,27 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
-* **Virtual clock: timeout, retry, and TTL races.** ``frontrun.explore(...)``
-  gains a ``clock=`` parameter (default ``"real"``). With ``clock="virtual"``
-  each execution gets a scheduler-owned virtual clock: explored code reads
-  virtual time from ``time.time()`` / ``time.monotonic()`` /
-  ``time.perf_counter()`` (+ ``_ns`` variants), ``time.sleep()`` /
-  ``asyncio.sleep()`` become zero-wall-time virtual deadlines, contended
-  ``Lock.acquire(timeout=...)`` calls time out deterministically instead of
-  racing the host clock, and the clock autojumps to the earliest pending
-  deadline when no worker is runnable (Trio ``MockClock``-style). Under DPOR
-  (sync and async), deadlocks with no pending timer are reported exactly
-  instead of via the wall-clock fallback timeout; the async check declines
-  when a pending user loop timer or an unmanaged awaitable could still wake
-  a parked task. With ``clock="explored"``, the clock advance is modelled
-  as a synthetic DPOR actor whose steps the engine schedules like any other
-  transition — "the retry fired between your read and your write" becomes an
-  explorable, replayable interleaving (recorded schedules include the clock
-  steps, and counterexample replay performs the same advances). The random
-  strategies gain the equivalent "maybe advance time" branch. Supported for
-  sync and async workers with ``strategy="dpor"`` and ``strategy="random"``;
-  rejected for ``execution="process"`` and with ``patch_sleep=False`` or
-  ``serializable_invariant``. Async event-loop timers (``asyncio.wait_for`` /
-  ``asyncio.timeout``) deliberately stay on the wall clock. As part of this
-  work, an untimed ``Event.wait()`` under DPOR — ``threading.Event`` and
-  ``asyncio.Event`` alike — now blocks the waiter in the engine until
-  ``set()`` (with a proper happens-before edge) instead of spin-probing or
-  parking invisibly: exploration branches that schedule the waiter before
-  the setter no longer burn a deadlock timeout or get scored as false
-  deadlock counterexamples, with or without a virtual clock. See
-  :doc:`virtual_clock`.
+* **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
+  now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
+  workers with both DPOR and random strategies. Explored code reads scheduler
+  time, sleeps become zero-wall-time virtual deadlines, timed lock acquires are
+  deterministic, and ``clock="explored"`` makes timer firings schedulable.
+  Untimed ``threading.Event`` / ``asyncio.Event`` waits now engine-block under
+  DPOR until ``set()``, avoiding false deadlocks and replay drift. Non-real
+  clocks are rejected with ``execution="process"``, ``patch_sleep=False``, or
+  ``serializable_invariant``; async loop timers such as ``asyncio.wait_for``
+  remain wall-clock. See :doc:`virtual_clock`.
 
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,
-  interleaving separate processes that contend on shared external state (SQL and
-  Redis). Workers are serialised with dill (install the ``process`` extra), so
-  closures and lambdas work — not just module-level functions; ``setup()``
-  returns a handle to the external state that is passed to each ``worker(state)``
-  and to ``invariant(state)`` (the same shape as thread/async mode). The
-  lower-level ``frontrun.explore_processes(...)`` (with ``frontrun.Subprocess``)
-  spawns real OS processes from ``"module:callable"`` targets, takes the same
-  ``invariant(state)`` contract, and supports ``strategy="dpor"`` (default,
-  engine reduction + cross-worker deadlock detection) or ``"exhaustive"``. Both
-  entry points accept ``reuse_workers=True`` (spawn each worker once, re-run per
-  interleaving) and a ``count=`` shorthand to replicate a worker; an
-  unserialisable worker or an unimportable target now fails *fast* with a clear
-  frontrun-level message (the child's real error, not a bare connection timeout).
-  Process-mode failures carry the failure kind and the external-access trace in
-  their explanation; ``CrossProcessResult.exhausted`` honestly reports ``False``
-  when ``max_executions`` / ``total_timeout`` truncate the search; and options
-  that only affect in-process tracing (``serializable_invariant``,
-  ``error_on_any_race``, ...) are rejected rather than silently ignored. See
-  :doc:`cross_process`.
+  using the same ``setup`` / ``workers`` / ``invariant`` shape as thread mode
+  for shared SQL/Redis state. Workers are serialised with dill (install the
+  ``process`` extra), and process runs support ``count=`` and
+  ``reuse_workers=True``; the lower-level ``explore_processes`` API still
+  supports explicit ``Subprocess`` targets and exhaustive search. Process-mode
+  errors now fail fast with clearer messages, report truncation honestly via
+  ``CrossProcessResult.exhausted``, and reject in-process-only options instead
+  of silently ignoring them. See :doc:`cross_process`.
 
 0.6.0 (2026-06-30)
 ------------------

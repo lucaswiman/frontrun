@@ -61,10 +61,11 @@ arbitrary epoch (1,000,000.0 seconds), owned by the scheduler:
   ``threading.Lock.acquire(timeout=t)`` registers a virtual deadline
   instead of busy-waiting against the host clock; whether it succeeds no
   longer depends on machine speed.
-* **The clock advances only when it must.** When every live worker is
-  finished or deadline-blocked, the clock jumps to the *earliest* pending
-  deadline and wakes its sleepers.  This is the "autojump" model
-  (prior art: ``trio.testing.MockClock(autojump_threshold=0)``).
+* **The clock advances only when it must.** When no real worker is runnable
+  and at least one virtual deadline is pending, the clock jumps to the
+  *earliest* pending deadline and wakes due sleepers.  This is the
+  "autojump" model (prior art:
+  ``trio.testing.MockClock(autojump_threshold=0)``).
 * **Deadlocks are detected exactly (sync and async DPOR).** All workers
   blocked with *no* pending deadline is a genuine deadlock; the DPOR
   schedulers report it immediately instead of via the wall-clock fallback

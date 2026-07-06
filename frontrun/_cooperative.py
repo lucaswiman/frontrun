@@ -159,7 +159,7 @@ def _check_lock_cycle(graph: Any, thread_id: int, object_id: int, scheduler: Any
 def _timed_acquire_state(
     timeout: float, scheduler: Any = None, thread_id: int | None = None
 ) -> tuple[float | None, Any, Any]:
-    """Return ``(deadline, graph, clock)`` for a contended acquire (finding 7).
+    """Return ``(deadline, graph, clock)`` for a contended acquire.
 
     A timed acquire (``timeout >= 0``) cannot participate in a deadlock: it
     gives up after its deadline, which releases whatever locks the caller
@@ -1492,7 +1492,7 @@ def _cooperative_sleep(seconds: float) -> None:
 
 
 def patch_sleep() -> None:
-    """Replace ``time.sleep`` with a no-op cooperative version.
+    """Replace ``time.sleep`` with the cooperative scheduler hook.
 
     Reference-counted like :func:`patch_locks` so multiple concurrent
     callers are safe.

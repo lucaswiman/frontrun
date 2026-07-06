@@ -106,16 +106,13 @@ explode the search space for nothing. Only **advancement** (the clock actor's st
 
 ### Async
 
-- `asyncio.sleep(d)` → wrapper that registers a deadline with the async scheduler and
-  pauses via the existing `await_point()` machinery (`frontrun/_async_autopause.py`),
+- `asyncio.sleep(d)` → wrapper that registers a deadline with the async scheduler,
   rather than yielding to the real loop timer.
-- `loop.time()` → return virtual time (assign on the loop instance the runners already
-  create; both async runners construct their own loop).
-- `asyncio.wait_for` / `asyncio.timeout` schedule callbacks via `loop.call_later`, which
-  consults `loop.time()` — with virtual `loop.time()` plus a loop-idle hook that advances
-  the clock to the earliest scheduled callback, these work unmodified. This mirrors how
-  AnyIO's autojump works on top of Trio. Needs a spike to confirm on vanilla asyncio; the
-  fallback is wrapping `wait_for`/`timeout` the same way as `sleep`.
+- `loop.time()` stays wall-clock. While `time.monotonic()` is patched for explored
+  tasks, the runners pin the event loop's own clock to the saved real monotonic
+  function so scheduler watchdogs and user loop timers remain real.
+- `asyncio.wait_for` / `asyncio.timeout` therefore keep wall-clock deadlines. Wrapping
+  them over virtual deadlines remains future work.
 
 ### Timed lock acquires
 
@@ -145,8 +142,7 @@ result = frontrun.explore(
 1. **v1 sync autojump:** patch `time.{time,monotonic,perf_counter,sleep}` under scheduler
    context; deadline-blocked thread state; advance-on-idle; exact deadlock detection for
    time-blocked threads. Validate on a TTL-cache lost-expiry bug (cachetools-style).
-2. **v1 async autojump:** virtual `loop.time()` + wrapped `asyncio.sleep`; spike
-   `wait_for` compatibility.
+2. **v1 async autojump:** wrapped `asyncio.sleep`; keep loop timers on wall-clock time.
 3. **v2 clock actor** for DPOR + a "maybe advance" branch for the random strategies.
    Validate on a tenacity-style retry race ("retry fires between read and write").
 4. **Timed-acquire migration:** route `CooperativeLock` timeouts through virtual

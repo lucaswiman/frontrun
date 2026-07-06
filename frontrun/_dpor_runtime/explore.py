@@ -136,10 +136,10 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
             exploration across different conflict points earlier, finding
             bugs faster on average.
         patch_sleep: If True (default), replace ``time.sleep`` with a
-            no-op that yields to the scheduler.  This prevents threads
-            from actually sleeping during exploration (which would be
-            extremely slow) while preserving sleep calls as scheduling
-            points.  Set to False if your code depends on real delays.
+            cooperative scheduler hook. With ``clock="real"``, sleep calls are
+            zero-wall-time scheduling points. With a virtual clock, positive
+            sleeps become virtual deadlines and ``sleep(0)`` remains a yield.
+            Set to False if your code depends on real delays.
         clock: ``"real"`` (default) leaves time untouched.  ``"virtual"``
             gives each execution a scheduler-owned virtual clock:
             ``time.time``/``time.monotonic``/``time.perf_counter`` return

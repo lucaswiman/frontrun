@@ -124,7 +124,11 @@ def explore(
         trace_packages: Package patterns to trace in addition to user code.
         track_dunder_dict_accesses: Report ``obj.__dict__`` accesses (DPOR).
         search: Wakeup-tree traversal strategy (DPOR only).
-        patch_sleep: Replace ``time.sleep`` / ``asyncio.sleep`` with no-op.
+        patch_sleep: For ``clock="real"``, make ``time.sleep`` /
+            ``asyncio.sleep`` cooperative zero-wall-time yields. For
+            ``clock="virtual"`` or ``"explored"``, required: positive sleeps
+            become scheduler-owned virtual deadlines and ``sleep(0)`` remains a
+            yield.
         serializable_invariant: Check serializability against sequential runs.
         error_on_any_race: Treat unsynchronized races as failures (DPOR only).
         clock: ``"real"`` (default) leaves time untouched. ``"virtual"`` gives
@@ -157,7 +161,7 @@ def explore(
     Raises:
         ValueError: If ``count`` and a list of workers are both provided,
             ``count <= 0``, ``strategy`` or ``clock`` is unrecognised, or
-            ``clock`` is combined with ``patch_sleep=False``,
+            a non-real ``clock`` is combined with ``patch_sleep=False``,
             ``serializable_invariant``, or ``execution="process"``.
     """
     worker_list = _resolve_workers(workers, count)
