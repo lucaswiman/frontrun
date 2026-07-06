@@ -27,6 +27,10 @@ Unreleased
   ``CrossProcessResult.exhausted``, and reject in-process-only options instead
   of silently ignoring them. See :doc:`cross_process`.
 
+* **Async DPOR correctness.** Accesses after ``await`` are now attributed before
+  scheduling successors, and ``asyncio.Lock`` / event state races replay
+  consistently across supported Python versions.
+
 0.6.0 (2026-06-30)
 ------------------
 
