@@ -153,14 +153,17 @@ Semantics and limitations
   ``wait_for`` with a short real timeout still works — it just measures
   wall time, not virtual time.  (This is the "spike" outcome from the
   proposal; wrapping ``wait_for`` over virtual deadlines is future work.)
-* Timed waits on ``Event`` / ``Condition`` / ``Queue`` keep wall-clock
-  timeouts (they spin-yield exactly as with ``clock="real"``).  Fully
-  virtualised timeouts currently cover ``sleep`` and lock acquires.
-  Untimed ``Event.wait()`` is fully supported, sync and async (under
-  DPOR the waiter blocks in the engine until ``set()``, with a proper
-  happens-before edge).  Async ``Queue`` / ``Condition`` waiters are not
-  yet engine-visible: they behave correctly but a deadlock through them
-  is reported via the wall-clock fallback, not exactly.
+* Sync timed waits on frontrun's cooperative primitives use virtual
+  deadlines: ``Lock`` / ``RLock`` / ``Semaphore`` acquire timeouts,
+  ``Event.wait(timeout=...)``, ``Condition.wait(timeout=...)`` /
+  ``wait_for(..., timeout=...)``, and ``Queue.get`` / ``put`` timeouts.
+  Async timeout wrappers such as ``asyncio.wait_for`` remain wall-clock
+  timers (see above).  Untimed ``Event.wait()`` is fully supported, sync
+  and async (under DPOR the waiter blocks in the engine until ``set()``,
+  with a proper happens-before edge).  Async ``Queue`` / ``Condition``
+  waiters are not yet engine-visible: they behave correctly but a
+  deadlock through them is reported via the wall-clock fallback, not
+  exactly.
 * An async ``Event.set()`` issued from outside the explored tasks (a
   loop callback or a foreign thread) is invisible to exact deadlock
   detection; if all tasks are otherwise blocked it may be reported as a

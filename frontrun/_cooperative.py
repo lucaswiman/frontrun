@@ -1286,9 +1286,9 @@ class CooperativeCondition:
         if result or timeout == 0:
             return result
         if timeout is not None:
-            deadline = _real_monotonic() + timeout
+            deadline = time.monotonic() + timeout
             while not result:
-                remaining = deadline - _real_monotonic()
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 self.wait(timeout=remaining)
