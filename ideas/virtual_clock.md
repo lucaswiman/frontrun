@@ -13,8 +13,11 @@ from this proposal:
   a clock jump would fire them spuriously. `asyncio.wait_for` / `asyncio.timeout`
   therefore stay wall-clock (documented); wrapping them over virtual deadlines
   remains future work.
-- `Event`/`Condition`/`Queue` timed waits keep wall-clock timeouts; fully
-  virtualised timeouts cover `sleep` and timed lock acquires (phase 4 done).
+- Sync cooperative timed waits now use virtual deadlines: lock/RLock/semaphore
+  acquires, `Event.wait(timeout=...)`, `Condition.wait(timeout=...)`,
+  `Condition.wait_for(..., timeout=...)`, and `Queue.get`/`put` timeouts.
+  Async loop timeouts such as `asyncio.wait_for` and `asyncio.timeout` remain
+  wall-clock for now; see `possible-future-roadmap/virtual-clock-transparency.md`.
 - `serializable_invariant` is rejected with a virtual clock (the sequential
   baseline runs execute outside the scheduler).
 - Post-review hardening: cooperative `Event.wait()` engine-blocks under DPOR

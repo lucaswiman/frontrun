@@ -1,6 +1,6 @@
 # Frontrun Roadmap
 
-Last reviewed: 2026-06-12.
+Last reviewed: 2026-07-06.
 
 ## Documents
 
@@ -9,6 +9,7 @@ Last reviewed: 2026-06-12.
 | [../cross_process_exploration.md](../cross_process_exploration.md) | Deterministic interleaving of OS processes contending on shared SQL/Redis state |
 | [../fault_injection.md](../fault_injection.md) | Injected exceptions / async cancellation as schedulable events |
 | [../virtual_clock.md](../virtual_clock.md) | Virtualized time: timeout, retry, and TTL races as explorable schedules |
+| [virtual-clock-transparency.md](virtual-clock-transparency.md) | Follow-up work to make virtual-clock behavior more transparent |
 | [dpor-improvements.md](dpor-improvements.md) | Wakeup tree equivalence, redundant opcode suppression (all low priority) |
 | [integrations-and-detection.md](integrations-and-detection.md) | SQL/Redis/resource detection layers, FK analysis |
 | [formal-methods.md](formal-methods.md) | TLA+/Quint integration, spec-guided exploration, counterexample replay |
@@ -59,6 +60,14 @@ inside frontrun. The PG parser at `crates/io/src/sql_extract.rs` would be a star
 seed for such a tool. Meanwhile the supported path is unchanged: if the workers are
 Python, run frontrun inside them.
 
+**Virtual clock** (`frontrun.explore(clock="virtual"|"explored")`) is implemented
+for sync and async workers under DPOR and random strategies. It covers
+scheduler-visible Python timing (`time.*`, `time.sleep`, `asyncio.sleep`, sync
+cooperative timed waits) and keeps timer firings replayable via autojump or the
+DPOR clock actor. Follow-up transparency work, such as virtual `asyncio.wait_for`,
+`datetime` support, and captured-reference diagnostics, is tracked in
+`virtual-clock-transparency.md`.
+
 ## Dropped (2026-06-12 cleanup)
 
 Removed as not worth doing — superseded by existing machinery, low value, or duplicative
@@ -79,8 +88,9 @@ test generation. Originals in git history.
    design (white-box vs. Jepsen-shaped; see above) — a separate tool, if ever.
 2. **Fault-point exploration** (fault_injection.md) — start with the async cancellation
    sweep (v1), which needs no new exploration machinery.
-3. **Virtual clock** (virtual_clock.md) — v1 autojump clock for sync, then the
-   clock-as-DPOR-actor model for explored timer firing.
+3. **Virtual clock transparency follow-ups** (virtual-clock-transparency.md) —
+   virtual `asyncio.wait_for`, async Queue/Condition visibility, `datetime`
+   support, and diagnostics for captured real-time references.
 
 ### P1 — Carried over
 
