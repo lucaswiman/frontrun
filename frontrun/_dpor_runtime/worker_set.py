@@ -14,6 +14,8 @@ from typing import Any
 from frontrun._dpor_core.worker import WorkerTarget
 from frontrun._threaded_runner import join_threads_with_deadline
 
+_POST_TIMEOUT_CLEANUP_JOIN_SECONDS = 0.5
+
 
 class ThreadWorkerSet:
     """Run each :class:`WorkerTarget` on its own daemon ``threading.Thread``."""
@@ -66,6 +68,7 @@ class ThreadWorkerSet:
             alive = self.join(handles, timeout)
             if alive and on_timeout is not None:
                 on_timeout(alive)
+                self.join(alive, _POST_TIMEOUT_CLEANUP_JOIN_SECONDS)
         finally:
             if teardown is not None:
                 teardown()
