@@ -577,6 +577,113 @@ def test_timed_semaphore_acquire_times_out_without_false_deadlock() -> None:
     assert result.property_holds, result.explanation
 
 
+class _TimedWaitState:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.cond = threading.Condition()
+        self.q: queue.Queue[str] = queue.Queue()
+        self.full_q: queue.Queue[str] = queue.Queue(maxsize=1)
+        self.full_q.put_nowait("old")
+        self.timed_out = False
+        self.waited_virtual = 0.0
+
+
+def test_timed_event_wait_expires_on_virtual_deadline() -> None:
+    def waiter(s: _TimedWaitState) -> None:
+        start = time.monotonic()
+        s.timed_out = not s.event.wait(timeout=0.05)
+        s.waited_virtual = time.monotonic() - start
+
+    def setter(s: _TimedWaitState) -> None:
+        time.sleep(1.0)
+        s.event.set()
+
+    result = frontrun.explore(
+        setup=_TimedWaitState,
+        workers=[waiter, setter],
+        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_timed_condition_wait_expires_on_virtual_deadline() -> None:
+    def waiter(s: _TimedWaitState) -> None:
+        with s.cond:
+            start = time.monotonic()
+            s.timed_out = not s.cond.wait(timeout=0.05)
+            s.waited_virtual = time.monotonic() - start
+
+    def notifier(s: _TimedWaitState) -> None:
+        time.sleep(1.0)
+        with s.cond:
+            s.cond.notify()
+
+    result = frontrun.explore(
+        setup=_TimedWaitState,
+        workers=[waiter, notifier],
+        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_timed_queue_get_expires_on_virtual_deadline() -> None:
+    def consumer(s: _TimedWaitState) -> None:
+        start = time.monotonic()
+        try:
+            s.q.get(timeout=0.05)
+        except queue.Empty:
+            s.timed_out = True
+        s.waited_virtual = time.monotonic() - start
+
+    def producer(s: _TimedWaitState) -> None:
+        time.sleep(1.0)
+        s.q.put("x")
+
+    result = frontrun.explore(
+        setup=_TimedWaitState,
+        workers=[consumer, producer],
+        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_timed_queue_put_expires_on_virtual_deadline() -> None:
+    def producer(s: _TimedWaitState) -> None:
+        start = time.monotonic()
+        try:
+            s.full_q.put("new", timeout=0.05)
+        except queue.Full:
+            s.timed_out = True
+        s.waited_virtual = time.monotonic() - start
+
+    def consumer(s: _TimedWaitState) -> None:
+        time.sleep(1.0)
+        s.full_q.get()
+
+    result = frontrun.explore(
+        setup=_TimedWaitState,
+        workers=[producer, consumer],
+        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
 # ---------------------------------------------------------------------------
 # Random strategy
 # ---------------------------------------------------------------------------
