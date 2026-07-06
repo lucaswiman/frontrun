@@ -400,6 +400,11 @@ class _CooperativeAsyncEvent:
     def clear(self) -> None:
         self._event.clear()
 
+    def _wake_sync_id(self, scheduler: Any, waiter: int) -> int:
+        stable_ids = getattr(scheduler, "_stable_ids", None)
+        event_id = stable_ids.get(self) if stable_ids is not None else id(self)
+        return event_wake_sync_id(event_id, waiter)
+
     async def wait(self) -> bool:
         task_id = _task_id_var.get()
         scheduler = _scheduler_var.get()
@@ -459,7 +464,7 @@ class _CooperativeAsyncEvent:
             # Close the set() → wake happens-before edge (skip if the run was
             # aborted — the free-run's events are not part of the exploration).
             if scheduler._error is None:
-                engine.report_sync(scheduler.execution, task_id, "lock_acquire", event_wake_sync_id(id(self), task_id))
+                engine.report_sync(scheduler.execution, task_id, "lock_acquire", self._wake_sync_id(scheduler, task_id))
             return result
         finally:
             _in_scheduler_pause.set(depth)
@@ -478,7 +483,7 @@ class _CooperativeAsyncEvent:
         engine = getattr(scheduler, "engine", None)
         if scheduler is not None and engine is not None and task_id is not None and scheduler._error is None:
             for waiter in list(self._waiters):
-                engine.report_sync(scheduler.execution, task_id, "lock_release", event_wake_sync_id(id(self), waiter))
+                engine.report_sync(scheduler.execution, task_id, "lock_release", self._wake_sync_id(scheduler, waiter))
                 scheduler.execution.unblock_thread(waiter)
         self._event.set()
 
