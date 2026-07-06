@@ -87,7 +87,6 @@ from frontrun._virtual_clock import (
     clock_scope,
     patch_time,
     unpatch_time,
-    validate_clock,
     validate_clock_options,
 )
 from frontrun.cli import require_active as _require_frontrun_env
@@ -711,7 +710,7 @@ def run_with_schedule(
     Returns:
         The state object after execution.
     """
-    clock = validate_clock(clock)
+    clock = validate_clock_options(clock, patch_sleep=patch_sleep)
     if _virtual_clock is not None and clock == "real":
         raise ValueError("_virtual_clock requires clock='virtual' or clock='explored'")
     virtual_clock = _virtual_clock if _virtual_clock is not None else (VirtualClock() if clock != "real" else None)
