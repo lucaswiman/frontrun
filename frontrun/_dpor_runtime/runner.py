@@ -301,6 +301,16 @@ class DporBytecodeRunner:
                     with scheduler._condition:
                         scheduler._condition.notify_all()
                     return
+                if event in ("event_read", "event_write"):
+                    state_key = _make_object_key(stable_lock_id, "__event_state__")
+                    with engine_lock:
+                        engine.report_access(
+                            execution,
+                            thread_id,
+                            state_key,
+                            "read" if event == "event_read" else "write",
+                        )
+                    return
                 if event == "event_wake":
                     with engine_lock:
                         waiter_set = scheduler._lock_waiters.get(stable_lock_id)

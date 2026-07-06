@@ -69,7 +69,13 @@ class ReplayEngine:
     def report_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
         return None
 
+    def report_access_at(self, execution: Any, thread_id: int, object_id: int, kind: str, path_id: int) -> None:
+        return None
+
     def report_first_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
+        return None
+
+    def report_first_access_at(self, execution: Any, thread_id: int, object_id: int, kind: str, path_id: int) -> None:
         return None
 
     def report_io_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:

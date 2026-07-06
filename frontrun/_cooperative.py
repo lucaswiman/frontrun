@@ -933,6 +933,8 @@ class CooperativeEvent:
 
     def _report(self, event: str) -> bool:
         """Report to the per-thread sync reporter; True if one was called."""
+        if _in_dpor_machinery():
+            return False
         if is_sync_suppressed():
             return False
         reporter = get_sync_reporter()
@@ -946,9 +948,21 @@ class CooperativeEvent:
             _scheduler_tls._in_dpor_machinery = prev
         return True
 
+    @staticmethod
+    def _yield_after_state_access() -> None:
+        ctx = get_context()
+        if ctx is None:
+            return
+        scheduler, thread_id = ctx
+        wait_for_turn = getattr(scheduler, "wait_for_turn", None)
+        if wait_for_turn is not None:
+            wait_for_turn(thread_id)
+
     def wait(self, timeout: float | None = None) -> bool:
 
         if self._event.is_set():
+            if self._report("event_read"):
+                self._yield_after_state_access()
             return True
 
         ctx = get_context()
@@ -1015,6 +1029,8 @@ class CooperativeEvent:
                 note_spin(thread_id, self._object_id, False)
 
     def set(self) -> None:
+        if self._report("event_write"):
+            self._yield_after_state_access()
         self._event.set()
         if not self._report("event_set"):
             # Unmanaged setter (no sync reporter): engine-blocked waiters must
@@ -1028,10 +1044,15 @@ class CooperativeEvent:
         _note_spin_release(self._object_id)
 
     def clear(self) -> None:
+        if self._report("event_write"):
+            self._yield_after_state_access()
         self._event.clear()
 
     def is_set(self) -> bool:
-        return self._event.is_set()
+        result = self._event.is_set()
+        if self._report("event_read"):
+            self._yield_after_state_access()
+        return result
 
     def __repr__(self) -> str:
         return f"<CooperativeEvent set={self.is_set()}>"
@@ -1464,10 +1485,13 @@ class CooperativeQueue:
         return self._queue.full()
 
     def get_nowait(self) -> Any:
-        return self._queue.get(block=False)
+        item = self._queue.get(block=False)
+        _note_spin_release(self._object_id)
+        return item
 
     def put_nowait(self, item: Any) -> None:
         self._queue.put(item, block=False)
+        _note_spin_release(self._object_id)
 
     def task_done(self) -> None:
         self._queue.task_done()

@@ -169,6 +169,31 @@ _in_trace_processing: contextvars.ContextVar[bool] = contextvars.ContextVar("_in
 _SHARED_SYNC_ACQUIRE_KEY = _make_object_key(0, "__async_dpor_sync_acquire__")
 
 
+class _PathPinnedEngine:
+    """Engine adapter that attributes memory accesses to a saved schedule slot."""
+
+    __slots__ = ("_engine", "_path_id")
+
+    def __init__(self, engine: Any, path_id: int) -> None:
+        self._engine = engine
+        self._path_id = path_id
+
+    def report_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> Any:
+        report_at = getattr(self._engine, "report_access_at", None)
+        if report_at is not None:
+            return report_at(execution, thread_id, object_id, kind, self._path_id)
+        return self._engine.report_access(execution, thread_id, object_id, kind)
+
+    def report_first_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> Any:
+        report_at = getattr(self._engine, "report_first_access_at", None)
+        if report_at is not None:
+            return report_at(execution, thread_id, object_id, kind, self._path_id)
+        return self._engine.report_first_access(execution, thread_id, object_id, kind)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._engine, name)
+
+
 # ---------------------------------------------------------------------------
 # Cooperative asyncio.Lock with deadlock detection
 # ---------------------------------------------------------------------------
@@ -289,7 +314,11 @@ class _CooperativeAsyncLock:
             graph.add_holding(task_id, lock_id)
             scheduler = _scheduler_var.get()
             if scheduler is not None:
-                scheduler.engine.report_sync(scheduler.execution, task_id, "lock_acquire", lock_id)
+                report_task_sync = getattr(scheduler, "report_task_sync", None)
+                if report_task_sync is not None:
+                    report_task_sync(task_id, "lock_acquire", lock_id)
+                else:
+                    scheduler.engine.report_sync(scheduler.execution, task_id, "lock_acquire", lock_id)
 
         return result
 
@@ -306,7 +335,11 @@ class _CooperativeAsyncLock:
                 held.discard(self)
             scheduler = _scheduler_var.get()
             if scheduler is not None:
-                scheduler.engine.report_sync(scheduler.execution, task_id, "lock_release", lock_id)
+                report_task_sync = getattr(scheduler, "report_task_sync", None)
+                if report_task_sync is not None:
+                    report_task_sync(task_id, "lock_release", lock_id)
+                else:
+                    scheduler.engine.report_sync(scheduler.execution, task_id, "lock_release", lock_id)
             self._owner = None
         self._lock.release()
 
@@ -396,15 +429,35 @@ class _CooperativeAsyncEvent:
         self._waiters: list[int] = []
 
     def is_set(self) -> bool:
-        return self._event.is_set()
+        result = self._event.is_set()
+        self._report_state_access("read")
+        return result
 
     def clear(self) -> None:
+        self._report_state_access("write")
         self._event.clear()
 
     def _wake_sync_id(self, scheduler: Any, waiter: int) -> int:
         stable_ids = getattr(scheduler, "_stable_ids", None)
         event_id = stable_ids.get(self) if stable_ids is not None else id(self)
         return event_wake_sync_id(event_id, waiter)
+
+    def _state_key(self, scheduler: Any) -> int:
+        stable_ids = getattr(scheduler, "_stable_ids", None)
+        event_id = stable_ids.get(self) if stable_ids is not None else id(self)
+        return _make_object_key(event_id, "__event_state__")
+
+    def _report_state_access(self, kind: str) -> None:
+        task_id = _task_id_var.get()
+        scheduler = _scheduler_var.get()
+        engine = getattr(scheduler, "engine", None)
+        if scheduler is None or engine is None or task_id is None or scheduler._error is not None:
+            return
+        report_task_access = getattr(scheduler, "report_task_access", None)
+        if report_task_access is not None:
+            report_task_access(task_id, self._state_key(scheduler), kind)
+        else:
+            engine.report_access(scheduler.execution, task_id, self._state_key(scheduler), kind)
 
     async def wait(self) -> bool:
         task_id = _task_id_var.get()
@@ -417,6 +470,7 @@ class _CooperativeAsyncEvent:
             await scheduler.pause(task_id, ("event_wait", id(self)))
 
         if self._event.is_set():
+            self._report_state_access("read")
             return True
         # A scheduler-detected deadlock/timeout aborts the run: tasks free-run
         # to completion (see InterleavedLoop.run_all), so waiting here would
@@ -465,7 +519,11 @@ class _CooperativeAsyncEvent:
             # Close the set() → wake happens-before edge (skip if the run was
             # aborted — the free-run's events are not part of the exploration).
             if scheduler._error is None:
-                engine.report_sync(scheduler.execution, task_id, "lock_acquire", self._wake_sync_id(scheduler, task_id))
+                report_task_sync = getattr(scheduler, "report_task_sync", None)
+                if report_task_sync is not None:
+                    report_task_sync(task_id, "lock_acquire", self._wake_sync_id(scheduler, task_id))
+                else:
+                    engine.report_sync(scheduler.execution, task_id, "lock_acquire", self._wake_sync_id(scheduler, task_id))
             return result
         finally:
             _in_scheduler_pause.set(depth)
@@ -483,8 +541,13 @@ class _CooperativeAsyncEvent:
         scheduler = _scheduler_var.get()
         engine = getattr(scheduler, "engine", None)
         if scheduler is not None and engine is not None and task_id is not None and scheduler._error is None:
+            self._report_state_access("write")
+            report_task_sync = getattr(scheduler, "report_task_sync", None)
             for waiter in list(self._waiters):
-                engine.report_sync(scheduler.execution, task_id, "lock_release", self._wake_sync_id(scheduler, waiter))
+                if report_task_sync is not None:
+                    report_task_sync(task_id, "lock_release", self._wake_sync_id(scheduler, waiter))
+                else:
+                    engine.report_sync(scheduler.execution, task_id, "lock_release", self._wake_sync_id(scheduler, waiter))
                 scheduler.execution.unblock_thread(waiter)
         self._event.set()
 
@@ -523,6 +586,7 @@ def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Call
     """
     tagged: weakref.WeakSet[Any] = weakref.WeakSet()
     orig_call_at = loop.call_at
+    orig_call_later = loop.call_later
 
     def _tagging_call_at(when: float, callback: Any, *args: Any, context: Any = None) -> Any:
         handle = orig_call_at(when, callback, *args, context=context)
@@ -530,7 +594,14 @@ def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Call
             tagged.add(handle)
         return handle
 
+    def _tagging_call_later(delay: float, callback: Any, *args: Any, context: Any = None) -> Any:
+        handle = orig_call_later(delay, callback, *args, context=context)
+        if _in_frontrun_timer.get():
+            tagged.add(handle)
+        return handle
+
     restore_call_at = _patch_loop_instance_attr(loop, "call_at", _tagging_call_at)
+    restore_call_later = _patch_loop_instance_attr(loop, "call_later", _tagging_call_later)
 
     def _user_timers_pending() -> bool:
         scheduled = getattr(loop, "_scheduled", None)
@@ -539,6 +610,7 @@ def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Call
         return any(not handle.cancelled() and handle not in tagged for handle in scheduled)
 
     def _uninstall() -> None:
+        restore_call_later()
         restore_call_at()
 
     return _user_timers_pending, _uninstall
@@ -641,7 +713,7 @@ class AsyncDporScheduler(InterleavedLoop):
         user_timers_pending: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
-        self.engine = engine
+        self.engine: Any = engine
         self.execution = execution
         self._num_engine_tasks = num_tasks
         # Exact deadlock detection (virtual clock only): a pending confirm
@@ -659,6 +731,9 @@ class AsyncDporScheduler(InterleavedLoop):
         self.virtual_clock = virtual_clock
         self._clock_mode = clock_mode
         self._clock_actor_id = clock_actor_id
+        self._last_scheduled_path_id: int | None = None
+        self._current_path_id: int | None = None
+        self._active_path_ids: dict[int, int] = {}
         # task_id → virtual deadline for tasks parked in sleep_until().  No
         # async analogue of the sync _timed_waits exists: asyncio.Lock.acquire
         # has no timeout parameter (asyncio timeouts stay on the wall clock;
@@ -697,7 +772,7 @@ class AsyncDporScheduler(InterleavedLoop):
             self.execution.block_thread(self._clock_actor_id)
 
         # Request the first scheduling decision
-        self._current_task = self._schedule_next()
+        self._set_current_task(self._schedule_next())
 
     # -- Virtual clock ---------------------------------------------------
 
@@ -712,6 +787,14 @@ class AsyncDporScheduler(InterleavedLoop):
             self.execution.unblock_thread(self._clock_actor_id)
         else:
             self.execution.block_thread(self._clock_actor_id)
+
+    def _set_current_task(self, task_id: int | None) -> None:
+        self._current_task = task_id
+        self._current_path_id = self._last_scheduled_path_id if task_id is not None else None
+
+    def _activate_current_task_path(self, task_id: int) -> None:
+        if self._current_task == task_id and self._current_path_id is not None:
+            self._active_path_ids[task_id] = self._current_path_id
 
     def _advance_virtual_clock(self) -> None:
         """One clock-actor step: jump to the earliest deadline, wake sleepers."""
@@ -728,7 +811,13 @@ class AsyncDporScheduler(InterleavedLoop):
             if dl <= now:
                 del self._sleepers[tid]
                 self.execution.unblock_thread(tid)
-                self.engine.report_sync(self.execution, self._clock_actor_id, "lock_release", wake_sync_id(tid))
+                self.engine.report_sync(
+                    self.execution,
+                    self._clock_actor_id,
+                    "lock_release",
+                    wake_sync_id(tid),
+                    self._last_scheduled_path_id,
+                )
         self._sync_clock_actor()
 
     async def sleep_until(self, task_id: int, deadline: float) -> None:
@@ -760,7 +849,7 @@ class AsyncDporScheduler(InterleavedLoop):
                 if cur == task_id or cur is None or not self.execution.runnable_threads():
                     next_task = self._schedule_next()
                     if next_task is not None:
-                        self._current_task = next_task
+                        self._set_current_task(next_task)
                 self._condition.notify_all()
                 # Phase 1: wait for the clock advance that removes us.
                 while task_id in self._sleepers:
@@ -791,7 +880,14 @@ class AsyncDporScheduler(InterleavedLoop):
                 if self._finished or self._error:
                     return
                 # Close the wake happens-before edge (clock advance → resume).
-                self.engine.report_sync(self.execution, task_id, "lock_acquire", wake_sync_id(task_id))
+                self._activate_current_task_path(task_id)
+                self.engine.report_sync(
+                    self.execution,
+                    task_id,
+                    "lock_acquire",
+                    wake_sync_id(task_id),
+                    self._current_path_id,
+                )
         finally:
             _in_scheduler_pause.set(depth)
 
@@ -813,7 +909,7 @@ class AsyncDporScheduler(InterleavedLoop):
                 return
             next_task = self._schedule_next()
             if next_task is not None:
-                self._current_task = next_task
+                self._set_current_task(next_task)
             self._condition.notify_all()
 
     async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
@@ -823,7 +919,7 @@ class AsyncDporScheduler(InterleavedLoop):
                 if self._current_task is None:
                     next_task = self._schedule_next()
                     if next_task is not None:
-                        self._current_task = next_task
+                        self._set_current_task(next_task)
                         self._condition.notify_all()
                         continue
                 try:
@@ -834,6 +930,8 @@ class AsyncDporScheduler(InterleavedLoop):
                     )
                     self._condition.notify_all()
                     return
+            if not (self._finished or self._error):
+                self._activate_current_task_path(task_id)
 
     def _maybe_confirm_exact_deadlock(self) -> None:
         """Arm a deferred exact-deadlock check (virtual clock only).
@@ -922,8 +1020,11 @@ class AsyncDporScheduler(InterleavedLoop):
                     self.execution.unblock_thread(self._clock_actor_id)
                     continue
                 self._maybe_confirm_exact_deadlock()
+                self._last_scheduled_path_id = None
                 return None
             scheduled = self.engine.schedule(self.execution)
+            path_position = getattr(self.engine, "path_position", None)
+            self._last_scheduled_path_id = path_position - 1 if path_position is not None else None
             if scheduled is not None and scheduled == self._clock_actor_id:
                 self._advance_virtual_clock()
                 continue
@@ -951,6 +1052,8 @@ class AsyncDporScheduler(InterleavedLoop):
     def on_proceed(self, task_id: Any, marker: Any = None) -> None:
         # Flush any pending I/O accesses before advancing
         self._flush_pending_io(task_id)
+        if isinstance(task_id, int):
+            self._activate_current_task_path(task_id)
         if isinstance(marker, tuple) and marker and marker[0] == "lock_acquire":
             # When SQL/Redis detection is active, opcode-level tracing is
             # disabled, so the only way to create cross-resource conflicts
@@ -980,7 +1083,7 @@ class AsyncDporScheduler(InterleavedLoop):
         # are done.
         next_task = self._schedule_next()
         if next_task is not None:
-            self._current_task = next_task
+            self._set_current_task(next_task)
         # If next_task is None but there are alive tasks, keep current
         # task so it can continue running to completion.
 
@@ -1094,6 +1197,8 @@ class AsyncDporScheduler(InterleavedLoop):
     async def _mark_done(self, task_id: Any) -> None:
         """Mark a task as finished in both InterleavedLoop and the DPOR engine."""
         self._progress += 1
+        if isinstance(task_id, int):
+            self._active_path_ids.pop(task_id, None)
         self.execution.finish_thread(task_id)
         # If this was the current task, schedule the next one
         async with self._condition:
@@ -1108,7 +1213,7 @@ class AsyncDporScheduler(InterleavedLoop):
                 self.execution.finish_thread(self._clock_actor_id)
             if self._current_task == task_id:
                 next_task = self._schedule_next()
-                self._current_task = next_task
+                self._set_current_task(next_task)
                 if next_task is None and len(self._tasks_done) >= self._num_engine_tasks:
                     self._finished = True
             self._condition.notify_all()
@@ -1116,6 +1221,8 @@ class AsyncDporScheduler(InterleavedLoop):
     def _cleanup_task_context(self, task_id: Any) -> None:
         # Flush any remaining pending I/O before cleanup
         self._flush_pending_io(task_id)
+        if isinstance(task_id, int):
+            self._active_path_ids.pop(task_id, None)
 
         # Release any row locks still held (task finished without COMMIT)
         self.release_row_locks(task_id)
@@ -1156,13 +1263,37 @@ class AsyncDporScheduler(InterleavedLoop):
             return _task_id_var.get()
         return None
 
+    def _path_id_for_task(self, task_id: int) -> int | None:
+        return self._active_path_ids.get(task_id)
+
+    def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
+        path_id = self._path_id_for_task(task_id)
+        if path_id is not None:
+            report_at = getattr(self.engine, "report_access_at", None)
+            if report_at is not None:
+                report_at(self.execution, task_id, object_id, kind, path_id)
+                return
+        self.engine.report_access(self.execution, task_id, object_id, kind)
+
+    def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
+        self.engine.report_sync(self.execution, task_id, event_type, sync_id, self._path_id_for_task(task_id))
+
     def _on_opcode(self, code: Any, offset: int, frame: Any, task_id: int) -> bool:
         if _in_trace_processing.get():
             return False
         token = _in_trace_processing.set(True)
         try:
             with self._engine_lock:
-                _process_opcode(frame, self, task_id)  # type: ignore[arg-type]
+                path_id = self._path_id_for_task(task_id)
+                if path_id is None:
+                    _process_opcode(frame, self, task_id)  # type: ignore[arg-type]
+                else:
+                    engine = self.engine
+                    self.engine = _PathPinnedEngine(engine, path_id)
+                    try:
+                        _process_opcode(frame, self, task_id)  # type: ignore[arg-type]
+                    finally:
+                        self.engine = engine
         finally:
             _in_trace_processing.reset(token)
         return False  # async never yields at opcode level
