@@ -35,7 +35,7 @@ import threading
 from collections import deque
 
 import frontrun
-from frontrun._cooperative import CooperativeLock
+from frontrun._cooperative import CooperativeLock, CooperativeRLock
 
 
 class MiniEngine:
@@ -57,10 +57,37 @@ class MiniEngine:
             self._lock.release()
 
 
+class TimeoutZeroMiniEngine:
+    """Same model, but uses acquire(timeout=0) as the trylock spelling."""
+
+    def __init__(self, lock) -> None:
+        self._lock = lock
+        self.q = deque()
+        self.processed = []
+
+    def send(self, item) -> None:
+        self.q.append(item)
+        if not self._lock.acquire(timeout=0):
+            return
+        try:
+            while self.q:
+                self.processed.append(self.q.popleft())
+        finally:
+            self._lock.release()
+
+
 def _make_state(lock_factory):
     class State:
         def __init__(self):
             self.engine = MiniEngine(lock_factory())
+
+    return State
+
+
+def _make_timeout_zero_state(lock_factory):
+    class State:
+        def __init__(self):
+            self.engine = TimeoutZeroMiniEngine(lock_factory())
 
     return State
 
@@ -81,6 +108,16 @@ def _invariant(s):
 def _explore(lock_factory):
     return frontrun.explore(
         setup=_make_state(lock_factory),
+        workers=[_worker_a, _worker_b],
+        invariant=_invariant,
+        detect_io=False,
+        reproduce_on_failure=10,
+    )
+
+
+def _explore_timeout_zero(lock_factory):
+    return frontrun.explore(
+        setup=_make_timeout_zero_state(lock_factory),
         workers=[_worker_a, _worker_b],
         invariant=_invariant,
         detect_io=False,
@@ -117,6 +154,22 @@ def test_threading_lock_agrees_with_real_lock():
     assert not result.property_holds, (
         f"threading.Lock ({type(threading.Lock()).__name__}) masked the lost-wakeup "
         "race that the real C-level lock finds"
+    )
+    assert result.reproduction_successes >= 8
+
+
+def test_cooperative_lock_timeout_zero_finds_lost_wakeup():
+    result = _explore_timeout_zero(CooperativeLock)
+    assert not result.property_holds, (
+        "CooperativeLock.acquire(timeout=0) masked the lost-wakeup race by not reporting a trylock attempt"
+    )
+    assert result.reproduction_successes >= 8
+
+
+def test_cooperative_rlock_timeout_zero_finds_lost_wakeup():
+    result = _explore_timeout_zero(CooperativeRLock)
+    assert not result.property_holds, (
+        "CooperativeRLock.acquire(timeout=0) masked the lost-wakeup race by not reporting a trylock attempt"
     )
     assert result.reproduction_successes >= 8
 
