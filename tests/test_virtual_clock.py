@@ -16,7 +16,8 @@ import time
 import pytest
 
 import frontrun
-from frontrun.bytecode import run_with_schedule
+from frontrun._virtual_clock import VirtualClock
+from frontrun.bytecode import OpcodeScheduler, run_with_schedule
 
 # ---------------------------------------------------------------------------
 # Plumbing
@@ -448,6 +449,17 @@ def test_random_strategy_virtual_sleep_zero_wall_time() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert wall_elapsed < 60.0
+
+
+def test_random_scheduler_autojumps_when_all_live_threads_are_timed_waits() -> None:
+    clock = VirtualClock()
+    scheduler = OpcodeScheduler([0], 2, virtual_clock=clock, clock_mode="virtual")
+    first_deadline = clock.now() + 1.0
+    scheduler.add_timed_wait(0, first_deadline)
+    scheduler.add_timed_wait(1, clock.now() + 2.0)
+
+    assert scheduler.wait_for_turn(0)
+    assert clock.now() == first_deadline
 
 
 def test_random_strategy_explored_clock_can_fire_timer_early() -> None:
