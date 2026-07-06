@@ -755,9 +755,16 @@ class DporScheduler:
                         return True
 
                     # Wait for our turn (fallback timeout for C-blocked threads)
-                    if not self._condition.wait(timeout=self.deadlock_timeout):
+                    if not self._condition.wait(timeout=self._condition_wait_timeout()):
                         if self._current_thread in self._threads_done:
                             # Current thread is done, try scheduling again
+                            next_thread = self._schedule_next()
+                            self._current_thread = next_thread
+                            if next_thread is None and len(self._threads_done) >= self.num_threads:
+                                self._finished = True
+                            self._condition.notify_all()
+                            continue
+                        if self.virtual_clock is not None and self._current_thread is None:
                             next_thread = self._schedule_next()
                             self._current_thread = next_thread
                             if next_thread is None and len(self._threads_done) >= self.num_threads:
