@@ -605,9 +605,14 @@ def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Call
 
     def _user_timers_pending() -> bool:
         scheduled = getattr(loop, "_scheduled", None)
+        ready = getattr(loop, "_ready", None)
         if scheduled is None:
             return True
-        return any(not handle.cancelled() and handle not in tagged for handle in scheduled)
+        if any(not handle.cancelled() and handle not in tagged for handle in scheduled):
+            return True
+        if ready is None:
+            return True
+        return any(not handle.cancelled() for handle in ready)
 
     def _uninstall() -> None:
         restore_call_later()
