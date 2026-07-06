@@ -9,13 +9,12 @@ Unreleased
 * **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
   now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
   workers with both DPOR and random strategies. Explored code reads scheduler
-  time, sleeps become zero-wall-time virtual deadlines, timed lock acquires are
-  deterministic, and ``clock="explored"`` makes timer firings schedulable.
-  Untimed ``threading.Event`` / ``asyncio.Event`` waits now engine-block under
-  DPOR until ``set()``, avoiding false deadlocks and replay drift. Non-real
-  clocks are rejected with ``execution="process"``, ``patch_sleep=False``, or
-  ``serializable_invariant``; async loop timers such as ``asyncio.wait_for``
-  remain wall-clock. See :doc:`virtual_clock`.
+  time, sleeps become zero-wall-time virtual deadlines, and ``clock="explored"``
+  makes timer firings schedulable. DPOR now virtualizes timed waits across
+  locks, events, conditions, and queues; keeps queue nowait wakeups, event state
+  races, async post-await races, and user ``asyncio.wait_for`` timers visible;
+  and rejects non-real clocks with incompatible options. See
+  :doc:`virtual_clock`.
 
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,

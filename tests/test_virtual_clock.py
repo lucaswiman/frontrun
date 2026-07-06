@@ -630,6 +630,22 @@ class _TimedWaitState:
         self.waited_virtual = 0.0
 
 
+def _assert_timed_wait_expires(
+    waiter: Callable[[_TimedWaitState], None],
+    releaser: Callable[[_TimedWaitState], None],
+) -> None:
+    result = frontrun.explore(
+        setup=_TimedWaitState,
+        workers=[waiter, releaser],
+        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
+        clock="virtual",
+        reproduce_on_failure=0,
+        deadlock_timeout=0.2,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_timed_event_wait_expires_on_virtual_deadline() -> None:
     def waiter(s: _TimedWaitState) -> None:
         start = time.monotonic()
@@ -640,16 +656,7 @@ def test_timed_event_wait_expires_on_virtual_deadline() -> None:
         time.sleep(1.0)
         s.event.set()
 
-    result = frontrun.explore(
-        setup=_TimedWaitState,
-        workers=[waiter, setter],
-        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
-        clock="virtual",
-        reproduce_on_failure=0,
-        deadlock_timeout=0.2,
-        timeout_per_run=1.0,
-    )
-    assert result.property_holds, result.explanation
+    _assert_timed_wait_expires(waiter, setter)
 
 
 def test_timed_condition_wait_expires_on_virtual_deadline() -> None:
@@ -664,16 +671,7 @@ def test_timed_condition_wait_expires_on_virtual_deadline() -> None:
         with s.cond:
             s.cond.notify()
 
-    result = frontrun.explore(
-        setup=_TimedWaitState,
-        workers=[waiter, notifier],
-        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
-        clock="virtual",
-        reproduce_on_failure=0,
-        deadlock_timeout=0.2,
-        timeout_per_run=1.0,
-    )
-    assert result.property_holds, result.explanation
+    _assert_timed_wait_expires(waiter, notifier)
 
 
 def test_timed_queue_get_expires_on_virtual_deadline() -> None:
@@ -689,16 +687,7 @@ def test_timed_queue_get_expires_on_virtual_deadline() -> None:
         time.sleep(1.0)
         s.q.put("x")
 
-    result = frontrun.explore(
-        setup=_TimedWaitState,
-        workers=[consumer, producer],
-        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
-        clock="virtual",
-        reproduce_on_failure=0,
-        deadlock_timeout=0.2,
-        timeout_per_run=1.0,
-    )
-    assert result.property_holds, result.explanation
+    _assert_timed_wait_expires(consumer, producer)
 
 
 def test_timed_queue_put_expires_on_virtual_deadline() -> None:
@@ -714,16 +703,7 @@ def test_timed_queue_put_expires_on_virtual_deadline() -> None:
         time.sleep(1.0)
         s.full_q.get()
 
-    result = frontrun.explore(
-        setup=_TimedWaitState,
-        workers=[producer, consumer],
-        invariant=lambda s: s.timed_out and s.waited_virtual >= 0.05,
-        clock="virtual",
-        reproduce_on_failure=0,
-        deadlock_timeout=0.2,
-        timeout_per_run=1.0,
-    )
-    assert result.property_holds, result.explanation
+    _assert_timed_wait_expires(producer, consumer)
 
 
 # ---------------------------------------------------------------------------
