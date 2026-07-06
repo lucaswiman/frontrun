@@ -302,7 +302,7 @@ class CooperativeLock:
             result = self._lock.acquire(blocking=blocking, timeout=timeout if timeout >= 0 else -1)
             return result
 
-        if not blocking:
+        if not blocking or timeout == 0:
             result = self._lock.acquire(blocking=False)
             if result:
                 self._set_owner_and_report("lock_acquire")
@@ -512,7 +512,7 @@ class CooperativeRLock:
                 self._acquired_during_dpor_machinery = True
             return result
 
-        if not blocking:
+        if not blocking or timeout == 0:
             if self._lock.acquire(blocking=False):
                 self._owner = me
                 self._count = 1
@@ -757,15 +757,16 @@ class CooperativeSemaphore:
 
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
         # Fast path: try to decrement counter
+        is_trylock = (not blocking) or timeout == 0
         if self._try_acquire():
             self._report("lock_acquire")
-            if not blocking:
+            if is_trylock:
                 # Mark as a trylock so DPOR release backtracking explores
                 # the ordering where the attempt fails (see CooperativeLock).
                 self._report("lock_attempt_ok")
             return True
 
-        if not blocking:
+        if is_trylock:
             # A failed trylock is observable behavior; make it visible to
             # the DPOR engine (see CooperativeLock.acquire).
             self._report("lock_attempt_fail")
