@@ -16,6 +16,13 @@ from __future__ import annotations
 
 import asyncio
 
+from frontrun._async_autopause import wrap_auto_paused_tasks
+from frontrun.async_dpor import (
+    _ReplayAsyncScheduler,
+    _patch_asyncio_event,
+    _reset_async_lock_state,
+    _unpatch_asyncio_event,
+)
 from frontrun.cli import require_active
 
 
@@ -122,3 +129,37 @@ def test_lock_blocked_holder_counterexample_reproduces() -> None:
         f"lock-blocked counterexample must reproduce, "
         f"got {result.reproduction_successes}/{result.reproduction_attempts}"
     )
+
+
+def test_event_blocked_replay_skips_drifted_waiter_slots() -> None:
+    """Replay must not stall when a drifted schedule points at an event waiter.
+
+    A cooperative Event.wait() consumes a scheduling point before it parks.
+    If the positional replay schedule has an extra slot for that same waiter,
+    the waiter is now blocked inside the real event wait and cannot consume it.
+    Replay should skip to the setter instead of burning the deadlock timeout.
+    """
+
+    async def scenario() -> list[str]:
+        _patch_asyncio_event()
+        try:
+            event = asyncio.Event()
+            order: list[str] = []
+
+            async def waiter() -> None:
+                await event.wait()
+                order.append("waiter")
+
+            async def setter() -> None:
+                event.set()
+                order.append("setter")
+
+            scheduler = _ReplayAsyncScheduler([0, 0, 0, 1, 0], 2, deadlock_timeout=0.1)
+            await scheduler.run_all(wrap_auto_paused_tasks({0: waiter, 1: setter}, scheduler), timeout=0.5)
+            assert scheduler._error is None
+            return order
+        finally:
+            _unpatch_asyncio_event()
+            _reset_async_lock_state()
+
+    assert asyncio.run(scenario()) == ["setter", "waiter"]
