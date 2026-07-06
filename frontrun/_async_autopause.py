@@ -46,7 +46,11 @@ class _AutoPauseIterator:
                 return self._pause_iter.send(value)
             except StopIteration:
                 self._pause_iter = None
-                return self._inner.send(self._buffered_value)
+                yielded = self._inner.send(self._buffered_value)
+                on_task_yielded = getattr(self._scheduler, "on_task_yielded", None)
+                if on_task_yielded is not None:
+                    on_task_yielded(self._task_id)
+                return yielded
 
         if _in_scheduler_pause.get() > 0:
             return self._inner.send(value)
@@ -58,7 +62,11 @@ class _AutoPauseIterator:
             return next(cast(Generator[Any, Any, Any], self._pause_iter))
         except StopIteration:
             self._pause_iter = None
-            return self._inner.send(self._buffered_value)
+            yielded = self._inner.send(self._buffered_value)
+            on_task_yielded = getattr(self._scheduler, "on_task_yielded", None)
+            if on_task_yielded is not None:
+                on_task_yielded(self._task_id)
+            return yielded
 
     def _close_pause_iter(self) -> None:
         """Close the suspended pause coroutine, tolerating cancellation noise.

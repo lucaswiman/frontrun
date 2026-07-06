@@ -412,14 +412,16 @@ impl DporEngine {
         for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_io_vv) {
                 self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
-                self.pending_races.push(PendingRace {
-                    prev_path_id: prev_access.path_id,
-                    current_path_id,
-                    thread_id,
-                    race_object: Some(object_id),
-                    inline_skipped: false,
-                    is_attribute_race: is_real_race,
-                });
+                if is_real_race {
+                    self.pending_races.push(PendingRace {
+                        prev_path_id: prev_access.path_id,
+                        current_path_id,
+                        thread_id,
+                        race_object: Some(object_id),
+                        inline_skipped: false,
+                        is_attribute_race: true,
+                    });
+                }
             }
         }
 

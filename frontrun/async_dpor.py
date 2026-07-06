@@ -243,7 +243,28 @@ class _CooperativeAsyncLock:
         self._owner: int | None = None
 
     def locked(self) -> bool:
-        return self._lock.locked()
+        result = self._lock.locked()
+        self._report_state_access("read")
+        return result
+
+    def _state_key(self, scheduler: Any) -> int:
+        stable_ids = getattr(scheduler, "_stable_ids", None)
+        lock_id = stable_ids.get(self) if stable_ids is not None else id(self)
+        return _make_object_key(lock_id, "__lock_state__")
+
+    def _report_state_access(self, kind: str) -> None:
+        task_id = _task_id_var.get()
+        scheduler = _scheduler_var.get()
+        engine = getattr(scheduler, "engine", None)
+        if scheduler is None or engine is None or task_id is None or scheduler._error is not None:
+            return
+        report_task_access = getattr(scheduler, "report_task_access", None)
+        if report_task_access is not None:
+            report_task_access(task_id, self._state_key(scheduler), kind)
+            return
+        report_access = getattr(engine, "report_access", None)
+        if report_access is not None:
+            report_access(scheduler.execution, task_id, self._state_key(scheduler), kind)
 
     async def acquire(self) -> bool:
         task_id = _task_id_var.get()
@@ -259,10 +280,21 @@ class _CooperativeAsyncLock:
         # coroutine wrapper won't insert a redundant scheduling point
         # for the pause's own yields.
         scheduler = _scheduler_var.get()
-        if scheduler is not None and task_id is not None and _in_scheduler_pause.get() == 0:
+        needs_cross_resource_pause = bool(
+            scheduler is not None
+            and (getattr(scheduler, "_detect_sql", False) or getattr(scheduler, "_detect_redis", False))
+        )
+        already_holds_lock = bool(task_id is not None and _async_task_held_locks.get(task_id))
+        if (
+            scheduler is not None
+            and task_id is not None
+            and _in_scheduler_pause.get() == 0
+            and (self._lock.locked() or already_holds_lock or needs_cross_resource_pause)
+        ):
             await scheduler.pause(task_id, ("lock_acquire", id(self)))
 
-        if task_id is not None and graph is not None and self._lock.locked():
+        lock_was_held = self._lock.locked()
+        if task_id is not None and graph is not None and lock_was_held:
             lock_id = id(self)
             # Register: this task is waiting for this lock
             cycle = graph.add_waiting(task_id, lock_id)
@@ -319,6 +351,13 @@ class _CooperativeAsyncLock:
                     report_task_sync(task_id, "lock_acquire", lock_id)
                 else:
                     scheduler.engine.report_sync(scheduler.execution, task_id, "lock_acquire", lock_id)
+                self._report_state_access("weak_write")
+                if not already_holds_lock and not lock_was_held and _in_scheduler_pause.get() == 0:
+                    await scheduler.pause(task_id, ("lock_held", lock_id))
+                    on_task_yielded = getattr(scheduler, "on_task_yielded", None)
+                    if on_task_yielded is not None:
+                        on_task_yielded(task_id)
+                    await _real_asyncio_sleep(0)
 
         return result
 
@@ -340,6 +379,7 @@ class _CooperativeAsyncLock:
                     report_task_sync(task_id, "lock_release", lock_id)
                 else:
                     scheduler.engine.report_sync(scheduler.execution, task_id, "lock_release", lock_id)
+                self._report_state_access("weak_write")
             self._owner = None
         self._lock.release()
 
@@ -744,6 +784,7 @@ class AsyncDporScheduler(InterleavedLoop):
         self._clock_actor_id = clock_actor_id
         self._last_scheduled_path_id: int | None = None
         self._current_path_id: int | None = None
+        self._current_task_consumed = False
         self._active_path_ids: dict[int, int] = {}
         # task_id → virtual deadline for tasks parked in sleep_until().  No
         # async analogue of the sync _timed_waits exists: asyncio.Lock.acquire
@@ -802,10 +843,30 @@ class AsyncDporScheduler(InterleavedLoop):
     def _set_current_task(self, task_id: int | None) -> None:
         self._current_task = task_id
         self._current_path_id = self._last_scheduled_path_id if task_id is not None else None
+        self._current_task_consumed = False
 
     def _activate_current_task_path(self, task_id: int) -> None:
         if self._current_task == task_id and self._current_path_id is not None:
             self._active_path_ids[task_id] = self._current_path_id
+
+    def _notify_waiters_soon(self) -> None:
+        async def _notify() -> None:
+            async with self._condition:
+                self._condition.notify_all()
+
+        asyncio.get_running_loop().create_task(_notify())
+
+    def on_task_yielded(self, task_id: int) -> None:
+        if self._finished or self._error:
+            return
+        if self._current_task == task_id and self._current_task_consumed:
+            self._active_path_ids.pop(task_id, None)
+            next_task = self._schedule_next()
+            if next_task is not None:
+                self._set_current_task(next_task)
+            else:
+                self._current_task_consumed = False
+            self._notify_waiters_soon()
 
     def _advance_virtual_clock(self) -> None:
         """One clock-actor step: jump to the earliest deadline, wake sleepers."""
@@ -850,6 +911,7 @@ class AsyncDporScheduler(InterleavedLoop):
                     return
                 self._sleepers[task_id] = deadline
                 self.execution.block_thread(task_id)
+                self._active_path_ids.pop(task_id, None)
                 self._sync_clock_actor()
                 # Reschedule if we held the turn — or if nothing is engine-
                 # runnable anymore (e.g. every other task is parked on an
@@ -899,6 +961,7 @@ class AsyncDporScheduler(InterleavedLoop):
                     wake_sync_id(task_id),
                     self._current_path_id,
                 )
+                self._current_task_consumed = True
         finally:
             _in_scheduler_pause.set(depth)
 
@@ -918,6 +981,7 @@ class AsyncDporScheduler(InterleavedLoop):
             cur = self._current_task
             if cur != task_id and cur is not None and self.execution.runnable_threads():
                 return
+            self._active_path_ids.pop(task_id, None)
             next_task = self._schedule_next()
             if next_task is not None:
                 self._set_current_task(next_task)
@@ -943,6 +1007,7 @@ class AsyncDporScheduler(InterleavedLoop):
                     return
             if not (self._finished or self._error):
                 self._activate_current_task_path(task_id)
+                self._current_task_consumed = True
 
     def _maybe_confirm_exact_deadlock(self) -> None:
         """Arm a deferred exact-deadlock check (virtual clock only).
@@ -1080,23 +1145,11 @@ class AsyncDporScheduler(InterleavedLoop):
             # creates a write-write conflict that isn't ordered by the
             # lock's HB, causing spurious trace exploration (e.g. 4 traces
             # instead of 2 for two tasks with a single lock).
-            if self._detect_sql or self._detect_redis:
-                self.engine.report_access(
-                    self.execution,
-                    task_id,
-                    _SHARED_SYNC_ACQUIRE_KEY,
-                    "write",
-                )
+            already_holds_lock = isinstance(task_id, int) and bool(_async_task_held_locks.get(task_id))
+            if self._detect_sql or self._detect_redis or already_holds_lock:
+                self.report_task_access(task_id, _SHARED_SYNC_ACQUIRE_KEY, "write")
 
-        # Schedule next task.  If the engine returns None (no runnable
-        # threads), keep _current_task as the current task_id so the
-        # current task can continue.  Only set _finished when ALL tasks
-        # are done.
-        next_task = self._schedule_next()
-        if next_task is not None:
-            self._set_current_task(next_task)
-        # If next_task is None but there are alive tasks, keep current
-        # task so it can continue running to completion.
+        self._current_task_consumed = True
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         self._error = SchedulerTimeoutError(
@@ -1200,7 +1253,7 @@ class AsyncDporScheduler(InterleavedLoop):
         _in_scheduler_pause.set(depth + 1)
         try:
             # Yield to let any previously-notified tasks process their wakeups
-            await asyncio.sleep(0)
+            await _real_asyncio_sleep(0)
             await super().pause(task_id, marker)
         finally:
             _in_scheduler_pause.set(depth)
@@ -1538,6 +1591,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         self._pending_clock_advances = 0
         self._event_blocked: set[int] = set()
         self._current_task: int | None = None
+        self._current_task_consumed = False
         if schedule:
             first = schedule[0]
             if clock_actor_id is not None and first == clock_actor_id:
@@ -1601,6 +1655,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                 continue
             break
         self._current_task = next_actor
+        self._current_task_consumed = False
         if next_actor is None:
             self._finished = True
 
@@ -1701,7 +1756,19 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                     return
 
     def on_proceed(self, task_id: Any, marker: Any = None) -> None:
-        self._advance()
+        self._current_task_consumed = True
+
+    def _notify_waiters_soon(self) -> None:
+        async def _notify() -> None:
+            async with self._condition:
+                self._condition.notify_all()
+
+        asyncio.get_running_loop().create_task(_notify())
+
+    def on_task_yielded(self, task_id: int) -> None:
+        if self._current_task == task_id and self._current_task_consumed:
+            self._advance()
+            self._notify_waiters_soon()
 
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)
@@ -1720,7 +1787,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         depth = _in_scheduler_pause.get()
         _in_scheduler_pause.set(depth + 1)
         try:
-            await asyncio.sleep(0)
+            await _real_asyncio_sleep(0)
             await super().pause(task_id, marker)
         finally:
             _in_scheduler_pause.set(depth)
