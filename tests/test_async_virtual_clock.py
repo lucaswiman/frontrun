@@ -452,10 +452,14 @@ def test_async_event_set_clear_race_is_detected_without_waiters() -> None:
             self.event = asyncio.Event()
 
     async def clearer(s: State) -> None:
+        await asyncio.sleep(0)
         s.event.clear()
+        await asyncio.sleep(0)
 
     async def setter(s: State) -> None:
+        await asyncio.sleep(0)
         s.event.set()
+        await asyncio.sleep(0)
 
     result = asyncio.run(
         frontrun.explore(
@@ -466,6 +470,32 @@ def test_async_event_set_clear_race_is_detected_without_waiters() -> None:
         )
     )
     assert not result.property_holds, "Async DPOR missed the set/clear race on Event state"
+
+
+def test_async_post_await_writes_are_attributed_to_resumed_step() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.value = 0
+
+    async def write_one(s: State) -> None:
+        await asyncio.sleep(0)
+        s.value = 1
+        await asyncio.sleep(0)
+
+    async def write_two(s: State) -> None:
+        await asyncio.sleep(0)
+        s.value = 2
+        await asyncio.sleep(0)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[write_one, write_two],
+            invariant=lambda s: s.value == 2,
+            reproduce_on_failure=0,
+        )
+    )
+    assert not result.property_holds, "Async DPOR missed a write race after an await"
 
 
 def test_async_event_wait_with_virtual_sleeper_autojumps() -> None:
