@@ -523,7 +523,9 @@ class _CooperativeAsyncEvent:
                 if report_task_sync is not None:
                     report_task_sync(task_id, "lock_acquire", self._wake_sync_id(scheduler, task_id))
                 else:
-                    engine.report_sync(scheduler.execution, task_id, "lock_acquire", self._wake_sync_id(scheduler, task_id))
+                    engine.report_sync(
+                        scheduler.execution, task_id, "lock_acquire", self._wake_sync_id(scheduler, task_id)
+                    )
             return result
         finally:
             _in_scheduler_pause.set(depth)
@@ -547,7 +549,9 @@ class _CooperativeAsyncEvent:
                 if report_task_sync is not None:
                     report_task_sync(task_id, "lock_release", self._wake_sync_id(scheduler, waiter))
                 else:
-                    engine.report_sync(scheduler.execution, task_id, "lock_release", self._wake_sync_id(scheduler, waiter))
+                    engine.report_sync(
+                        scheduler.execution, task_id, "lock_release", self._wake_sync_id(scheduler, waiter)
+                    )
                 scheduler.execution.unblock_thread(waiter)
         self._event.set()
 
