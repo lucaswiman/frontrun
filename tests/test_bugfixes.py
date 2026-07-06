@@ -303,7 +303,7 @@ class TestTimeoutAccumulation:
 
         # Before fix: elapsed ~ 3.0 (3 threads x 1.0s each)
         # After fix: elapsed ~ 1.0 (global deadline) + grace period for abort
-        assert elapsed < 3.0, f"total time {elapsed:.1f}s should be <3.0s with timeout=1.0"
+        assert elapsed < 2.0, f"total time {elapsed:.1f}s should be <2.0s with timeout=1.0"
 
     @pytest.mark.intentionally_leaves_dangling_threads
     def test_dpor_total_timeout_is_bounded(self):
@@ -320,7 +320,7 @@ class TestTimeoutAccumulation:
         runner.run([hang, hang, hang], timeout=1.0)
         elapsed = time.monotonic() - start
 
-        assert elapsed < 3.0, f"total time {elapsed:.1f}s should be <3.0s with timeout=1.0"
+        assert elapsed < 2.0, f"total time {elapsed:.1f}s should be <2.0s with timeout=1.0"
 
 
 # ---------------------------------------------------------------------------
