@@ -103,7 +103,7 @@ from frontrun._virtual_clock import (
     unpatch_time,
     validate_clock_options,
 )
-from frontrun.async_scheduler import InterleavedLoop, _in_frontrun_timer, frontrun_wait_for
+from frontrun.async_scheduler import InterleavedLoop, SchedulerTimeoutError, _in_frontrun_timer, frontrun_wait_for
 from frontrun.common import (
     InterleavingResult,
     check_invariant,
@@ -650,6 +650,7 @@ class AsyncDporScheduler(InterleavedLoop):
         self._user_timers_pending = user_timers_pending
         self._deadlock_confirm_pending = False
         self._deadlock_confirm_task: asyncio.Task[None] | None = None
+        self._deadlock_confirm_progress: int | None = None
         # Virtual clock (ideas/virtual_clock.md), mirroring the sync
         # DporScheduler: an extra engine thread (the clock actor) whose steps
         # advance the clock to the earliest pending deadline.  "virtual" =
@@ -771,7 +772,7 @@ class AsyncDporScheduler(InterleavedLoop):
                     try:
                         await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                     except asyncio.TimeoutError:
-                        self._error = TimeoutError(
+                        self._error = SchedulerTimeoutError(
                             f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
                         )
                         self._condition.notify_all()
@@ -782,7 +783,7 @@ class AsyncDporScheduler(InterleavedLoop):
                     try:
                         await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                     except asyncio.TimeoutError:
-                        self._error = TimeoutError(
+                        self._error = SchedulerTimeoutError(
                             f"Deadlock: task {task_id} woke at t={deadline} but was never rescheduled"
                         )
                         self._condition.notify_all()
@@ -828,7 +829,9 @@ class AsyncDporScheduler(InterleavedLoop):
                 try:
                     await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                 except asyncio.TimeoutError:
-                    self._error = TimeoutError(f"Deadlock: task {task_id} woke from {reason} but was never scheduled")
+                    self._error = SchedulerTimeoutError(
+                        f"Deadlock: task {task_id} woke from {reason} but was never scheduled"
+                    )
                     self._condition.notify_all()
                     return
 
@@ -849,40 +852,50 @@ class AsyncDporScheduler(InterleavedLoop):
         if len(self._tasks_done) >= self._num_engine_tasks:
             return
         self._deadlock_confirm_pending = True
+        self._deadlock_confirm_progress = self._progress
         self._deadlock_confirm_task = asyncio.get_running_loop().create_task(self._confirm_exact_deadlock())
 
     async def _confirm_exact_deadlock(self) -> None:
         try:
-            for _ in range(2):
-                await _real_asyncio_sleep(0)
-            async with self._condition:
-                if self._error is not None or self._finished:
-                    return
-                if len(self._tasks_done) >= self._num_engine_tasks:
-                    return
-                if self.execution.runnable_threads():
-                    return
-                if self._has_pending_deadlines():
-                    return
-                checker = self._user_timers_pending
-                if checker is None or checker():
-                    # A pending user timer (e.g. a wall-clock asyncio.wait_for
-                    # around a blocked await) may still wake a parked task —
-                    # not a proven deadlock; leave it to the wall fallback.
-                    return
-                desc = (
-                    "all live tasks are blocked and no virtual-clock deadline is pending "
-                    f"(sleepers={sorted(self._sleepers)}, done={sorted(self._tasks_done)})"
-                )
-                self._error = DeadlockError(f"Deadlock detected by virtual clock: {desc}", desc)
-                # Wake tasks parked on cooperative events so they free-run to
-                # completion and run_all can raise the DeadlockError (tasks
-                # parked on cooperative locks unstick when their holders
-                # finish and force-release).
-                _wake_parked_async_event_waiters()
-                self._condition.notify_all()
+            snapshot = self._deadlock_confirm_progress
+            while True:
+                for _ in range(2):
+                    await _real_asyncio_sleep(0)
+                async with self._condition:
+                    if self._error is not None or self._finished:
+                        return
+                    if snapshot is not None and self._progress != snapshot:
+                        return
+                    if len(self._tasks_done) >= self._num_engine_tasks:
+                        return
+                    if self.execution.runnable_threads():
+                        return
+                    if self._has_pending_deadlines():
+                        return
+                    checker = self._user_timers_pending
+                    if checker is not None and checker():
+                        # A pending user timer (e.g. asyncio.wait_for) may
+                        # still wake a parked task. Recheck shortly after it
+                        # has a chance to fire instead of reporting a stale
+                        # exact deadlock or waiting for timeout_per_run.
+                        pass
+                    else:
+                        desc = (
+                            "all live tasks are blocked and no virtual-clock deadline is pending "
+                            f"(sleepers={sorted(self._sleepers)}, done={sorted(self._tasks_done)})"
+                        )
+                        self._error = DeadlockError(f"Deadlock detected by virtual clock: {desc}", desc)
+                        # Wake tasks parked on cooperative events so they
+                        # free-run to completion and run_all can raise the
+                        # DeadlockError (tasks parked on cooperative locks
+                        # unstick when their holders finish and force-release).
+                        _wake_parked_async_event_waiters()
+                        self._condition.notify_all()
+                        return
+                await _real_asyncio_sleep(min(0.01, max(0.001, self.deadlock_timeout / 10.0)))
         finally:
             self._deadlock_confirm_pending = False
+            self._deadlock_confirm_progress = None
 
     def _schedule_next(self) -> int | None:
         """Ask the DPOR engine which task to run next.
@@ -972,7 +985,7 @@ class AsyncDporScheduler(InterleavedLoop):
         # task so it can continue running to completion.
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
-        self._error = TimeoutError(
+        self._error = SchedulerTimeoutError(
             f"Deadlock: DPOR async scheduler wants task {self._current_task} "
             f"but task {task_id} is waiting at marker {marker!r}"
         )
@@ -1080,6 +1093,7 @@ class AsyncDporScheduler(InterleavedLoop):
 
     async def _mark_done(self, task_id: Any) -> None:
         """Mark a task as finished in both InterleavedLoop and the DPOR engine."""
+        self._progress += 1
         self.execution.finish_thread(task_id)
         # If this was the current task, schedule the next one
         async with self._condition:
@@ -1480,7 +1494,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                         try:
                             await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                         except asyncio.TimeoutError:
-                            self._error = TimeoutError(
+                            self._error = SchedulerTimeoutError(
                                 f"Replay deadlock: task {task_id} sleeping until t={deadline} was never woken"
                             )
                             self._condition.notify_all()
@@ -1538,7 +1552,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                 try:
                     await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                 except asyncio.TimeoutError:
-                    self._error = TimeoutError(
+                    self._error = SchedulerTimeoutError(
                         f"Replay deadlock: task {task_id} woke from {reason} but was never scheduled"
                     )
                     self._condition.notify_all()
@@ -1870,7 +1884,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                         await scheduler.run_all(task_funcs, timeout=timeout_per_run)  # type: ignore[arg-type]
                 except DeadlockError as e:
                     deadlock_error = e
-                except TimeoutError:
+                except SchedulerTimeoutError:
                     timed_out = True
                 except Exception as e:
                     # Task raised an exception (not deadlock/timeout).

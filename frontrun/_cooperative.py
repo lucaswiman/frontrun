@@ -772,44 +772,64 @@ class CooperativeSemaphore:
         scheduler, thread_id = ctx
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
+        deadline, _, clock = (
+            _timed_acquire_state(timeout, scheduler, thread_id) if timeout is not None else (None, None, None)
+        )
         if before_sync_retry is not None:
             assert after_sync_retry is not None
-            while True:
-                if scheduler._error:
-                    raise SchedulerAbort("scheduler aborted")
-                if scheduler._finished:
-                    return self._drain_until(_real_monotonic() + 1.0)
-                if not before_sync_retry(thread_id):
-                    return False
-                if self._try_acquire():
-                    self._report("lock_acquire")
+            try:
+                while True:
+                    if _timed_acquire_expired(deadline, clock):
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
+                        return False
+                    if scheduler._error:
+                        raise SchedulerAbort("scheduler aborted")
+                    if scheduler._finished:
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
+                        return self._drain_until(_real_monotonic() + 1.0)
+                    if not before_sync_retry(thread_id):
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
+                        return False
+                    if self._try_acquire():
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
+                        self._report("lock_acquire")
+                        after_sync_retry(thread_id)
+                        return True
+                    self._report("lock_wait")
                     after_sync_retry(thread_id)
-                    return True
-                self._report("lock_wait")
-                after_sync_retry(thread_id)
+            except BaseException:
+                _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
+                raise
 
         # Bytecode scheduling relies on re-probing after each scheduler
         # turn; reporting wait without retrying can wedge a waiter forever.
         self._report("lock_wait")
-        note_spin = _spin_note_hook(scheduler)
+        note_spin = _spin_note_hook(scheduler) if timeout is None else None
         try:
             while True:
+                if _timed_acquire_expired(deadline, clock):
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
+                    return False
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
                 if self._try_acquire():
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     self._report("lock_acquire")
                     return True
                 if scheduler._finished:
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     return self._drain_until(_real_monotonic() + 1.0)
                 if note_spin is not None:
                     # See CooperativeLock.acquire: flag the spin for the
                     # virtual-clock autojump, then re-probe.
                     note_spin(thread_id, self._object_id, True)
                     if self._try_acquire():
+                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         self._report("lock_acquire")
                         return True
                 scheduler.wait_for_turn(thread_id)
         finally:
+            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             if note_spin is not None:
                 note_spin(thread_id, self._object_id, False)
 
@@ -1040,6 +1060,7 @@ class CooperativeCondition:
         # Legacy counter kept for notify_all() and backward compat with
         # any code that reads _notify_count.
         self._notify_count = 0
+        self._object_id = id(self)
         # Fallback real condition for non-managed threads (no scheduler)
         self._real_cond = real_condition(real_lock())
 
@@ -1152,6 +1173,7 @@ class CooperativeCondition:
                     return served
 
             scheduler, thread_id = ctx
+            note_spin = _spin_note_hook(scheduler) if timeout is None else None
 
             # The spin-loop reads of _served below are intentionally
             # done WITHOUT holding self._lock.  This is safe because
@@ -1159,25 +1181,33 @@ class CooperativeCondition:
             # only cause one extra spin iteration, never a missed wakeup.
 
             deadline = _real_monotonic() + timeout if timeout is not None else math.inf
-            while my_ticket >= self._served:
-                if scheduler._error:
-                    raise SchedulerAbort("scheduler aborted")
-                if scheduler._finished:
-                    # When the scheduler is done, give notifications a
-                    # brief window to land (bounded by the remaining
-                    # user timeout, if any).  Matches the previous
-                    # per-branch behaviour: timeout case slept once for
-                    # min(0.01, remaining); no-timeout case polled for up
-                    # to 1s.  We unify with a bounded poll loop.
-                    end = _real_monotonic() + min(1.0, max(0.0, deadline - _real_monotonic()))
-                    while my_ticket >= self._served and _real_monotonic() < end:
-                        time.sleep(0.001)
-                    served = my_ticket < self._served
-                    return served
-                if _real_monotonic() >= deadline:
-                    served = False
-                    return False
-                scheduler.wait_for_turn(thread_id)
+            try:
+                while my_ticket >= self._served:
+                    if scheduler._error:
+                        raise SchedulerAbort("scheduler aborted")
+                    if scheduler._finished:
+                        # When the scheduler is done, give notifications a
+                        # brief window to land (bounded by the remaining
+                        # user timeout, if any).  Matches the previous
+                        # per-branch behaviour: timeout case slept once for
+                        # min(0.01, remaining); no-timeout case polled for up
+                        # to 1s.  We unify with a bounded poll loop.
+                        end = _real_monotonic() + min(1.0, max(0.0, deadline - _real_monotonic()))
+                        while my_ticket >= self._served and _real_monotonic() < end:
+                            time.sleep(0.001)
+                        served = my_ticket < self._served
+                        return served
+                    if _real_monotonic() >= deadline:
+                        served = False
+                        return False
+                    if note_spin is not None:
+                        note_spin(thread_id, self._object_id, True)
+                        if my_ticket < self._served:
+                            break
+                    scheduler.wait_for_turn(thread_id)
+            finally:
+                if note_spin is not None:
+                    note_spin(thread_id, self._object_id, False)
             served = True
             return True
         finally:
@@ -1255,6 +1285,7 @@ class CooperativeCondition:
         # wait queue.  _advance_served returns the number actually woken and,
         # separately, how many of those were unmanaged (real_cond) waiters.
         _, real_woken = self._advance_served(max(0, n))
+        _note_spin_release(self._object_id)
         # Wake the real condition ONLY for the unmanaged waiters whose tickets
         # were just served (no scheduler context — they block in
         # _real_cond.wait()).  Waking by the total served count would also wake
@@ -1268,6 +1299,7 @@ class CooperativeCondition:
         self._check_owned()
         # Wake every live waiter; cancelled tickets are skipped for free.
         self._advance_served(self._next_ticket - self._served)
+        _note_spin_release(self._object_id)
         with self._real_cond:
             self._real_cond.notify_all()
 
@@ -1291,11 +1323,14 @@ class CooperativeQueue:
 
     def __init__(self, maxsize: int = 0) -> None:
         self._queue = self._queue_factory(maxsize)
+        self._object_id = id(self)
 
     def get(self, block: bool = True, timeout: float | None = None) -> Any:
 
         try:
-            return self._queue.get(block=False)
+            item = self._queue.get(block=False)
+            _note_spin_release(self._object_id)
+            return item
         except queue.Empty:
             if not block:
                 raise
@@ -1306,23 +1341,39 @@ class CooperativeQueue:
 
         scheduler, thread_id = ctx
         deadline = _real_monotonic() + timeout if timeout is not None else math.inf
-        while True:
-            if scheduler._error:
-                raise SchedulerAbort("scheduler aborted")
-            try:
-                return self._queue.get(block=False)
-            except queue.Empty:
-                pass
-            if scheduler._finished:
-                return self._queue.get(block=True, timeout=1.0)
-            if _real_monotonic() >= deadline:
-                raise queue.Empty
-            scheduler.wait_for_turn(thread_id)
+        note_spin = _spin_note_hook(scheduler) if timeout is None else None
+        try:
+            while True:
+                if scheduler._error:
+                    raise SchedulerAbort("scheduler aborted")
+                try:
+                    item = self._queue.get(block=False)
+                    _note_spin_release(self._object_id)
+                    return item
+                except queue.Empty:
+                    pass
+                if scheduler._finished:
+                    return self._queue.get(block=True, timeout=1.0)
+                if _real_monotonic() >= deadline:
+                    raise queue.Empty
+                if note_spin is not None:
+                    note_spin(thread_id, self._object_id, True)
+                    try:
+                        item = self._queue.get(block=False)
+                        _note_spin_release(self._object_id)
+                        return item
+                    except queue.Empty:
+                        pass
+                scheduler.wait_for_turn(thread_id)
+        finally:
+            if note_spin is not None:
+                note_spin(thread_id, self._object_id, False)
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
 
         try:
             self._queue.put(item, block=False)
+            _note_spin_release(self._object_id)
             return
         except queue.Full:
             if not block:
@@ -1335,20 +1386,35 @@ class CooperativeQueue:
 
         scheduler, thread_id = ctx
         deadline = _real_monotonic() + timeout if timeout is not None else math.inf
-        while True:
-            if scheduler._error:
-                raise SchedulerAbort("scheduler aborted")
-            try:
-                self._queue.put(item, block=False)
-                return
-            except queue.Full:
-                pass
-            if scheduler._finished:
-                self._queue.put(item, block=True, timeout=1.0)
-                return
-            if _real_monotonic() >= deadline:
-                raise queue.Full
-            scheduler.wait_for_turn(thread_id)
+        note_spin = _spin_note_hook(scheduler) if timeout is None else None
+        try:
+            while True:
+                if scheduler._error:
+                    raise SchedulerAbort("scheduler aborted")
+                try:
+                    self._queue.put(item, block=False)
+                    _note_spin_release(self._object_id)
+                    return
+                except queue.Full:
+                    pass
+                if scheduler._finished:
+                    self._queue.put(item, block=True, timeout=1.0)
+                    _note_spin_release(self._object_id)
+                    return
+                if _real_monotonic() >= deadline:
+                    raise queue.Full
+                if note_spin is not None:
+                    note_spin(thread_id, self._object_id, True)
+                    try:
+                        self._queue.put(item, block=False)
+                        _note_spin_release(self._object_id)
+                        return
+                    except queue.Full:
+                        pass
+                scheduler.wait_for_turn(thread_id)
+        finally:
+            if note_spin is not None:
+                note_spin(thread_id, self._object_id, False)
 
     def qsize(self) -> int:
         return self._queue.qsize()

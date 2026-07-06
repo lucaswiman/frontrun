@@ -13,7 +13,7 @@ from frontrun._dpor_core import (
     wake_sync_id,
 )
 from frontrun._opcode_observer import anchor_label as _anchor_label
-from frontrun._virtual_clock import VirtualClock
+from frontrun._virtual_clock import VirtualClock, real_monotonic
 
 from ._shared import *
 from ._shared import _dpor_tls, _get_instructions, _process_opcode
@@ -68,11 +68,15 @@ class DporScheduler:
         # stays in its spin loop; the clock advance unblocks it in the engine
         # so it can observe the expired deadline and give up).
         self._timed_waits: dict[int, float] = {}
+        # thread_id → resource id for threads blocked in cooperative spin
+        # loops that do not have a richer DPOR sync event (Condition/Queue).
+        self._spin_waiters: dict[int, int] = {}
         # Replay only: clock-actor schedule entries reached before any
         # deadline was registered (schedule drift).  The owed advance is
         # performed at the next deadline registration instead of being lost
         # (losing it costs a full deadlock_timeout per reproduction attempt).
         self._pending_clock_advances = 0
+        self._exact_deadlock_candidate_at: float | None = None
         self.deadlock_timeout = deadlock_timeout
         self.trace_recorder = trace_recorder
         self._preload_bridge = preload_bridge
@@ -96,6 +100,8 @@ class DporScheduler:
         self._error: Exception | None = None
         self._threads_done: set[int] = set()
         self._current_thread: int | None = None
+        self._baseline_thread_keys = {id(t) for t in threading.enumerate() if t.is_alive()}
+        self._worker_thread_keys: set[int] = set()
 
         # Shadow stacks are per-thread (each thread only accesses its own),
         # stored in thread-local storage. This avoids cross-thread access
@@ -188,6 +194,27 @@ class DporScheduler:
     def _has_pending_deadlines(self) -> bool:
         return bool(self._sleepers or self._timed_waits)
 
+    def _condition_wait_timeout(self) -> float:
+        if self.virtual_clock is None or self._exact_deadlock_candidate_at is None:
+            return self.deadlock_timeout
+        remaining = 0.1 - (real_monotonic() - self._exact_deadlock_candidate_at)
+        return max(0.001, min(self.deadlock_timeout, remaining))
+
+    def register_worker_thread(self) -> None:
+        key = id(threading.current_thread())
+        with self._condition:
+            self._worker_thread_keys.add(key)
+
+    def unregister_worker_thread(self) -> None:
+        key = id(threading.current_thread())
+        with self._condition:
+            self._worker_thread_keys.discard(key)
+
+    def _has_live_external_threads(self) -> bool:
+        current = {id(t) for t in threading.enumerate() if t.is_alive()}
+        external = current - self._baseline_thread_keys - self._worker_thread_keys
+        return bool(external)
+
     def _sync_clock_actor_locked(self) -> None:
         """Keep the clock actor's enabledness in step with pending deadlines.
 
@@ -274,6 +301,30 @@ class DporScheduler:
             # it from every waiter set is equivalent to knowing the lock id.
             for waiters in self._lock_waiters.values():
                 waiters.discard(thread_id)
+            self._condition.notify_all()
+
+    def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool) -> None:
+        """Mark cooperative Condition/Queue polling as engine-blocked."""
+        with self._condition:
+            with self._engine_lock:
+                if waiting:
+                    self._spin_waiters[thread_id] = resource_id
+                    self.execution.block_thread(thread_id)
+                else:
+                    if self._spin_waiters.pop(thread_id, None) is not None:
+                        self.execution.unblock_thread(thread_id)
+                self._sync_clock_actor_locked()
+            self._condition.notify_all()
+
+    def note_spin_release(self, resource_id: int) -> None:
+        """Wake spin waiters for a cooperative resource that changed state."""
+        with self._condition:
+            with self._engine_lock:
+                for tid, res in list(self._spin_waiters.items()):
+                    if res == resource_id:
+                        del self._spin_waiters[tid]
+                        self.execution.unblock_thread(tid)
+                self._sync_clock_actor_locked()
             self._condition.notify_all()
 
     def sleep_until(self, thread_id: int, deadline: float) -> None:
@@ -395,6 +446,7 @@ class DporScheduler:
                         # pending — enable the clock actor so its advance
                         # step is the (only) schedulable transition.
                         self.execution.unblock_thread(self._clock_actor_id)
+                        self._exact_deadlock_candidate_at = None
                         continue
                     self._last_scheduled_path_id = None
                     if (
@@ -403,17 +455,27 @@ class DporScheduler:
                         and not self._finished
                         and len(self._threads_done) < self.num_threads
                     ):
+                        if self._has_live_external_threads():
+                            self._exact_deadlock_candidate_at = None
+                            return None
+                        if self._exact_deadlock_candidate_at is None:
+                            self._exact_deadlock_candidate_at = real_monotonic()
+                            return None
+                        if real_monotonic() - self._exact_deadlock_candidate_at < 0.1:
+                            return None
                         # Exact deadlock: every live thread is blocked and no
                         # deadline is pending, so no transition can ever
                         # become enabled.  Report it now instead of via the
                         # wall-clock fallback timeout.
                         desc = (
                             "all live threads are blocked and no virtual-clock deadline is pending "
-                            f"(sleepers={sorted(self._sleepers)}, done={sorted(self._threads_done)})"
+                            f"(sleepers={sorted(self._sleepers)}, spin_waiters={sorted(self._spin_waiters)}, "
+                            f"done={sorted(self._threads_done)})"
                         )
                         self._error = DeadlockError(f"Deadlock detected by virtual clock: {desc}", desc)
                     return None
 
+                self._exact_deadlock_candidate_at = None
                 scheduled = self.engine.schedule(self.execution)
                 # Snapshot path position under engine_lock. On free-threaded
                 # Python, another thread may call schedule() concurrently
@@ -458,7 +520,14 @@ class DporScheduler:
                         self._condition.notify_all()
                         return True
 
-                    if not self._condition.wait(timeout=self.deadlock_timeout):
+                    if not self._condition.wait(timeout=self._condition_wait_timeout()):
+                        if self.virtual_clock is not None and self._current_thread is None:
+                            next_thread = self._schedule_next()
+                            self._current_thread = next_thread
+                            if next_thread is None and len(self._threads_done) >= self.num_threads:
+                                self._finished = True
+                            self._condition.notify_all()
+                            continue
                         if self._current_thread in self._threads_done:
                             next_thread = self._schedule_next()
                             self._current_thread = next_thread
@@ -802,6 +871,7 @@ class DporScheduler:
                     if self.virtual_clock is not None:
                         self._sleepers.pop(thread_id, None)
                         self._timed_waits.pop(thread_id, None)
+                        self._spin_waiters.pop(thread_id, None)
                         self._sync_clock_actor_locked()
                     if self._clock_actor_id is not None and len(self._threads_done) >= self.num_threads:
                         self.execution.unblock_thread(self._clock_actor_id)
@@ -1499,6 +1569,18 @@ class _IOAnchoredReplayScheduler(DporScheduler):
             active = [t for t in range(self.num_threads) if t not in self._threads_done]
             return active[0] if active else None
         return self._io_schedule[self._io_index][0]
+
+    def _replay_sleep_self_wake(self, thread_id: int) -> bool:
+        if self.virtual_clock is None:
+            return False
+        deadline = self._sleepers.get(thread_id)
+        if deadline is None:
+            return False
+        if self._current_thread == thread_id:
+            self._replay_advance_clock_to(deadline)
+            self._condition.notify_all()
+            return True
+        return False
 
     def wait_for_turn(self, thread_id: int) -> bool:
         return self._wait_for_turn(thread_id)

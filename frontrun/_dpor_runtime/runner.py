@@ -132,6 +132,7 @@ class DporBytecodeRunner:
     def _setup_dpor_tls(self, thread_id: int) -> None:
         """Set up both shared cooperative TLS and DPOR-specific TLS."""
         scheduler = self.scheduler
+        scheduler.register_worker_thread()
         engine = scheduler.engine
         execution = scheduler.execution
         engine_lock = scheduler._engine_lock
@@ -452,6 +453,7 @@ class DporBytecodeRunner:
                 uninstall_thread_opcode_trace(handle)
             self._teardown_dpor_tls()
             self.scheduler.mark_done(thread_id)
+            self.scheduler.unregister_worker_thread()
 
     def _run_thread(
         self,

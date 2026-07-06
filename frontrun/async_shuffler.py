@@ -71,7 +71,7 @@ from frontrun.async_dpor import (
     patch_sql_async,
     unpatch_sql_async,
 )
-from frontrun.async_scheduler import InterleavedLoop
+from frontrun.async_scheduler import InterleavedLoop, SchedulerTimeoutError
 from frontrun.common import (
     InterleavingResult,
     check_invariant,
@@ -163,8 +163,9 @@ class AwaitScheduler(InterleavedLoop):
                             self._condition.notify_all()
                             continue
                         snapshot = (self._progress, self._index, len(self._tasks_done))
+                        quiescence_slice = min(_QUIESCENCE_SLICE, max(0.001, self.deadlock_timeout / 2.0))
                         try:
-                            await asyncio.wait_for(self._condition.wait(), timeout=_QUIESCENCE_SLICE)
+                            await asyncio.wait_for(self._condition.wait(), timeout=quiescence_slice)
                         except asyncio.TimeoutError:
                             if (self._progress, self._index, len(self._tasks_done)) == snapshot:
                                 # Quiescent: the remaining tasks are parked on
@@ -177,7 +178,7 @@ class AwaitScheduler(InterleavedLoop):
                                 self._condition.notify_all()
                                 continue
                             if _real_monotonic() - wait_started > self.deadlock_timeout:
-                                self._error = TimeoutError(
+                                self._error = SchedulerTimeoutError(
                                     f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
                                 )
                                 self._condition.notify_all()
@@ -222,7 +223,7 @@ class AwaitScheduler(InterleavedLoop):
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         needed = self.schedule[self._index] if self._index < len(self.schedule) else "?"
-        self._error = TimeoutError(
+        self._error = SchedulerTimeoutError(
             f"Deadlock: schedule wants task {needed} at index {self._index}/{len(self.schedule)}"
         )
         self._condition.notify_all()
@@ -351,7 +352,7 @@ class AsyncShuffler:
                 # skip as inconclusive (slow-but-correct runs look identical).
                 detect_external_deadlock=True,
             )
-        except TimeoutError:
+        except SchedulerTimeoutError:
             # A timeout (overall wall-clock or the scheduler's own
             # deadlock-timeout, which run_all now re-raises — finding F1)
             # means tasks were cancelled mid-flight, so the state is partial.

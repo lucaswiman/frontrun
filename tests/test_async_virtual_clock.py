@@ -244,17 +244,19 @@ def test_async_wait_for_lock_timeout_is_not_scored_as_deadlock() -> None:
     class State:
         def __init__(self) -> None:
             self.lock = asyncio.Lock()
+            self.holder_has_lock = asyncio.Event()
             self.release = asyncio.Event()
             self.timed_out = False
             self.holder_done = False
 
     async def holder(s: State) -> None:
         async with s.lock:
+            s.holder_has_lock.set()
             await s.release.wait()
         s.holder_done = True
 
     async def waiter(s: State) -> None:
-        await asyncio.sleep(0)
+        await s.holder_has_lock.wait()
         try:
             await asyncio.wait_for(s.lock.acquire(), timeout=0.05)
         except (TimeoutError, asyncio.TimeoutError):
