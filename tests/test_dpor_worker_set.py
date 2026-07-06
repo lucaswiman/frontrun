@@ -89,6 +89,7 @@ def test_on_timeout_called_with_alive_workers() -> None:
 
     def slow() -> None:
         release.wait(timeout=5.0)
+        time.sleep(0.05)
 
     def fast() -> None:
         pass
@@ -104,6 +105,7 @@ def test_on_timeout_called_with_alive_workers() -> None:
     )
 
     assert len(timed_out) == 1
+    assert not timed_out[0].is_alive()
 
 
 def test_threads_exposed_for_inspection() -> None:
