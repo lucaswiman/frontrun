@@ -16,13 +16,13 @@ import threading
 from typing import Any
 
 import pytest
-from frontrun._dpor import PyDporEngine
 
 import frontrun
 from frontrun._deadlock import SchedulerAbort
+from frontrun._dpor import PyDporEngine
 from frontrun._dpor_runtime.runner import DporBytecodeRunner
-from frontrun.dpor import DporScheduler
 from frontrun.common import InterleavingResult
+from frontrun.dpor import DporScheduler
 
 
 class _CountingCondition:
@@ -31,7 +31,7 @@ class _CountingCondition:
         self.wait_calls = 0
         self.notify_calls = 0
 
-    def __enter__(self) -> "_CountingCondition":
+    def __enter__(self) -> _CountingCondition:
         self._lock.acquire()
         return self
 
@@ -71,6 +71,7 @@ def test_dpor_report_and_wait_reschedules_done_current_without_timeout() -> None
         _report_and_wait = DporScheduler._report_and_wait
         report_and_wait = DporScheduler.report_and_wait
         _condition_wait_timeout = DporScheduler._condition_wait_timeout
+        _reschedule_done_current_unlocked = DporScheduler._reschedule_done_current_unlocked
         _flush_other_pending_io_for_current_io_unlocked = DporScheduler._flush_other_pending_io_for_current_io_unlocked
         _flush_pending_io_for_unlocked = DporScheduler._flush_pending_io_for_unlocked
 

@@ -1272,6 +1272,36 @@ def test_report_or_buffer_captures_pending_row_locks() -> None:
         _io_tls._pending_row_locks = []
 
 
+def test_for_update_pyformat_dict_resolves_sqlalchemy_named_bind() -> None:
+    """SQLAlchemy may pass ``:name`` binds through psycopg2's pyformat cursor path."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()
+    set_dpor_scheduler(object())
+    set_dpor_thread_id(0)
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._pending_row_locks = []
+    try:
+        _report_sql_access(
+            "SELECT value FROM maz_trace_test WHERE id = :id FOR UPDATE",
+            {"id": "row1"},
+            paramstyle="pyformat",
+        )
+        assert "sql:maz_trace_test:(('id', 'row1'))" in _io_tls._pending_row_locks
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        clear_sql_metadata()
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _io_tls._pending_row_locks = []
+
+
 def test_report_or_buffer_no_capture_outside_tx() -> None:
     """_report_or_buffer with force_immediate=True does NOT track row locks outside a tx.
 
