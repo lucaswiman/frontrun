@@ -83,11 +83,13 @@ from frontrun._tracing import set_active_trace_filter as _set_active_trace_filte
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun._virtual_clock import (
     ClockMode,
+    DeadlineCoordinator,
     VirtualClock,
     clock_scope,
     patch_time,
     unpatch_time,
     validate_clock_options,
+    warn_if_captured_time_reference,
 )
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import (
@@ -98,6 +100,7 @@ from frontrun.common import (
 
 # Type variable for the shared state passed between setup and thread functions
 T = TypeVar("T")
+_TIMED_WAIT_TOKEN = "timed_wait"
 
 
 class OpcodeScheduler:
@@ -129,6 +132,7 @@ class OpcodeScheduler:
         trace_recorder: TraceRecorder | None = None,
         virtual_clock: VirtualClock | None = None,
         clock_mode: str = "real",
+        clock_diagnostics: bool = False,
     ):
         self.schedule = list(schedule)  # mutable copy for dynamic extension
         self.num_threads = num_threads
@@ -142,6 +146,8 @@ class OpcodeScheduler:
         #   to the earliest deadline (see sleep_until).
         self.virtual_clock = virtual_clock
         self.clock_mode = clock_mode
+        self._clock_diagnostics = clock_diagnostics
+        self._deadlines = DeadlineCoordinator()
         self._sleepers: dict[int, float] = {}
         self._timed_waits: dict[int, float] = {}
         # thread_id → resource id for threads spinning on an *untimed*
@@ -237,8 +243,9 @@ class OpcodeScheduler:
                     # other live thread is deadline-blocked: nothing can
                     # release the lock before time passes, so advance to the
                     # earliest pending deadline (which may be our own).
-                    deadlines = list(self._sleepers.values()) + list(self._timed_waits.values())
-                    self._advance_clock_to(min(deadlines))
+                    deadline = self._deadlines.next_deadline()
+                    if deadline is not None:
+                        self._advance_clock_to(deadline)
 
                 if scheduled_tid == thread_id:
                     self._index += 1
@@ -268,6 +275,7 @@ class OpcodeScheduler:
             self._threads_done.add(thread_id)
             self._sleepers.pop(thread_id, None)
             self._timed_waits.pop(thread_id, None)
+            self._deadlines.cancel(thread_id)
             self._spin_waiters.pop(thread_id, None)
             self._condition.notify_all()
 
@@ -281,14 +289,11 @@ class OpcodeScheduler:
         clock = self.virtual_clock
         if clock is None:
             return
-        clock.advance_to(target)
-        now = clock.now()
-        for tid, dl in list(self._sleepers.items()):
-            if dl <= now:
-                del self._sleepers[tid]
-        for tid, dl in list(self._timed_waits.items()):
-            if dl <= now:
-                del self._timed_waits[tid]
+        for event in self._deadlines.advance_to(clock, target):
+            if event.kind == "sleep":
+                self._sleepers.pop(event.actor_id, None)
+            elif event.kind == "timeout":
+                self._timed_waits.pop(event.actor_id, None)
 
     def sleep_until(self, thread_id: int, deadline: float) -> None:
         """Block *thread_id* until the virtual clock reaches *deadline*.
@@ -299,6 +304,7 @@ class OpcodeScheduler:
         """
         with self._condition:
             self._sleepers[thread_id] = deadline
+            self._deadlines.add_sleep(thread_id, deadline, wake_id=None)
             self._condition.notify_all()
             try:
                 while thread_id in self._sleepers:
@@ -310,9 +316,9 @@ class OpcodeScheduler:
                         # Every live thread is asleep, in a timed wait, or
                         # spinning on a resource nothing can release before
                         # time passes: only the clock can move.
-                        deadlines = [self._sleepers[t] for t in alive if t in self._sleepers]
-                        deadlines += [self._timed_waits[t] for t in alive if t in self._timed_waits]
-                        self._advance_clock_to(min(deadlines))
+                        next_deadline = self._deadlines.next_deadline()
+                        if next_deadline is not None:
+                            self._advance_clock_to(next_deadline)
                         self._condition.notify_all()
                         continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
@@ -325,6 +331,7 @@ class OpcodeScheduler:
                         return
             finally:
                 self._sleepers.pop(thread_id, None)
+                self._deadlines.cancel_sleep(thread_id)
 
     def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool) -> None:
         """Flag *thread_id* as spinning on an untimed cooperative wait.
@@ -353,12 +360,14 @@ class OpcodeScheduler:
         """Register a virtual deadline for a timed lock acquire."""
         with self._condition:
             self._timed_waits[thread_id] = deadline
+            self._deadlines.add_timeout(thread_id, deadline, _TIMED_WAIT_TOKEN)
             self._condition.notify_all()
 
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""
         with self._condition:
             self._timed_waits.pop(thread_id, None)
+            self._deadlines.cancel(thread_id, _TIMED_WAIT_TOKEN)
             self._condition.notify_all()
 
     def clear_engine_block(self, thread_id: int) -> None:
@@ -489,6 +498,8 @@ class BytecodeShuffler:
             return tid  # type: ignore[no-any-return]
 
         def _on_opcode(code: Any, offset: int, frame: Any, tid: int) -> bool:
+            if scheduler._clock_diagnostics:
+                warn_if_captured_time_reference(frame)
             if recorder is not None:
                 recorder.record_from_opcode(tid, frame)
             scheduler.wait_for_turn(tid)
@@ -686,6 +697,7 @@ def run_with_schedule(
     patch_sleep: bool = True,
     clock: ClockMode = "real",
     _virtual_clock: VirtualClock | None = None,
+    clock_diagnostics: bool = False,
 ) -> T:
     """Run one interleaving and return the state object.
 
@@ -722,6 +734,7 @@ def run_with_schedule(
         trace_recorder=trace_recorder,
         virtual_clock=virtual_clock,
         clock_mode=clock,
+        clock_diagnostics=clock_diagnostics,
     )
     runner = BytecodeShuffler(scheduler, detect_io=detect_io)
 
@@ -777,6 +790,7 @@ def explore_random(
     serializable_invariant: Callable[[T], Any] | bool = False,
     error_on_any_race: bool = False,
     clock: ClockMode = "real",
+    clock_diagnostics: bool = False,
 ) -> InterleavingResult:
     """Search for interleavings that violate an invariant.
 
@@ -881,6 +895,7 @@ def explore_random(
                     patch_sleep=patch_sleep,
                     clock=clock,
                     _virtual_clock=attempt_clock,
+                    clock_diagnostics=clock_diagnostics,
                 )
             except DeadlockError as dl_err:
                 result.num_explored += 1
@@ -943,6 +958,7 @@ def explore_random(
                                 patch_sleep=patch_sleep,
                                 clock=clock,
                                 _virtual_clock=replay_clock,
+                                clock_diagnostics=clock_diagnostics,
                             )
                             with clock_scope(replay_clock):
                                 replay_failed, _ = check_invariant(invariant, replay_state)

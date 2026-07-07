@@ -50,6 +50,7 @@ def explore(
     execution: Execution = "thread",
     # Time control (both strategies, sync + async)
     clock: Clock = "real",
+    clock_diagnostics: bool = False,
     # DPOR-specific kwargs
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
@@ -148,6 +149,10 @@ def explore(
             (worker processes read real time) or ``serializable_invariant``
             (the sequential baseline runs outside the scheduler). See
             :doc:`/virtual_clock`.
+        clock_diagnostics: When using a virtual clock, warn when traced worker
+            frames hold references to real ``time.*`` functions captured before
+            frontrun patched the time module. Diagnostics do not change
+            scheduling behavior.
         max_attempts: Random schedule samples to try (random strategy only).
         max_ops: Maximum schedule length per attempt (random strategy only).
         seed: RNG seed for reproducibility (random strategy only).
@@ -214,6 +219,7 @@ def explore(
                 # processes read real time, so a non-default value is a
                 # correctness footgun rather than a silent no-op.
                 ("clock", clock != "real"),
+                ("clock_diagnostics", clock_diagnostics),
             )
             if is_set
         ]
@@ -266,6 +272,7 @@ def explore(
         "serializable_invariant": serializable_invariant,
         "error_on_any_race": error_on_any_race,
         "clock": clock,
+        "clock_diagnostics": clock_diagnostics,
         "max_attempts": max_attempts,
         "max_ops": max_ops,
         "seed": seed,

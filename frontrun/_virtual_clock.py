@@ -30,6 +30,7 @@ from __future__ import annotations
 import threading
 import time
 import warnings
+import datetime as _datetime
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -52,6 +53,17 @@ _real_perf_counter = time.perf_counter
 _real_time_ns = time.time_ns
 _real_monotonic_ns = time.monotonic_ns
 _real_perf_counter_ns = time.perf_counter_ns
+_real_datetime = _datetime.datetime
+_real_date = _datetime.date
+_REAL_TIME_FUNCTIONS = {
+    _real_time: "time.time",
+    _real_monotonic: "time.monotonic",
+    _real_perf_counter: "time.perf_counter",
+    _real_time_ns: "time.time_ns",
+    _real_monotonic_ns: "time.monotonic_ns",
+    _real_perf_counter_ns: "time.perf_counter_ns",
+}
+_warned_captured_refs: set[tuple[str, int, str, str]] = set()
 
 
 def real_monotonic() -> float:
@@ -88,6 +100,30 @@ def validate_clock_options(
                 "and clock reads would use real wall-clock time"
             )
     return mode
+
+
+def warn_if_captured_time_reference(frame: Any) -> None:
+    """Warn once when a frame holds a pre-patch real ``time.*`` function.
+
+    This is an opt-in diagnostic called by tracers.  It intentionally does
+    not rewrite the reference: function objects captured before frontrun's
+    patch scope cannot be safely swapped out in general.
+    """
+    for scope_name, mapping in (("local", frame.f_locals), ("global", frame.f_globals)):
+        for name, value in mapping.items():
+            label = next((candidate for func, candidate in _REAL_TIME_FUNCTIONS.items() if value is func), None)
+            if label is None:
+                continue
+            key = (frame.f_code.co_filename, frame.f_lineno, name, label)
+            if key in _warned_captured_refs:
+                continue
+            _warned_captured_refs.add(key)
+            warnings.warn(
+                f"virtual clock diagnostic: captured real {label} reference in {scope_name} {name!r}; "
+                f"call through the time module inside explored code instead",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 class VirtualClock:
@@ -173,10 +209,16 @@ class DeadlineCoordinator:
         for key in [key for key in self._deadlines if key[0] == actor_id]:
             del self._deadlines[key]
 
+    def cancel_sleep(self, actor_id: int) -> None:
+        self.cancel(actor_id, _SLEEP_TOKEN)
+
     def has(self, actor_id: int, token: object | None = None) -> bool:
         if token is not None:
             return (actor_id, token) in self._deadlines
         return any(key[0] == actor_id for key in self._deadlines)
+
+    def has_sleep(self, actor_id: int) -> bool:
+        return self.has(actor_id, _SLEEP_TOKEN)
 
     def deadline_for(self, actor_id: int, token: object | None = None) -> float | None:
         if token is not None:
@@ -184,6 +226,9 @@ class DeadlineCoordinator:
             return entry.deadline if entry is not None else None
         entries = [entry.deadline for key, entry in self._deadlines.items() if key[0] == actor_id]
         return min(entries) if entries else None
+
+    def sleep_deadline_for(self, actor_id: int) -> float | None:
+        return self.deadline_for(actor_id, _SLEEP_TOKEN)
 
     def actors(self) -> set[int]:
         return {actor_id for actor_id, _ in self._deadlines}
@@ -223,6 +268,31 @@ class DeadlineCoordinator:
             )
             for entry in due
         ]
+
+
+class _VirtualDateTime(_real_datetime):
+    @classmethod
+    def now(cls, tz: _datetime.tzinfo | None = None) -> "_VirtualDateTime":
+        clock = _active_virtual_clock()
+        if clock is None:
+            return _real_datetime.now(tz)  # type: ignore[return-value]
+        return _real_datetime.fromtimestamp(clock.now(), tz)  # type: ignore[return-value]
+
+    @classmethod
+    def utcnow(cls) -> "_VirtualDateTime":
+        clock = _active_virtual_clock()
+        if clock is None:
+            return _real_datetime.utcnow()  # type: ignore[return-value]
+        return _real_datetime.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)  # type: ignore[return-value]
+
+
+class _VirtualDate(_real_date):
+    @classmethod
+    def today(cls) -> "_VirtualDate":
+        clock = _active_virtual_clock()
+        if clock is None:
+            return _real_date.today()  # type: ignore[return-value]
+        return _real_datetime.fromtimestamp(clock.now()).date()  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +437,8 @@ def patch_time() -> None:
         time.time_ns = _virtual_time_ns
         time.monotonic_ns = _virtual_monotonic_ns
         time.perf_counter_ns = _virtual_perf_counter_ns
+        _datetime.datetime = _VirtualDateTime
+        _datetime.date = _VirtualDate
 
 
 def unpatch_time() -> None:
@@ -384,6 +456,8 @@ def unpatch_time() -> None:
         time.time_ns = _real_time_ns
         time.monotonic_ns = _real_monotonic_ns
         time.perf_counter_ns = _real_perf_counter_ns
+        _datetime.datetime = _real_datetime
+        _datetime.date = _real_date
 
 
 __all__ = [
@@ -399,4 +473,5 @@ __all__ = [
     "unpatch_time",
     "validate_clock",
     "validate_clock_options",
+    "warn_if_captured_time_reference",
 ]

@@ -696,31 +696,36 @@ def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
     class State:
         def __init__(self) -> None:
             self.condition = asyncio.Condition()
+            self.ready_event = asyncio.Event()
             self.ready = 0
             self.woken: list[str] = []
-            self.after_first_notify = 0
+            self.timed_out: list[str] = []
+            self.remaining_after_first_notify = -1
 
     async def waiter(name: str, s: State) -> None:
         async with s.condition:
             s.ready += 1
-            s.condition.notify_all()
-            await s.condition.wait()
-            s.woken.append(name)
+            if s.ready == 2:
+                s.ready_event.set()
+            try:
+                await asyncio.wait_for(s.condition.wait(), timeout=2.0)
+                s.woken.append(name)
+            except TimeoutError:
+                s.timed_out.append(name)
 
     async def notifier(s: State) -> None:
+        await s.ready_event.wait()
         async with s.condition:
-            await s.condition.wait_for(lambda: s.ready == 2)
             s.condition.notify(1)
-        await asyncio.sleep(0)
-        s.after_first_notify = len(s.woken)
-        async with s.condition:
-            s.condition.notify_all()
+            s.remaining_after_first_notify = len(getattr(s.condition, "_waiters"))
 
     result = asyncio.run(
         frontrun.explore(
             setup=State,
             workers=[lambda s: waiter("a", s), lambda s: waiter("b", s), notifier],
-            invariant=lambda s: s.after_first_notify == 1 and sorted(s.woken) == ["a", "b"],
+            invariant=lambda s: (
+                s.remaining_after_first_notify == 1 and len(s.woken) == 1 and len(s.timed_out) == 1
+            ),
             clock="virtual",
             reproduce_on_failure=0,
         )

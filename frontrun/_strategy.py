@@ -81,6 +81,7 @@ _DPOR_SYNC_KEYS: frozenset[str] = frozenset(
         "serializable_invariant",
         "error_on_any_race",
         "clock",
+        "clock_diagnostics",
     }
 )
 
@@ -105,6 +106,7 @@ _RANDOM_SYNC_KEYS: frozenset[str] = frozenset(
         "serializable_invariant",
         "error_on_any_race",
         "clock",
+        "clock_diagnostics",
     }
 )
 
@@ -181,6 +183,7 @@ _DPOR_ASYNC_KEYS: frozenset[str] = frozenset(
         "serializable_invariant",
         "error_on_any_race",
         "clock",
+        "clock_diagnostics",
     }
 )
 
@@ -197,6 +200,7 @@ _RANDOM_ASYNC_KEYS: frozenset[str] = frozenset(
         "error_on_any_race",
         "total_timeout",
         "clock",
+        "clock_diagnostics",
     }
 )
 

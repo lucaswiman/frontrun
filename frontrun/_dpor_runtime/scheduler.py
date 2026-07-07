@@ -13,13 +13,14 @@ from frontrun._dpor_core import (
     wake_sync_id,
 )
 from frontrun._opcode_observer import anchor_label as _anchor_label
-from frontrun._virtual_clock import VirtualClock, real_monotonic
+from frontrun._virtual_clock import DeadlineCoordinator, VirtualClock, real_monotonic
 
 from ._shared import *
 from ._shared import _dpor_tls, _get_instructions, _process_opcode
 from .preload_bridge import _PreloadBridge
 
 _SENTINEL = object()
+_TIMED_WAIT_TOKEN = "timed_wait"
 
 
 class DporScheduler:
@@ -48,6 +49,7 @@ class DporScheduler:
         virtual_clock: VirtualClock | None = None,
         clock_mode: str = "real",
         clock_actor_id: int | None = None,
+        clock_diagnostics: bool = False,
     ) -> None:
         self.engine = engine
         self.execution = execution
@@ -62,6 +64,8 @@ class DporScheduler:
         self.virtual_clock = virtual_clock
         self._clock_mode = clock_mode
         self._clock_actor_id = clock_actor_id
+        self._clock_diagnostics = clock_diagnostics
+        self._deadlines = DeadlineCoordinator()
         # thread_id → virtual deadline for threads blocked in sleep_until().
         self._sleepers: dict[int, float] = {}
         # thread_id → virtual deadline for timed lock acquires (the thread
@@ -192,7 +196,7 @@ class DporScheduler:
         return wake_sync_id(thread_id)
 
     def _has_pending_deadlines(self) -> bool:
-        return bool(self._sleepers or self._timed_waits)
+        return self._deadlines.has_pending()
 
     def _condition_wait_timeout(self) -> float:
         if self.virtual_clock is None or self._exact_deadlock_candidate_at is None:
@@ -250,33 +254,32 @@ class DporScheduler:
         clock = self.virtual_clock
         if clock is None:
             return
-        pending = list(self._sleepers.values()) + list(self._timed_waits.values())
-        if not pending:
+        due = self._deadlines.advance_to_next(clock)
+        if not due:
             # Spurious actor step (e.g. a stale wakeup-tree branch): re-block.
             self._sync_clock_actor_locked()
             return
-        clock.advance_to(min(pending))
-        now = clock.now()
-        for tid, dl in sorted(self._sleepers.items(), key=lambda kv: (kv[1], kv[0])):
-            if dl <= now:
-                del self._sleepers[tid]
+        for event in due:
+            tid = event.actor_id
+            if event.kind == "sleep":
+                self._sleepers.pop(tid, None)
                 self.execution.unblock_thread(tid)
                 self.engine.report_sync(
                     self.execution,
                     self._clock_actor_id,
                     "lock_release",
-                    self._wake_sync_id(tid),
+                    event.wake_id if event.wake_id is not None else self._wake_sync_id(tid),
                     self._last_scheduled_path_id,
                 )
-        # Timed-wait wakes deliberately carry no happens-before edge: the
-        # waiter re-reports lock_wait (re-blocking itself) before it can
-        # observe expiry, and the give-up path ends in clear_engine_block —
-        # its subsequent steps are ordered by the lock machinery itself, not
-        # by this advance.  Sleeper wakes (above) do need the edge because a
-        # sleeper's next step has no other synchronization with the advance.
-        for tid, dl in sorted(self._timed_waits.items(), key=lambda kv: (kv[1], kv[0])):
-            if dl <= now:
-                del self._timed_waits[tid]
+                continue
+            if event.kind == "timeout":
+                # Timed-wait wakes deliberately carry no happens-before edge:
+                # the waiter re-reports lock_wait (re-blocking itself) before
+                # it can observe expiry, and the give-up path ends in
+                # clear_engine_block. Sleeper wakes (above) need the edge
+                # because a sleeper's next step has no other synchronization
+                # with the advance.
+                self._timed_waits.pop(tid, None)
                 self.execution.unblock_thread(tid)
         self._sync_clock_actor_locked()
 
@@ -284,6 +287,7 @@ class DporScheduler:
         """Register a virtual deadline for a timed lock acquire."""
         with self._engine_lock:
             self._timed_waits[thread_id] = deadline
+            self._deadlines.add_timeout(thread_id, deadline, _TIMED_WAIT_TOKEN)
             self._sync_clock_actor_locked()
         if self._pending_clock_advances > 0:
             # Replay owed us an actor step (see _pending_clock_advances).
@@ -297,6 +301,7 @@ class DporScheduler:
         """Deregister a timed-acquire deadline (acquired or gave up)."""
         with self._engine_lock:
             self._timed_waits.pop(thread_id, None)
+            self._deadlines.cancel(thread_id, _TIMED_WAIT_TOKEN)
             self._sync_clock_actor_locked()
 
     def clear_engine_block(self, thread_id: int) -> None:
@@ -357,6 +362,7 @@ class DporScheduler:
                     return
                 with self._engine_lock:
                     self._sleepers[thread_id] = deadline
+                    self._deadlines.add_sleep(thread_id, deadline, self._wake_sync_id(thread_id))
                     self.execution.block_thread(thread_id)
                     self._sync_clock_actor_locked()
                 if self._pending_clock_advances > 0:
@@ -374,6 +380,7 @@ class DporScheduler:
                 def _abort_sleep() -> None:
                     with self._engine_lock:
                         self._sleepers.pop(thread_id, None)
+                        self._deadlines.cancel_sleep(thread_id)
                         self.execution.unblock_thread(thread_id)
                         self._sync_clock_actor_locked()
 
@@ -889,6 +896,7 @@ class DporScheduler:
                     if self.virtual_clock is not None:
                         self._sleepers.pop(thread_id, None)
                         self._timed_waits.pop(thread_id, None)
+                        self._deadlines.cancel(thread_id)
                         self._spin_waiters.pop(thread_id, None)
                         self._sync_clock_actor_locked()
                     if self._clock_actor_id is not None and len(self._threads_done) >= self.num_threads:
@@ -1095,17 +1103,14 @@ class DporScheduler:
         clock = self.virtual_clock
         if clock is None:
             return
-        pending = list(self._sleepers.values()) + list(self._timed_waits.values())
-        if not pending:
+        due = self._deadlines.advance_to_next(clock) if target is None else self._deadlines.advance_to(clock, target)
+        if not due:
             return
-        clock.advance_to(min(pending) if target is None else target)
-        now = clock.now()
-        for tid, dl in list(self._sleepers.items()):
-            if dl <= now:
-                del self._sleepers[tid]
-        for tid, dl in list(self._timed_waits.items()):
-            if dl <= now:
-                del self._timed_waits[tid]
+        for event in due:
+            if event.kind == "sleep":
+                self._sleepers.pop(event.actor_id, None)
+            elif event.kind == "timeout":
+                self._timed_waits.pop(event.actor_id, None)
 
     def _replay_sleep_self_wake(self, thread_id: int) -> bool:
         """Replay-only escape from ``sleep_until`` phase 1 (base: no-op).
