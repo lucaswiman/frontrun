@@ -1,27 +1,24 @@
 # Virtual Clock Transparency Follow-ups
 
-Last reviewed: 2026-07-06.
+Last reviewed: 2026-07-07.
 
-Status: not implemented. The v1 virtual clock is implemented in
-`frontrun.explore(clock="virtual"|"explored")`; this document covers follow-up
-work to make clock manipulation feel more transparent without weakening
-determinism or replayability.
+Status: phases 1-5 implemented. The remaining open item is Python
+cross-process virtual clocks, which stays exploratory until a real workload
+needs it.
 
 ## Summary
 
-The remaining improvements are achievable, but they are not one feature. They
-fall into three groups:
+The transparency follow-ups that fit frontrun's in-process white-box model are
+implemented:
 
-1. **Achievable and principled:** async timeout wrappers, async primitive
-   visibility, and a shared deadline abstraction.
-2. **Achievable with caveats:** `datetime` support and captured-reference
-   diagnostics.
-3. **Not a good fit for core frontrun:** arbitrary C-level sleeps and
-   fully-transparent pre-existing captured references.
+- a shared deadline coordinator;
+- virtual `asyncio.wait_for` / `asyncio.timeout` wrappers;
+- engine-visible async `Queue` and `Condition` waiters;
+- module-qualified `datetime` support;
+- opt-in captured `time.*` diagnostics via `clock_diagnostics=True`.
 
-The release-grade contract should stay narrow until these are implemented:
-virtual time covers scheduler-visible Python code, not every possible source of
-time in the process.
+The release-grade contract remains intentionally scoped: virtual time covers
+scheduler-visible Python code, not every possible source of time in the process.
 
 ## Goals
 
@@ -48,7 +45,7 @@ time in the process.
 
 ## Phase 1: Consolidate Deadline State
 
-Status: proposed. Complexity: medium. Priority: high for maintainability.
+Status: implemented. Complexity: medium. Priority: high for maintainability.
 
 Today the virtual-clock state is duplicated across sync DPOR, sync random,
 async DPOR, async random, and replay schedulers: sleepers, timed waits, spin
@@ -80,7 +77,7 @@ Acceptance tests:
 
 ## Phase 2: Virtual `asyncio.wait_for` and `asyncio.timeout`
 
-Status: proposed. Complexity: medium-high. Priority: high user value.
+Status: implemented. Complexity: medium-high. Priority: high user value.
 
 Current behavior is deliberately conservative: event-loop timers stay on the
 wall clock so frontrun's scheduler watchdogs do not fire when virtual time
@@ -127,7 +124,7 @@ Acceptance tests:
 
 ## Phase 3: Engine-visible Async Queue and Condition Waiters
 
-Status: proposed. Complexity: medium. Priority: medium.
+Status: implemented. Complexity: medium. Priority: medium.
 
 Async DPOR currently patches `asyncio.Lock` and `asyncio.Event`, but raw
 `asyncio.Queue`, `asyncio.Condition`, and bare futures are not engine-visible.
@@ -159,7 +156,7 @@ Acceptance tests:
 
 ## Phase 4: `datetime` Support
 
-Status: proposed. Complexity: medium. Priority: medium.
+Status: implemented. Complexity: medium. Priority: medium.
 
 Many TTL/rate-limit implementations use `datetime.datetime.now()` or
 `datetime.date.today()` instead of `time.monotonic()`. Supporting these is
@@ -188,7 +185,7 @@ Acceptance tests:
 
 ## Phase 5: Captured-reference Diagnostics
 
-Status: proposed. Complexity: low-medium. Priority: medium.
+Status: implemented. Complexity: low-medium. Priority: medium.
 
 Fully fixing pre-existing captured references is not generally possible, but
 frontrun can make the failure mode less surprising.
@@ -246,11 +243,11 @@ Acceptance tests:
 
 ## Release Guidance
 
-These follow-ups are valuable but not required for the current release if the
-release notes keep the scoped contract:
+The release notes should keep the scoped contract:
 
 - `clock="virtual"` and `clock="explored"` control scheduler-visible Python
   timing.
-- Async loop timers remain wall-clock.
-- Captured references, `datetime`, process workers, and C-level sleeps are
-  documented limitations until the relevant phases above land.
+- Raw async loop timers remain wall-clock; virtual async timeouts are provided
+  by patched `asyncio.wait_for` / `asyncio.timeout`.
+- Captured references, process workers, bare futures, and C-level sleeps remain
+  documented limitations.

@@ -356,7 +356,7 @@ if not result.ok:
 
 ### Virtual Clock: Timeout, Retry, and TTL Races
 
-Races involving timeouts, retries with backoff, TTL caches, and rate limiters depend on *when a timer fires*, which a wall-clock scheduler cannot control. Pass `clock="virtual"` and frontrun gives each execution a scheduler-owned virtual clock: `time.time()` / `time.monotonic()` / `time.perf_counter()` return virtual time in explored code, `time.sleep()` / `asyncio.sleep()` become zero-wall-time virtual deadlines, timed `Lock.acquire(timeout=...)` calls resolve deterministically, and the clock autojumps to the earliest pending deadline when nothing is runnable (the same model as Trio's autojump `MockClock`). Under DPOR (sync and async), deadlocks with no pending timer are reported exactly instead of via a wall-clock fallback.
+Races involving timeouts, retries with backoff, TTL caches, and rate limiters depend on *when a timer fires*, which a wall-clock scheduler cannot control. Pass `clock="virtual"` and frontrun gives each execution a scheduler-owned virtual clock: `time.time()` / `time.monotonic()` / `time.perf_counter()` and module-qualified `datetime` reads return virtual time in explored code, sleeps and async timeout wrappers become zero-wall-time virtual deadlines, timed `Lock.acquire(timeout=...)` calls resolve deterministically, and the clock autojumps to the earliest pending deadline when nothing is runnable (the same model as Trio's autojump `MockClock`). Under DPOR (sync and async), deadlocks with no pending timer are reported exactly instead of via a wall-clock fallback.
 
 `clock="explored"` goes further: the clock advance itself becomes a schedulable DPOR step (a synthetic "clock actor"), so "the retry fired exactly between your read and your write" is explored — and replayed — like any other interleaving:
 
@@ -385,7 +385,7 @@ result = frontrun.explore(
 assert not result.property_holds  # found: the timer fired inside the RMW window
 ```
 
-Works for sync and async workers with both `strategy="dpor"` and `strategy="random"`. Async loop timers (`asyncio.wait_for` deadlines) deliberately stay on the wall clock. See [Virtual clock](docs/virtual_clock.rst) for semantics and limitations.
+Works for sync and async workers with both `strategy="dpor"` and `strategy="random"`. Raw event-loop timers stay on the wall clock, but `asyncio.wait_for` and `asyncio.timeout` inside explored tasks use virtual deadlines. See [Virtual clock](docs/virtual_clock.rst) for semantics and limitations.
 
 ### C-Level I/O Interception
 

@@ -50,9 +50,11 @@ arbitrary epoch (1,000,000.0 seconds), owned by the scheduler:
 
 * **Clock reads are virtual.** ``time.time()``, ``time.monotonic()``,
   ``time.perf_counter()`` (and their ``_ns`` variants) return virtual time
-  inside explored code.  Patching is gated per thread/context: worker
-  threads and tasks, ``setup()``, and the ``invariant`` see virtual time;
-  unrelated threads (pytest machinery, background daemons) see real time.
+  inside explored code.  Module-qualified ``datetime.datetime.now()`` /
+  ``utcnow()`` and ``datetime.date.today()`` also read virtual time. Patching
+  is gated per thread/context: worker threads and tasks, ``setup()``, and
+  the ``invariant`` see virtual time; unrelated threads (pytest machinery,
+  background daemons) see real time.
 * **Sleeps are timed blocks.** ``time.sleep(d)`` / ``asyncio.sleep(d)``
   with ``d > 0`` register a deadline at ``now + d`` and block until the
   clock reaches it — in zero wall time.  ``sleep(0)`` remains a pure yield,
@@ -66,15 +68,17 @@ arbitrary epoch (1,000,000.0 seconds), owned by the scheduler:
   *earliest* pending deadline and wakes due sleepers.  This is the
   "autojump" model (prior art:
   ``trio.testing.MockClock(autojump_threshold=0)``).
+* **Async timeout wrappers are virtual.** Inside explored tasks,
+  ``asyncio.wait_for(awaitable, timeout=t)`` and ``asyncio.timeout(t)``
+  register virtual deadlines. The event loop's own timer heap still stays on
+  wall time; raw ``loop.call_later`` / ``call_at`` callbacks are not
+  virtualized.
 * **Deadlocks are detected exactly (sync and async DPOR).** All workers
   blocked with *no* pending deadline is a genuine deadlock; the DPOR
   schedulers report it immediately instead of via the wall-clock fallback
-  timeout.  The async scheduler additionally requires that no *user* loop
-  timer is pending (a wall-clock ``asyncio.wait_for`` may still wake a
-  parked task) and that every parked task is on a frontrun-managed
-  primitive — tasks parked on unmanaged awaitables (``asyncio.Queue``,
-  ``asyncio.Condition``, bare futures) fall back to the wall-clock
-  ``deadlock_timeout``, as do the random schedulers.
+  timeout.  Async DPOR manages ``Lock``, ``Event``, ``Queue`` and
+  ``Condition`` waiters. Bare futures and user-created loop timers remain
+  outside the exact model and keep the conservative wall-clock fallback.
 
 ``clock="explored"``: timer firings as interleaving choices
 -----------------------------------------------------------
@@ -145,45 +149,38 @@ Semantics and limitations
   and clock reads would use real wall-clock time.
 * ``time.time`` and ``time.monotonic`` return the *same* virtual value
   (there is one clock).
-* **Async loop timers stay on the wall clock.** ``loop.time()``,
-  ``loop.call_later``, and therefore ``asyncio.wait_for`` /
-  ``asyncio.timeout`` deadlines are not virtualised: the scheduler's own
-  deadlock-timeout timers share the event loop's timer heap, and
-  virtualising it would let a clock jump fire them spuriously.  A
-  ``wait_for`` with a short real timeout still works — it just measures
-  wall time, not virtual time.  (This is the "spike" outcome from the
-  proposal; wrapping ``wait_for`` over virtual deadlines is future work.)
+* **Raw async loop timers stay on the wall clock.** ``loop.time()``,
+  ``loop.call_later`` and ``loop.call_at`` are not virtualized: the
+  scheduler's own watchdog timers share the event loop's timer heap, and
+  virtualizing it would let a clock jump fire them spuriously. Use
+  ``asyncio.wait_for`` / ``asyncio.timeout`` inside explored tasks when you
+  want a virtual async timeout.
 * Sync timed waits on frontrun's cooperative primitives use virtual
   deadlines: ``Lock`` / ``RLock`` / ``Semaphore`` acquire timeouts,
   ``Event.wait(timeout=...)``, ``Condition.wait(timeout=...)`` /
   ``wait_for(..., timeout=...)``, and ``Queue.get`` / ``put`` timeouts.
-  Async timeout wrappers such as ``asyncio.wait_for`` remain wall-clock
-  timers (see above).  Untimed ``Event.wait()`` is fully supported, sync
-  and async (under DPOR the waiter blocks in the engine until ``set()``,
-  with a proper happens-before edge).  Async ``Queue`` / ``Condition``
-  waiters are not yet engine-visible: they behave correctly but a
-  deadlock through them is reported via the wall-clock fallback, not
-  exactly.
+  Async ``wait_for`` / ``timeout`` deadlines are virtual, and async DPOR
+  makes ``Event``, ``Queue`` and ``Condition`` waiters engine-visible with
+  wake happens-before edges.
 * An async ``Event.set()`` issued from outside the explored tasks (a
   loop callback or a foreign thread) is invisible to exact deadlock
   detection; if all tasks are otherwise blocked it may be reported as a
   deadlock.  Setters inside explored tasks — the normal case — are fully
   tracked.
 * **Captured references bypass the patch.** ``from time import monotonic``
-  (or storing ``time.monotonic`` in a local/default argument) captures the
-  real function before patching; such call sites keep reading wall-clock
-  time.  Call through the module (``time.monotonic()``) in code under
-  test.
+  or ``from datetime import datetime`` before exploration captures the real
+  object before patching; such call sites keep reading wall-clock time. Call
+  through the module (``time.monotonic()``, ``datetime.datetime.now()``) in
+  code under test. Set ``clock_diagnostics=True`` to warn when traced worker
+  frames hold captured real ``time.*`` functions.
 * ``strategy="random"`` with *async* workers cannot see tasks blocked on
   raw ``asyncio`` primitives (e.g. ``asyncio.Lock``); a quiescence
   heuristic advances the clock when nothing has progressed for a short
   interval.  Prefer ``strategy="dpor"`` for lock-heavy async code — it
   patches ``asyncio.Lock`` and needs no heuristic.
-* C-level sleeps (e.g. inside database drivers) are invisible to the
-  clock — the same boundary as the existing ``deadlock_timeout``
-  caveat for unmanaged C code.
-* ``datetime.datetime.now()`` is not patched; the supported surface is
-  ``time.time`` / ``time.monotonic`` / ``time.perf_counter`` (+ ``_ns``).
+* C-level clock reads and sleeps (including inside extension modules) are
+  outside the virtual clock unless a frontrun integration explicitly models
+  them.
 
 How it works
 ------------

@@ -9,11 +9,10 @@ Unreleased
 * **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
   now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
   workers with both DPOR and random strategies. Explored code reads scheduler
-  time, sleeps become zero-wall-time virtual deadlines, and ``clock="explored"``
-  makes timer firings schedulable. Sync cooperative timed waits now use virtual
-  deadlines; DPOR also keeps event state races, async post-await races, and
-  queue wakeups visible, avoids mislabeling wall-clock ``asyncio.wait_for``
-  timers as exact deadlocks, and rejects incompatible clock options. See
+  time (including module-qualified ``datetime``), sleeps and async timeout
+  wrappers become zero-wall-time virtual deadlines, and ``clock="explored"``
+  makes timer firings schedulable. DPOR also models cooperative timed waits,
+  async queue/condition wakeups, and captured-time diagnostics. See
   :doc:`virtual_clock`.
 
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
