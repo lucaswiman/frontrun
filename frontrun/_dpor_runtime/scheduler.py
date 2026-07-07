@@ -1189,9 +1189,8 @@ class DporScheduler:
         """Block until all *resource_ids* can be held by *thread_id*.
 
         If another thread holds a conflicting lock, waits on the condition
-        variable.  On timeout (the holder is likely blocked in C too), lets
-        the C call proceed — the ``lock_timeout`` PostgreSQL safety net
-        will handle it as a fast error rather than an indefinite hang.
+        variable.  On timeout, aborts the scheduled transition rather than
+        letting an unmodeled database call proceed.
 
         When a WaitForGraph is installed, registers waiting/holding edges for
         instant cycle-based deadlock detection.
