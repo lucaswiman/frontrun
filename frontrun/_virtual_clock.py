@@ -212,27 +212,6 @@ class DeadlineCoordinator:
     def cancel_sleep(self, actor_id: int) -> None:
         self.cancel(actor_id, _SLEEP_TOKEN)
 
-    def has(self, actor_id: int, token: object | None = None) -> bool:
-        if token is not None:
-            return (actor_id, token) in self._deadlines
-        return any(key[0] == actor_id for key in self._deadlines)
-
-    def has_sleep(self, actor_id: int) -> bool:
-        return self.has(actor_id, _SLEEP_TOKEN)
-
-    def deadline_for(self, actor_id: int, token: object | None = None) -> float | None:
-        if token is not None:
-            entry = self._deadlines.get((actor_id, token))
-            return entry.deadline if entry is not None else None
-        entries = [entry.deadline for key, entry in self._deadlines.items() if key[0] == actor_id]
-        return min(entries) if entries else None
-
-    def sleep_deadline_for(self, actor_id: int) -> float | None:
-        return self.deadline_for(actor_id, _SLEEP_TOKEN)
-
-    def actors(self) -> set[int]:
-        return {actor_id for actor_id, _ in self._deadlines}
-
     def has_pending(self) -> bool:
         return bool(self._deadlines)
 
@@ -270,25 +249,45 @@ class _VirtualDateTime(_real_datetime):
     @classmethod
     def now(cls, tz: _datetime.tzinfo | None = None) -> _VirtualDateTime:
         clock = _active_virtual_clock()
-        if clock is None:
-            return _real_datetime.now(tz)  # type: ignore[return-value]
-        return _real_datetime.fromtimestamp(clock.now(), tz)  # type: ignore[return-value]
+        value = _real_datetime.now(tz) if clock is None else _real_datetime.fromtimestamp(clock.now(), tz)
+        return cls(
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+            tzinfo=value.tzinfo,
+            fold=value.fold,
+        )
 
     @classmethod
     def utcnow(cls) -> _VirtualDateTime:
         clock = _active_virtual_clock()
-        if clock is None:
-            return _real_datetime.utcnow()  # type: ignore[return-value]
-        return _real_datetime.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)  # type: ignore[return-value]
+        value = (
+            _real_datetime.now(_datetime.timezone.utc).replace(tzinfo=None)
+            if clock is None
+            else _real_datetime.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
+        )
+        return cls(
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+            fold=value.fold,
+        )
 
 
 class _VirtualDate(_real_date):
     @classmethod
     def today(cls) -> _VirtualDate:
         clock = _active_virtual_clock()
-        if clock is None:
-            return _real_date.today()  # type: ignore[return-value]
-        return _real_datetime.fromtimestamp(clock.now()).date()  # type: ignore[return-value]
+        value = _real_date.today() if clock is None else _real_datetime.fromtimestamp(clock.now()).date()
+        return cls(value.year, value.month, value.day)
 
 
 # ---------------------------------------------------------------------------

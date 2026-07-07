@@ -119,7 +119,7 @@ def test_time_functions_restored_after_exploration() -> None:
 
 
 def test_time_functions_restored_after_worker_exception() -> None:
-    saved_monotonic = time.monotonic
+    saved = (time.monotonic, dt.datetime, dt.date)
 
     class State:
         pass
@@ -136,7 +136,7 @@ def test_time_functions_restored_after_worker_exception() -> None:
             clock="virtual",
             reproduce_on_failure=0,
         )
-    assert time.monotonic is saved_monotonic
+    assert (time.monotonic, dt.datetime, dt.date) == saved
 
 
 def test_invariant_sees_virtual_time() -> None:
@@ -246,8 +246,12 @@ class _DatetimeObserver:
     def __init__(self) -> None:
         self.start = dt.datetime.min
         self.end = dt.datetime.min
+        self.utc = dt.datetime.min
         self.aware = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
         self.today = dt.date.min
+        self.now_is_datetime = False
+        self.utc_is_datetime = False
+        self.today_is_date = False
 
 
 def test_datetime_now_advances_with_virtual_sleep() -> None:
@@ -255,11 +259,27 @@ def test_datetime_now_advances_with_virtual_sleep() -> None:
         s.start = dt.datetime.now()
         time.sleep(2.5)
         s.end = dt.datetime.now()
+        s.now_is_datetime = isinstance(s.end, dt.datetime)
 
     result = frontrun.explore(
         setup=_DatetimeObserver,
         workers=[worker],
-        invariant=lambda s: (s.end - s.start).total_seconds() >= 2.5,
+        invariant=lambda s: s.now_is_datetime and (s.end - s.start).total_seconds() >= 2.5,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_datetime_utcnow_reads_virtual_time() -> None:
+    def worker(s: _DatetimeObserver) -> None:
+        s.utc = dt.datetime.utcnow()
+        s.utc_is_datetime = isinstance(s.utc, dt.datetime)
+
+    result = frontrun.explore(
+        setup=_DatetimeObserver,
+        workers=[worker],
+        invariant=lambda s: s.utc_is_datetime and s.utc.timestamp() == pytest.approx(VIRTUAL_EPOCH),
         clock="virtual",
         reproduce_on_failure=0,
     )
@@ -285,11 +305,12 @@ def test_date_today_reads_virtual_time() -> None:
 
     def worker(s: _DatetimeObserver) -> None:
         s.today = dt.date.today()
+        s.today_is_date = isinstance(s.today, dt.date)
 
     result = frontrun.explore(
         setup=_DatetimeObserver,
         workers=[worker],
-        invariant=lambda s: s.today == expected,
+        invariant=lambda s: s.today_is_date and s.today == expected,
         clock="virtual",
         reproduce_on_failure=0,
     )

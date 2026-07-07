@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 import frontrun
 from frontrun.common import InterleavingResult
 
@@ -254,7 +256,7 @@ def test_async_random_explored_clock_can_fire_timer_early() -> None:
     _assert_invariant_failure(result, "expected delayed writer")
 
 
-def test_async_wait_for_stays_on_wall_clock() -> None:
+def test_async_wait_for_uses_virtual_deadline() -> None:
     """``asyncio.wait_for`` uses a virtual deadline inside explored tasks."""
 
     class State:
@@ -285,15 +287,17 @@ def test_async_wait_for_stays_on_wall_clock() -> None:
     assert wall_elapsed < 4.0, f"virtual wait_for took {wall_elapsed:.1f}s wall time"
 
 
-def test_async_wait_for_event_timeout_is_explored_before_setter() -> None:
+def test_async_wait_for_event_timeout_is_explored_before_delayed_setter() -> None:
     class State:
         def __init__(self) -> None:
             self.event = asyncio.Event()
             self.timed_out = False
+            self.completed = False
 
     async def waiter(s: State) -> None:
         try:
-            await asyncio.wait_for(s.event.wait(), timeout=0.5)
+            await asyncio.wait_for(s.event.wait(), timeout=1.0)
+            s.completed = True
         except (TimeoutError, asyncio.TimeoutError):
             s.timed_out = True
 
@@ -314,6 +318,67 @@ def test_async_wait_for_event_timeout_is_explored_before_setter() -> None:
         )
     )
     _assert_invariant_failure(result, "virtual wait_for timeout")
+
+
+def test_async_wait_for_removes_timeout_deadline_after_success() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.completed = False
+            self.elapsed = 0.0
+
+    async def waiter(s: State) -> None:
+        start = time.monotonic()
+        await asyncio.wait_for(s.event.wait(), timeout=5.0)
+        await asyncio.sleep(10.0)
+        s.completed = True
+        s.elapsed = time.monotonic() - start
+
+    async def setter(s: State) -> None:
+        await asyncio.sleep(1.0)
+        s.event.set()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, setter],
+            invariant=lambda s: s.completed and s.elapsed >= 11.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_wait_for_bare_future_uses_virtual_deadline() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(fut, timeout=1.0)
+        except (TimeoutError, asyncio.TimeoutError):
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.elapsed >= 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+            timeout_per_run=1.0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 1.0, f"bare-future wait_for burned wall time ({wall_elapsed:.1f}s)"
 
 
 def test_async_wait_for_cancels_inner_task_once() -> None:
@@ -347,6 +412,36 @@ def test_async_wait_for_cancels_inner_task_once() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_async_wait_for_returns_inner_value_when_cancel_is_suppressed() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.cancelled = False
+            self.result = ""
+
+    async def suppresses_cancel(s: State) -> str:
+        try:
+            await asyncio.sleep(10.0)
+        except asyncio.CancelledError:
+            s.cancelled = True
+            return "cleaned"
+        return "unexpected"
+
+    async def worker(s: State) -> None:
+        s.result = await asyncio.wait_for(suppresses_cancel(s), timeout=1.0)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.cancelled and s.result == "cleaned",
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
 def test_async_timeout_context_uses_virtual_deadline_and_reports_expiry() -> None:
     class State:
         def __init__(self) -> None:
@@ -356,7 +451,7 @@ def test_async_timeout_context_uses_virtual_deadline_and_reports_expiry() -> Non
 
     async def worker(s: State) -> None:
         start = time.monotonic()
-        timeout_cm: Any | None = None
+        timeout_cm: object | None = None
         try:
             async with asyncio.timeout(1.0) as active_timeout:
                 timeout_cm = active_timeout
@@ -364,13 +459,76 @@ def test_async_timeout_context_uses_virtual_deadline_and_reports_expiry() -> Non
         except TimeoutError:
             s.timed_out = True
             s.elapsed = time.monotonic() - start
-            s.expired = bool(timeout_cm is not None and timeout_cm.expired())
+            s.expired = bool(timeout_cm is not None and getattr(timeout_cm, "expired")())
 
     result = asyncio.run(
         frontrun.explore(
             setup=State,
             workers=[worker],
             invariant=lambda s: s.timed_out and s.expired and s.elapsed >= 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_removes_deadline_after_success() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.completed = False
+            self.expired_inside = True
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        async with asyncio.timeout(5.0) as timeout_cm:
+            await asyncio.sleep(1.0)
+            s.expired_inside = timeout_cm.expired()
+        await asyncio.sleep(10.0)
+        s.completed = True
+        s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.completed and not s.expired_inside and s.elapsed >= 11.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_reschedule_from_none_uses_virtual_deadline() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.expired = False
+            self.deadline_delta = 0.0
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        timeout_cm: object | None = None
+        try:
+            async with asyncio.timeout(None) as active_timeout:
+                timeout_cm = active_timeout
+                active_timeout.reschedule(time.monotonic() + 1.0)
+                deadline = active_timeout.when()
+                s.deadline_delta = -1.0 if deadline is None else deadline - start
+                await asyncio.sleep(10.0)
+        except TimeoutError:
+            s.timed_out = True
+            s.expired = bool(timeout_cm is not None and getattr(timeout_cm, "expired")())
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.expired and s.deadline_delta == pytest.approx(1.0),
             clock="virtual",
             reproduce_on_failure=0,
         )
