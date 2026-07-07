@@ -179,9 +179,7 @@ class _FakeScheduler:
 def test_drive_relays_raises_on_hung_relay() -> None:
     coord = DporCrossProcessCoordinator(num_workers=1)
     # Force a non-blocking join budget so the still-alive relay is detected at
-    # once rather than after the default deadlock_timeout*2+10s. Thread.join
-    # clamps negative timeouts to 0, so join_budget == 0 makes the join a
-    # non-blocking liveness check.
+    # once rather than after the default deadlock_timeout*2+10s.
     coord.deadlock_timeout = -5.0
 
     peer, relay_end = socket.socketpair()

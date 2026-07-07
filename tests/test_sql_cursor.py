@@ -1339,8 +1339,8 @@ def test_update_on_held_row_lock_reports_weak_data_access_without_reacquire() ->
             del _io_tls._held_row_locks
 
 
-def test_for_update_dpor_row_lock_replaces_row_write_access() -> None:
-    """DPOR row-lock acquire is the write-intent ordering point for FOR UPDATE."""
+def test_for_update_dpor_reports_weak_read_and_row_lock() -> None:
+    """FOR UPDATE uses row-lock arbitration but still reports the row read."""
     from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
     from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
 
@@ -1359,8 +1359,50 @@ def test_for_update_dpor_row_lock_replaces_row_write_access() -> None:
             {"id": "row1"},
             paramstyle="pyformat",
         )
+        assert (row_resource, "weak_read") in log.events
         assert row_resource in _io_tls._pending_row_locks
         assert (row_resource, "write") not in log.events
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        clear_sql_metadata()
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _io_tls._pending_row_locks = []
+
+
+def test_for_update_dpor_weak_read_conflicts_with_plain_writer_resource() -> None:
+    """A modeled row-lock reader and an unmodeled writer must share a row resource."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()
+    set_dpor_scheduler(object())
+    set_dpor_thread_id(0)
+    row_resource = "sql:maz_trace_test:(('id', 'row1'),)"
+    _io_tls._pending_row_locks = []
+    try:
+        _io_tls._in_transaction = True
+        _io_tls._is_autobegin = True
+        _report_sql_access(
+            "SELECT value FROM maz_trace_test WHERE id = :id FOR UPDATE",
+            {"id": "row1"},
+            paramstyle="pyformat",
+        )
+
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _report_sql_access(
+            "UPDATE maz_trace_test SET value = :v WHERE id = :id",
+            {"id": "row1", "v": 1},
+            paramstyle="pyformat",
+        )
+
+        assert (row_resource, "weak_read") in log.events
+        assert (row_resource, "write") in log.events
     finally:
         set_dpor_scheduler(None)
         set_dpor_thread_id(None)
