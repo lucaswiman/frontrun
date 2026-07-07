@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import threading
 import time
+import warnings
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from frontrun import _real_threading as _rt
@@ -114,6 +116,113 @@ class VirtualClock:
         with self._lock:
             if deadline > self._now:
                 self._now = deadline
+
+
+@dataclass(frozen=True)
+class WakeEvent:
+    """A deadline that became due after a virtual-clock advance."""
+
+    actor_id: int
+    deadline: float
+    token: object
+    kind: str
+    wake_id: int | None
+
+
+@dataclass(frozen=True)
+class _Deadline:
+    actor_id: int
+    deadline: float
+    token: object
+    kind: str
+    wake_id: int | None
+
+
+_SLEEP_TOKEN = object()
+
+
+def _token_sort_key(token: object) -> tuple[str, str]:
+    if isinstance(token, str | int | float | bool | bytes | type(None)):
+        return (type(token).__name__, repr(token))
+    return (type(token).__name__, repr(token))
+
+
+class DeadlineCoordinator:
+    """Own virtual deadline ordering for a scheduler.
+
+    The scheduler still owns engine blocking/unblocking and synchronization
+    reporting.  This helper only tracks deadlines, selects the next virtual
+    time, and returns the events that became due.  It supports more than one
+    deadline per actor, which is required for ``asyncio.wait_for`` wrapping an
+    awaitable that also has its own virtual sleep deadline.
+    """
+
+    def __init__(self) -> None:
+        self._deadlines: dict[tuple[int, object], _Deadline] = {}
+
+    def add_sleep(self, actor_id: int, deadline: float, wake_id: int | None, token: object = _SLEEP_TOKEN) -> None:
+        self._deadlines[(actor_id, token)] = _Deadline(actor_id, deadline, token, "sleep", wake_id)
+
+    def add_timeout(self, actor_id: int, deadline: float, token: object, wake_id: int | None = None) -> None:
+        self._deadlines[(actor_id, token)] = _Deadline(actor_id, deadline, token, "timeout", wake_id)
+
+    def cancel(self, actor_id: int, token: object | None = None) -> None:
+        if token is not None:
+            self._deadlines.pop((actor_id, token), None)
+            return
+        for key in [key for key in self._deadlines if key[0] == actor_id]:
+            del self._deadlines[key]
+
+    def has(self, actor_id: int, token: object | None = None) -> bool:
+        if token is not None:
+            return (actor_id, token) in self._deadlines
+        return any(key[0] == actor_id for key in self._deadlines)
+
+    def deadline_for(self, actor_id: int, token: object | None = None) -> float | None:
+        if token is not None:
+            entry = self._deadlines.get((actor_id, token))
+            return entry.deadline if entry is not None else None
+        entries = [entry.deadline for key, entry in self._deadlines.items() if key[0] == actor_id]
+        return min(entries) if entries else None
+
+    def actors(self) -> set[int]:
+        return {actor_id for actor_id, _ in self._deadlines}
+
+    def has_pending(self) -> bool:
+        return bool(self._deadlines)
+
+    def next_deadline(self) -> float | None:
+        if not self._deadlines:
+            return None
+        return min(entry.deadline for entry in self._deadlines.values())
+
+    def advance_to_next(self, clock: VirtualClock) -> list[WakeEvent]:
+        deadline = self.next_deadline()
+        if deadline is None:
+            return []
+        return self.advance_to(clock, deadline)
+
+    def advance_to(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
+        clock.advance_to(deadline)
+        now = clock.now()
+        due = [
+            entry
+            for entry in self._deadlines.values()
+            if entry.deadline <= now
+        ]
+        due.sort(key=lambda entry: (entry.deadline, entry.actor_id, _token_sort_key(entry.token)))
+        for entry in due:
+            self._deadlines.pop((entry.actor_id, entry.token), None)
+        return [
+            WakeEvent(
+                actor_id=entry.actor_id,
+                deadline=entry.deadline,
+                token=entry.token,
+                kind=entry.kind,
+                wake_id=entry.wake_id,
+            )
+            for entry in due
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +389,9 @@ def unpatch_time() -> None:
 __all__ = [
     "VIRTUAL_EPOCH",
     "ClockMode",
+    "DeadlineCoordinator",
     "VirtualClock",
+    "WakeEvent",
     "clock_context",
     "clock_scope",
     "patch_time",
