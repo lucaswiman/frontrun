@@ -28,6 +28,7 @@ from frontrun._redis_patch_registry import ASYNC_REDIS_TARGETS
 # Lazy imports to avoid circular dependency — resolved at first use.
 _in_scheduler_pause = None
 _scheduler_var_ref = None
+_real_asyncio_sleep_ref = None
 
 
 def _get_in_scheduler_pause() -> Any:
@@ -46,6 +47,15 @@ def _get_scheduler_var() -> Any:
 
         _scheduler_var_ref = (_scheduler_var, _task_id_var)
     return _scheduler_var_ref
+
+
+def _get_real_asyncio_sleep() -> Any:
+    global _real_asyncio_sleep_ref  # noqa: PLW0603
+    if _real_asyncio_sleep_ref is None:
+        from frontrun.async_dpor import _real_asyncio_sleep
+
+        _real_asyncio_sleep_ref = _real_asyncio_sleep
+    return _real_asyncio_sleep_ref
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +81,8 @@ async def _dispatch_async(
         return await original_method(self, *args, **kwargs)
 
     dpor_ctx = _get_dpor_context()
+    scheduler = None
+    task_id = None
     if dpor_ctx is not None:
         scheduler = dpor_ctx[0]
         task_id = _get_scheduler_var()[1].get()
@@ -82,9 +94,15 @@ async def _dispatch_async(
     pause_var.set(depth + 1)
     try:
         with _suppress_endpoint_io():
-            return await original_method(self, *args, **kwargs)
+            result = await original_method(self, *args, **kwargs)
     finally:
         pause_var.set(depth)
+    if dpor_ctx is not None and task_id is not None:
+        on_task_yielded = getattr(scheduler, "on_task_yielded", None)
+        if on_task_yielded is not None:
+            on_task_yielded(task_id)
+    await _get_real_asyncio_sleep()(0)
+    return result
 
 
 async def _intercept_execute_command_async(

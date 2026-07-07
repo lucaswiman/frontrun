@@ -13,6 +13,14 @@ _auto_pause_active: contextvars.ContextVar[bool] = contextvars.ContextVar("_auto
 _in_scheduler_pause: contextvars.ContextVar[int] = contextvars.ContextVar("_in_scheduler_pause", default=0)
 
 
+def _notify_task_yielded(scheduler: Any, task_id: int) -> None:
+    if _in_scheduler_pause.get() > 0:
+        return
+    on_task_yielded = getattr(scheduler, "on_task_yielded", None)
+    if on_task_yielded is not None:
+        on_task_yielded(task_id)
+
+
 async def await_point() -> None:
     """Yield to the active async scheduler, or return immediately if none exists."""
     if _auto_pause_active.get():
@@ -47,9 +55,7 @@ class _AutoPauseIterator:
             except StopIteration:
                 self._pause_iter = None
                 yielded = self._inner.send(self._buffered_value)
-                on_task_yielded = getattr(self._scheduler, "on_task_yielded", None)
-                if on_task_yielded is not None:
-                    on_task_yielded(self._task_id)
+                _notify_task_yielded(self._scheduler, self._task_id)
                 return yielded
 
         if _in_scheduler_pause.get() > 0:
@@ -63,9 +69,7 @@ class _AutoPauseIterator:
         except StopIteration:
             self._pause_iter = None
             yielded = self._inner.send(self._buffered_value)
-            on_task_yielded = getattr(self._scheduler, "on_task_yielded", None)
-            if on_task_yielded is not None:
-                on_task_yielded(self._task_id)
+            _notify_task_yielded(self._scheduler, self._task_id)
             return yielded
 
     def _close_pause_iter(self) -> None:

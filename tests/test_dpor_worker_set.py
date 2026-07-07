@@ -14,6 +14,7 @@ import pytest
 
 from frontrun._dpor_core.worker import WorkerSet, WorkerTarget
 from frontrun._dpor_runtime.worker_set import ThreadWorkerSet
+from frontrun._threaded_runner import _POST_TIMEOUT_CLEANUP_JOIN_SECONDS
 
 
 def _targets(funcs):
@@ -86,6 +87,12 @@ def test_teardown_runs_after_join() -> None:
 def test_on_timeout_called_with_alive_workers() -> None:
     release = threading.Event()
     timed_out: list[object] = []
+    join_timeouts: list[float] = []
+
+    class SpyWorkerSet(ThreadWorkerSet):
+        def join(self, handles: object, timeout: float) -> list[threading.Thread]:
+            join_timeouts.append(timeout)
+            return super().join(handles, timeout)
 
     def slow() -> None:
         release.wait(timeout=5.0)
@@ -98,13 +105,14 @@ def test_on_timeout_called_with_alive_workers() -> None:
         timed_out.extend(alive)
         release.set()  # let the slow worker exit so the test cleans up
 
-    ThreadWorkerSet().run(
+    SpyWorkerSet().run(
         _targets([fast, slow]),
         timeout=0.3,
         on_timeout=on_timeout,
     )
 
     assert len(timed_out) == 1
+    assert join_timeouts == [0.3, _POST_TIMEOUT_CLEANUP_JOIN_SECONDS]
     assert not timed_out[0].is_alive()
 
 

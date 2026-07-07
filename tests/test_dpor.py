@@ -223,6 +223,7 @@ def test_dpor_runner_cleans_up_runtime_state_after_error(monkeypatch) -> None:
         def __init__(self) -> None:
             self.error: Exception | None = None
             self.done: list[int] = []
+            self.lifecycle: list[str] = []
 
         def report_error(self, error: Exception) -> None:
             self.error = error
@@ -231,16 +232,20 @@ def test_dpor_runner_cleans_up_runtime_state_after_error(monkeypatch) -> None:
             self.done.append(thread_id)
 
         def register_worker_thread(self) -> None:
-            pass
+            self.lifecycle.append("register")
 
         def unregister_worker_thread(self) -> None:
-            pass
+            self.lifecycle.append("unregister")
 
     scheduler = _StubScheduler()
     runner = DporBytecodeRunner(scheduler)  # type: ignore[arg-type]
     events: list[str] = []
 
-    monkeypatch.setattr(runner, "_setup_dpor_tls", lambda thread_id: events.append(f"setup:{thread_id}"))
+    def setup(thread_id: int) -> None:
+        scheduler.register_worker_thread()
+        events.append(f"setup:{thread_id}")
+
+    monkeypatch.setattr(runner, "_setup_dpor_tls", setup)
     monkeypatch.setattr(runner, "_teardown_dpor_tls", lambda: events.append("teardown"))
     monkeypatch.setattr(
         "frontrun._dpor_runtime.runner.install_thread_opcode_trace",
@@ -260,6 +265,7 @@ def test_dpor_runner_cleans_up_runtime_state_after_error(monkeypatch) -> None:
     assert isinstance(runner.errors[0], RuntimeError)
     assert isinstance(scheduler.error, RuntimeError)
     assert scheduler.done == [0]
+    assert scheduler.lifecycle == ["register", "unregister"]
     assert events == ["setup:0", "trace:on", "trace:off", "teardown"]
 
 
@@ -268,6 +274,7 @@ def test_dpor_runner_swallows_scheduler_abort(monkeypatch) -> None:
         def __init__(self) -> None:
             self.error: Exception | None = None
             self.done: list[int] = []
+            self.lifecycle: list[str] = []
 
         def report_error(self, error: Exception) -> None:
             self.error = error
@@ -276,16 +283,20 @@ def test_dpor_runner_swallows_scheduler_abort(monkeypatch) -> None:
             self.done.append(thread_id)
 
         def register_worker_thread(self) -> None:
-            pass
+            self.lifecycle.append("register")
 
         def unregister_worker_thread(self) -> None:
-            pass
+            self.lifecycle.append("unregister")
 
     scheduler = _StubScheduler()
     runner = DporBytecodeRunner(scheduler)  # type: ignore[arg-type]
     events: list[str] = []
 
-    monkeypatch.setattr(runner, "_setup_dpor_tls", lambda thread_id: events.append(f"setup:{thread_id}"))
+    def setup(thread_id: int) -> None:
+        scheduler.register_worker_thread()
+        events.append(f"setup:{thread_id}")
+
+    monkeypatch.setattr(runner, "_setup_dpor_tls", setup)
     monkeypatch.setattr(runner, "_teardown_dpor_tls", lambda: events.append("teardown"))
 
     def abort() -> None:
@@ -296,6 +307,7 @@ def test_dpor_runner_swallows_scheduler_abort(monkeypatch) -> None:
     assert runner.errors == {}
     assert scheduler.error is None
     assert scheduler.done == [0]
+    assert scheduler.lifecycle == ["register", "unregister"]
     assert events == ["setup:0", "teardown"]
 
 

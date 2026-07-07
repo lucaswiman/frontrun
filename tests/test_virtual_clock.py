@@ -19,12 +19,23 @@ from typing import Any
 import pytest
 
 import frontrun
-from frontrun._virtual_clock import VirtualClock
+from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
 from frontrun.bytecode import OpcodeScheduler, run_with_schedule
+from frontrun.common import InterleavingResult
 
 # ---------------------------------------------------------------------------
 # Plumbing
 # ---------------------------------------------------------------------------
+
+
+def _assert_invariant_failure(result: InterleavingResult, expected: str | None = None) -> None:
+    assert not result.property_holds
+    explanation = result.explanation
+    assert explanation is not None
+    assert "Deadlock" not in explanation
+    assert "Task crash" not in explanation
+    if expected is not None:
+        assert expected in explanation
 
 
 def test_explore_rejects_unknown_clock() -> None:
@@ -144,8 +155,8 @@ def test_invariant_sees_virtual_time() -> None:
     )
     assert result.property_holds, result.explanation
     worker_saw, invariant_saw = observed[0]
-    assert worker_saw >= 1_000_000.0  # VIRTUAL_EPOCH
-    assert invariant_saw >= worker_saw  # both virtual, monotonic
+    assert worker_saw == pytest.approx(VIRTUAL_EPOCH + 5.0)
+    assert invariant_saw == pytest.approx(worker_saw)
 
 
 # ---------------------------------------------------------------------------
@@ -281,15 +292,20 @@ def test_explored_clock_finds_timer_between_read_and_write() -> None:
     """With clock="explored" the clock advance is a schedulable DPOR step:
     the engine must find the interleaving where the delayed write fires
     between the RMW worker's read and write (final x == 1, not 100)."""
+
+    def invariant(s: _RetryRace) -> bool:
+        assert s.x == 100, f"expected delayed writer to remain final, got x={s.x}"
+        return True
+
     wall_start = time.monotonic()
     result = frontrun.explore(
         setup=_RetryRace,
         workers=[_rmw_worker, _delayed_writer],
-        invariant=lambda s: s.x == 100,
+        invariant=invariant,
         clock="explored",
     )
     wall_elapsed = time.monotonic() - wall_start
-    assert not result.property_holds
+    _assert_invariant_failure(result, "expected delayed writer")
     assert result.counterexample is not None
     # The recorded schedule contains clock-actor steps; replay must perform
     # the same advances without stalling on the deadlock timeout.
@@ -317,13 +333,18 @@ def test_explored_clock_can_fire_later_timer_before_earlier_sleeper_resumes() ->
     """After the first deadline wakes a sleeper, the clock actor must remain
     schedulable while later deadlines are still pending. Otherwise DPOR misses
     races where a later timer fires before an earlier sleeper gets CPU."""
+
+    def invariant(s: _TimerCascadeRace) -> bool:
+        assert s.x == 100, f"expected later timer write to remain final, got x={s.x}"
+        return True
+
     result = frontrun.explore(
         setup=_TimerCascadeRace,
         workers=[_early_timer_increments, _later_timer_writes],
-        invariant=lambda s: s.x == 100,
+        invariant=invariant,
         clock="explored",
     )
-    assert not result.property_holds
+    _assert_invariant_failure(result, "expected later timer write")
     assert result.counterexample is not None
     assert result.reproduction_attempts == 10
     assert result.reproduction_successes == 10
@@ -344,13 +365,18 @@ def test_equal_deadline_sleepers_remain_raceable_after_wake() -> None:
     """Waking equal-deadline sleepers in one clock step must not serialize
     their continuations by worker id; their post-wake shared-state accesses
     still need normal DPOR race exploration."""
+
+    def invariant(s: _EqualDeadlineRace) -> bool:
+        assert s.x == 2, f"expected both equal-deadline increments, got x={s.x}"
+        return True
+
     result = frontrun.explore(
         setup=_EqualDeadlineRace,
         workers=[_equal_deadline_rmw, _equal_deadline_rmw],
-        invariant=lambda s: s.x == 2,
+        invariant=invariant,
         clock="explored",
     )
-    assert not result.property_holds
+    _assert_invariant_failure(result, "expected both equal-deadline increments")
     assert result.counterexample is not None
     assert result.reproduction_attempts == 10
     assert result.reproduction_successes == 10
@@ -404,17 +430,26 @@ def test_sleep_while_holding_lock_dpor() -> None:
 def test_random_sleep_while_holding_lock() -> None:
     """Random strategy: an untimed lock spinner must not block the autojump
     (regression: sleep(1.0) silently returned with 0 virtual seconds)."""
+    invariant_checks = 0
+
+    def invariant(s: _HoldAndSleep) -> bool:
+        nonlocal invariant_checks
+        invariant_checks += 1
+        return s.b_acquired and s.a_sleep_virtual >= 1.0
+
     result = frontrun.explore(
         setup=_HoldAndSleep,
         workers=[_hold_sleep_a, _hold_sleep_b],
-        invariant=lambda s: s.b_acquired and s.a_sleep_virtual >= 1.0,
+        invariant=invariant,
         strategy="random",
         clock="virtual",
         max_attempts=3,
         seed=42,
         reproduce_on_failure=0,
+        timeout_per_run=1.0,
     )
     assert result.property_holds, result.explanation
+    assert invariant_checks > 0
 
 
 def test_event_deadlock_detected_exactly() -> None:
@@ -457,17 +492,21 @@ def test_queue_deadlock_detected_exactly() -> None:
     def worker(s: State) -> None:
         s.q.get()
 
+    wall_start = time.monotonic()
     result = frontrun.explore(
         setup=State,
         workers=[worker, worker],
         invariant=lambda s: True,
         clock="virtual",
         reproduce_on_failure=0,
-        deadlock_timeout=0.2,
-        timeout_per_run=1.0,
+        deadlock_timeout=2.0,
+        timeout_per_run=3.0,
     )
+    wall_elapsed = time.monotonic() - wall_start
     assert not result.property_holds
-    assert "deadlock" in str(result.explanation).lower()
+    assert result.explanation is not None
+    assert "no virtual-clock deadline is pending" in result.explanation
+    assert wall_elapsed < 1.0, f"queue deadlock took {wall_elapsed:.1f}s to report (wall-clock fallback?)"
 
 
 def test_event_set_clear_race_is_detected_without_waiters() -> None:
@@ -481,14 +520,18 @@ def test_event_set_clear_race_is_detected_without_waiters() -> None:
     def setter(s: State) -> None:
         s.event.set()
 
+    def invariant(s: State) -> bool:
+        assert s.event.is_set(), "expected event to remain set"
+        return True
+
     result = frontrun.explore(
         setup=State,
         workers=[clearer, setter],
-        invariant=lambda s: s.event.is_set(),
+        invariant=invariant,
         detect_io=False,
         reproduce_on_failure=0,
     )
-    assert not result.property_holds, "DPOR missed the set/clear race on Event state"
+    _assert_invariant_failure(result, "expected event to remain set")
 
 
 def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
@@ -503,12 +546,15 @@ def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
 
     def worker(s: State) -> None:
         def setter() -> None:
+            setter_started.set()
             _real_time_sleep(0.05)
             s.event.set()
 
+        setter_started = threading.Event()
         t = threading.Thread(target=setter)
         setter_threads.append(t)
         t.start()
+        assert setter_started.wait(timeout=1.0)
         s.woke = s.event.wait()
         t.join(timeout=1.0)
 
@@ -519,8 +565,8 @@ def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
             invariant=lambda s: s.woke,
             clock="virtual",
             reproduce_on_failure=0,
-            deadlock_timeout=0.2,
-            timeout_per_run=1.0,
+            deadlock_timeout=1.0,
+            timeout_per_run=2.0,
         )
     finally:
         for thread in setter_threads:
@@ -684,14 +730,14 @@ def test_condition_wait_for_timeout_uses_virtual_deadline() -> None:
     def waiter(s: State) -> None:
         with s.cond:
             start = time.monotonic()
-            s.wait_result = s.cond.wait_for(lambda: False, timeout=0.25)
+            s.wait_result = s.cond.wait_for(lambda: False, timeout=5.0)
             s.waited_virtual = time.monotonic() - start
 
     wall_start = time.monotonic()
     result = frontrun.explore(
         setup=State,
         workers=[waiter],
-        invariant=lambda s: not s.wait_result and s.waited_virtual >= 0.25,
+        invariant=lambda s: not s.wait_result and s.waited_virtual >= 5.0,
         clock="virtual",
         reproduce_on_failure=0,
         deadlock_timeout=0.05,
@@ -699,7 +745,7 @@ def test_condition_wait_for_timeout_uses_virtual_deadline() -> None:
     )
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
-    assert wall_elapsed < 0.15, f"wait_for burned wall time instead of virtual time ({wall_elapsed:.3f}s)"
+    assert wall_elapsed < 1.0, f"wait_for burned wall time instead of virtual time ({wall_elapsed:.3f}s)"
 
 
 def test_timed_queue_get_expires_on_virtual_deadline() -> None:
@@ -745,18 +791,27 @@ def test_random_strategy_virtual_sleep_zero_wall_time() -> None:
         time.sleep(300.0)
         s.end = time.monotonic()
 
+    invariant_checks = 0
+
+    def invariant(s: _SleepObserver) -> bool:
+        nonlocal invariant_checks
+        invariant_checks += 1
+        return s.end - s.start >= 300.0
+
     wall_start = time.monotonic()
     result = frontrun.explore(
         setup=_SleepObserver,
         workers=[worker, lambda s: None],
-        invariant=lambda s: s.end - s.start >= 300.0,
+        invariant=invariant,
         strategy="random",
         clock="virtual",
         max_attempts=5,
         reproduce_on_failure=0,
+        timeout_per_run=1.0,
     )
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
+    assert invariant_checks > 0
     assert wall_elapsed < 60.0
 
 
@@ -882,14 +937,19 @@ def test_random_strategy_explored_clock_can_fire_timer_early() -> None:
     """The random scheduler's "maybe advance" branch: with clock="explored",
     schedule entries landing on a sleeping thread advance the clock, so the
     delayed write can land between the RMW read and write."""
+
+    def invariant(s: _RetryRace) -> bool:
+        assert s.x == 100, f"expected delayed writer to remain final, got x={s.x}"
+        return True
+
     result = frontrun.explore(
         setup=_RetryRace,
         workers=[_rmw_worker, _delayed_writer],
-        invariant=lambda s: s.x == 100,
+        invariant=invariant,
         strategy="random",
         clock="explored",
         max_attempts=200,
         seed=1234,
         reproduce_on_failure=0,
     )
-    assert not result.property_holds
+    _assert_invariant_failure(result, "expected delayed writer")

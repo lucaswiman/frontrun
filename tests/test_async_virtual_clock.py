@@ -15,6 +15,15 @@ import frontrun
 from frontrun.common import InterleavingResult
 
 
+def _assert_invariant_failure(result: InterleavingResult, expected: str | None = None) -> None:
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Deadlock" not in result.explanation
+    assert "Task crash" not in result.explanation
+    if expected is not None:
+        assert expected in result.explanation
+
+
 class _SleepObserver:
     def __init__(self) -> None:
         self.start = 0.0
@@ -136,15 +145,19 @@ def test_async_autojump_does_not_explore_early_timer_fire() -> None:
 
 
 def test_async_explored_clock_finds_timer_between_read_and_write() -> None:
+    def invariant(s: _RetryRace) -> bool:
+        assert s.x == 100, f"expected delayed writer to remain final, got x={s.x}"
+        return True
+
     result = asyncio.run(
         frontrun.explore(
             setup=_RetryRace,
             workers=[_rmw_worker, _delayed_writer],
-            invariant=lambda s: s.x == 100,
+            invariant=invariant,
             clock="explored",
         )
     )
-    assert not result.property_holds
+    _assert_invariant_failure(result, "expected delayed writer")
     assert result.counterexample is not None
 
 
@@ -167,15 +180,20 @@ def test_async_explored_clock_can_fire_later_timer_before_earlier_sleeper_resume
     """The async clock actor must stay schedulable after waking the first
     deadline so DPOR can explore a later timer firing before that sleeper
     resumes."""
+
+    def invariant(s: _TimerCascadeRace) -> bool:
+        assert s.x == 100, f"expected later timer write to remain final, got x={s.x}"
+        return True
+
     result = asyncio.run(
         frontrun.explore(
             setup=_TimerCascadeRace,
             workers=[_early_timer_increments, _later_timer_writes],
-            invariant=lambda s: s.x == 100,
+            invariant=invariant,
             clock="explored",
         )
     )
-    assert not result.property_holds
+    _assert_invariant_failure(result, "expected later timer write")
     assert result.counterexample is not None
     assert result.reproduction_attempts == 10
     assert result.reproduction_successes == 10
@@ -190,29 +208,42 @@ def test_async_random_virtual_sleep_zero_wall_time() -> None:
     async def noop(s: _SleepObserver) -> None:
         pass
 
+    invariant_checks = 0
+
+    def invariant(s: _SleepObserver) -> bool:
+        nonlocal invariant_checks
+        invariant_checks += 1
+        return s.end - s.start >= 300.0
+
     wall_start = time.monotonic()
     result = asyncio.run(
         frontrun.explore(
             setup=_SleepObserver,
             workers=[worker, noop],
-            invariant=lambda s: s.end - s.start >= 300.0,
+            invariant=invariant,
             strategy="random",
             clock="virtual",
             max_attempts=5,
             reproduce_on_failure=0,
+            timeout_per_run=1.0,
         )
     )
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
+    assert invariant_checks > 0
     assert wall_elapsed < 60.0
 
 
 def test_async_random_explored_clock_can_fire_timer_early() -> None:
+    def invariant(s: _RetryRace) -> bool:
+        assert s.x == 100, f"expected delayed writer to remain final, got x={s.x}"
+        return True
+
     result = asyncio.run(
         frontrun.explore(
             setup=_RetryRace,
             workers=[_rmw_worker, _delayed_writer],
-            invariant=lambda s: s.x == 100,
+            invariant=invariant,
             strategy="random",
             clock="explored",
             max_attempts=200,
@@ -220,7 +251,7 @@ def test_async_random_explored_clock_can_fire_timer_early() -> None:
             reproduce_on_failure=0,
         )
     )
-    assert not result.property_holds
+    _assert_invariant_failure(result, "expected delayed writer")
 
 
 def test_async_wait_for_stays_on_wall_clock() -> None:
@@ -461,15 +492,19 @@ def test_async_event_set_clear_race_is_detected_without_waiters() -> None:
         s.event.set()
         await asyncio.sleep(0)
 
+    def invariant(s: State) -> bool:
+        assert s.event.is_set(), "expected event to remain set"
+        return True
+
     result = asyncio.run(
         frontrun.explore(
             setup=State,
             workers=[clearer, setter],
-            invariant=lambda s: s.event.is_set(),
+            invariant=invariant,
             reproduce_on_failure=0,
         )
     )
-    assert not result.property_holds, "Async DPOR missed the set/clear race on Event state"
+    _assert_invariant_failure(result, "expected event to remain set")
 
 
 def test_async_post_await_writes_are_attributed_to_resumed_step() -> None:
@@ -487,15 +522,19 @@ def test_async_post_await_writes_are_attributed_to_resumed_step() -> None:
         s.value = 2
         await asyncio.sleep(0)
 
+    def invariant(s: State) -> bool:
+        assert s.value == 2, f"expected final value from write_two, got {s.value}"
+        return True
+
     result = asyncio.run(
         frontrun.explore(
             setup=State,
             workers=[write_one, write_two],
-            invariant=lambda s: s.value == 2,
+            invariant=invariant,
             reproduce_on_failure=0,
         )
     )
-    assert not result.property_holds, "Async DPOR missed a write race after an await"
+    _assert_invariant_failure(result, "expected final value from write_two")
 
 
 def test_async_event_wait_with_virtual_sleeper_autojumps() -> None:
@@ -586,21 +625,30 @@ def test_async_random_lock_sleep_quiescence_rescue() -> None:
         async with s.lock:
             s.b_acquired = True
 
+    invariant_checks = 0
+
+    def invariant(s: _AsyncHoldAndSleep) -> bool:
+        nonlocal invariant_checks
+        invariant_checks += 1
+        return s.b_acquired and s.a_sleep_virtual >= 1.0
+
     wall_start = time.monotonic()
     result = asyncio.run(
         frontrun.explore(
             setup=_AsyncHoldAndSleep,
             workers=[a, b],
-            invariant=lambda s: s.b_acquired and s.a_sleep_virtual >= 1.0,
+            invariant=invariant,
             strategy="random",
             clock="virtual",
             max_attempts=3,
             seed=7,
             reproduce_on_failure=0,
+            timeout_per_run=1.0,
         )
     )
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
+    assert invariant_checks > 0
     assert wall_elapsed < 10.0, f"async random lock+sleep took {wall_elapsed:.1f}s"
 
 
@@ -616,11 +664,19 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
         async with s.lock:
             s.b_acquired = True
 
+    invariant_checks = 0
+
+    def invariant(s: _AsyncHoldAndSleep) -> bool:
+        nonlocal invariant_checks
+        invariant_checks += 1
+        return s.b_acquired and s.a_sleep_virtual >= 1.0
+
+    wall_start = time.monotonic()
     result = asyncio.run(
         frontrun.explore(
             setup=_AsyncHoldAndSleep,
             workers=[a, b],
-            invariant=lambda s: s.b_acquired and s.a_sleep_virtual >= 1.0,
+            invariant=invariant,
             strategy="random",
             clock="virtual",
             max_attempts=3,
@@ -630,4 +686,7 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
             reproduce_on_failure=0,
         )
     )
+    wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
+    assert invariant_checks > 0
+    assert wall_elapsed < 2.0, f"async random lock+sleep took {wall_elapsed:.1f}s"

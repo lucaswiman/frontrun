@@ -158,6 +158,7 @@ class TestIOAnchoredReplayScheduler:
 
     def test_io_anchored_replay_advances_virtual_sleep(self) -> None:
         from frontrun._dpor_runtime.replay import _run_dpor_schedule
+        from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
 
         class State:
             def __init__(self) -> None:
@@ -168,6 +169,8 @@ class TestIOAnchoredReplayScheduler:
             time.sleep(1.0)
             s.elapsed = time.monotonic() - start
 
+        clock = VirtualClock()
+        wall_start = time.monotonic()
         state = _run_dpor_schedule(
             [0],
             State,
@@ -177,6 +180,10 @@ class TestIOAnchoredReplayScheduler:
             deadlock_timeout=0.1,
             io_schedule=[(0, "dummy")],
             clock="virtual",
+            virtual_clock=clock,
         )
+        wall_elapsed = time.monotonic() - wall_start
 
         assert state.elapsed >= 1.0
+        assert clock.now() >= VIRTUAL_EPOCH + 1.0
+        assert wall_elapsed < 0.5, f"virtual replay sleep burned wall time ({wall_elapsed:.3f}s)"
