@@ -1150,6 +1150,16 @@ class DporScheduler:
         with self._engine_lock:
             self.execution.unblock_thread(thread_id)
 
+    def _schedule_idle_current_unlocked(self) -> bool:
+        if self._current_thread is not None:
+            return False
+        next_thread = self._schedule_next()
+        self._current_thread = next_thread
+        if next_thread is None and len(self._threads_done) >= self.num_threads:
+            self._finished = True
+        self._condition.notify_all()
+        return True
+
     def _wait_for_row_lock_turn_unlocked(self, thread_id: int) -> bool:
         """Wait until an unblocked row-lock waiter has a scheduler turn."""
         while True:
@@ -1159,26 +1169,12 @@ class DporScheduler:
                 return True
             if self._reschedule_done_current_unlocked():
                 continue
-            if self._current_thread is None:
-                next_thread = self._schedule_next()
-                self._current_thread = next_thread
-                if next_thread is None and len(self._threads_done) >= self.num_threads:
-                    self._finished = True
-                    self._condition.notify_all()
-                    return False
-                self._condition.notify_all()
+            if self._schedule_idle_current_unlocked():
                 continue
             if not self._condition.wait(timeout=self._condition_wait_timeout()):
                 if self._reschedule_done_current_unlocked():
                     continue
-                if self._current_thread is None:
-                    next_thread = self._schedule_next()
-                    self._current_thread = next_thread
-                    if next_thread is None and len(self._threads_done) >= self.num_threads:
-                        self._finished = True
-                        self._condition.notify_all()
-                        return False
-                    self._condition.notify_all()
+                if self._schedule_idle_current_unlocked():
                     continue
                 self._error = TimeoutError(
                     "DPOR row-lock waiter was unblocked but not rescheduled: "

@@ -16,10 +16,10 @@ import threading
 from typing import Any
 
 import pytest
+from frontrun._dpor import PyDporEngine
 
 import frontrun
 from frontrun._deadlock import SchedulerAbort
-from frontrun._dpor import PyDporEngine
 from frontrun._dpor_runtime.runner import DporBytecodeRunner
 from frontrun.common import InterleavingResult
 from frontrun.dpor import DporScheduler
@@ -83,6 +83,7 @@ def test_dpor_report_and_wait_reschedules_done_current_without_timeout() -> None
 
     assert host.report_and_wait(None, 0)
     assert host._condition.wait_calls == 0
+
 
 # ---------------------------------------------------------------------------
 # Low-level Rust engine tests (via PyO3)
