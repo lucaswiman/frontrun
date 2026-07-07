@@ -12,7 +12,7 @@ The transparency follow-ups that fit frontrun's in-process white-box model are
 implemented:
 
 - a shared deadline coordinator;
-- virtual `asyncio.wait_for` / `asyncio.timeout` wrappers;
+- virtual `asyncio.wait_for` / `asyncio.timeout` / `asyncio.timeout_at` wrappers;
 - engine-visible async `Queue` and `Condition` waiters;
 - module-qualified `datetime` support;
 - opt-in captured `time.*` diagnostics via `clock_diagnostics=True`.
@@ -75,7 +75,7 @@ Acceptance tests:
 - Replay drift tests still reproduce without burning `deadlock_timeout`.
 - Sync and async schedulers use the same due-deadline ordering rules.
 
-## Phase 2: Virtual `asyncio.wait_for` and `asyncio.timeout`
+## Phase 2: Virtual `asyncio.wait_for`, `asyncio.timeout`, and `asyncio.timeout_at`
 
 Status: implemented. Complexity: medium-high. Priority: high user value.
 
@@ -84,8 +84,8 @@ wall clock so frontrun's scheduler watchdogs do not fire when virtual time
 jumps. That avoids false deadlocks, but it is a user papercut because
 `asyncio.wait_for` is the standard timeout surface.
 
-Patch `asyncio.wait_for` and `asyncio.timeout` during exploration instead of
-virtualizing `loop.time()`.
+Patch `asyncio.wait_for`, `asyncio.timeout`, and `asyncio.timeout_at` during
+exploration instead of virtualizing `loop.time()`.
 
 Design sketch:
 
@@ -97,8 +97,10 @@ Design sketch:
   - when the virtual deadline wins, cancel the inner task and raise
     `asyncio.TimeoutError` / `TimeoutError` with normal Python semantics;
   - when inner completion wins, cancel the virtual deadline.
-- For `asyncio.timeout(t)`, implement the same virtual deadline around the
-  current task's cancellation scope.
+- For `asyncio.timeout(t)` and `asyncio.timeout_at(when)`, implement the same
+  virtual deadline around the current task's cancellation scope. `timeout_at`
+  and timeout context `reschedule(when)` keep asyncio's loop-time API; frontrun
+  converts the remaining delay to a scheduler-owned virtual deadline.
 - Preserve wall-clock behavior outside explored task contexts.
 
 DPOR semantics:
@@ -249,6 +251,6 @@ The release notes should keep the scoped contract:
 - `clock="virtual"` and `clock="explored"` control scheduler-visible Python
   timing.
 - Raw async loop timers remain wall-clock; virtual async timeouts are provided
-  by patched `asyncio.wait_for` / `asyncio.timeout`.
+  by patched `asyncio.wait_for` / `asyncio.timeout` / `asyncio.timeout_at`.
 - Captured references, process workers, bare futures, and C-level sleeps remain
   documented limitations.

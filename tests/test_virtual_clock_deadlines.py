@@ -29,7 +29,7 @@ def test_deadline_coordinator_tracks_multiple_deadlines_per_actor() -> None:
     assert not deadlines.has_pending()
 
 
-def test_deadline_coordinator_orders_equal_deadlines_by_actor_then_token() -> None:
+def test_deadline_coordinator_orders_equal_deadlines_by_actor_then_insertion_order() -> None:
     clock = VirtualClock()
     deadlines = DeadlineCoordinator()
     token_b = "b"
@@ -41,9 +41,21 @@ def test_deadline_coordinator_orders_equal_deadlines_by_actor_then_token() -> No
 
     due = deadlines.advance_to_next(clock)
 
-    assert [(event.actor_id, event.token) for event in due] == [(1, token_a), (1, token_b), (2, token_b)]
+    assert [(event.actor_id, event.token) for event in due] == [(1, token_b), (1, token_a), (2, token_b)]
     assert [event.kind for event in due] == ["timeout", "timeout", "timeout"]
     assert [event.wake_id for event in due] == [None, None, None]
+
+
+def test_deadline_coordinator_equal_opaque_tokens_do_not_use_repr_order() -> None:
+    clock = VirtualClock()
+    deadlines = DeadlineCoordinator()
+    first = object()
+    second = object()
+
+    deadlines.add_timeout(1, clock.now() + 1.0, first)
+    deadlines.add_timeout(1, clock.now() + 1.0, second)
+
+    assert [event.token for event in deadlines.advance_to_next(clock)] == [first, second]
 
 
 def test_deadline_coordinator_cancels_sleep_timeout_and_actor_deadlines_independently() -> None:

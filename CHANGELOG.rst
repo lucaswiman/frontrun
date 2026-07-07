@@ -12,8 +12,8 @@ Unreleased
   time (including module-qualified ``datetime`` current-time reads), sleeps
   and async timeout wrappers become zero-wall-time virtual deadlines, and
   ``clock="explored"`` makes timer firings schedulable. DPOR also models
-  cooperative timed waits, async queue/condition wakeups, and captured-time
-  diagnostics. See :doc:`virtual_clock`.
+  cooperative timed waits, async queue/condition wakeups, and captured
+  ``time.*`` clock-read diagnostics. See :doc:`virtual_clock`.
 
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,

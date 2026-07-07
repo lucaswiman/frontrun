@@ -150,6 +150,15 @@ class AwaitScheduler(InterleavedLoop):
     def remove_timeout_deadline(self, task_id: int, token: object) -> None:
         self._deadlines.cancel(task_id, token)
 
+    def _advance_virtual_deadline_for_idle(self) -> bool:
+        if self.virtual_clock is None:
+            return False
+        next_deadline = self._deadlines.next_deadline()
+        if next_deadline is None:
+            return False
+        self._advance_clock_to(next_deadline)
+        return True
+
     async def sleep_until(self, task_id: int, deadline: float) -> None:
         """Block *task_id* until the virtual clock reaches *deadline*."""
         depth = _in_scheduler_pause.get()
@@ -550,9 +559,9 @@ async def explore_async_random(
             advance the clock, exploring early timer firings).  Tasks that
             block on primitives the scheduler cannot see (e.g. a raw
             ``asyncio.Lock``) are handled by a quiescence heuristic; prefer
-            the DPOR strategy for lock-heavy async code.  ``asyncio.wait_for``
-            / ``asyncio.timeout`` inside explored tasks use virtual deadlines.
-            See :doc:`/virtual_clock`.
+            the DPOR strategy for lock-heavy async code.  ``asyncio.wait_for``,
+            ``asyncio.timeout``, and ``asyncio.timeout_at`` inside explored
+            tasks use virtual deadlines. See :doc:`/virtual_clock`.
 
     Returns:
         InterleavingResult with the outcome.  The ``unique_interleavings``

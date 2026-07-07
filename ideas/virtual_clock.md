@@ -10,12 +10,14 @@ from this proposal:
   `lock_release` (actor) / `lock_acquire` (woken worker) sync events.
 - The async `loop.time()` spike concluded **against** virtualising loop time:
   the scheduler's own deadlock-timeout timers share the loop's timer heap, so
-  a clock jump would fire them spuriously. `asyncio.wait_for` / `asyncio.timeout`
-  are patched directly inside explored task contexts instead.
+  a clock jump would fire them spuriously. `asyncio.wait_for` /
+  `asyncio.timeout` / `asyncio.timeout_at` are patched directly inside explored
+  task contexts instead.
 - Sync cooperative timed waits now use virtual deadlines: lock/RLock/semaphore
   acquires, `Event.wait(timeout=...)`, `Condition.wait(timeout=...)`,
   `Condition.wait_for(..., timeout=...)`, and `Queue.get`/`put` timeouts.
-  Async `asyncio.wait_for` and `asyncio.timeout` use virtual deadlines.
+  Async `asyncio.wait_for`, `asyncio.timeout`, and `asyncio.timeout_at` use
+  virtual deadlines.
 - `serializable_invariant` is rejected with a virtual clock (the sequential
   baseline runs execute outside the scheduler).
 - Post-review hardening: cooperative `Event.wait()` engine-blocks under DPOR
@@ -113,8 +115,10 @@ explode the search space for nothing. Only **advancement** (the clock actor's st
 - `loop.time()` stays wall-clock. While `time.monotonic()` is patched for explored
   tasks, the runners pin the event loop's own clock to the saved real monotonic
   function so scheduler watchdogs and user loop timers remain real.
-- `asyncio.wait_for` / `asyncio.timeout` are patched directly during
-  exploration. Raw loop timers remain wall-clock.
+- `asyncio.wait_for` / `asyncio.timeout` / `asyncio.timeout_at` are patched
+  directly during exploration. Raw loop timers remain wall-clock; `timeout_at`
+  and timeout context `reschedule(when)` keep asyncio's loop-time API and are
+  translated to virtual deadlines internally.
 
 ### Timed lock acquires
 
@@ -132,7 +136,7 @@ import frontrun
 
 result = frontrun.explore(
     strategy="dpor",
-    threads={...},
+    workers=[...],
     invariant=...,
     clock="virtual",        # default "real"; "virtual" implies autojump (v1)
     # v2: clock="explored" adds the clock actor

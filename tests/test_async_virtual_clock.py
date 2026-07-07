@@ -50,7 +50,7 @@ def test_async_sleep_advances_virtual_clock_zero_wall_time() -> None:
     )
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
-    assert wall_elapsed < 60.0
+    assert wall_elapsed < 4.0
 
 
 class _TTLCache:
@@ -233,7 +233,7 @@ def test_async_random_virtual_sleep_zero_wall_time() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert invariant_checks > 0
-    assert wall_elapsed < 60.0
+    assert wall_elapsed < 4.0
 
 
 def test_async_random_explored_clock_can_fire_timer_early() -> None:
@@ -322,7 +322,8 @@ def test_async_wait_for_event_timeout_is_explored_before_delayed_setter() -> Non
     assert result.reproduction_successes == 10
 
 
-def test_async_wait_for_zero_timeout_does_not_start_inner_coroutine() -> None:
+@pytest.mark.parametrize("timeout", [0, -1])
+def test_async_wait_for_non_positive_timeout_does_not_start_inner_coroutine(timeout: float) -> None:
     class State:
         def __init__(self) -> None:
             self.inner_ran = False
@@ -333,34 +334,7 @@ def test_async_wait_for_zero_timeout_does_not_start_inner_coroutine() -> None:
 
     async def worker(s: State) -> None:
         try:
-            await asyncio.wait_for(inner(s), timeout=0)
-        except TimeoutError:
-            s.timed_out = True
-
-    result = asyncio.run(
-        frontrun.explore(
-            setup=State,
-            workers=[worker],
-            invariant=lambda s: s.timed_out and not s.inner_ran,
-            clock="virtual",
-            reproduce_on_failure=0,
-        )
-    )
-    assert result.property_holds, result.explanation
-
-
-def test_async_wait_for_negative_timeout_does_not_start_inner_coroutine() -> None:
-    class State:
-        def __init__(self) -> None:
-            self.inner_ran = False
-            self.timed_out = False
-
-    async def inner(s: State) -> None:
-        s.inner_ran = True
-
-    async def worker(s: State) -> None:
-        try:
-            await asyncio.wait_for(inner(s), timeout=-1)
+            await asyncio.wait_for(inner(s), timeout=timeout)
         except TimeoutError:
             s.timed_out = True
 
@@ -525,6 +499,31 @@ def test_async_timeout_zero_expires_and_clears_cancellation_state() -> None:
 
 
 @pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_zero_without_await_does_not_cancel_later() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.completed = False
+            self.cancelling_after_context = -1
+
+    async def worker(s: State) -> None:
+        async with asyncio.timeout(0):
+            s.completed = True
+        s.cancelling_after_context = asyncio.current_task().cancelling()  # type: ignore[union-attr]
+        await asyncio.sleep(0)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.completed and s.cancelling_after_context == 0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
 def test_async_timeout_positive_expiry_clears_cancellation_state() -> None:
     class State:
         def __init__(self) -> None:
@@ -552,16 +551,17 @@ def test_async_timeout_positive_expiry_clears_cancellation_state() -> None:
 
 
 @pytest.mark.skipif(not hasattr(asyncio, "timeout_at"), reason="asyncio.timeout_at requires Python 3.11+")
-def test_async_timeout_at_uses_virtual_deadline() -> None:
+def test_async_timeout_at_uses_loop_time_deadline() -> None:
     class State:
         def __init__(self) -> None:
             self.timed_out = False
             self.elapsed = 0.0
 
     async def worker(s: State) -> None:
+        loop = asyncio.get_running_loop()
         start = time.monotonic()
         try:
-            async with asyncio.timeout_at(start + 1.0):
+            async with asyncio.timeout_at(loop.time() + 1.0):
                 await asyncio.sleep(10.0)
         except TimeoutError:
             s.timed_out = True
@@ -571,7 +571,36 @@ def test_async_timeout_at_uses_virtual_deadline() -> None:
         frontrun.explore(
             setup=State,
             workers=[worker],
-            invariant=lambda s: s.timed_out and s.elapsed >= 1.0,
+            invariant=lambda s: s.timed_out and s.elapsed == pytest.approx(1.0, abs=0.01),
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_suppressed_cancel_clears_cancellation_state() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.cancelled = False
+            self.completed = False
+            self.cancelling_after_context = -1
+
+    async def worker(s: State) -> None:
+        async with asyncio.timeout(1.0):
+            try:
+                await asyncio.sleep(10.0)
+            except asyncio.CancelledError:
+                s.cancelled = True
+        s.completed = True
+        s.cancelling_after_context = asyncio.current_task().cancelling()  # type: ignore[union-attr]
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.cancelled and s.completed and s.cancelling_after_context == 0,
             clock="virtual",
             reproduce_on_failure=0,
         )
@@ -603,7 +632,7 @@ def test_async_timeout_context_uses_virtual_deadline_and_reports_expiry() -> Non
         frontrun.explore(
             setup=State,
             workers=[worker],
-            invariant=lambda s: s.timed_out and s.expired and s.elapsed >= 1.0,
+            invariant=lambda s: s.timed_out and s.expired and s.elapsed == pytest.approx(1.0, abs=0.01),
             clock="virtual",
             reproduce_on_failure=0,
         )
@@ -636,6 +665,7 @@ def test_async_random_wait_for_bare_future_uses_virtual_deadline() -> None:
             max_attempts=1,
             reproduce_on_failure=0,
             timeout_per_run=1.0,
+            deadlock_timeout=0.05,
         )
     )
     assert result.property_holds, result.explanation
@@ -677,26 +707,35 @@ def test_async_timeout_context_reschedule_from_none_uses_virtual_deadline() -> N
             self.timed_out = False
             self.expired = False
             self.deadline_delta = 0.0
+            self.elapsed = 0.0
 
     async def worker(s: State) -> None:
-        start = time.monotonic()
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        virtual_start = time.monotonic()
         timeout_cm: object | None = None
         try:
             async with asyncio.timeout(None) as active_timeout:
                 timeout_cm = active_timeout
-                active_timeout.reschedule(time.monotonic() + 1.0)
+                active_timeout.reschedule(start + 1.0)
                 deadline = active_timeout.when()
                 s.deadline_delta = -1.0 if deadline is None else deadline - start
                 await asyncio.sleep(10.0)
         except TimeoutError:
             s.timed_out = True
+            s.elapsed = time.monotonic() - virtual_start
             s.expired = bool(timeout_cm is not None and getattr(timeout_cm, "expired")())
 
     result = asyncio.run(
         frontrun.explore(
             setup=State,
             workers=[worker],
-            invariant=lambda s: s.timed_out and s.expired and s.deadline_delta == pytest.approx(1.0),
+            invariant=lambda s: (
+                s.timed_out
+                and s.expired
+                and s.deadline_delta == pytest.approx(1.0)
+                and s.elapsed == pytest.approx(1.0, abs=0.01)
+            ),
             clock="virtual",
             reproduce_on_failure=0,
         )
@@ -770,16 +809,18 @@ def test_async_dpor_plain_wall_timeout_is_not_reported_as_deadlock() -> None:
     from frontrun.async_dpor import _real_asyncio_sleep
 
     class State:
-        pass
+        def __init__(self) -> None:
+            self.completed = False
 
     async def worker(s: State) -> None:
         await _real_asyncio_sleep(0.2)
+        s.completed = True
 
     result = asyncio.run(
         frontrun.explore(
             setup=State,
             workers=[worker],
-            invariant=lambda s: True,
+            invariant=lambda s: not s.completed,
             clock="virtual",
             max_executions=1,
             reproduce_on_failure=0,
@@ -787,7 +828,11 @@ def test_async_dpor_plain_wall_timeout_is_not_reported_as_deadlock() -> None:
             deadlock_timeout=0.01,
         )
     )
-    assert result.property_holds, result.explanation
+    assert not result.property_holds
+    assert result.counterexample is None
+    assert result.explanation is not None
+    assert "inconclusive" in result.explanation
+    assert "Deadlock detected" not in result.explanation
 
 
 def test_timer_tagging_restores_loop_call_at_instance_override() -> None:
@@ -1169,7 +1214,7 @@ def test_async_queue_get_nowait_wakes_blocked_putter() -> None:
 def test_async_condition_patch_preserves_unmanaged_wait_notify() -> None:
     from frontrun.async_dpor import _patch_asyncio_queue_condition, _unpatch_asyncio_queue_condition
 
-    async def scenario() -> bool:
+    async def scenario(*, notify_all: bool) -> bool:
         condition = asyncio.Condition()
         ready = asyncio.Event()
         woke = False
@@ -1184,13 +1229,17 @@ def test_async_condition_patch_preserves_unmanaged_wait_notify() -> None:
         task = asyncio.create_task(waiter())
         await ready.wait()
         async with condition:
-            condition.notify()
+            if notify_all:
+                condition.notify_all()
+            else:
+                condition.notify()
         await asyncio.wait_for(task, timeout=1.0)
         return woke
 
     _patch_asyncio_queue_condition()
     try:
-        assert asyncio.run(scenario())
+        assert asyncio.run(scenario(notify_all=False))
+        assert asyncio.run(scenario(notify_all=True))
     finally:
         _unpatch_asyncio_queue_condition()
 

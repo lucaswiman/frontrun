@@ -72,10 +72,10 @@ arbitrary epoch (1,000,000.0 seconds), owned by the scheduler:
   "autojump" model (prior art:
   ``trio.testing.MockClock(autojump_threshold=0)``).
 * **Async timeout wrappers are virtual.** Inside explored tasks,
-  ``asyncio.wait_for(awaitable, timeout=t)`` and ``asyncio.timeout(t)``
-  register virtual deadlines. The event loop's own timer heap still stays on
-  wall time; raw ``loop.call_later`` / ``call_at`` callbacks are not
-  virtualized.
+  ``asyncio.wait_for(awaitable, timeout=t)``, ``asyncio.timeout(t)``, and
+  ``asyncio.timeout_at(when)`` register virtual deadlines. The event loop's own
+  timer heap still stays on wall time; raw ``loop.call_later`` / ``call_at``
+  callbacks are not virtualized.
 * **Deadlocks are detected exactly (sync and async DPOR).** All workers
   blocked with *no* pending deadline is a genuine deadlock; the DPOR
   schedulers report it immediately instead of via the wall-clock fallback
@@ -156,29 +156,32 @@ Semantics and limitations
   ``loop.call_later`` and ``loop.call_at`` are not virtualized: the
   scheduler's own watchdog timers share the event loop's timer heap, and
   virtualizing it would let a clock jump fire them spuriously. Use
-  ``asyncio.wait_for`` / ``asyncio.timeout`` inside explored tasks when you
-  want a virtual async timeout. The handle returned by ``asyncio.timeout``
-  uses the same virtual time domain for ``when()`` / ``reschedule(when)``;
-  pass values derived from virtual ``time.monotonic()``.
+  ``asyncio.wait_for`` / ``asyncio.timeout`` / ``asyncio.timeout_at`` inside
+  explored tasks when you want a virtual async timeout. The handle returned by
+  ``asyncio.timeout`` keeps asyncio's normal loop-time API for ``when()`` /
+  ``reschedule(when)``; pass values derived from ``loop.time()``. frontrun
+  converts the remaining delay to a virtual scheduler deadline internally.
 * Sync timed waits on frontrun's cooperative primitives use virtual
   deadlines: ``Lock`` / ``RLock`` / ``Semaphore`` acquire timeouts,
   ``Event.wait(timeout=...)``, ``Condition.wait(timeout=...)`` /
   ``wait_for(..., timeout=...)``, and ``Queue.get`` / ``put`` timeouts.
-  Async ``wait_for`` / ``timeout`` deadlines are virtual, and async DPOR
-  makes ``Event``, ``Queue`` and ``Condition`` waiters engine-visible with
-  wake happens-before edges.
+  Async ``wait_for`` / ``timeout`` / ``timeout_at`` deadlines are virtual, and
+  async DPOR makes ``Event``, ``Queue`` and ``Condition`` waiters engine-visible
+  with wake happens-before edges.
 * An async ``Event.set()`` issued from outside the explored tasks (a
   loop callback or a foreign thread) is invisible to exact deadlock
   detection; if all tasks are otherwise blocked it may be reported as a
   deadlock.  Setters inside explored tasks — the normal case — are fully
   tracked.
-* **Captured references bypass the patch.** ``from time import monotonic``
-  or ``from datetime import datetime`` before exploration captures the real
-  object before patching; such call sites keep reading wall-clock time. Call
-  through the module (``time.monotonic()``, ``datetime.datetime.now()``) in
-  code under test. Set ``clock_diagnostics=True`` to warn when traced worker
-  frames hold captured real ``time.*`` functions. Diagnostics require frame
-  tracing, so they apply to DPOR and sync random exploration; async random
+* **Captured references bypass the patch.** ``from time import monotonic``,
+  ``from time import sleep``, ``from datetime import datetime``, or captured
+  ``asyncio.sleep`` / ``wait_for`` / ``timeout`` objects taken before
+  exploration keep pointing at the real object. Call through the module
+  (``time.monotonic()``, ``datetime.datetime.now()``, ``asyncio.wait_for(...)``)
+  in code under test. Set ``clock_diagnostics=True`` to warn when traced worker
+  frames hold captured real ``time.*`` clock-read functions. Diagnostics do not
+  detect captured sleeps, async helpers, or datetime/date classes. They require
+  frame tracing, so they apply to DPOR and sync random exploration; async random
   accepts the unified option but cannot inspect frames.
 * ``strategy="random"`` with *async* workers cannot see tasks blocked on
   raw ``asyncio`` primitives (e.g. ``asyncio.Lock``); a quiescence

@@ -169,18 +169,13 @@ class WakeEvent:
 class _Deadline:
     actor_id: int
     deadline: float
+    order: int
     token: object
     kind: str
     wake_id: int | None
 
 
 _SLEEP_TOKEN = object()
-
-
-def _token_sort_key(token: object) -> tuple[str, str]:
-    if isinstance(token, str | int | float | bool | bytes | type(None)):
-        return (type(token).__name__, repr(token))
-    return (type(token).__name__, repr(token))
 
 
 class DeadlineCoordinator:
@@ -195,12 +190,17 @@ class DeadlineCoordinator:
 
     def __init__(self) -> None:
         self._deadlines: dict[tuple[int, object], _Deadline] = {}
+        self._next_order = 0
+
+    def _new_deadline(self, actor_id: int, deadline: float, token: object, kind: str, wake_id: int | None) -> _Deadline:
+        self._next_order += 1
+        return _Deadline(actor_id, deadline, self._next_order, token, kind, wake_id)
 
     def add_sleep(self, actor_id: int, deadline: float, wake_id: int | None, token: object = _SLEEP_TOKEN) -> None:
-        self._deadlines[(actor_id, token)] = _Deadline(actor_id, deadline, token, "sleep", wake_id)
+        self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "sleep", wake_id)
 
     def add_timeout(self, actor_id: int, deadline: float, token: object, wake_id: int | None = None) -> None:
-        self._deadlines[(actor_id, token)] = _Deadline(actor_id, deadline, token, "timeout", wake_id)
+        self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "timeout", wake_id)
 
     def cancel(self, actor_id: int, token: object | None = None) -> None:
         if token is not None:
@@ -230,7 +230,7 @@ class DeadlineCoordinator:
         clock.advance_to(deadline)
         now = clock.now()
         due = [entry for entry in self._deadlines.values() if entry.deadline <= now]
-        due.sort(key=lambda entry: (entry.deadline, entry.actor_id, _token_sort_key(entry.token)))
+        due.sort(key=lambda entry: (entry.deadline, entry.actor_id, entry.order))
         for entry in due:
             self._deadlines.pop((entry.actor_id, entry.token), None)
         return [
@@ -245,7 +245,23 @@ class DeadlineCoordinator:
         ]
 
 
-class _VirtualDateTime(_real_datetime):
+class _VirtualDateTimeMeta(type):
+    def __instancecheck__(cls, instance: object) -> bool:
+        return isinstance(instance, _real_datetime)
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        return issubclass(subclass, _real_datetime)
+
+
+class _VirtualDateMeta(type):
+    def __instancecheck__(cls, instance: object) -> bool:
+        return isinstance(instance, _real_date)
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        return issubclass(subclass, _real_date)
+
+
+class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
     @classmethod
     def now(cls, tz: _datetime.tzinfo | None = None) -> _VirtualDateTime:
         clock = _active_virtual_clock()
@@ -282,7 +298,7 @@ class _VirtualDateTime(_real_datetime):
         )
 
 
-class _VirtualDate(_real_date):
+class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):
     @classmethod
     def today(cls) -> _VirtualDate:
         clock = _active_virtual_clock()

@@ -199,7 +199,7 @@ def test_sleep_advances_virtual_clock_with_zero_wall_time() -> None:
     )
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
-    assert wall_elapsed < 60.0  # the 500 s sleep must not be a real sleep
+    assert wall_elapsed < 4.0  # the 500 s sleep must not be a real sleep
 
 
 class _TTLCache:
@@ -303,8 +303,7 @@ def test_datetime_utcnow_reads_virtual_time() -> None:
         setup=_DatetimeObserver,
         workers=[worker],
         invariant=lambda s: (
-            s.utc_is_datetime
-            and s.utc.replace(tzinfo=dt.timezone.utc).timestamp() == pytest.approx(VIRTUAL_EPOCH)
+            s.utc_is_datetime and s.utc.replace(tzinfo=dt.timezone.utc).timestamp() == pytest.approx(VIRTUAL_EPOCH)
         ),
         clock="virtual",
         reproduce_on_failure=0,
@@ -468,7 +467,7 @@ def test_explored_clock_finds_timer_between_read_and_write() -> None:
     # the same advances without stalling on the deadlock timeout.
     assert result.reproduction_attempts == 10
     assert result.reproduction_successes == 10
-    assert wall_elapsed < 30.0, f"exploration + 10 replays took {wall_elapsed:.1f}s (replay clock stall?)"
+    assert wall_elapsed < 10.0, f"exploration + 10 replays took {wall_elapsed:.1f}s (replay clock stall?)"
 
 
 class _TimerCascadeRace:

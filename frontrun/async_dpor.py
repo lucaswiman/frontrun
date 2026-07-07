@@ -219,7 +219,7 @@ def _reset_async_lock_state() -> None:
     Must run before each exploration execution AND each replay attempt: stale
     wait-for edges / lock owners / held-locks from a prior run (compounded by
     id() reuse) leak into the next one and cause spurious DeadlockError or
-    phantom ownership (finding F5).
+    phantom ownership.
     """
     if _async_wait_graph is not None:
         _async_wait_graph.clear()
@@ -656,10 +656,40 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
                 return waiter, fut
         return None
 
+    def _wake_waiter(
+        self,
+        waiters: list[tuple[int, asyncio.Future[None]]],
+        scheduler: Any,
+        task_id: int | None,
+    ) -> None:
+        waiter_info = self._pop_waiter(waiters)
+        if waiter_info is None:
+            return
+        waiter, fut = waiter_info
+        if scheduler is not None and task_id is not None:
+            report_task_sync = getattr(scheduler, "report_task_sync", None)
+            if report_task_sync is not None:
+                report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
+            scheduler.execution.unblock_thread(waiter)
+        fut.set_result(None)
+
     def _wake_all_for_abort(self) -> None:
         for _waiter, fut in self._frontrun_get_waiters + self._frontrun_put_waiters:
             if not fut.done():
                 fut.set_result(None)
+
+    def get_nowait(self) -> Any:
+        item = super().get_nowait()
+        self._wake_waiter(self._frontrun_put_waiters, _scheduler_var.get(), _task_id_var.get())
+        if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
+            _async_parked_queues.discard(self)
+        return item
+
+    def put_nowait(self, item: Any) -> None:
+        super().put_nowait(item)
+        self._wake_waiter(self._frontrun_get_waiters, _scheduler_var.get(), _task_id_var.get())
+        if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
+            _async_parked_queues.discard(self)
 
     async def get(self) -> Any:
         task_id = _task_id_var.get()
@@ -709,16 +739,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
                     event_blocked.discard(task_id)
                 if not unblocked:
                     scheduler.execution.unblock_thread(task_id)
-        item = self.get_nowait()
-        put_waiter = self._pop_waiter(self._frontrun_put_waiters)
-        if put_waiter is not None:
-            waiter, fut = put_waiter
-            report_task_sync = getattr(scheduler, "report_task_sync", None)
-            if report_task_sync is not None:
-                report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-            scheduler.execution.unblock_thread(waiter)
-            fut.set_result(None)
-        return item
+        return self.get_nowait()
 
     async def put(self, item: Any) -> None:
         task_id = _task_id_var.get()
@@ -766,14 +787,6 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
                 if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
                     _async_parked_queues.discard(self)
         self.put_nowait(item)
-        get_waiter = self._pop_waiter(self._frontrun_get_waiters)
-        if get_waiter is not None:
-            waiter, fut = get_waiter
-            report_task_sync = getattr(scheduler, "report_task_sync", None)
-            if report_task_sync is not None:
-                report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-            scheduler.execution.unblock_thread(waiter)
-            fut.set_result(None)
 
 
 class _CooperativeAsyncCondition:
@@ -781,6 +794,7 @@ class _CooperativeAsyncCondition:
 
     def __init__(self, lock: Any | None = None) -> None:
         self._lock = lock if lock is not None else _real_asyncio_lock()
+        self._real_condition = _real_asyncio_condition(self._lock)
         self._waiters: list[tuple[int, asyncio.Future[None]]] = []
 
     def locked(self) -> bool:
@@ -811,8 +825,7 @@ class _CooperativeAsyncCondition:
         task_id = _task_id_var.get()
         scheduler = _scheduler_var.get()
         if scheduler is None or task_id is None:
-            condition = _real_asyncio_condition(self._lock)
-            return await condition.wait()
+            return await self._real_condition.wait()
         fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._waiters.append((task_id, fut))
         _async_parked_conditions.add(self)
@@ -869,6 +882,10 @@ class _CooperativeAsyncCondition:
             raise RuntimeError("cannot notify on un-acquired lock")
         task_id = _task_id_var.get()
         scheduler = _scheduler_var.get()
+        if scheduler is None or task_id is None:
+            self._real_condition.notify(n)
+            if not self._waiters:
+                return
         woke = 0
         while self._waiters and woke < n:
             waiter, fut = self._waiters.pop(0)
@@ -885,6 +902,14 @@ class _CooperativeAsyncCondition:
             _async_parked_conditions.discard(self)
 
     def notify_all(self) -> None:
+        task_id = _task_id_var.get()
+        scheduler = _scheduler_var.get()
+        if scheduler is None or task_id is None:
+            if not self.locked():
+                raise RuntimeError("cannot notify on un-acquired lock")
+            self._real_condition.notify_all()
+            if not self._waiters:
+                return
         self.notify(len(self._waiters))
 
 
@@ -982,6 +1007,7 @@ def _pin_loop_time(loop: Any) -> Callable[[], None]:
 _real_asyncio_sleep = asyncio.sleep
 _real_asyncio_wait_for = asyncio.wait_for
 _real_asyncio_timeout = getattr(asyncio, "timeout", None)
+_real_asyncio_timeout_at = getattr(asyncio, "timeout_at", None)
 _async_sleep_patched = False
 _async_timeout_patched = False
 
@@ -1059,41 +1085,71 @@ def _virtual_timeout_context(delay: float | None) -> Any:
         if _real_asyncio_timeout is None:
             raise RuntimeError("asyncio.timeout is not available on this Python version")
         return _real_asyncio_timeout(delay)
-    return _VirtualAsyncTimeoutContext(scheduler, task_id, delay)
+    when = None if delay is None else asyncio.get_running_loop().time() + delay
+    return _VirtualAsyncTimeoutContext(scheduler, task_id, when)
+
+
+def _virtual_timeout_at_context(when: float | None) -> Any:
+    scheduler = _scheduler_var.get()
+    task_id = _task_id_var.get()
+    clock = getattr(scheduler, "virtual_clock", None)
+    if (
+        _in_frontrun_timer.get()
+        or scheduler is None
+        or task_id is None
+        or clock is None
+        or _real_asyncio_timeout_at is None
+    ):
+        if _real_asyncio_timeout_at is None:
+            raise RuntimeError("asyncio.timeout_at is not available on this Python version")
+        return _real_asyncio_timeout_at(when)
+    return _VirtualAsyncTimeoutContext(scheduler, task_id, when)
 
 
 class _VirtualAsyncTimeoutContext:
-    def __init__(self, scheduler: Any, task_id: int, delay: float | None) -> None:
+    def __init__(self, scheduler: Any, task_id: int, when: float | None) -> None:
         self._scheduler = scheduler
         self._task_id = task_id
-        self._delay = delay
-        self._deadline: float | None = None
+        self._initial_when = when
+        self._when: float | None = None
         self._token: _VirtualAsyncTimeoutToken | None = None
         self._task: asyncio.Task[Any] | None = None
+        self._cancelling = 0
+        self._immediate_handle: asyncio.Handle | None = None
 
     async def __aenter__(self) -> _VirtualAsyncTimeoutContext:
-        clock = getattr(self._scheduler, "virtual_clock", None)
-        if clock is None:
-            return self
         self._task = asyncio.current_task()
-        if self._delay is None:
-            return self
-        self.reschedule(clock.now() + max(0.0, self._delay))
+        if self._task is not None:
+            self._cancelling = self._task.cancelling()
+        self.reschedule(self._initial_when)
         return self
 
     def when(self) -> float | None:
-        return self._deadline
+        return self._when
 
     def expired(self) -> bool:
         return self._token.expired if self._token is not None else False
 
+    def _to_virtual_deadline(self, when: float | None) -> float | None:
+        if when is None:
+            return None
+        clock = getattr(self._scheduler, "virtual_clock", None)
+        if clock is None:
+            return None
+        delay = when - asyncio.get_running_loop().time()
+        return clock.now() + max(0.0, delay)
+
     def reschedule(self, when: float | None) -> None:
         remove_timeout = getattr(self._scheduler, "remove_timeout_deadline", None)
+        if self._immediate_handle is not None:
+            self._immediate_handle.cancel()
+            self._immediate_handle = None
         if self._token is not None and remove_timeout is not None:
             remove_timeout(self._task_id, self._token)
         self._token = None
-        self._deadline = when
-        if when is None or self._task is None:
+        self._when = when
+        deadline = self._to_virtual_deadline(when)
+        if deadline is None or self._task is None:
             return
         add_timeout = getattr(self._scheduler, "add_timeout_deadline", None)
         if add_timeout is None:
@@ -1108,16 +1164,30 @@ class _VirtualAsyncTimeoutContext:
                 self._task.cancel()
 
         setattr(token, _ASYNC_TIMEOUT_FIRE, fire)
-        add_timeout(self._task_id, when, token)
+        clock = getattr(self._scheduler, "virtual_clock", None)
+        if clock is not None and deadline <= clock.now():
+            self._immediate_handle = asyncio.get_running_loop().call_soon(fire)
+            return
+        add_timeout(self._task_id, deadline, token)
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         token = self._token
+        expired = bool(token is not None and token.expired)
+        if self._immediate_handle is not None:
+            self._immediate_handle.cancel()
+            self._immediate_handle = None
         if token is not None:
             remove_timeout = getattr(self._scheduler, "remove_timeout_deadline", None)
             if remove_timeout is not None:
                 remove_timeout(self._task_id, token)
-        if token is not None and token.expired and exc_type is asyncio.CancelledError:
-            raise TimeoutError from exc
+        if expired:
+            uncancel = getattr(self._task, "uncancel", None)
+            remaining_cancels = uncancel() if uncancel is not None else self._cancelling
+            wait_scheduled = getattr(self._scheduler, "wait_until_scheduled_after_block", None)
+            if wait_scheduled is not None and getattr(self._scheduler, "_error", None) is None:
+                await wait_scheduled(self._task_id, "asyncio.timeout")
+            if exc_type is asyncio.CancelledError and (uncancel is None or remaining_cancels <= self._cancelling):
+                raise TimeoutError from exc
         return False
 
 
@@ -1138,8 +1208,15 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
     ):
         return await _real_asyncio_wait_for(awaitable, timeout)
 
-    token = _VirtualAsyncTimeoutToken()
-    add_timeout(task_id, clock.now() + max(0.0, timeout), token)
+    if timeout <= 0:
+        inner = asyncio.ensure_future(awaitable)
+        if inner.done():
+            return await inner
+        inner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await inner
+        raise TimeoutError
+
     inner_awaitable: Awaitable[Any] = awaitable
     wraps_logical_task = asyncio.iscoroutine(awaitable)
     if wraps_logical_task:
@@ -1147,32 +1224,35 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
 
         inner_awaitable = _AutoPauseCoroutine(awaitable, task_id, scheduler)
     inner = asyncio.ensure_future(inner_awaitable)
+
+    token = _VirtualAsyncTimeoutToken()
+    add_timeout(task_id, clock.now() + timeout, token)
     event_blocked = getattr(scheduler, "_event_blocked", None)
-    engine_blocked = not wraps_logical_task
-    if engine_blocked and event_blocked is not None:
+    engine_execution = None if wraps_logical_task else getattr(scheduler, "execution", None)
+    if engine_execution is not None and event_blocked is not None:
         event_blocked.add(task_id)
-    if engine_blocked:
-        scheduler.execution.block_thread(task_id)
+    if engine_execution is not None:
+        engine_execution.block_thread(task_id)
     depth = _in_scheduler_pause.get()
     _in_scheduler_pause.set(depth + 1)
     unblocked = False
     try:
         kick = getattr(scheduler, "kick_stalled_schedule", None)
-        if engine_blocked and kick is not None:
+        if engine_execution is not None and kick is not None:
             await kick(task_id)
         done, _pending = await asyncio.wait({inner, token.future}, return_when=asyncio.FIRST_COMPLETED)
-        if engine_blocked:
-            scheduler.execution.unblock_thread(task_id)
+        if engine_execution is not None:
+            engine_execution.unblock_thread(task_id)
             unblocked = True
-        if engine_blocked and event_blocked is not None:
+        if engine_execution is not None and event_blocked is not None:
             event_blocked.discard(task_id)
         wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
-        if engine_blocked and getattr(scheduler, "_error", None) is None and wait_scheduled is not None:
+        if engine_execution is not None and getattr(scheduler, "_error", None) is None and wait_scheduled is not None:
             await wait_scheduled(task_id, "virtual wait_for")
         if inner in done and token.future not in done:
             return await inner
         if token.future in done:
-            if not engine_blocked and getattr(scheduler, "_error", None) is None and wait_scheduled is not None:
+            if engine_execution is None and getattr(scheduler, "_error", None) is None and wait_scheduled is not None:
                 await wait_scheduled(task_id, "virtual wait_for timeout")
             if not inner.done():
                 inner.cancel()
@@ -1184,10 +1264,10 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
     finally:
         _in_scheduler_pause.set(depth)
         remove_timeout(task_id, token)
-        if engine_blocked and event_blocked is not None:
+        if engine_execution is not None and event_blocked is not None:
             event_blocked.discard(task_id)
-        if engine_blocked and not unblocked:
-            scheduler.execution.unblock_thread(task_id)
+        if engine_execution is not None and not unblocked:
+            engine_execution.unblock_thread(task_id)
         if not inner.done():
             inner.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1201,6 +1281,8 @@ def _patch_asyncio_timeouts() -> None:
     asyncio.wait_for = _virtual_asyncio_wait_for  # type: ignore[assignment]
     if _real_asyncio_timeout is not None:
         asyncio.timeout = _virtual_timeout_context  # type: ignore[assignment]
+    if _real_asyncio_timeout_at is not None:
+        asyncio.timeout_at = _virtual_timeout_at_context  # type: ignore[assignment]
     _async_timeout_patched = True
 
 
@@ -1211,6 +1293,8 @@ def _unpatch_asyncio_timeouts() -> None:
     asyncio.wait_for = _real_asyncio_wait_for  # type: ignore[assignment]
     if _real_asyncio_timeout is not None:
         asyncio.timeout = _real_asyncio_timeout  # type: ignore[assignment]
+    if _real_asyncio_timeout_at is not None:
+        asyncio.timeout_at = _real_asyncio_timeout_at  # type: ignore[assignment]
     _async_timeout_patched = False
 
 
@@ -1666,7 +1750,7 @@ class AsyncDporScheduler(InterleavedLoop):
         # Set up IO reporter context so SQL interception can report to us.
         # Async DPOR runs all tasks on one event-loop thread, so the DPOR
         # scheduler/thread-id and transaction state must be task-aware
-        # (contextvar-backed) rather than per-thread (findings F2, F4).
+        # (contextvar-backed) rather than per-thread.
         from frontrun._io_detection import (
             set_dpor_scheduler_task,
             set_dpor_thread_id_task,
@@ -2113,8 +2197,8 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                 self._current_task = first
         # Stubs so the patched cooperative asyncio.Lock can call
         # engine.report_sync / execution.block_thread without crashing during
-        # replay (finding F3).  _lock_blocked mirrors the DPOR scheduler's
-        # attribute so the same lock-acquire code path works unmodified.
+        # replay. _lock_blocked mirrors the DPOR scheduler's attribute so the
+        # same lock-acquire code path works unmodified.
         self.engine: Any = ReplayEngine()
         self.execution: Any = ReplayExecution()
         self._lock_blocked: dict[int, int] = {}
@@ -2217,6 +2301,21 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                             )
                             self._condition.notify_all()
                             return
+                    while not (self._finished or self._error) and self._current_task != task_id:
+                        if self._current_task in self._event_blocked:
+                            self._advance()
+                            self._condition.notify_all()
+                            continue
+                        try:
+                            await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                        except asyncio.TimeoutError:
+                            self._error = SchedulerTimeoutError(
+                                f"Replay deadlock: task {task_id} woke from sleep but was never scheduled"
+                            )
+                            self._condition.notify_all()
+                            return
+                    if not (self._finished or self._error):
+                        self._current_task_consumed = True
                 finally:
                     self._sleepers.pop(task_id, None)
                     self._deadlines.cancel_sleep(task_id)
@@ -2276,6 +2375,8 @@ class _ReplayAsyncScheduler(InterleavedLoop):
                     )
                     self._condition.notify_all()
                     return
+            if not (self._finished or self._error):
+                self._current_task_consumed = True
 
     def on_proceed(self, task_id: Any, marker: Any = None) -> None:
         self._current_task_consumed = True
@@ -2300,7 +2401,7 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         # Release any asyncio.Lock objects still held by this task (e.g. the
         # task crashed or was cancelled without release()).  Without this,
         # stale holding edges / lock owners leak into later replay attempts
-        # and cause spurious DeadlockError or phantom ownership (finding F5).
+        # and cause spurious DeadlockError or phantom ownership.
         _release_task_async_locks(task_id)
         _scheduler_var.set(None)
         _task_id_var.set(None)
@@ -2341,7 +2442,7 @@ async def _reproduce_async_counterexample(
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
     for _ in range(reproduce_on_failure):
-        # Clear cooperative-lock global state before EACH replay attempt (F5).
+        # Clear cooperative-lock global state before each replay attempt.
         _reset_async_lock_state()
 
         replay_clock = VirtualClock() if clock != "real" else None
@@ -2380,7 +2481,7 @@ async def _reproduce_async_counterexample(
         except (AttributeError, TypeError, NameError):
             # Programming errors in our own replay plumbing (e.g. a missing
             # scheduler attribute) must NOT be silently scored as a failed
-            # reproduction — surface them instead of hiding the bug (F3).
+            # reproduction; surface them instead of hiding the bug.
             raise
         except Exception:
             # The user's task body raised: the run produced no usable state,
@@ -2479,9 +2580,9 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         error_on_any_race: Treat unsynchronized races as failures.
         clock: ``"real"`` (default), ``"virtual"`` (autojump virtual clock),
             or ``"explored"`` (clock advances become schedulable DPOR steps
-            via a synthetic clock-actor task).  ``asyncio.wait_for`` /
-            ``asyncio.timeout`` inside explored tasks use virtual deadlines.
-            See :doc:`/virtual_clock`.
+            via a synthetic clock-actor task). ``asyncio.wait_for``,
+            ``asyncio.timeout``, and ``asyncio.timeout_at`` inside explored
+            tasks use virtual deadlines. See :doc:`/virtual_clock`.
 
     Returns:
         InterleavingResult with exploration statistics and any counterexample.
@@ -2507,6 +2608,8 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     )
 
     result = InterleavingResult(property_holds=True)
+    decisive_executions = 0
+    inconclusive_timeouts = 0
     stable_ids = StableObjectIds()
     total_deadline = make_deadline(total_timeout)
 
@@ -2548,8 +2651,8 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     # (where the contextvar-gated patch resolves to virtual time) would carry
     # a virtual ``when`` that the loop compares against wall-clock time —
     # deadlock-timeout timers would then never fire.  Raw loop timers stay on
-    # the wall clock; asyncio.wait_for / asyncio.timeout are patched directly
-    # inside explored tasks.
+    # the wall clock; asyncio.wait_for / asyncio.timeout / asyncio.timeout_at
+    # are patched directly inside explored tasks.
     _loop = asyncio.get_running_loop()
     _restore_loop_time: Callable[[], None] | None = None
     _user_timers_check: Callable[[], bool] | None = None
@@ -2636,27 +2739,21 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                 result.num_explored += 1
 
                 # Check for deadlock: explicit DeadlockError from wait-for
-                # graph cycle detection, or timeout (tasks blocked on locks
-                # get cancelled by run_all and appear "done" via _mark_done
-                # in the finally block, so we can't rely on unfinished alone).
+                # graph cycle detection / exact virtual-clock detection.  A
+                # plain SchedulerTimeoutError is only an inconclusive partial
+                # run: the task may simply be waiting on a wall-clock awaitable
+                # the scheduler does not model, so do not score it as a
+                # constructive deadlock.
                 is_deadlock = False
                 deadlock_explanation = ""
                 if deadlock_error is not None:
                     is_deadlock = True
                     deadlock_explanation = f"Deadlock detected: {deadlock_error.cycle_description}"
-                elif timed_out:
-                    is_deadlock = True
-                    if unfinished:
-                        stuck = ", ".join(str(t) for t in unfinished)
-                        deadlock_explanation = (
-                            f"Deadlock detected: tasks [{stuck}] did not complete. "
-                            f"All tasks were blocked and could not make progress."
-                        )
-                    else:
-                        deadlock_explanation = (
-                            "Deadlock detected: all tasks were blocked and timed out. "
-                            "Tasks could not make progress (likely waiting on locks held by each other)."
-                        )
+
+                if timed_out and not is_deadlock:
+                    inconclusive_timeouts += 1
+                    continue
+                decisive_executions += 1
 
                 if is_deadlock:
                     schedule_list = record_dpor_failure(result, list(execution.schedule_trace), deadlock_explanation)
@@ -2726,5 +2823,13 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             _untag_timers()
         if _restore_loop_time is not None:
             _restore_loop_time()
+
+    if result.property_holds and result.num_explored > 0 and decisive_executions == 0 and inconclusive_timeouts > 0:
+        result.property_holds = False
+        result.explanation = (
+            f"Async DPOR checked no completed interleavings: all {inconclusive_timeouts} explored execution(s) "
+            "timed out before completion. This is inconclusive, not a deadlock counterexample; increase "
+            "timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
+        )
 
     return result

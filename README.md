@@ -385,7 +385,7 @@ result = frontrun.explore(
 assert not result.property_holds  # found: the timer fired inside the RMW window
 ```
 
-Works for sync and async workers with both `strategy="dpor"` and `strategy="random"`. Raw event-loop timers stay on the wall clock, but `asyncio.wait_for` and `asyncio.timeout` inside explored tasks use virtual deadlines. See [Virtual clock](docs/virtual_clock.rst) for semantics and limitations.
+Works for sync and async workers with both `strategy="dpor"` and `strategy="random"`. Raw event-loop timers stay on the wall clock, but `asyncio.wait_for`, `asyncio.timeout`, and `asyncio.timeout_at` inside explored tasks use virtual deadlines. See [Virtual clock](docs/virtual_clock.rst) for semantics and limitations.
 
 ### C-Level I/O Interception
 
