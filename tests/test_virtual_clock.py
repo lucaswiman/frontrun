@@ -13,6 +13,8 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import warnings
+import datetime as dt
 from collections.abc import Callable
 from typing import Any
 
@@ -82,7 +84,16 @@ def test_process_execution_rejects_virtual_clock() -> None:
 
 
 def test_time_functions_restored_after_exploration() -> None:
-    saved = (time.time, time.monotonic, time.perf_counter, time.time_ns, time.monotonic_ns, time.perf_counter_ns)
+    saved = (
+        time.time,
+        time.monotonic,
+        time.perf_counter,
+        time.time_ns,
+        time.monotonic_ns,
+        time.perf_counter_ns,
+        dt.datetime,
+        dt.date,
+    )
 
     class State:
         pass
@@ -102,6 +113,8 @@ def test_time_functions_restored_after_exploration() -> None:
         time.time_ns,
         time.monotonic_ns,
         time.perf_counter_ns,
+        dt.datetime,
+        dt.date,
     ) == saved
 
 
@@ -227,6 +240,103 @@ def test_ttl_cache_expiry_is_reachable() -> None:
         reproduce_on_failure=0,
     )
     assert result.property_holds, result.explanation
+
+
+class _DatetimeObserver:
+    def __init__(self) -> None:
+        self.start = dt.datetime.min
+        self.end = dt.datetime.min
+        self.aware = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        self.today = dt.date.min
+
+
+def test_datetime_now_advances_with_virtual_sleep() -> None:
+    def worker(s: _DatetimeObserver) -> None:
+        s.start = dt.datetime.now()
+        time.sleep(2.5)
+        s.end = dt.datetime.now()
+
+    result = frontrun.explore(
+        setup=_DatetimeObserver,
+        workers=[worker],
+        invariant=lambda s: (s.end - s.start).total_seconds() >= 2.5,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_datetime_now_timezone_reads_virtual_time() -> None:
+    def worker(s: _DatetimeObserver) -> None:
+        s.aware = dt.datetime.now(dt.timezone.utc)
+
+    result = frontrun.explore(
+        setup=_DatetimeObserver,
+        workers=[worker],
+        invariant=lambda s: s.aware.tzinfo is dt.timezone.utc and s.aware.timestamp() == pytest.approx(VIRTUAL_EPOCH),
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_date_today_reads_virtual_time() -> None:
+    expected = dt.date.fromtimestamp(VIRTUAL_EPOCH)
+
+    def worker(s: _DatetimeObserver) -> None:
+        s.today = dt.date.today()
+
+    result = frontrun.explore(
+        setup=_DatetimeObserver,
+        workers=[worker],
+        invariant=lambda s: s.today == expected,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_clock_diagnostics_warn_for_captured_time_reference() -> None:
+    captured_monotonic = time.monotonic
+
+    class State:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+    def worker(s: State, monotonic: Callable[[], float] = captured_monotonic) -> None:
+        s.value = monotonic()
+
+    with pytest.warns(RuntimeWarning, match="captured.*time\\.monotonic"):
+        result = frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.value > 0,
+            clock="virtual",
+            clock_diagnostics=True,
+            reproduce_on_failure=0,
+        )
+    assert result.property_holds, result.explanation
+
+
+def test_clock_diagnostics_ignore_module_qualified_time_calls() -> None:
+    class State:
+        pass
+
+    def worker(s: State) -> None:
+        time.monotonic()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: True,
+            clock="virtual",
+            clock_diagnostics=True,
+            reproduce_on_failure=0,
+        )
+    assert result.property_holds, result.explanation
+    assert not [warning for warning in caught if "captured" in str(warning.message)]
 
 
 class _WakeOrder:

@@ -255,16 +255,83 @@ def test_async_random_explored_clock_can_fire_timer_early() -> None:
 
 
 def test_async_wait_for_stays_on_wall_clock() -> None:
-    """Documented limitation: loop timers (asyncio.wait_for) remain real, so
-    a short real timeout fires even while virtual sleeps are active."""
+    """``asyncio.wait_for`` uses a virtual deadline inside explored tasks."""
 
     class State:
         def __init__(self) -> None:
             self.timed_out = False
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(asyncio.sleep(10.0), timeout=1.0)
+        except (TimeoutError, asyncio.TimeoutError):
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker, lambda s: asyncio.sleep(0)],
+            invariant=lambda s: s.timed_out and s.elapsed >= 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"virtual wait_for took {wall_elapsed:.1f}s wall time"
+
+
+def test_async_wait_for_event_timeout_is_explored_before_setter() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.timed_out = False
+
+    async def waiter(s: State) -> None:
+        try:
+            await asyncio.wait_for(s.event.wait(), timeout=0.5)
+        except (TimeoutError, asyncio.TimeoutError):
+            s.timed_out = True
+
+    async def setter(s: State) -> None:
+        await asyncio.sleep(1.0)
+        s.event.set()
+
+    def invariant(s: State) -> bool:
+        assert not s.timed_out, "virtual wait_for timeout fired before the event setter"
+        return True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, setter],
+            invariant=invariant,
+            clock="explored",
+        )
+    )
+    _assert_invariant_failure(result, "virtual wait_for timeout")
+
+
+def test_async_wait_for_cancels_inner_task_once() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.cancelled = 0
+
+    async def never_finishes(s: State) -> None:
+        try:
+            await asyncio.sleep(10.0)
+        except asyncio.CancelledError:
+            s.cancelled += 1
+            raise
 
     async def worker(s: State) -> None:
         try:
-            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.2)
+            await asyncio.wait_for(never_finishes(s), timeout=1.0)
         except (TimeoutError, asyncio.TimeoutError):
             s.timed_out = True
 
@@ -272,7 +339,7 @@ def test_async_wait_for_stays_on_wall_clock() -> None:
         frontrun.explore(
             setup=State,
             workers=[worker],
-            invariant=lambda s: s.timed_out,
+            invariant=lambda s: s.timed_out and s.cancelled == 1,
             clock="virtual",
             reproduce_on_failure=0,
         )
@@ -568,6 +635,97 @@ def test_async_event_wait_with_virtual_sleeper_autojumps() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert wall_elapsed < 4.0, f"event+sleeper took {wall_elapsed:.1f}s (autojump stall?)"
+
+
+def test_async_queue_get_deadlock_detected_exactly() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def consumer(s: State) -> None:
+        await s.queue.get()
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[consumer, consumer],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+            deadlock_timeout=0.2,
+            timeout_per_run=1.0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "no virtual-clock deadline is pending" in result.explanation
+    assert wall_elapsed < 0.8, f"queue deadlock took {wall_elapsed:.1f}s to report (wall fallback?)"
+
+
+def test_async_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue()
+            self.item = ""
+
+    async def consumer(s: State) -> None:
+        s.item = await s.queue.get()
+
+    async def producer(s: State) -> None:
+        await asyncio.sleep(1.0)
+        await s.queue.put("ready")
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[consumer, producer],
+            invariant=lambda s: s.item == "ready",
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"queue+sleeper took {wall_elapsed:.1f}s (autojump stall?)"
+
+
+def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.condition = asyncio.Condition()
+            self.ready = 0
+            self.woken: list[str] = []
+            self.after_first_notify = 0
+
+    async def waiter(name: str, s: State) -> None:
+        async with s.condition:
+            s.ready += 1
+            s.condition.notify_all()
+            await s.condition.wait()
+            s.woken.append(name)
+
+    async def notifier(s: State) -> None:
+        async with s.condition:
+            await s.condition.wait_for(lambda: s.ready == 2)
+            s.condition.notify(1)
+        await asyncio.sleep(0)
+        s.after_first_notify = len(s.woken)
+        async with s.condition:
+            s.condition.notify_all()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[lambda s: waiter("a", s), lambda s: waiter("b", s), notifier],
+            invariant=lambda s: s.after_first_notify == 1 and sorted(s.woken) == ["a", "b"],
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
 
 
 class _AsyncHoldAndSleep:
