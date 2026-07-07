@@ -551,8 +551,8 @@ async def explore_async_random(
             block on primitives the scheduler cannot see (e.g. a raw
             ``asyncio.Lock``) are handled by a quiescence heuristic; prefer
             the DPOR strategy for lock-heavy async code.  ``asyncio.wait_for``
-            / ``asyncio.timeout`` stay on the wall clock.  See
-            :doc:`/virtual_clock`.
+            / ``asyncio.timeout`` inside explored tasks use virtual deadlines.
+            See :doc:`/virtual_clock`.
 
     Returns:
         InterleavingResult with the outcome.  The ``unique_interleavings``

@@ -126,16 +126,16 @@ Acceptance tests:
 
 Status: implemented. Complexity: medium. Priority: medium.
 
-Async DPOR currently patches `asyncio.Lock` and `asyncio.Event`, but raw
-`asyncio.Queue`, `asyncio.Condition`, and bare futures are not engine-visible.
-They behave correctly in many tests, but deadlocks through them fall back to
-wall-clock detection, and virtual-clock autojump has to be conservative.
+Async DPOR now patches `asyncio.Lock`, `asyncio.Event`, `asyncio.Queue`, and
+`asyncio.Condition`, so waiters on those primitives are engine-visible. Bare
+futures remain outside this wrapper layer.
 
-Add cooperative wrappers for:
+The cooperative wrappers cover:
 
 - `asyncio.Queue.get` / `put` waiters,
 - `asyncio.Condition.wait` / `notify` / `notify_all`,
-- optionally `asyncio.Semaphore` if it shows up in real workloads.
+- `asyncio.Semaphore` remains a possible future wrapper if it shows up in real
+  workloads.
 
 Semantics:
 

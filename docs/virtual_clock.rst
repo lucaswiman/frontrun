@@ -157,7 +157,9 @@ Semantics and limitations
   scheduler's own watchdog timers share the event loop's timer heap, and
   virtualizing it would let a clock jump fire them spuriously. Use
   ``asyncio.wait_for`` / ``asyncio.timeout`` inside explored tasks when you
-  want a virtual async timeout.
+  want a virtual async timeout. The handle returned by ``asyncio.timeout``
+  uses the same virtual time domain for ``when()`` / ``reschedule(when)``;
+  pass values derived from virtual ``time.monotonic()``.
 * Sync timed waits on frontrun's cooperative primitives use virtual
   deadlines: ``Lock`` / ``RLock`` / ``Semaphore`` acquire timeouts,
   ``Event.wait(timeout=...)``, ``Condition.wait(timeout=...)`` /
@@ -175,7 +177,9 @@ Semantics and limitations
   object before patching; such call sites keep reading wall-clock time. Call
   through the module (``time.monotonic()``, ``datetime.datetime.now()``) in
   code under test. Set ``clock_diagnostics=True`` to warn when traced worker
-  frames hold captured real ``time.*`` functions.
+  frames hold captured real ``time.*`` functions. Diagnostics require frame
+  tracing, so they apply to DPOR and sync random exploration; async random
+  accepts the unified option but cannot inspect frames.
 * ``strategy="random"`` with *async* workers cannot see tasks blocked on
   raw ``asyncio`` primitives (e.g. ``asyncio.Lock``); a quiescence
   heuristic advances the clock when nothing has progressed for a short

@@ -152,7 +152,9 @@ def explore(
         clock_diagnostics: When using a virtual clock, warn when traced worker
             frames hold references to real ``time.*`` functions captured before
             frontrun patched the time module. Diagnostics do not change
-            scheduling behavior.
+            scheduling behavior. Requires frame tracing: DPOR and sync random
+            can emit diagnostics; async random accepts the option for API
+            compatibility but cannot inspect frames.
         max_attempts: Random schedule samples to try (random strategy only).
         max_ops: Maximum schedule length per attempt (random strategy only).
         seed: RNG seed for reproducibility (random strategy only).

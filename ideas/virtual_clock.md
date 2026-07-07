@@ -38,11 +38,11 @@ from this proposal:
 
 ## Problem statement
 
-Races involving timeouts, retries with backoff, TTL caches, debouncing, and rate limiters
-are invisible to frontrun today because `time.time()` / `time.monotonic()` / `sleep()` are
-real. "The retry fired exactly between the read and the write" is not an interleaving the
-scheduler can choose — it is wall-clock luck. The tenacity and cachetools case studies both
-sit squarely in this space, so validation targets already exist in-repo.
+Before virtual clocks, races involving timeouts, retries with backoff, TTL
+caches, debouncing, and rate limiters were invisible to frontrun because
+`time.time()` / `time.monotonic()` / `sleep()` were real. "The retry fired
+exactly between the read and the write" was wall-clock luck rather than an
+interleaving the scheduler could choose.
 
 Concretely, wall-clock time leaks into exploration in three places today:
 
