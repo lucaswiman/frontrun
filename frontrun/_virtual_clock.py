@@ -27,10 +27,10 @@ machinery, unrelated code) always see real time:
 
 from __future__ import annotations
 
+import datetime as _datetime
 import threading
 import time
 import warnings
-import datetime as _datetime
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -250,11 +250,7 @@ class DeadlineCoordinator:
     def advance_to(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
         clock.advance_to(deadline)
         now = clock.now()
-        due = [
-            entry
-            for entry in self._deadlines.values()
-            if entry.deadline <= now
-        ]
+        due = [entry for entry in self._deadlines.values() if entry.deadline <= now]
         due.sort(key=lambda entry: (entry.deadline, entry.actor_id, _token_sort_key(entry.token)))
         for entry in due:
             self._deadlines.pop((entry.actor_id, entry.token), None)
@@ -272,14 +268,14 @@ class DeadlineCoordinator:
 
 class _VirtualDateTime(_real_datetime):
     @classmethod
-    def now(cls, tz: _datetime.tzinfo | None = None) -> "_VirtualDateTime":
+    def now(cls, tz: _datetime.tzinfo | None = None) -> _VirtualDateTime:
         clock = _active_virtual_clock()
         if clock is None:
             return _real_datetime.now(tz)  # type: ignore[return-value]
         return _real_datetime.fromtimestamp(clock.now(), tz)  # type: ignore[return-value]
 
     @classmethod
-    def utcnow(cls) -> "_VirtualDateTime":
+    def utcnow(cls) -> _VirtualDateTime:
         clock = _active_virtual_clock()
         if clock is None:
             return _real_datetime.utcnow()  # type: ignore[return-value]
@@ -288,7 +284,7 @@ class _VirtualDateTime(_real_datetime):
 
 class _VirtualDate(_real_date):
     @classmethod
-    def today(cls) -> "_VirtualDate":
+    def today(cls) -> _VirtualDate:
         clock = _active_virtual_clock()
         if clock is None:
             return _real_date.today()  # type: ignore[return-value]

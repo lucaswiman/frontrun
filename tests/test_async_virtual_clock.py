@@ -723,9 +723,7 @@ def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
         frontrun.explore(
             setup=State,
             workers=[lambda s: waiter("a", s), lambda s: waiter("b", s), notifier],
-            invariant=lambda s: (
-                s.remaining_after_first_notify == 1 and len(s.woken) == 1 and len(s.timed_out) == 1
-            ),
+            invariant=lambda s: s.remaining_after_first_notify == 1 and len(s.woken) == 1 and len(s.timed_out) == 1,
             clock="virtual",
             reproduce_on_failure=0,
         )

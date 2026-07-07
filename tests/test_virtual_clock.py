@@ -10,11 +10,11 @@ Covers the design in ``ideas/virtual_clock.md``:
 
 from __future__ import annotations
 
+import datetime as dt
 import queue
 import threading
 import time
 import warnings
-import datetime as dt
 from collections.abc import Callable
 from typing import Any
 

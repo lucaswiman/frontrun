@@ -246,9 +246,6 @@ class _CooperativeAsyncLock:
         self._owner: int | None = None
 
     def locked(self) -> bool:
-        return self._lock.locked()
-
-    def locked(self) -> bool:
         result = self._lock.locked()
         self._report_state_access("read")
         return result
@@ -622,8 +619,8 @@ def _unpatch_asyncio_event() -> None:
 
 _real_asyncio_queue = asyncio.Queue
 _real_asyncio_condition = asyncio.Condition
-_async_parked_queues: set["_CooperativeAsyncQueue[Any]"] = set()
-_async_parked_conditions: set["_CooperativeAsyncCondition"] = set()
+_async_parked_queues: set[_CooperativeAsyncQueue[Any]] = set()
+_async_parked_conditions: set[_CooperativeAsyncCondition] = set()
 
 
 def _async_wake_sync_id(scheduler: Any, obj: object, waiter: int) -> int:
@@ -705,9 +702,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             finally:
                 _in_scheduler_pause.set(depth)
                 self._frontrun_get_waiters = [
-                    (waiter, waiter_fut)
-                    for waiter, waiter_fut in self._frontrun_get_waiters
-                    if waiter_fut is not fut
+                    (waiter, waiter_fut) for waiter, waiter_fut in self._frontrun_get_waiters if waiter_fut is not fut
                 ]
                 if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
                     _async_parked_queues.discard(self)
@@ -738,9 +733,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
                 await fut
             finally:
                 self._frontrun_put_waiters = [
-                    (waiter, waiter_fut)
-                    for waiter, waiter_fut in self._frontrun_put_waiters
-                    if waiter_fut is not fut
+                    (waiter, waiter_fut) for waiter, waiter_fut in self._frontrun_put_waiters if waiter_fut is not fut
                 ]
                 scheduler.execution.unblock_thread(task_id)
                 if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
@@ -771,7 +764,7 @@ class _CooperativeAsyncCondition:
     def release(self) -> None:
         self._lock.release()
 
-    async def __aenter__(self) -> "_CooperativeAsyncCondition":
+    async def __aenter__(self) -> _CooperativeAsyncCondition:
         await self.acquire()
         return self
 
@@ -1048,7 +1041,7 @@ class _VirtualAsyncTimeoutContext:
         self._token: _VirtualAsyncTimeoutToken | None = None
         self._task: asyncio.Task[Any] | None = None
 
-    async def __aenter__(self) -> "_VirtualAsyncTimeoutContext":
+    async def __aenter__(self) -> _VirtualAsyncTimeoutContext:
         if self._delay is None:
             return self
         clock = getattr(self._scheduler, "virtual_clock", None)

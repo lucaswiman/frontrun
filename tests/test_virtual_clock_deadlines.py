@@ -17,9 +17,7 @@ def test_deadline_coordinator_tracks_multiple_deadlines_per_actor() -> None:
 
     due = deadlines.advance_to_next(clock)
 
-    assert [(event.actor_id, event.token, event.deadline) for event in due] == [
-        (0, timeout_token, clock.now())
-    ]
+    assert [(event.actor_id, event.token, event.deadline) for event in due] == [(0, timeout_token, clock.now())]
     assert deadlines.has_pending()
     assert deadlines.next_deadline() == clock.now() + 9.0
 

@@ -171,9 +171,9 @@ class AwaitScheduler(InterleavedLoop):
                         alive = [t for t in range(self.num_tasks) if t not in self._tasks_done]
                         if alive and all(t in self._sleepers for t in alive):
                             # Every live task is asleep: only time can move.
-                            deadline = self._deadlines.next_deadline()
-                            if deadline is not None:
-                                self._advance_clock_to(deadline)
+                            next_deadline = self._deadlines.next_deadline()
+                            if next_deadline is not None:
+                                self._advance_clock_to(next_deadline)
                             self._condition.notify_all()
                             continue
                         snapshot = (self._progress, self._index, len(self._tasks_done))
@@ -188,9 +188,9 @@ class AwaitScheduler(InterleavedLoop):
                                 # sleeper).  Advancing time is the only way
                                 # forward; without it the run dies by wall
                                 # timeout — a false deadlock.
-                                deadline = self._deadlines.next_deadline()
-                                if deadline is not None:
-                                    self._advance_clock_to(deadline)
+                                next_deadline = self._deadlines.next_deadline()
+                                if next_deadline is not None:
+                                    self._advance_clock_to(next_deadline)
                                 self._condition.notify_all()
                                 continue
                             if _real_monotonic() - wait_started > self.deadlock_timeout:
