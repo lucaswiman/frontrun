@@ -347,6 +347,37 @@ def test_async_wait_for_cancels_inner_task_once() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_async_timeout_context_uses_virtual_deadline_and_reports_expiry() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.expired = False
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        timeout_cm: Any | None = None
+        try:
+            async with asyncio.timeout(1.0) as active_timeout:
+                timeout_cm = active_timeout
+                await asyncio.sleep(10.0)
+        except TimeoutError:
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+            s.expired = bool(timeout_cm is not None and timeout_cm.expired())
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.expired and s.elapsed >= 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_uncaught_async_wait_for_timeout_is_task_crash_not_deadlock() -> None:
     class State:
         pass
@@ -690,6 +721,45 @@ def test_async_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert wall_elapsed < 4.0, f"queue+sleeper took {wall_elapsed:.1f}s (autojump stall?)"
+
+
+def test_async_bounded_queue_put_wake_is_schedulable() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+            self.queue.put_nowait("initial")
+            self.consumer_ran = asyncio.Event()
+            self.producer_done = False
+            self.observed_before_producer = False
+
+    async def producer(s: State) -> None:
+        await s.queue.put("replacement")
+        s.producer_done = True
+
+    async def consumer(s: State) -> None:
+        await asyncio.sleep(1.0)
+        await s.queue.get()
+        s.consumer_ran.set()
+
+    async def observer(s: State) -> None:
+        await s.consumer_ran.wait()
+        if not s.producer_done:
+            s.observed_before_producer = True
+
+    def invariant(s: State) -> bool:
+        assert not s.observed_before_producer, "observer ran after queue space opened but before putter resumed"
+        return True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[producer, consumer, observer],
+            invariant=invariant,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    _assert_invariant_failure(result, "before putter resumed")
 
 
 def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
