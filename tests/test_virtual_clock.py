@@ -254,6 +254,29 @@ class _DatetimeObserver:
         self.today_is_date = False
 
 
+def test_datetime_patch_preserves_isinstance_for_existing_objects() -> None:
+    existing_datetime = dt.datetime(2026, 1, 2, 3, 4, 5)
+    existing_date = dt.date(2026, 1, 2)
+
+    class State:
+        def __init__(self) -> None:
+            self.datetime_ok = False
+            self.date_ok = False
+
+    def worker(s: State) -> None:
+        s.datetime_ok = isinstance(existing_datetime, dt.datetime)
+        s.date_ok = isinstance(existing_date, dt.date)
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=lambda s: s.datetime_ok and s.date_ok,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_datetime_now_advances_with_virtual_sleep() -> None:
     def worker(s: _DatetimeObserver) -> None:
         s.start = dt.datetime.now()
@@ -279,7 +302,10 @@ def test_datetime_utcnow_reads_virtual_time() -> None:
     result = frontrun.explore(
         setup=_DatetimeObserver,
         workers=[worker],
-        invariant=lambda s: s.utc_is_datetime and s.utc.timestamp() == pytest.approx(VIRTUAL_EPOCH),
+        invariant=lambda s: (
+            s.utc_is_datetime
+            and s.utc.replace(tzinfo=dt.timezone.utc).timestamp() == pytest.approx(VIRTUAL_EPOCH)
+        ),
         clock="virtual",
         reproduce_on_failure=0,
     )
