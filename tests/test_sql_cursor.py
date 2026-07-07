@@ -1304,7 +1304,7 @@ def test_for_update_pyformat_dict_resolves_sqlalchemy_named_bind() -> None:
 
 
 def test_update_on_held_row_lock_does_not_duplicate_row_access() -> None:
-    """A row lock already serializes later writes to the same row."""
+    """A held row lock suppresses only duplicate lock arbitration, not the write."""
     from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
     from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
 
@@ -1324,7 +1324,7 @@ def test_update_on_held_row_lock_does_not_duplicate_row_access() -> None:
             {"id": "row1", "v": 1},
             paramstyle="pyformat",
         )
-        assert row_resource not in [resource_id for resource_id, _kind in log.events]
+        assert (row_resource, "write") in log.events
         assert row_resource not in _io_tls._pending_row_locks
     finally:
         set_dpor_scheduler(None)
@@ -1368,6 +1368,30 @@ def test_for_update_dpor_row_lock_replaces_row_write_access() -> None:
         _io_tls._in_transaction = False
         _io_tls._is_autobegin = False
         _io_tls._pending_row_locks = []
+
+
+def test_acquire_pending_row_locks_marks_only_acquired_resources() -> None:
+    """TLS held-lock state must not claim locks the scheduler did not acquire."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_row_locks import _acquire_pending_row_locks
+
+    class Scheduler:
+        def acquire_row_locks(self, _thread_id: int, resources: list[str]) -> list[str]:
+            assert resources == ["sql:t:(('id', 1),)", "sql:t:(('id', 2),)"]
+            return [resources[0]]
+
+    set_dpor_scheduler(Scheduler())
+    set_dpor_thread_id(0)
+    _io_tls._pending_row_locks = ["sql:t:(('id', 1),)", "sql:t:(('id', 2),)"]
+    try:
+        _acquire_pending_row_locks()
+        assert _io_tls._held_row_locks == {"sql:t:(('id', 1),)"}
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        _io_tls._pending_row_locks = []
+        if hasattr(_io_tls, "_held_row_locks"):
+            del _io_tls._held_row_locks
 
 
 def test_report_or_buffer_no_capture_outside_tx() -> None:

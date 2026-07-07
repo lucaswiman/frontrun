@@ -174,6 +174,74 @@ class TestReportAndWaitCalledPerSqlOp:
 
         assert calls == ["report:None:0", "acquire", "execute"]
 
+    def test_row_lock_acquire_uses_held_sync_retry_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The modern DPOR SQL path holds the sync turn through row-lock acquire."""
+        from frontrun import _sql_cursor
+        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+
+        calls: list[str] = []
+
+        class Scheduler:
+            def before_sync_retry(self, thread_id: int) -> bool:
+                calls.append(f"before:{thread_id}")
+                return True
+
+            def after_sync_retry(self, thread_id: int) -> None:
+                calls.append(f"after:{thread_id}")
+
+        monkeypatch.setattr(_sql_cursor, "_acquire_pending_row_locks", lambda: calls.append("acquire"))
+
+        set_dpor_scheduler(Scheduler())
+        set_dpor_thread_id(0)
+        try:
+            _sql_cursor._dpor_schedule_and_suppress_sync(
+                reported=True,
+                operation="SELECT value FROM maz_trace_test WHERE id = 'row1' FOR UPDATE",
+                parameters=None,
+                paramstyle="qmark",
+                execute=lambda: calls.append("execute"),
+            )
+        finally:
+            set_dpor_scheduler(None)
+            set_dpor_thread_id(None)
+
+        assert calls == ["before:0", "acquire", "execute", "after:0"]
+
+    def test_row_lock_acquire_skips_execute_when_sync_retry_denied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If the scheduler denies the SQL turn, do not acquire row locks or enter the driver."""
+        from frontrun import _sql_cursor
+        from frontrun._deadlock import SchedulerAbort
+        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+
+        calls: list[str] = []
+
+        class Scheduler:
+            def before_sync_retry(self, thread_id: int) -> bool:
+                calls.append(f"before:{thread_id}")
+                return False
+
+            def after_sync_retry(self, thread_id: int) -> None:
+                calls.append(f"after:{thread_id}")
+
+        monkeypatch.setattr(_sql_cursor, "_acquire_pending_row_locks", lambda: calls.append("acquire"))
+
+        set_dpor_scheduler(Scheduler())
+        set_dpor_thread_id(0)
+        try:
+            with pytest.raises(SchedulerAbort):
+                _sql_cursor._dpor_schedule_and_suppress_sync(
+                    reported=True,
+                    operation="SELECT value FROM maz_trace_test WHERE id = 'row1' FOR UPDATE",
+                    parameters=None,
+                    paramstyle="qmark",
+                    execute=lambda: calls.append("execute"),
+                )
+        finally:
+            set_dpor_scheduler(None)
+            set_dpor_thread_id(None)
+
+        assert calls == ["before:0"]
+
 
 # ---------------------------------------------------------------------------
 # Integration test: DPOR explores >1 interleaving for untraced library SQL
