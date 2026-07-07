@@ -200,6 +200,17 @@ class DporScheduler:
         remaining = 0.1 - (real_monotonic() - self._exact_deadlock_candidate_at)
         return max(0.001, min(self.deadlock_timeout, remaining))
 
+    def _reschedule_done_current_unlocked(self) -> bool:
+        """Advance immediately when the current thread has already finished."""
+        if self._current_thread not in self._threads_done:
+            return False
+        next_thread = self._schedule_next()
+        self._current_thread = next_thread
+        if next_thread is None and len(self._threads_done) >= self.num_threads:
+            self._finished = True
+        self._condition.notify_all()
+        return True
+
     def register_worker_thread(self) -> None:
         key = id(threading.current_thread())
         with self._condition:
@@ -506,6 +517,8 @@ class DporScheduler:
                 while True:
                     if self._finished or self._error:
                         return False
+                    if self._reschedule_done_current_unlocked():
+                        continue
 
                     if self._active_sync_thread is not None and self._active_sync_thread != thread_id:
                         pass
@@ -684,6 +697,8 @@ class DporScheduler:
                 while True:
                     if self._finished or self._error:
                         return False
+                    if self._reschedule_done_current_unlocked():
+                        continue
                     if self._current_thread == thread_id:
                         current_pending = self._pending_io_by_thread.get(thread_id)
                         if (
@@ -756,13 +771,7 @@ class DporScheduler:
 
                     # Wait for our turn (fallback timeout for C-blocked threads)
                     if not self._condition.wait(timeout=self._condition_wait_timeout()):
-                        if self._current_thread in self._threads_done:
-                            # Current thread is done, try scheduling again
-                            next_thread = self._schedule_next()
-                            self._current_thread = next_thread
-                            if next_thread is None and len(self._threads_done) >= self.num_threads:
-                                self._finished = True
-                            self._condition.notify_all()
+                        if self._reschedule_done_current_unlocked():
                             continue
                         if self.virtual_clock is not None and self._current_thread is None:
                             next_thread = self._schedule_next()
@@ -1141,6 +1150,43 @@ class DporScheduler:
         with self._engine_lock:
             self.execution.unblock_thread(thread_id)
 
+    def _wait_for_row_lock_turn_unlocked(self, thread_id: int) -> bool:
+        """Wait until an unblocked row-lock waiter has a scheduler turn."""
+        while True:
+            if self._finished or self._error:
+                return False
+            if self._current_thread == thread_id:
+                return True
+            if self._reschedule_done_current_unlocked():
+                continue
+            if self._current_thread is None:
+                next_thread = self._schedule_next()
+                self._current_thread = next_thread
+                if next_thread is None and len(self._threads_done) >= self.num_threads:
+                    self._finished = True
+                    self._condition.notify_all()
+                    return False
+                self._condition.notify_all()
+                continue
+            if not self._condition.wait(timeout=self._condition_wait_timeout()):
+                if self._reschedule_done_current_unlocked():
+                    continue
+                if self._current_thread is None:
+                    next_thread = self._schedule_next()
+                    self._current_thread = next_thread
+                    if next_thread is None and len(self._threads_done) >= self.num_threads:
+                        self._finished = True
+                        self._condition.notify_all()
+                        return False
+                    self._condition.notify_all()
+                    continue
+                self._error = TimeoutError(
+                    "DPOR row-lock waiter was unblocked but not rescheduled: "
+                    f"waiting for thread {thread_id}, current is {self._current_thread}"
+                )
+                self._condition.notify_all()
+                return False
+
     def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> None:
         """Block until all *resource_ids* can be held by *thread_id*.
 
@@ -1158,9 +1204,13 @@ class DporScheduler:
         with self._condition:
             for res_id in resource_ids:
                 lock_int_id = self._row_lock_int_id(res_id)
+                already_held = False
                 while True:
                     holder = self._active_row_locks.get(res_id)
-                    if holder is None or holder == thread_id:
+                    if holder is None:
+                        break
+                    if holder == thread_id:
+                        already_held = True
                         break
                     # Another thread holds this row lock — check for cycle first
                     if graph is not None:
@@ -1184,6 +1234,9 @@ class DporScheduler:
                     # engine's per-thread bookkeeping (notdep, sleep set
                     # propagation, preemption counts, and the recorded schedule).
                     self._engine_block_thread(thread_id)
+                    if self._active_sync_thread == thread_id:
+                        self._active_sync_thread = None
+                        self._next_thread_after_sync = None
                     # Yield scheduling to the holder so it can run and
                     # either release the lock or block on one of ours
                     # (triggering WaitForGraph cycle detection).
@@ -1207,6 +1260,10 @@ class DporScheduler:
                         graph.remove_waiting(thread_id, lock_int_id, kind="row_lock")
                     if self._finished or self._error:
                         return
+                    if not self._wait_for_row_lock_turn_unlocked(thread_id):
+                        return
+                if already_held:
+                    continue
                 # Record ownership and notify graph — shared logic via registry.
                 self._row_lock_registry.record_acquire(thread_id, res_id, graph)
                 # Report row-lock acquire to the DPOR engine so vector clocks

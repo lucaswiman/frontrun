@@ -77,6 +77,10 @@ def wrap_sync_thread(
         try:
             lock_timeout_sql = _lock_timeout_statement(lock_timeout)
             if lock_timeout_sql is not None:
+                from frontrun._sql_endpoint_suppression import suppress_sql_write
+
+                suppress_sql_write("BEGIN")
+                suppress_sql_write(lock_timeout_sql)
                 conn.exec_driver_sql(lock_timeout_sql)
         except BaseException:
             unsuppress_sync_reporting()
@@ -95,10 +99,14 @@ def wrap_sync_thread(
         _orig_commit = conn.commit
         _orig_rollback = conn.rollback
 
-        def _wrap_sa_method(method: Any) -> Any:
+        def _wrap_sa_method(method: Any, sql_write: str | None = None) -> Any:
             def wrapped(*args: Any, **kw: Any) -> Any:
                 suppress_sync_reporting()
                 try:
+                    if sql_write is not None:
+                        from frontrun._sql_endpoint_suppression import suppress_sql_write
+
+                        suppress_sql_write(sql_write)
                     return method(*args, **kw)
                 finally:
                     unsuppress_sync_reporting()
@@ -107,8 +115,8 @@ def wrap_sync_thread(
 
         conn.execute = _wrap_sa_method(_orig_execute)  # type: ignore[method-assign]
         conn.exec_driver_sql = _wrap_sa_method(_orig_exec_driver_sql)  # type: ignore[method-assign]
-        conn.commit = _wrap_sa_method(_orig_commit)  # type: ignore[method-assign]
-        conn.rollback = _wrap_sa_method(_orig_rollback)  # type: ignore[method-assign]
+        conn.commit = _wrap_sa_method(_orig_commit, "COMMIT")  # type: ignore[method-assign]
+        conn.rollback = _wrap_sa_method(_orig_rollback, "ROLLBACK")  # type: ignore[method-assign]
         exc_info: tuple[type[BaseException], BaseException, object] | tuple[None, None, None] = (None, None, None)
         with _current_connection_scope(current_connection, conn):
             try:

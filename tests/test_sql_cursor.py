@@ -1338,6 +1338,38 @@ def test_update_on_held_row_lock_does_not_duplicate_row_access() -> None:
             del _io_tls._held_row_locks
 
 
+def test_for_update_dpor_row_lock_replaces_row_write_access() -> None:
+    """DPOR row-lock acquire is the write-intent ordering point for FOR UPDATE."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()
+    set_dpor_scheduler(object())
+    set_dpor_thread_id(0)
+    row_resource = "sql:maz_trace_test:(('id', 'row1'),)"
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._pending_row_locks = []
+    try:
+        _report_sql_access(
+            "SELECT value FROM maz_trace_test WHERE id = :id FOR UPDATE",
+            {"id": "row1"},
+            paramstyle="pyformat",
+        )
+        assert row_resource in _io_tls._pending_row_locks
+        assert (row_resource, "write") not in log.events
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        clear_sql_metadata()
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _io_tls._pending_row_locks = []
+
+
 def test_report_or_buffer_no_capture_outside_tx() -> None:
     """_report_or_buffer with force_immediate=True does NOT track row locks outside a tx.
 

@@ -140,9 +140,12 @@ def resolve_parameters(sql: str, parameters: Any, paramstyle: str) -> str:
             return _resolve_named(sql, parameters)
         if paramstyle in ("format", "pyformat"):
             # Detect actual style from parameter type:
-            # dict → %(name)s, sequence → %s
+            # dict → %(name)s or SQLAlchemy-style :name, sequence → %s
             if isinstance(parameters, dict):
-                return _resolve_pyformat(sql, parameters)
+                resolved = _resolve_pyformat(sql, parameters)
+                if resolved == sql:
+                    resolved = _resolve_named(sql, parameters)
+                return resolved
             return _resolve_positional(sql, parameters, _RE_FORMAT)
     except (IndexError, KeyError, TypeError, ValueError):
         pass

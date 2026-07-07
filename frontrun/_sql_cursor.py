@@ -45,8 +45,10 @@ from frontrun._sql_endpoint_suppression import (
     clear_permanent_suppressions,
     get_active_sql_io_context,
     is_sql_endpoint_suppressed,
+    is_sql_write_suppressed,
     is_tid_suppressed,
     suppress_sql_endpoint,
+    suppress_sql_write,
     suppress_tid_permanently,
 )
 from frontrun._sql_insert_tracker import record_insert, resolve_alias
@@ -112,9 +114,11 @@ __all__ = [
     "clear_permanent_suppressions",
     "get_active_sql_io_context",
     "is_sql_endpoint_suppressed",
+    "is_sql_write_suppressed",
     "is_tid_suppressed",
     "reset_connection_state",
     "suppress_sql_endpoint",
+    "suppress_sql_write",
     "suppress_tid_permanently",
 ]
 
@@ -199,19 +203,31 @@ def _dpor_schedule_and_suppress_sync(
     # accesses) and during replay (to consume schedule entries that DPOR
     # generated for SQL statements).
     _dpor_ctx = _get_dpor_context()
+    _held_sync_turn = False
+    after_sync: Callable[[int], None] | None = None
+    thread_id: int | None = None
     if _dpor_ctx is not None and (reported or isinstance(operation, str)):
-        _dpor_ctx[0].report_and_wait(None, _dpor_ctx[1])
-
-    # Block if another DPOR thread holds a conflicting row lock. This must run
-    # after the scheduling boundary above: otherwise a thread can become the
-    # modeled row-lock holder while it is still waiting to be scheduled.
-    _acquire_pending_row_locks()
+        scheduler, thread_id = _dpor_ctx
+        before_sync = getattr(scheduler, "before_sync_retry", None)
+        after_sync = getattr(scheduler, "after_sync_retry", None)
+        if callable(before_sync) and callable(after_sync):
+            before_sync(thread_id)
+            _held_sync_turn = True
+        else:
+            scheduler.report_and_wait(None, thread_id)
+    if reported:
+        suppress_sql_write(operation, parameters, paramstyle)
 
     _set_active_sql_io_context(operation, parameters, paramstyle)
     # Suppress cooperative lock sync events during the actual DB call.
     # Internal psycopg2/driver locks are implementation details.
     suppress_sync_reporting()
     try:
+        # Block if another DPOR thread holds a conflicting row lock. This runs
+        # after the scheduling boundary and, for DporScheduler, while the SQL
+        # transition still owns the turn. Otherwise a thread can become the
+        # modeled row-lock holder while it is still waiting to be scheduled.
+        _acquire_pending_row_locks()
         if reported:
             with _suppress_endpoint_io():
                 return execute()
@@ -226,6 +242,8 @@ def _dpor_schedule_and_suppress_sync(
         raise
     finally:
         unsuppress_sync_reporting()
+        if _held_sync_turn and after_sync is not None and thread_id is not None:
+            after_sync(thread_id)
 
 
 # ---------------------------------------------------------------------------
@@ -320,11 +338,11 @@ def _report_sql_access(
                 # Whether this access participates in the primary-colset bridge
                 # as a READ.  Normally this tracks ``kind == "read"`` (pure
                 # INSERT writes stay fully row-granular and emit no bridge).
-                # SELECT ... FOR UPDATE elevates the row-level kind to "write"
-                # for conflict creation, but the *underlying* access is a read:
-                # it must still emit the primary READ bridge so it conflicts
-                # with non-primary-colset accesses to the same physical row,
-                # exactly like a plain UPDATE's read phase (finding 6).
+                # SELECT ... FOR UPDATE may elevate the row-level kind to
+                # "write" for non-DPOR conflict creation, but the underlying
+                # access is a read: it must still emit the primary READ bridge
+                # so it conflicts with non-primary-colset accesses to the same
+                # physical row, exactly like a plain UPDATE's read phase.
                 if bridge_as_read is None:
                     bridge_as_read = kind == "read"
 
@@ -359,6 +377,7 @@ def _report_sql_access(
                                 _sql_resource_id(table, [], db_scope=db_scope),
                                 "read",
                                 force_immediate=lock_update,
+                                track_row_lock=False,
                             )
                             reported_bridges.add(table)
                     else:
@@ -368,6 +387,7 @@ def _report_sql_access(
                             _sql_resource_id(table, [], db_scope=db_scope),
                             "write",
                             force_immediate=lock_update,
+                            track_row_lock=False,
                         )
                         reported_bridges.add(table)
 
@@ -382,17 +402,26 @@ def _report_sql_access(
                     res_id = (
                         alias if alias is not None else _sql_resource_id(table, row_preds, temporal, db_scope=db_scope)
                     )
-                    _report_or_buffer(reporter, res_id, kind, force_immediate=lock_update)
+                    _report_or_buffer(
+                        reporter,
+                        res_id,
+                        kind,
+                        force_immediate=lock_update,
+                        report_access=not (lock_update and dpor_ctx is not None),
+                    )
 
             # Report explicit reads
             for table in access.read_tables:
                 # SELECT FOR UPDATE is both read and write to create conflicts.
+                # Under DPOR, row-lock acquire/release is modeled directly, so
+                # report_or_buffer enqueues the row lock but skips the duplicate
+                # row write access.
                 # SHARE locks are treated as reads (they don't block other shares).
                 kind = "write" if lock_update else "read"
-                # The row-level kind is elevated to "write" for FOR UPDATE, but
-                # the access is still a read for bridge purposes — emit the
+                # The row-level kind may be elevated to "write" for FOR UPDATE,
+                # but the access is still a read for bridge purposes — emit the
                 # primary READ bridge so it conflicts with non-primary-colset
-                # accesses to the same physical row (finding 6).
+                # accesses to the same physical row.
                 report_or_buffer(table, kind, pred_rows, bridge_as_read=True)
 
             # Report implicit reads from Foreign Key dependencies
@@ -507,9 +536,10 @@ def _wrap_connection_tx_methods(conn: Any) -> None:
         if orig is None or getattr(orig, "_frontrun_tx_wrapped", False):
             continue
 
-        def _make(orig_method: Any = orig, _handler: Any = handler) -> Any:
+        def _make(orig_method: Any = orig, _handler: Any = handler, _name: str = name) -> Any:
             def _wrapped(*args: Any, **kwargs: Any) -> Any:
                 _handler()
+                suppress_sql_write(_name.upper())
                 return orig_method(*args, **kwargs)
 
             _wrapped._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
@@ -754,6 +784,40 @@ def _get_traced_cursor_class(base_cursor_cls: type, paramstyle: str) -> type:
     return cached
 
 
+_TRACED_CONNECTION_CLASSES: dict[tuple[type, str], type] = {}
+
+
+def _get_traced_connection_class(base_connection_cls: type, paramstyle: str) -> type:
+    """Return a connection subclass that drives tx state for C-extension drivers."""
+    if getattr(base_connection_cls, "_frontrun_traced_connection", False):
+        return base_connection_cls
+    key = (base_connection_cls, paramstyle)
+    cached = _TRACED_CONNECTION_CLASSES.get(key)
+    if cached is not None:
+        return cached
+
+    class TracedConnection(base_connection_cls):  # type: ignore[valid-type]
+        def cursor(self, *args: Any, **kwargs: Any) -> Any:
+            factory = kwargs.get("cursor_factory")
+            if factory is not None:
+                kwargs["cursor_factory"] = _get_traced_cursor_class(factory, paramstyle)
+            return super().cursor(*args, **kwargs)
+
+        def commit(self) -> None:
+            handle_connection_commit()
+            super().commit()
+
+        def rollback(self) -> None:
+            handle_connection_rollback()
+            super().rollback()
+
+    TracedConnection.__name__ = f"Traced{base_connection_cls.__name__}"
+    TracedConnection.__qualname__ = f"Traced{base_connection_cls.__qualname__}"
+    TracedConnection._frontrun_traced_connection = True  # type: ignore[attr-defined]
+    _TRACED_CONNECTION_CLASSES[key] = TracedConnection
+    return TracedConnection
+
+
 def _wrap_connection_cursor(conn: Any, paramstyle: str) -> None:
     """Wrap ``conn.cursor`` so an explicit ``cursor_factory`` is traced too.
 
@@ -963,12 +1027,21 @@ def patch_sql() -> None:
         except (ImportError, AttributeError):
             pass  # driver not installed — skip silently
 
-    def _make_patched_connect(orig: Any, default_cursor_cls: type, paramstyle: str, driver: str) -> Any:
+    def _make_patched_connect(
+        orig: Any,
+        default_cursor_cls: type,
+        paramstyle: str,
+        driver: str,
+        default_connection_cls: type | None = None,
+    ) -> Any:
         def patched_connect(*args: Any, **kwargs: Any) -> Any:
             # Wrap whatever cursor_factory the caller already set (e.g. Django's Cursor),
             # rather than using setdefault, which is a no-op when the caller set it first.
             user_factory = kwargs.get("cursor_factory", default_cursor_cls)
             kwargs["cursor_factory"] = _get_traced_cursor_class(user_factory, paramstyle)
+            if driver == "psycopg2" and default_connection_cls is not None:
+                user_connection_factory = kwargs.get("connection_factory", default_connection_cls)
+                kwargs["connection_factory"] = _get_traced_connection_class(user_connection_factory, paramstyle)
             from frontrun._cooperative import suppress_sync_reporting as _ssr
             from frontrun._cooperative import unsuppress_sync_reporting as _usr
 
@@ -1015,7 +1088,10 @@ def patch_sql() -> None:
                     conn.autocommit = True
                     _lt_cur = conn.cursor(cursor_factory=default_cursor_cls)
                     try:
-                        _lt_cur.execute(f"SET lock_timeout = '{int(_lock_timeout_ms)}ms'")
+                        _lock_timeout_sql = f"SET lock_timeout = '{int(_lock_timeout_ms)}ms'"
+                        suppress_sql_write("BEGIN")
+                        suppress_sql_write(_lock_timeout_sql)
+                        _lt_cur.execute(_lock_timeout_sql)
                     finally:
                         _lt_cur.close()
                     conn.autocommit = _was_autocommit
@@ -1031,12 +1107,17 @@ def patch_sql() -> None:
             driver_mod = importlib.import_module(target.module_name)
             cursor_mod = importlib.import_module(target.cursor_module_name)
             orig_cursor_cls = getattr(cursor_mod, target.cursor_attr_name)
+            orig_connection_cls = getattr(cursor_mod, "connection", None)
             orig_connect = driver_mod.connect
             setattr(
                 driver_mod,
                 "connect",
                 _make_patched_connect(
-                    orig_connect, orig_cursor_cls, paramstyle=target.paramstyle, driver=target.driver
+                    orig_connect,
+                    orig_cursor_cls,
+                    paramstyle=target.paramstyle,
+                    driver=target.driver,
+                    default_connection_cls=orig_connection_cls if isinstance(orig_connection_cls, type) else None,
                 ),
             )
             _PATCHES.append((driver_mod, "connect", orig_connect))

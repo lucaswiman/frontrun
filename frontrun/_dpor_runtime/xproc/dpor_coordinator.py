@@ -171,17 +171,12 @@ def _relay_loop(
                 # attributed inside the critical section, making two workers'
                 # unlocked writes look lock-synchronized and pruning the race.
                 _flush_relay_pending_io(scheduler, worker_id, pending_io)
-                # Take the scheduling turn BEFORE acquiring. acquire_row_locks
-                # itself only waits for the row lock, not for the engine's
-                # pick: in-process that is safe because the opcode tracer means
-                # the acquiring thread already holds the turn, but relays have
-                # no opcode tracing, so two workers' ACQUIRE_LOCKS frames would
-                # race and the winner's lock_acquire lands at a step the
-                # engine committed to the other thread — desynchronizing the
-                # recorded schedule from the actual executor and corrupting
-                # backtracking (reachable acquisition-order reversals get
-                # silently pruned while still claiming exhausted=True).
-                if not scheduler.report_and_wait(None, worker_id):
+                # Take and hold the scheduling turn through the modeled row-lock
+                # acquire. A plain report_and_wait() schedules the next worker
+                # before acquire_row_locks() records lock_acquire, letting two
+                # relays race around the acquire and desynchronizing the engine
+                # trace from the executor.
+                if not scheduler.before_sync_retry(worker_id):
                     _reply(sock, False)
                     break
                 try:
@@ -191,6 +186,8 @@ def _relay_loop(
                     break
                 else:
                     _reply(sock, True)
+                finally:
+                    scheduler.after_sync_retry(worker_id)
             elif kind == proto.RELEASE_LOCKS:
                 scheduler.release_row_locks(worker_id)
             elif kind == proto.BEFORE_IO:
