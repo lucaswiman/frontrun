@@ -8,6 +8,8 @@ from frontrun._dpor_core.concurrency import (
     ReplayEngine,
     ReplayExecution,
     dpor_exploration_iter,
+    event_wake_sync_id,
+    wake_sync_id,
 )
 from frontrun._dpor_core.engine import make_dpor_engine
 from frontrun._dpor_core.failures import record_dpor_failure
@@ -43,6 +45,7 @@ __all__ = [
     "compute_serializable_baseline_async",
     "compute_serializable_baseline_sync",
     "dpor_exploration_iter",
+    "event_wake_sync_id",
     "extend_replay_schedule",
     "format_race_failure_explanation",
     "group_schedule_runs",
@@ -51,4 +54,5 @@ __all__ = [
     "make_dpor_engine",
     "record_dpor_failure",
     "reset_execution_state",
+    "wake_sync_id",
 ]

@@ -52,8 +52,10 @@ __all__ = [
     "clear_permanent_suppressions",
     "get_active_sql_io_context",
     "is_sql_endpoint_suppressed",
+    "is_sql_write_suppressed",
     "is_tid_suppressed",
     "suppress_sql_endpoint",
+    "suppress_sql_write",
     "suppress_tid_permanently",
 ]
 
@@ -78,6 +80,7 @@ _ACTIVE_SQL_IO_CONTEXTS: dict[int, tuple[str | None, list[str] | None]] = {}
 # they're read the context has exited.  Permanent endpoint suppression
 # persists across the entire DPOR execution.
 _suppressed_sql_endpoints: set[str] = set()
+_suppressed_sql_writes: set[str] = set()
 
 _permanently_suppressed_tids: set[int] = set()
 
@@ -196,6 +199,19 @@ def suppress_sql_endpoint(conn: Any) -> None:
             _suppressed_sql_endpoints.add(resource_id)
 
 
+def suppress_sql_write(operation: Any, parameters: Any = None, paramstyle: str = "format") -> None:
+    """Register raw PostgreSQL wire SQL text that the SQL layer already models."""
+    if not isinstance(operation, str):
+        return
+    candidates = {operation}
+    try:
+        candidates.add(resolve_parameters(operation, parameters, paramstyle))
+    except Exception:
+        pass
+    with _suppress_lock:
+        _suppressed_sql_writes.update(candidates)
+
+
 def suppress_tid_permanently(tid: int | None = None) -> None:
     """Mark a thread as permanently suppressed for LD_PRELOAD events.
 
@@ -217,8 +233,15 @@ def is_sql_endpoint_suppressed(resource_id: str) -> bool:
         return resource_id in _suppressed_sql_endpoints
 
 
+def is_sql_write_suppressed(resource_id: str) -> bool:
+    """Check if a raw ``sql_write`` resource has a SQL-level model."""
+    with _suppress_lock:
+        return resource_id in _suppressed_sql_writes
+
+
 def clear_permanent_suppressions() -> None:
     """Clear all permanent suppressions (between DPOR executions)."""
     with _suppress_lock:
         _permanently_suppressed_tids.clear()
         _suppressed_sql_endpoints.clear()
+        _suppressed_sql_writes.clear()

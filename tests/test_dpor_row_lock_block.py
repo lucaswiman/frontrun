@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from frontrun._cooperative import real_condition, real_lock
+from frontrun._deadlock import SchedulerAbort
 from frontrun._dpor_core import RowLockRegistry
 from frontrun.dpor import DporScheduler
 
@@ -54,6 +55,8 @@ def _make_host() -> Any:
             self._thread_row_locks = self._row_lock_registry._task_row_locks
             self._row_lock_ids = self._row_lock_registry._row_lock_ids
             self._row_lock_blocked: dict[int, int] = {}
+            self._active_sync_thread: int | None = None
+            self._next_thread_after_sync: int | None = None
 
         acquire_row_locks = DporScheduler.acquire_row_locks
         release_row_locks = DporScheduler.release_row_locks
@@ -61,6 +64,9 @@ def _make_host() -> Any:
         _row_lock_int_id = DporScheduler._row_lock_int_id
         _engine_block_thread = DporScheduler._engine_block_thread
         _engine_unblock_thread = DporScheduler._engine_unblock_thread
+
+        def _wait_for_row_lock_turn_unlocked(self, _thread_id: int) -> bool:
+            return True
 
     return RowLockHost()
 
@@ -96,19 +102,24 @@ def test_blocked_thread_marked_blocked_in_engine() -> None:
     assert 1 not in host.execution.blocked, "engine must unblock the thread after acquire"
 
 
-def test_blocked_thread_unblocked_on_timeout() -> None:
-    """A thread is blocked during the wait and unblocked after a timeout."""
+def test_blocked_thread_aborts_on_timeout() -> None:
+    """A thread is blocked during the wait and aborts after a timeout."""
     host = _make_host()
     host.deadlock_timeout = 0.3
     host.acquire_row_locks(0, ["sql:users:(('id', 42))"])
 
     saw_blocked = threading.Event()
+    aborted = threading.Event()
     done = threading.Event()
 
     def waiter() -> None:
         # The holder never releases, so this blocks then times out.
-        host.acquire_row_locks(1, ["sql:users:(('id', 42))"])
-        done.set()
+        try:
+            host.acquire_row_locks(1, ["sql:users:(('id', 42))"])
+        except SchedulerAbort:
+            aborted.set()
+        finally:
+            done.set()
 
     t = threading.Thread(target=waiter)
     t.start()
@@ -121,5 +132,7 @@ def test_blocked_thread_unblocked_on_timeout() -> None:
 
     t.join(timeout=2.0)
     assert saw_blocked.is_set(), "engine must see the thread blocked during the wait"
-    assert done.is_set(), "waiter should return after timeout"
+    assert done.is_set(), "waiter should finish after timeout"
+    assert aborted.is_set(), "waiter should abort after timeout"
     assert 1 not in host.execution.blocked, "timed-out thread must be unblocked in the engine"
+    assert isinstance(host._error, TimeoutError)

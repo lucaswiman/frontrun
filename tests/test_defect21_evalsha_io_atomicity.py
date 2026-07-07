@@ -21,8 +21,8 @@ EVALSHA atomicity does not cover the client-side capture→send window.
 
 These tests pin the two sides of the correct behaviour:
 
-1. A genuinely atomic single-EVAL rate limiter (server-side ``INCR`` check,
-   no client-side state) never reds under ``detect_io=True``.
+1. A genuinely atomic single-EVAL/EVALSHA rate limiter (server-side ``INCR``
+   check, no client-side state) never reds under ``detect_io=True``.
 2. A non-atomic GET-check-then-INCR rate limiter (two separate commands)
    still reds under ``detect_io=True`` — EVAL atomicity handling must not
    over-suppress genuine multi-command TOCTOU races.
@@ -63,22 +63,28 @@ KEY = "defect21:limiter"
 
 
 class TestAtomicEvalNoFalsePositive:
-    """A single atomic EVAL must not produce a fabricated race under detect_io=True."""
+    """A single atomic EVAL/EVALSHA must not produce a fabricated race under detect_io=True."""
 
-    def test_sync_atomic_eval_green(self, redis_port: int) -> None:
-        """Two threads, one atomic EVAL each: at most LIMIT successes, always green."""
+    @pytest.mark.parametrize("script_command", ["eval", "evalsha"])
+    def test_sync_atomic_lua_green(self, redis_port: int, script_command: str) -> None:
+        """Two threads, one atomic Lua command each: at most LIMIT successes, always green."""
         port = redis_port
 
         class State:
             def __init__(self) -> None:
                 r = redis_lib.Redis(port=port)
                 r.delete(KEY)
+                self.script_sha = r.script_load(ATOMIC_LIMITER_SCRIPT) if script_command == "evalsha" else None
                 r.close()
                 self.results: list[int] = []
 
         def worker(state: State) -> None:
             r = redis_lib.Redis(port=port)
-            res = r.eval(ATOMIC_LIMITER_SCRIPT, 1, KEY, LIMIT)
+            if script_command == "evalsha":
+                assert state.script_sha is not None
+                res = r.evalsha(state.script_sha, 1, KEY, LIMIT)
+            else:
+                res = r.eval(ATOMIC_LIMITER_SCRIPT, 1, KEY, LIMIT)
             state.results.append(int(res))
             r.close()
 
@@ -93,11 +99,12 @@ class TestAtomicEvalNoFalsePositive:
         )
         assert result.property_holds, (
             "FALSE POSITIVE: detect_io=True fabricated an over-admission for a "
-            "single atomic EVAL — impossible on single-threaded Redis.\n" + str(result.explanation)
+            f"single atomic {script_command.upper()} — impossible on single-threaded Redis.\n" + str(result.explanation)
         )
 
-    def test_async_atomic_eval_green(self, redis_port: int) -> None:
-        """Two asyncio tasks, one atomic EVAL each: always green under detect_io=True.
+    @pytest.mark.parametrize("script_command", ["eval", "evalsha"])
+    def test_async_atomic_lua_green(self, redis_port: int, script_command: str) -> None:
+        """Two asyncio tasks, one atomic Lua command each: always green under detect_io=True.
 
         Mirrors the fastapi-limiter scenario shape (async redis clients, one
         Lua script per task) minus pyrate-limiter's client-side timestamp,
@@ -111,12 +118,17 @@ class TestAtomicEvalNoFalsePositive:
             def __init__(self) -> None:
                 r = redis_lib.Redis(port=port)
                 r.delete(KEY)
+                self.script_sha = r.script_load(ATOMIC_LIMITER_SCRIPT) if script_command == "evalsha" else None
                 r.close()
                 self.results: list[int] = []
 
         async def worker(state: State) -> None:
             r = aioredis.Redis(port=port)
-            res = await r.eval(ATOMIC_LIMITER_SCRIPT, 1, KEY, LIMIT)
+            if script_command == "evalsha":
+                assert state.script_sha is not None
+                res = await r.evalsha(state.script_sha, 1, KEY, LIMIT)
+            else:
+                res = await r.eval(ATOMIC_LIMITER_SCRIPT, 1, KEY, LIMIT)
             state.results.append(int(res))
             await r.aclose()
 
@@ -133,7 +145,7 @@ class TestAtomicEvalNoFalsePositive:
         )
         assert result.property_holds, (
             "FALSE POSITIVE: detect_io=True fabricated an over-admission for a "
-            "single atomic EVAL — impossible on single-threaded Redis.\n" + str(result.explanation)
+            f"single atomic {script_command.upper()} — impossible on single-threaded Redis.\n" + str(result.explanation)
         )
 
 
@@ -170,9 +182,7 @@ class TestNonAtomicRaceStillDetected:
             invariant=invariant,
             detect_io=True,
         )
-        assert not result.property_holds, (
-            "OVER-SUPPRESSION: the non-atomic GET-then-INCR TOCTOU race was not detected"
-        )
+        assert not result.property_holds, "OVER-SUPPRESSION: the non-atomic GET-then-INCR TOCTOU race was not detected"
         assert result.reproduction_attempts == 10
         assert result.reproduction_successes == 10, (
             f"real race must reproduce deterministically, got "
@@ -215,4 +225,9 @@ class TestNonAtomicRaceStillDetected:
         )
         assert not result.property_holds, (
             "OVER-SUPPRESSION: the non-atomic async GET-then-INCR TOCTOU race was not detected"
+        )
+        assert result.reproduction_attempts == 10
+        assert result.reproduction_successes == 10, (
+            f"real async race must reproduce deterministically, got "
+            f"{result.reproduction_successes}/{result.reproduction_attempts}"
         )

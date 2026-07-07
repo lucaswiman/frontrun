@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from frontrun._dpor_core.worker import WorkerTarget
-from frontrun._threaded_runner import join_threads_with_deadline
+from frontrun._threaded_runner import _POST_TIMEOUT_CLEANUP_JOIN_SECONDS, join_threads_with_deadline
 
 
 class ThreadWorkerSet:
@@ -66,6 +66,7 @@ class ThreadWorkerSet:
             alive = self.join(handles, timeout)
             if alive and on_timeout is not None:
                 on_timeout(alive)
+                self.join(alive, _POST_TIMEOUT_CLEANUP_JOIN_SECONDS)
         finally:
             if teardown is not None:
                 teardown()

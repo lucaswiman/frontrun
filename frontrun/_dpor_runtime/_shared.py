@@ -50,6 +50,7 @@ from frontrun._sql_cursor import (
     clear_sql_metadata,
     get_active_sql_io_context,
     is_sql_endpoint_suppressed,
+    is_sql_write_suppressed,
     is_tid_suppressed,
     patch_sql,
     unpatch_sql,

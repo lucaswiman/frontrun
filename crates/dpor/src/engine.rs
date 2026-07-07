@@ -210,6 +210,21 @@ impl DporEngine {
         kind: AccessKind,
     ) {
         let current_path_id = self.path.current_position().saturating_sub(1);
+        self.process_access_at(execution, thread_id, object_id, kind, current_path_id);
+    }
+
+    /// Like [`process_access`] but attributes the access to an explicit
+    /// scheduling step. Async DPOR schedules the next task before the current
+    /// await-delimited segment executes, so using the live path position would
+    /// attach the segment's accesses to the following scheduling choice.
+    pub fn process_access_at(
+        &mut self,
+        execution: &mut Execution,
+        thread_id: usize,
+        object_id: ObjectId,
+        kind: AccessKind,
+        current_path_id: usize,
+    ) {
         let current_dpor_vv = execution.threads[thread_id].dpor_vv.clone();
 
         let object_state = execution.objects.entry(object_id).or_insert_with(ObjectState::new);
@@ -259,6 +274,19 @@ impl DporEngine {
         kind: AccessKind,
     ) {
         let current_path_id = self.path.current_position().saturating_sub(1);
+        self.process_first_access_at(execution, thread_id, object_id, kind, current_path_id);
+    }
+
+    /// Like [`process_first_access`] but attributes the access to an explicit
+    /// scheduling step.
+    pub fn process_first_access_at(
+        &mut self,
+        execution: &mut Execution,
+        thread_id: usize,
+        object_id: ObjectId,
+        kind: AccessKind,
+        current_path_id: usize,
+    ) {
         let current_dpor_vv = execution.threads[thread_id].dpor_vv.clone();
 
         let object_state = execution.objects.entry(object_id).or_insert_with(ObjectState::new);

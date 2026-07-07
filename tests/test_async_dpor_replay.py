@@ -15,7 +15,17 @@ DeadlockError or phantom ownership in later replays.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
+from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
+from frontrun._dpor_core import event_wake_sync_id
+from frontrun._opcode_observer import StableObjectIds
+from frontrun.async_dpor import (
+    _patch_asyncio_event,
+    _ReplayAsyncScheduler,
+    _reset_async_lock_state,
+    _unpatch_asyncio_event,
+)
 from frontrun.cli import require_active
 
 
@@ -122,3 +132,83 @@ def test_lock_blocked_holder_counterexample_reproduces() -> None:
         f"lock-blocked counterexample must reproduce, "
         f"got {result.reproduction_successes}/{result.reproduction_attempts}"
     )
+
+
+def test_event_blocked_replay_skips_drifted_waiter_slots() -> None:
+    """Replay must not stall when a drifted schedule points at an event waiter.
+
+    A cooperative Event.wait() consumes a scheduling point before it parks.
+    If the positional replay schedule has an extra slot for that same waiter,
+    the waiter is now blocked inside the real event wait and cannot consume it.
+    Replay should skip to the setter instead of burning the deadlock timeout.
+    """
+
+    async def scenario() -> list[str]:
+        _patch_asyncio_event()
+        try:
+            event = asyncio.Event()
+            order: list[str] = []
+
+            async def waiter() -> None:
+                await event.wait()
+                order.append("waiter")
+
+            async def setter() -> None:
+                event.set()
+                order.append("setter")
+
+            scheduler = _ReplayAsyncScheduler([0, 0, 0, 1, 0], 2, deadlock_timeout=0.1)
+            await scheduler.run_all(wrap_auto_paused_tasks({0: waiter, 1: setter}, scheduler), timeout=0.5)
+            assert scheduler._error is None
+            return order
+        finally:
+            _unpatch_asyncio_event()
+            _reset_async_lock_state()
+
+    assert asyncio.run(scenario()) == ["setter", "waiter"]
+
+
+def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
+    """Event wake edges must be keyed by stable event id, not raw id(event)."""
+
+    class Engine:
+        def __init__(self) -> None:
+            self.syncs: list[tuple[int, str, int]] = []
+
+        def report_sync(self, execution: Any, task_id: int, event: str, object_id: int) -> None:
+            self.syncs.append((task_id, event, object_id))
+
+    class Execution:
+        def __init__(self) -> None:
+            self.unblocked: list[int] = []
+
+        def unblock_thread(self, task_id: int) -> None:
+            self.unblocked.append(task_id)
+
+    class Scheduler:
+        def __init__(self) -> None:
+            self.engine = Engine()
+            self.execution = Execution()
+            self._stable_ids = StableObjectIds()
+            self._error = None
+
+    _patch_asyncio_event()
+    try:
+        event = asyncio.Event()
+        scheduler = Scheduler()
+        stable_event_id = scheduler._stable_ids.get(event)
+        event._waiters.append(1)  # type: ignore[attr-defined]
+
+        scheduler_token = _scheduler_var.set(scheduler)
+        task_token = _task_id_var.set(0)
+        try:
+            event.set()
+        finally:
+            _task_id_var.reset(task_token)
+            _scheduler_var.reset(scheduler_token)
+
+        assert scheduler.engine.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
+        assert scheduler.execution.unblocked == [1]
+    finally:
+        _unpatch_asyncio_event()
+        _reset_async_lock_state()

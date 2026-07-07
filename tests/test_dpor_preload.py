@@ -13,6 +13,8 @@ import os
 import tempfile
 from typing import Any
 
+import pytest
+
 import frontrun
 from frontrun._preload_io import PreloadIOEvent
 from frontrun.dpor import _PreloadBridge
@@ -143,6 +145,8 @@ class TestRowLockRegistry:
                 self._thread_row_locks: dict[int, set[str]] = self._row_lock_registry._task_row_locks
                 self._row_lock_ids: dict[str, int] = self._row_lock_registry._row_lock_ids
                 self._row_lock_blocked: dict[int, int] = {}
+                self._active_sync_thread: int | None = None
+                self._next_thread_after_sync: int | None = None
 
             # Bind the real methods from DporScheduler so tests exercise production code.
             acquire_row_locks = DporScheduler.acquire_row_locks
@@ -151,6 +155,9 @@ class TestRowLockRegistry:
             _row_lock_int_id = DporScheduler._row_lock_int_id
             _engine_block_thread = DporScheduler._engine_block_thread
             _engine_unblock_thread = DporScheduler._engine_unblock_thread
+
+            def _wait_for_row_lock_turn_unlocked(self, _thread_id: int) -> bool:
+                return True
 
         return RowLockHost()
 
@@ -216,9 +223,11 @@ class TestRowLockRegistry:
         sched.deadlock_timeout = 0.2  # Fast timeout for test
         sched.acquire_row_locks(0, ["sql:users:(('id', 42))"])
 
-        # Thread 1 tries to acquire, should timeout
-        sched.acquire_row_locks(1, ["sql:users:(('id', 42))"])
-        # After timeout, thread 0 still holds the lock
+        from frontrun._deadlock import SchedulerAbort
+
+        with pytest.raises(SchedulerAbort):
+            sched.acquire_row_locks(1, ["sql:users:(('id', 42))"])
+
         assert sched._active_row_locks.get("sql:users:(('id', 42))") == 0
 
     def _make_scheduler_with_graph(self) -> Any:
@@ -243,6 +252,8 @@ class TestRowLockRegistry:
                 self._thread_row_locks: dict[int, set[str]] = self._row_lock_registry._task_row_locks
                 self._row_lock_ids: dict[str, int] = self._row_lock_registry._row_lock_ids
                 self._row_lock_blocked: dict[int, int] = {}
+                self._active_sync_thread: int | None = None
+                self._next_thread_after_sync: int | None = None
 
             acquire_row_locks = DporScheduler.acquire_row_locks
             release_row_locks = DporScheduler.release_row_locks
@@ -250,6 +261,9 @@ class TestRowLockRegistry:
             _row_lock_int_id = DporScheduler._row_lock_int_id
             _engine_block_thread = DporScheduler._engine_block_thread
             _engine_unblock_thread = DporScheduler._engine_unblock_thread
+
+            def _wait_for_row_lock_turn_unlocked(self, _thread_id: int) -> bool:
+                return True
 
         return RowLockHost()
 

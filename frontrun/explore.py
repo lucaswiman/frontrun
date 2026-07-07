@@ -31,10 +31,13 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from frontrun._strategy import ASYNC_STRATEGIES, STRATEGIES
+from frontrun._virtual_clock import ClockMode
 from frontrun.common import any_async
 
 Strategy = Literal["dpor", "random"]
 Execution = Literal["thread", "process"]
+#: Alias of :data:`frontrun._virtual_clock.ClockMode` (single source of truth).
+Clock = ClockMode
 
 
 def explore(
@@ -45,6 +48,8 @@ def explore(
     count: int | None = None,
     strategy: Strategy = "dpor",
     execution: Execution = "thread",
+    # Time control (both strategies, sync + async)
+    clock: Clock = "real",
     # DPOR-specific kwargs
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
@@ -119,9 +124,30 @@ def explore(
         trace_packages: Package patterns to trace in addition to user code.
         track_dunder_dict_accesses: Report ``obj.__dict__`` accesses (DPOR).
         search: Wakeup-tree traversal strategy (DPOR only).
-        patch_sleep: Replace ``time.sleep`` / ``asyncio.sleep`` with no-op.
+        patch_sleep: For ``clock="real"``, make ``time.sleep`` /
+            ``asyncio.sleep`` cooperative zero-wall-time yields. For
+            ``clock="virtual"`` or ``"explored"``, required: positive sleeps
+            become scheduler-owned virtual deadlines and ``sleep(0)`` remains a
+            yield.
         serializable_invariant: Check serializability against sequential runs.
         error_on_any_race: Treat unsynchronized races as failures (DPOR only).
+        clock: ``"real"`` (default) leaves time untouched. ``"virtual"`` gives
+            each execution a scheduler-owned virtual clock: explored code reads
+            virtual time from ``time.time()`` / ``time.monotonic()`` /
+            ``time.perf_counter()``, sleeps become zero-wall-time virtual
+            deadlines, timed lock acquires time out deterministically, and the
+            clock autojumps to the earliest pending deadline when nothing is
+            runnable. ``"explored"`` additionally makes the clock advance a
+            schedulable choice, so timer firings are explored against other
+            operations ("the retry fired between the read and the write").
+            Rule of thumb: use ``"virtual"`` to make timeout/TTL logic
+            reachable deterministically at zero wall cost; add ``"explored"``
+            when the *timing* of a timer firing is itself the race you are
+            hunting. Works with both strategies, sync and async. Requires
+            ``patch_sleep=True``; not supported with ``execution="process"``
+            (worker processes read real time) or ``serializable_invariant``
+            (the sequential baseline runs outside the scheduler). See
+            :doc:`/virtual_clock`.
         max_attempts: Random schedule samples to try (random strategy only).
         max_ops: Maximum schedule length per attempt (random strategy only).
         seed: RNG seed for reproducibility (random strategy only).
@@ -134,9 +160,15 @@ def explore(
 
     Raises:
         ValueError: If ``count`` and a list of workers are both provided,
-            ``count <= 0``, or ``strategy`` is unrecognised.
+            ``count <= 0``, ``strategy`` or ``clock`` is unrecognised, or
+            a non-real ``clock`` is combined with ``patch_sleep=False``,
+            ``serializable_invariant``, or ``execution="process"``.
     """
     worker_list = _resolve_workers(workers, count)
+
+    from frontrun._virtual_clock import validate_clock_options
+
+    validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
 
     # A deadlock_timeout left unset resolves per execution mode: process spawn is
     # slow, so it gets a longer default than in-process threads.
@@ -178,13 +210,17 @@ def explore(
                 ("max_ops", max_ops is not None),
                 ("seed", seed is not None),
                 ("debug", debug),
+                # The virtual clock lives in the in-process scheduler; worker
+                # processes read real time, so a non-default value is a
+                # correctness footgun rather than a silent no-op.
+                ("clock", clock != "real"),
             )
             if is_set
         ]
         if unsupported:
             raise ValueError(
                 f"explore(): execution='process' does not support {', '.join(unsupported)} "
-                "(these affect in-process tracing only; drop them or use execution='thread')"
+                "(these require the in-process scheduler; drop them or use execution='thread')"
             )
         from frontrun.cross_process import _explore_process
 
@@ -229,6 +265,7 @@ def explore(
         "patch_sleep": patch_sleep,
         "serializable_invariant": serializable_invariant,
         "error_on_any_race": error_on_any_race,
+        "clock": clock,
         "max_attempts": max_attempts,
         "max_ops": max_ops,
         "seed": seed,

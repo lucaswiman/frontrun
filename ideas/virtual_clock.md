@@ -1,6 +1,41 @@
 # Virtual Clock: Making Timeout, Retry, and TTL Races Explorable
 
-**Status:** Proposal (2026-06-12). Not implemented.
+**Status:** Implemented (2026-07-05) — `frontrun.explore(clock="virtual"|"explored")`,
+sync + async, DPOR + random. See `docs/virtual_clock.rst`. Implementation deltas
+from this proposal:
+
+- One mechanism serves both modes: the clock actor exists in v1 too, but is
+  *enabled* only when nothing else is runnable (autojump) vs. whenever a
+  deadline is pending (explored). Wake edges are reported as
+  `lock_release` (actor) / `lock_acquire` (woken worker) sync events.
+- The async `loop.time()` spike concluded **against** virtualising loop time:
+  the scheduler's own deadlock-timeout timers share the loop's timer heap, so
+  a clock jump would fire them spuriously. `asyncio.wait_for` / `asyncio.timeout`
+  therefore stay wall-clock (documented); wrapping them over virtual deadlines
+  remains future work.
+- Sync cooperative timed waits now use virtual deadlines: lock/RLock/semaphore
+  acquires, `Event.wait(timeout=...)`, `Condition.wait(timeout=...)`,
+  `Condition.wait_for(..., timeout=...)`, and `Queue.get`/`put` timeouts.
+  Async loop timeouts such as `asyncio.wait_for` and `asyncio.timeout` remain
+  wall-clock for now; see `possible-future-roadmap/virtual-clock-transparency.md`.
+- `serializable_invariant` is rejected with a virtual clock (the sequential
+  baseline runs execute outside the scheduler).
+- Post-review hardening: cooperative `Event.wait()` engine-blocks under DPOR
+  (a spinner is indistinguishable from useful work, so branches scheduling
+  the waiter before the setter ran unboundedly); the random scheduler tracks
+  untimed lock/event spinners so autojump still fires; `clock_scope` owns the
+  `time.*` patch so invariants see virtual time; replay defers recorded
+  clock-actor steps that arrive before their sleeper registers (drift);
+  async random uses a quiescence heuristic for tasks parked on unpatched
+  asyncio primitives.
+- Exact deadlock detection covers async DPOR too: `asyncio.Event` is patched
+  (waiters engine-block with wake happens-before edges, like `asyncio.Lock`),
+  and a "nobody runnable, no deadline pending" observation is confirmed after
+  draining in-flight loop wakes and checking that no *user* loop timer is
+  pending (frontrun's own watchdog timers are tagged via a `loop.call_at`
+  wrapper). Tasks parked on unmanaged awaitables (`asyncio.Queue` /
+  `Condition` / bare futures) still look runnable to the engine, so the check
+  safely declines and the wall fallback applies.
 
 ## Problem statement
 
@@ -74,16 +109,13 @@ explode the search space for nothing. Only **advancement** (the clock actor's st
 
 ### Async
 
-- `asyncio.sleep(d)` → wrapper that registers a deadline with the async scheduler and
-  pauses via the existing `await_point()` machinery (`frontrun/_async_autopause.py`),
+- `asyncio.sleep(d)` → wrapper that registers a deadline with the async scheduler,
   rather than yielding to the real loop timer.
-- `loop.time()` → return virtual time (assign on the loop instance the runners already
-  create; both async runners construct their own loop).
-- `asyncio.wait_for` / `asyncio.timeout` schedule callbacks via `loop.call_later`, which
-  consults `loop.time()` — with virtual `loop.time()` plus a loop-idle hook that advances
-  the clock to the earliest scheduled callback, these work unmodified. This mirrors how
-  AnyIO's autojump works on top of Trio. Needs a spike to confirm on vanilla asyncio; the
-  fallback is wrapping `wait_for`/`timeout` the same way as `sleep`.
+- `loop.time()` stays wall-clock. While `time.monotonic()` is patched for explored
+  tasks, the runners pin the event loop's own clock to the saved real monotonic
+  function so scheduler watchdogs and user loop timers remain real.
+- `asyncio.wait_for` / `asyncio.timeout` therefore keep wall-clock deadlines. Wrapping
+  them over virtual deadlines remains future work.
 
 ### Timed lock acquires
 
@@ -113,8 +145,7 @@ result = frontrun.explore(
 1. **v1 sync autojump:** patch `time.{time,monotonic,perf_counter,sleep}` under scheduler
    context; deadline-blocked thread state; advance-on-idle; exact deadlock detection for
    time-blocked threads. Validate on a TTL-cache lost-expiry bug (cachetools-style).
-2. **v1 async autojump:** virtual `loop.time()` + wrapped `asyncio.sleep`; spike
-   `wait_for` compatibility.
+2. **v1 async autojump:** wrapped `asyncio.sleep`; keep loop timers on wall-clock time.
 3. **v2 clock actor** for DPOR + a "maybe advance" branch for the random strategies.
    Validate on a tenacity-style retry race ("retry fires between read and write").
 4. **Timed-acquire migration:** route `CooperativeLock` timeouts through virtual

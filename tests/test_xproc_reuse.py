@@ -179,9 +179,7 @@ class _FakeScheduler:
 def test_drive_relays_raises_on_hung_relay() -> None:
     coord = DporCrossProcessCoordinator(num_workers=1)
     # Force a non-blocking join budget so the still-alive relay is detected at
-    # once rather than after the default deadlock_timeout*2+10s. Thread.join
-    # clamps negative timeouts to 0, so join_budget == 0 makes the join a
-    # non-blocking liveness check.
+    # once rather than after the default deadlock_timeout*2+10s.
     coord.deadlock_timeout = -5.0
 
     peer, relay_end = socket.socketpair()
@@ -191,6 +189,8 @@ def test_drive_relays_raises_on_hung_relay() -> None:
         # still alive after the zero-budget join -> loud TimeoutError.
         with pytest.raises(TimeoutError, match="did not terminate"):
             coord._drive_relays(scheduler, {0: relay_end}, [], {}, set())
+        relay = next((t for t in threading.enumerate() if t.name == "xproc-relay-0"), None)
+        assert relay is None or not relay.is_alive(), "relay thread should be joined before _drive_relays returns"
     finally:
         # Unblock the hung daemon relay (peer EOF makes recv_msg return None)
         # and wait for it to unwind so no thread outlives the test.

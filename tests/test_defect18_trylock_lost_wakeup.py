@@ -34,22 +34,25 @@ import _thread
 import threading
 from collections import deque
 
+import pytest
+
 import frontrun
-from frontrun._cooperative import CooperativeLock
+from frontrun._cooperative import CooperativeLock, CooperativeRLock
 
 
 class MiniEngine:
     """Minimal model of statemachine's SyncEngine.processing_loop()."""
 
-    def __init__(self, lock) -> None:
+    def __init__(self, lock, acquire_kwargs=None) -> None:
         self._lock = lock
+        self._acquire_kwargs = {"blocking": False} if acquire_kwargs is None else acquire_kwargs
         self.q = deque()
         self.processed = []
 
     def send(self, item) -> None:
         self.q.append(item)
-        if not self._lock.acquire(blocking=False):
-            return  # assume the current holder will drain our item
+        if not self._lock.acquire(**self._acquire_kwargs):
+            return
         try:
             while self.q:
                 self.processed.append(self.q.popleft())
@@ -57,10 +60,10 @@ class MiniEngine:
             self._lock.release()
 
 
-def _make_state(lock_factory):
+def _make_state(lock_factory, acquire_kwargs=None):
     class State:
         def __init__(self):
-            self.engine = MiniEngine(lock_factory())
+            self.engine = MiniEngine(lock_factory(), acquire_kwargs)
 
     return State
 
@@ -78,9 +81,9 @@ def _invariant(s):
     return len(s.engine.processed) == 2
 
 
-def _explore(lock_factory):
+def _explore(lock_factory, acquire_kwargs=None):
     return frontrun.explore(
-        setup=_make_state(lock_factory),
+        setup=_make_state(lock_factory, acquire_kwargs),
         workers=[_worker_a, _worker_b],
         invariant=_invariant,
         detect_io=False,
@@ -93,8 +96,7 @@ def test_real_lock_finds_lost_wakeup():
     result = _explore(_thread.allocate_lock)
     assert not result.property_holds, "DPOR missed the lost-wakeup race with a real lock"
     assert result.reproduction_successes >= 8, (
-        f"lost-wakeup counterexample replayed only "
-        f"{result.reproduction_successes}/{result.reproduction_attempts}"
+        f"lost-wakeup counterexample replayed only {result.reproduction_successes}/{result.reproduction_attempts}"
     )
 
 
@@ -106,8 +108,7 @@ def test_cooperative_lock_finds_lost_wakeup():
         f"explored {result.num_explored} interleavings, all green"
     )
     assert result.reproduction_successes >= 8, (
-        f"lost-wakeup counterexample replayed only "
-        f"{result.reproduction_successes}/{result.reproduction_attempts}"
+        f"lost-wakeup counterexample replayed only {result.reproduction_successes}/{result.reproduction_attempts}"
     )
 
 
@@ -119,6 +120,15 @@ def test_threading_lock_agrees_with_real_lock():
     assert not result.property_holds, (
         f"threading.Lock ({type(threading.Lock()).__name__}) masked the lost-wakeup "
         "race that the real C-level lock finds"
+    )
+    assert result.reproduction_successes >= 8
+
+
+@pytest.mark.parametrize("lock_factory", [CooperativeLock, CooperativeRLock], ids=["lock", "rlock"])
+def test_cooperative_timeout_zero_finds_lost_wakeup(lock_factory):
+    result = _explore(lock_factory, {"timeout": 0})
+    assert not result.property_holds, (
+        f"{lock_factory.__name__}.acquire(timeout=0) masked the lost-wakeup race by not reporting a trylock attempt"
     )
     assert result.reproduction_successes >= 8
 

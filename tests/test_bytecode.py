@@ -493,14 +493,14 @@ def test_timeout_counts_as_explored():
     import time
 
     def slow_worker(state):
-        time.sleep(1)
+        time.sleep(0.05)
 
     result = explore_random(
         setup=lambda: None,
         threads=[slow_worker, slow_worker],
         invariant=lambda s: True,
         max_attempts=5,
-        timeout_per_run=0.001,
+        timeout_per_run=0.005,
         seed=42,
         patch_sleep=False,
     )

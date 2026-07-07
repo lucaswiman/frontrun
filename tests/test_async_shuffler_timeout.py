@@ -159,6 +159,33 @@ def test_slow_but_correct_run_is_inconclusive_not_deadlock() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_uncaught_wait_for_timeout_is_task_crash_not_deadlock() -> None:
+    class State:
+        pass
+
+    async def worker(state: State) -> None:
+        await asyncio.wait_for(asyncio.Event().wait(), timeout=0.01)
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=State,
+            tasks=[worker],
+            invariant=lambda s: True,
+            max_attempts=1,
+            timeout_per_run=1.0,
+            deadlock_timeout=0.2,
+            clock="virtual",
+            seed=1,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Task crash" in result.explanation
+    assert "TimeoutError" in result.explanation
+    assert "Deadlock detected" not in result.explanation
+
+
 def test_detect_sql_reports_table_accesses() -> None:
     """F8: detect_sql=True in the random async shuffler must actually report.
 

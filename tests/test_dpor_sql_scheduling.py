@@ -8,12 +8,11 @@ user-code opcode.  The Rust engine's record_io_access keeps only the FIRST
 event per thread — so the UPDATE write is dropped and only the SELECT read is
 recorded.  DPOR sees no write-write conflict and explores only 1 interleaving.
 
-The fix: _intercept_execute calls report_and_wait(None, thread_id) directly,
-forcing a scheduling point at each SQL call regardless of whether the caller
-is traced user code or opaque library code.
+The fix: _intercept_execute forces a scheduler boundary at each SQL call
+regardless of whether the caller is traced user code or opaque library code.
 
 Tests:
-  1. Unit test — verifies report_and_wait is called once per reportable SQL op.
+  1. Unit test — verifies the scheduler boundary is reached once per reportable SQL op.
   2. Integration test — verifies DPOR explores >1 interleaving when SQL is
      called from untraced "library" code (simulated via a helper compiled with
      a frontrun/ filename so _should_trace_file returns False for it).
@@ -24,7 +23,6 @@ from __future__ import annotations
 import os
 import sqlite3
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -77,26 +75,32 @@ def mem_db() -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
-# Unit test: report_and_wait is called for each reportable SQL operation
+# Unit test: a scheduler boundary is reached for each reportable SQL operation
 # ---------------------------------------------------------------------------
 
 
-class TestReportAndWaitCalledPerSqlOp:
-    """_intercept_execute must call report_and_wait once per reportable SQL op."""
+class TestSqlSchedulerBoundaryPerOp:
+    """_intercept_execute must schedule once per reportable SQL op."""
 
-    def test_report_and_wait_called_when_dpor_active(self, mem_db: sqlite3.Connection) -> None:
-        """When DPOR is active, each cursor.execute should trigger report_and_wait."""
+    def test_scheduler_boundary_called_when_dpor_active(self, mem_db: sqlite3.Connection) -> None:
+        """When DPOR is active, each cursor.execute should trigger a scheduler boundary."""
         from frontrun._io_detection import (
             set_dpor_scheduler,
             set_dpor_thread_id,
             set_io_reporter,
         )
 
-        # Set up a mock scheduler that records report_and_wait calls
-        mock_scheduler = MagicMock()
-        mock_scheduler.report_and_wait.return_value = True
+        calls: list[tuple[str, int]] = []
 
-        set_dpor_scheduler(mock_scheduler)
+        class Scheduler:
+            def before_sync_retry(self, thread_id: int) -> bool:
+                calls.append(("before", thread_id))
+                return True
+
+            def after_sync_retry(self, thread_id: int) -> None:
+                calls.append(("after", thread_id))
+
+        set_dpor_scheduler(Scheduler())
         set_dpor_thread_id(0)
         set_io_reporter(lambda r, k: None)  # so reported=True
 
@@ -114,20 +118,15 @@ class TestReportAndWaitCalledPerSqlOp:
             set_dpor_thread_id(None)
             set_io_reporter(None)
 
-        calls = mock_scheduler.report_and_wait.call_args_list
-        assert len(calls) >= 2, (
-            f"Expected report_and_wait to be called at least once per SQL operation "
-            f"(SELECT + UPDATE = 2), but got {len(calls)} call(s). "
+        assert calls.count(("before", 0)) >= 2, (
+            f"Expected a scheduler boundary at least once per SQL operation "
+            f"(SELECT + UPDATE = 2), but got {calls.count(('before', 0))} call(s). "
             "The scheduling-point fix in _intercept_execute may have been removed."
         )
-        # All calls must use frame=None (not a real frame)
-        for call in calls:
-            assert call.args[0] is None, (
-                f"report_and_wait should be called with frame=None from _intercept_execute, got frame={call.args[0]!r}"
-            )
+        assert calls.count(("before", 0)) == calls.count(("after", 0))
 
-    def test_report_and_wait_not_called_when_dpor_inactive(self, mem_db: sqlite3.Connection) -> None:
-        """When DPOR is not active, _intercept_execute must not call report_and_wait."""
+    def test_scheduler_boundary_not_called_when_dpor_inactive(self, mem_db: sqlite3.Connection) -> None:
+        """When DPOR is not active, _intercept_execute must not enter scheduler code."""
         from frontrun._io_detection import set_io_reporter
 
         set_io_reporter(lambda r, k: None)
@@ -143,6 +142,104 @@ class TestReportAndWaitCalledPerSqlOp:
             unpatch_sql()
             set_io_reporter(None)
         # If we got here without error, the guard worked correctly
+
+    def test_row_lock_acquire_happens_after_scheduling_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SQL row-lock arbitration must run after the DPOR scheduling boundary."""
+        from frontrun import _sql_cursor
+        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+
+        calls: list[str] = []
+
+        class Scheduler:
+            def report_and_wait(self, frame: object | None, thread_id: int) -> bool:
+                calls.append(f"report:{frame!r}:{thread_id}")
+                return True
+
+        monkeypatch.setattr(_sql_cursor, "_acquire_pending_row_locks", lambda: calls.append("acquire"))
+
+        set_dpor_scheduler(Scheduler())
+        set_dpor_thread_id(0)
+        try:
+            _sql_cursor._dpor_schedule_and_suppress_sync(
+                reported=True,
+                operation="SELECT value FROM maz_trace_test WHERE id = 'row1' FOR UPDATE",
+                parameters=None,
+                paramstyle="qmark",
+                execute=lambda: calls.append("execute"),
+            )
+        finally:
+            set_dpor_scheduler(None)
+            set_dpor_thread_id(None)
+
+        assert calls == ["report:None:0", "acquire", "execute"]
+
+    def test_row_lock_acquire_uses_held_sync_retry_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The modern DPOR SQL path holds the sync turn through row-lock acquire."""
+        from frontrun import _sql_cursor
+        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+
+        calls: list[str] = []
+
+        class Scheduler:
+            def before_sync_retry(self, thread_id: int) -> bool:
+                calls.append(f"before:{thread_id}")
+                return True
+
+            def after_sync_retry(self, thread_id: int) -> None:
+                calls.append(f"after:{thread_id}")
+
+        monkeypatch.setattr(_sql_cursor, "_acquire_pending_row_locks", lambda: calls.append("acquire"))
+
+        set_dpor_scheduler(Scheduler())
+        set_dpor_thread_id(0)
+        try:
+            _sql_cursor._dpor_schedule_and_suppress_sync(
+                reported=True,
+                operation="SELECT value FROM maz_trace_test WHERE id = 'row1' FOR UPDATE",
+                parameters=None,
+                paramstyle="qmark",
+                execute=lambda: calls.append("execute"),
+            )
+        finally:
+            set_dpor_scheduler(None)
+            set_dpor_thread_id(None)
+
+        assert calls == ["before:0", "acquire", "execute", "after:0"]
+
+    def test_row_lock_acquire_skips_execute_when_sync_retry_denied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If the scheduler denies the SQL turn, do not acquire row locks or enter the driver."""
+        from frontrun import _sql_cursor
+        from frontrun._deadlock import SchedulerAbort
+        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+
+        calls: list[str] = []
+
+        class Scheduler:
+            def before_sync_retry(self, thread_id: int) -> bool:
+                calls.append(f"before:{thread_id}")
+                return False
+
+            def after_sync_retry(self, thread_id: int) -> None:
+                calls.append(f"after:{thread_id}")
+
+        monkeypatch.setattr(_sql_cursor, "_acquire_pending_row_locks", lambda: calls.append("acquire"))
+
+        set_dpor_scheduler(Scheduler())
+        set_dpor_thread_id(0)
+        try:
+            with pytest.raises(SchedulerAbort):
+                _sql_cursor._dpor_schedule_and_suppress_sync(
+                    reported=True,
+                    operation="SELECT value FROM maz_trace_test WHERE id = 'row1' FOR UPDATE",
+                    parameters=None,
+                    paramstyle="qmark",
+                    execute=lambda: calls.append("execute"),
+                )
+        finally:
+            set_dpor_scheduler(None)
+            set_dpor_thread_id(None)
+
+        assert calls == ["before:0"]
 
 
 # ---------------------------------------------------------------------------

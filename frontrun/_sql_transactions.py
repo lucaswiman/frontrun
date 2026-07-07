@@ -21,6 +21,9 @@ State lives on :data:`_io_tls` (shared with ``_sql_cursor``):
 * ``_tx_savepoints``  — dict mapping savepoint name to buffer index
 * ``_pending_row_locks`` — list of resource IDs needing DPOR row-lock
   arbitration (drained by ``_sql_row_locks._acquire_pending_row_locks``)
+* ``_held_row_locks`` — set of row-lock resources already acquired by this
+  transaction; later row data accesses are reported weakly and do not need
+  duplicate row-lock arbitration
 """
 
 from __future__ import annotations
@@ -41,7 +44,14 @@ __all__ = [
 ]
 
 
-def _report_or_buffer(reporter: Any, res_id: str, kind: str, *, force_immediate: bool = False) -> None:
+def _report_or_buffer(
+    reporter: Any,
+    res_id: str,
+    kind: str,
+    *,
+    force_immediate: bool = False,
+    track_row_lock: bool = True,
+) -> None:
     """Report a SQL access immediately, or buffer it if inside a transaction.
 
     When ``force_immediate=True`` the access is reported right away even
@@ -49,6 +59,10 @@ def _report_or_buffer(reporter: Any, res_id: str, kind: str, *, force_immediate:
     learn about write-intent conflicts before C-level blocking can occur).
     Transaction atomicity is preserved because the DPOR scheduler still
     skips yielding inside transactions.
+
+    When a row lock is already held, the access is still reported, but as a
+    weak access. This keeps conflicts with plain readers/writers visible
+    without creating a second dependency between two row-lock-protected writers.
 
     Autobegin transactions (``_is_autobegin=True``) are NOT buffered: with
     READ COMMITTED isolation (PostgreSQL default), individual statements are
@@ -59,12 +73,21 @@ def _report_or_buffer(reporter: Any, res_id: str, kind: str, *, force_immediate:
     store = tx_store()
     in_tx = getattr(store, "_in_transaction", False)
     is_autobegin = getattr(store, "_is_autobegin", False)
+    held_row_locks = getattr(store, "_held_row_locks", set())
+    lock_already_held = track_row_lock and res_id in held_row_locks
+
+    if lock_already_held and kind == "write":
+        report_kind = "weak_write"
+    elif lock_already_held and kind == "read":
+        report_kind = "weak_read"
+    else:
+        report_kind = kind
     if in_tx and not force_immediate and not is_autobegin:
         if not hasattr(store, "_tx_buffer"):
             store._tx_buffer = []
-        store._tx_buffer.append((res_id, kind))
+        store._tx_buffer.append((res_id, report_kind))
     else:
-        reporter(res_id, kind)
+        reporter(res_id, report_kind)
 
     # Track resources that need row-lock arbitration.
     # SELECT FOR UPDATE (force_immediate) always needs arbitration.
@@ -73,7 +96,7 @@ def _report_or_buffer(reporter: Any, res_id: str, kind: str, *, force_immediate:
     # row-level locks) can cause the cooperative scheduler to deadlock
     # when one thread blocks in the kernel waiting for another's lock
     # (defect #6).
-    if in_tx and (force_immediate or kind == "write"):
+    if track_row_lock and in_tx and not lock_already_held and (force_immediate or kind == "write"):
         pending = getattr(store, "_pending_row_locks", None)
         if pending is None:
             pending = []
@@ -206,7 +229,9 @@ def handle_connection_commit() -> None:
     if not getattr(tx_store(), "_in_transaction", False):
         return
     from frontrun._io_detection import get_io_reporter
+    from frontrun._sql_endpoint_suppression import suppress_sql_write
 
+    suppress_sql_write("COMMIT")
     _handle_tx_op(get_io_reporter(), TxOp.COMMIT)
 
 
@@ -215,7 +240,9 @@ def handle_connection_rollback() -> None:
     if not getattr(tx_store(), "_in_transaction", False):
         return
     from frontrun._io_detection import get_io_reporter
+    from frontrun._sql_endpoint_suppression import suppress_sql_write
 
+    suppress_sql_write("ROLLBACK")
     _handle_tx_op(get_io_reporter(), TxOp.ROLLBACK)
 
 
@@ -228,6 +255,13 @@ def reset_connection_state() -> None:
     transaction is active (it's a no-op in that case).
     """
     store = tx_store()
-    for attr in ("_in_transaction", "_is_autobegin", "_tx_buffer", "_tx_savepoints", "_pending_row_locks"):
+    for attr in (
+        "_in_transaction",
+        "_is_autobegin",
+        "_tx_buffer",
+        "_tx_savepoints",
+        "_pending_row_locks",
+        "_held_row_locks",
+    ):
         if hasattr(store, attr):
             delattr(store, attr)

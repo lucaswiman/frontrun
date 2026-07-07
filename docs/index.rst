@@ -27,6 +27,11 @@ The DPOR engine also drives **cross-process exploration**: the same
 ``frontrun.explore(...)`` interface applied to separate Python processes that
 contend on shared external state (SQL and Redis).
 
+Time itself can be scheduled: with ``clock="virtual"`` sleeps cost zero wall
+time and TTL expiry becomes reachable, and with ``clock="explored"`` timer
+firings are explored against other operations like any other interleaving
+choice — see :doc:`virtual_clock`.
+
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
@@ -44,6 +49,7 @@ contend on shared external state (SQL and Redis).
    sql-technical-details
    redis
    cross_process
+   virtual_clock
    trace_filtering
    internals
    api_reference

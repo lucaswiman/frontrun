@@ -82,6 +82,20 @@ impl PyDporEngine {
         Ok(())
     }
 
+    /// Report a shared memory access attributed to an explicit path position.
+    fn report_access_at(
+        &mut self,
+        execution: &mut PyExecution,
+        thread_id: usize,
+        object_id: u64,
+        kind: &str,
+        path_id: usize,
+    ) -> PyResult<()> {
+        let access_kind = Self::parse_access_kind(kind)?;
+        self.inner.process_access_at(&mut execution.inner, thread_id, object_id, access_kind, path_id);
+        Ok(())
+    }
+
     /// Report a first-access shared memory access.  Like `report_access`
     /// but keeps the earliest access per thread rather than the latest.
     /// Used for container-level keys where multiple writes to the same
@@ -96,6 +110,20 @@ impl PyDporEngine {
     ) -> PyResult<()> {
         let access_kind = Self::parse_access_kind(kind)?;
         self.inner.process_first_access(&mut execution.inner, thread_id, object_id, access_kind);
+        Ok(())
+    }
+
+    /// Report a first-access shared memory access attributed to an explicit path position.
+    fn report_first_access_at(
+        &mut self,
+        execution: &mut PyExecution,
+        thread_id: usize,
+        object_id: u64,
+        kind: &str,
+        path_id: usize,
+    ) -> PyResult<()> {
+        let access_kind = Self::parse_access_kind(kind)?;
+        self.inner.process_first_access_at(&mut execution.inner, thread_id, object_id, access_kind, path_id);
         Ok(())
     }
 

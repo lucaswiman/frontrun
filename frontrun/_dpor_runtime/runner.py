@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+from frontrun._dpor_core import event_wake_sync_id as _event_wake_sync_id
 from frontrun._dpor_core.worker import WorkerTarget
 from frontrun._opcode_observer import (
     OpcodeTraceHandle,
@@ -14,6 +15,7 @@ from frontrun._opcode_observer import (
     uninstall_thread_opcode_trace,
 )
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
+from frontrun._virtual_clock import patch_time, unpatch_time
 
 from ._shared import *
 from ._shared import (
@@ -86,11 +88,14 @@ class DporBytecodeRunner:
             unpatch_io()
             self._io_patched = False
 
-    def patch_scope(self, *, patch_sleep: bool = True) -> PatchScope:
+    def patch_scope(self, *, patch_sleep: bool = True, virtual_time: bool = False) -> PatchScope:
         scope = PatchScope()
         scope.add(self._patch_locks, self._unpatch_locks)
         scope.add(self._patch_io, self._unpatch_io)
         scope.add(self._patch_sleep, self._unpatch_sleep, enabled=patch_sleep)
+        # Route time.time/monotonic/perf_counter through the scheduler's
+        # virtual clock (gated per-thread; see frontrun._virtual_clock).
+        scope.add(patch_time, unpatch_time, enabled=virtual_time)
         return scope
 
     def _start_opcode_trace(self) -> None:
@@ -127,6 +132,7 @@ class DporBytecodeRunner:
     def _setup_dpor_tls(self, thread_id: int) -> None:
         """Set up both shared cooperative TLS and DPOR-specific TLS."""
         scheduler = self.scheduler
+        scheduler.register_worker_thread()
         engine = scheduler.engine
         execution = scheduler.execution
         engine_lock = scheduler._engine_lock
@@ -265,6 +271,61 @@ class DporBytecodeRunner:
                     with scheduler._condition:
                         scheduler._condition.notify_all()
                     return
+                # Cooperative Event machinery (see CooperativeEvent): waiters
+                # engine-block until set().  Wake happens-before edges use
+                # per-waiter sync ids (like the virtual clock's wake edges) so
+                # each of N waiters gets its own release/acquire pair, and the
+                # lock_depth bookkeeping above is deliberately not touched.
+                if event == "event_wait":
+                    with engine_lock:
+                        if lock_obj.is_set():  # type: ignore[attr-defined]
+                            # set() already ran (serialized by engine_lock):
+                            # blocking now would be a lost wakeup.
+                            return
+                        scheduler._lock_waiters.setdefault(stable_lock_id, set()).add(thread_id)
+                        execution.block_thread(thread_id)
+                    return
+                if event == "event_set":
+                    with engine_lock:
+                        waiters = scheduler._lock_waiters.pop(stable_lock_id, set())
+                        _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
+                        for waiter in sorted(waiters):
+                            execution.unblock_thread(waiter)
+                            engine.report_sync(
+                                execution,
+                                thread_id,
+                                "lock_release",
+                                _event_wake_sync_id(stable_lock_id, waiter),
+                                _saved_path_id,
+                            )
+                    with scheduler._condition:
+                        scheduler._condition.notify_all()
+                    return
+                if event in ("event_read", "event_write"):
+                    state_key = _make_object_key(stable_lock_id, "__event_state__")
+                    with engine_lock:
+                        engine.report_access(
+                            execution,
+                            thread_id,
+                            state_key,
+                            "read" if event == "event_read" else "write",
+                        )
+                    return
+                if event == "event_wake":
+                    with engine_lock:
+                        waiter_set = scheduler._lock_waiters.get(stable_lock_id)
+                        if waiter_set is not None:
+                            waiter_set.discard(thread_id)
+                        execution.unblock_thread(thread_id)
+                        _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
+                        engine.report_sync(
+                            execution,
+                            thread_id,
+                            "lock_acquire",
+                            _event_wake_sync_id(stable_lock_id, thread_id),
+                            _saved_path_id,
+                        )
+                    return
                 with engine_lock:
                     _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                     engine.report_sync(execution, thread_id, event, stable_lock_id, _saved_path_id)
@@ -402,6 +463,7 @@ class DporBytecodeRunner:
                 uninstall_thread_opcode_trace(handle)
             self._teardown_dpor_tls()
             self.scheduler.mark_done(thread_id)
+            self.scheduler.unregister_worker_thread()
 
     def _run_thread(
         self,

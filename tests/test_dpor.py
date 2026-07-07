@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 import pytest
 from frontrun._dpor import PyDporEngine
@@ -21,6 +22,68 @@ import frontrun
 from frontrun._deadlock import SchedulerAbort
 from frontrun._dpor_runtime.runner import DporBytecodeRunner
 from frontrun.common import InterleavingResult
+from frontrun.dpor import DporScheduler
+
+
+class _CountingCondition:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.wait_calls = 0
+        self.notify_calls = 0
+
+    def __enter__(self) -> _CountingCondition:
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self._lock.release()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.wait_calls += 1
+        return False
+
+    def notify_all(self) -> None:
+        self.notify_calls += 1
+
+
+def test_dpor_report_and_wait_reschedules_done_current_without_timeout() -> None:
+    """A stale current thread that already finished should not cost deadlock_timeout."""
+
+    class Host:
+        def __init__(self) -> None:
+            self._condition = _CountingCondition()
+            self._finished = False
+            self._error = None
+            self._current_thread = 1
+            self._threads_done = {1}
+            self.num_threads = 2
+            self.virtual_clock = None
+            self.deadlock_timeout = 0.01
+            self._preload_bridge = None
+            self.trace_recorder = None
+            self._pending_io_by_thread: dict[int, list[tuple[int, str, bool]]] = {}
+            self._lock_depth_by_thread: dict[int, int] = {}
+            self._switch_point_collector = None
+            self._step_event_collector = None
+            self._last_scheduled_path_id = None
+            self.scheduled = 0
+
+        _report_and_wait = DporScheduler._report_and_wait
+        report_and_wait = DporScheduler.report_and_wait
+        _condition_wait_timeout = DporScheduler._condition_wait_timeout
+        _reschedule_done_current_unlocked = DporScheduler._reschedule_done_current_unlocked
+        _flush_other_pending_io_for_current_io_unlocked = DporScheduler._flush_other_pending_io_for_current_io_unlocked
+        _flush_pending_io_for_unlocked = DporScheduler._flush_pending_io_for_unlocked
+
+        def _schedule_next(self) -> int | None:
+            self.scheduled += 1
+            return 0 if self.scheduled == 1 else None
+
+    host = Host()
+
+    assert host.report_and_wait(None, 0)
+    assert host._condition.wait_calls == 0
+
 
 # ---------------------------------------------------------------------------
 # Low-level Rust engine tests (via PyO3)
@@ -223,6 +286,7 @@ def test_dpor_runner_cleans_up_runtime_state_after_error(monkeypatch) -> None:
         def __init__(self) -> None:
             self.error: Exception | None = None
             self.done: list[int] = []
+            self.lifecycle: list[str] = []
 
         def report_error(self, error: Exception) -> None:
             self.error = error
@@ -230,11 +294,21 @@ def test_dpor_runner_cleans_up_runtime_state_after_error(monkeypatch) -> None:
         def mark_done(self, thread_id: int) -> None:
             self.done.append(thread_id)
 
+        def register_worker_thread(self) -> None:
+            self.lifecycle.append("register")
+
+        def unregister_worker_thread(self) -> None:
+            self.lifecycle.append("unregister")
+
     scheduler = _StubScheduler()
     runner = DporBytecodeRunner(scheduler)  # type: ignore[arg-type]
     events: list[str] = []
 
-    monkeypatch.setattr(runner, "_setup_dpor_tls", lambda thread_id: events.append(f"setup:{thread_id}"))
+    def setup(thread_id: int) -> None:
+        scheduler.register_worker_thread()
+        events.append(f"setup:{thread_id}")
+
+    monkeypatch.setattr(runner, "_setup_dpor_tls", setup)
     monkeypatch.setattr(runner, "_teardown_dpor_tls", lambda: events.append("teardown"))
     monkeypatch.setattr(
         "frontrun._dpor_runtime.runner.install_thread_opcode_trace",
@@ -254,6 +328,7 @@ def test_dpor_runner_cleans_up_runtime_state_after_error(monkeypatch) -> None:
     assert isinstance(runner.errors[0], RuntimeError)
     assert isinstance(scheduler.error, RuntimeError)
     assert scheduler.done == [0]
+    assert scheduler.lifecycle == ["register", "unregister"]
     assert events == ["setup:0", "trace:on", "trace:off", "teardown"]
 
 
@@ -262,6 +337,7 @@ def test_dpor_runner_swallows_scheduler_abort(monkeypatch) -> None:
         def __init__(self) -> None:
             self.error: Exception | None = None
             self.done: list[int] = []
+            self.lifecycle: list[str] = []
 
         def report_error(self, error: Exception) -> None:
             self.error = error
@@ -269,11 +345,21 @@ def test_dpor_runner_swallows_scheduler_abort(monkeypatch) -> None:
         def mark_done(self, thread_id: int) -> None:
             self.done.append(thread_id)
 
+        def register_worker_thread(self) -> None:
+            self.lifecycle.append("register")
+
+        def unregister_worker_thread(self) -> None:
+            self.lifecycle.append("unregister")
+
     scheduler = _StubScheduler()
     runner = DporBytecodeRunner(scheduler)  # type: ignore[arg-type]
     events: list[str] = []
 
-    monkeypatch.setattr(runner, "_setup_dpor_tls", lambda thread_id: events.append(f"setup:{thread_id}"))
+    def setup(thread_id: int) -> None:
+        scheduler.register_worker_thread()
+        events.append(f"setup:{thread_id}")
+
+    monkeypatch.setattr(runner, "_setup_dpor_tls", setup)
     monkeypatch.setattr(runner, "_teardown_dpor_tls", lambda: events.append("teardown"))
 
     def abort() -> None:
@@ -284,6 +370,7 @@ def test_dpor_runner_swallows_scheduler_abort(monkeypatch) -> None:
     assert runner.errors == {}
     assert scheduler.error is None
     assert scheduler.done == [0]
+    assert scheduler.lifecycle == ["register", "unregister"]
     assert events == ["setup:0", "teardown"]
 
 

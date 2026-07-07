@@ -10,6 +10,7 @@ from frontrun._dpor_core import (
     make_dpor_engine,
     record_dpor_failure,
 )
+from frontrun._virtual_clock import ClockMode, VirtualClock, clock_scope, validate_clock_options
 
 from ._shared import *
 from ._shared import _require_frontrun_env, _set_active_trace_filter, _TraceFilter
@@ -51,6 +52,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
     patch_sleep: bool = True,
     serializable_invariant: Callable[[T], Any] | bool = False,
     error_on_any_race: bool = False,
+    clock: ClockMode = "real",
 ) -> InterleavingResult:
     """Systematically explore interleavings using DPOR.
 
@@ -134,10 +136,19 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
             exploration across different conflict points earlier, finding
             bugs faster on average.
         patch_sleep: If True (default), replace ``time.sleep`` with a
-            no-op that yields to the scheduler.  This prevents threads
-            from actually sleeping during exploration (which would be
-            extremely slow) while preserving sleep calls as scheduling
-            points.  Set to False if your code depends on real delays.
+            cooperative scheduler hook. With ``clock="real"``, sleep calls are
+            zero-wall-time scheduling points. With a virtual clock, positive
+            sleeps become virtual deadlines and ``sleep(0)`` remains a yield.
+            Set to False if your code depends on real delays.
+        clock: ``"real"`` (default) leaves time untouched.  ``"virtual"``
+            gives each execution a scheduler-owned virtual clock:
+            ``time.time``/``time.monotonic``/``time.perf_counter`` return
+            virtual time in explored code, ``time.sleep`` becomes a timed
+            block, and the clock autojumps to the earliest pending deadline
+            when no thread is runnable.  ``"explored"`` additionally models
+            the clock advance as a synthetic DPOR actor, so "the timer fired
+            between your read and your write" is explored like any other
+            interleaving.  Requires ``patch_sleep=True``.
 
     Returns:
         InterleavingResult with exploration statistics and any counterexample found.
@@ -150,6 +161,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
        automatically skipped.
     """
     _require_frontrun_env("frontrun.explore")
+    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 
@@ -157,8 +169,11 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
     serial_valid_states, serial_hash_fn = compute_serializable_baseline_sync(setup, threads, serializable_invariant)
 
     num_threads = len(threads)
+    # With a virtual clock the engine gets one extra thread: the clock actor
+    # (id == num_threads), whose steps advance the clock (see scheduler.py).
+    clock_actor_id = num_threads if clock != "real" else None
     engine = make_dpor_engine(
-        num_threads=num_threads,
+        num_threads=num_threads + (1 if clock_actor_id is not None else 0),
         preemption_bound=preemption_bound,
         max_branches=max_branches,
         max_executions=max_executions,
@@ -304,6 +319,9 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
             # Set up switch point collection for the report
             _collecting_report = report is not None and len(report.executions) < _MAX_RECORDED_EXECUTIONS
             switch_points: list[Any] = []
+            # Fresh virtual clock per execution so every interleaving starts
+            # from the same deterministic epoch.
+            virtual_clock = VirtualClock() if clock != "real" else None
             scheduler = DporScheduler(
                 engine,
                 execution,
@@ -316,11 +334,15 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                 stable_ids=stable_ids,
                 switch_point_collector=switch_points if _collecting_report else None,
                 track_dunder_dict_accesses=track_dunder_dict_accesses,
+                virtual_clock=virtual_clock,
+                clock_mode=clock,
+                clock_actor_id=clock_actor_id,
             )
             runner = DporBytecodeRunner(scheduler, detect_io=detect_io, preload_bridge=preload_bridge)
 
-            with runner.patch_scope(patch_sleep=patch_sleep):
-                state = setup()
+            with runner.patch_scope(patch_sleep=patch_sleep, virtual_time=virtual_clock is not None):
+                with clock_scope(virtual_clock):
+                    state = setup()
                 # Assign stable object IDs in deterministic, schedule-independent
                 # order *before* any worker runs.  Without this, IDs are assigned
                 # in first-touch order, which DPOR backtracks permute across
@@ -377,6 +399,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                         detect_io=detect_io,
                         io_schedule=list(scheduler._io_trace) if detect_io and scheduler._io_trace else None,
                         patch_sleep=patch_sleep,
+                        clock=clock,
                     )
                     result.reproduction_attempts = attempts
                     result.reproduction_successes = successes
@@ -433,7 +456,11 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
             if not _evaluate_invariant:
                 invariant_failed, assertion_msg = False, None
             else:
-                invariant_failed, assertion_msg = check_invariant(invariant, state)
+                # The invariant runs on the driver thread; register the
+                # execution's virtual clock so TTL-style reads see the same
+                # (virtual) time the workers saw.
+                with clock_scope(virtual_clock):
+                    invariant_failed, assertion_msg = check_invariant(invariant, state)
             if invariant_failed:
                 with engine_lock:
                     schedule = execution.schedule_trace
@@ -465,6 +492,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                         io_schedule=list(scheduler._io_trace) if detect_io and scheduler._io_trace else None,
                         patch_sleep=patch_sleep,
                         access_schedule=access_schedule,
+                        clock=clock,
                     )
                     result.reproduction_attempts = attempts
                     result.reproduction_successes = successes

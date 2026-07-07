@@ -1272,6 +1272,171 @@ def test_report_or_buffer_captures_pending_row_locks() -> None:
         _io_tls._pending_row_locks = []
 
 
+def test_for_update_pyformat_dict_resolves_sqlalchemy_named_bind() -> None:
+    """SQLAlchemy may pass ``:name`` binds through psycopg2's pyformat cursor path."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()
+    set_dpor_scheduler(object())
+    set_dpor_thread_id(0)
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._pending_row_locks = []
+    try:
+        _report_sql_access(
+            "SELECT value FROM maz_trace_test WHERE id = :id FOR UPDATE",
+            {"id": "row1"},
+            paramstyle="pyformat",
+        )
+        assert "sql:maz_trace_test:(('id', 'row1'),)" in _io_tls._pending_row_locks
+        assert "sql:maz_trace_test" not in _io_tls._pending_row_locks
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        clear_sql_metadata()
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _io_tls._pending_row_locks = []
+
+
+def test_update_on_held_row_lock_reports_weak_data_access_without_reacquire() -> None:
+    """A held row lock suppresses only duplicate lock arbitration, not the write."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()
+    set_dpor_scheduler(object())
+    set_dpor_thread_id(0)
+    row_resource = "sql:maz_trace_test:(('id', 'row1'),)"
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._pending_row_locks = []
+    _io_tls._held_row_locks = {row_resource}
+    try:
+        _report_sql_access(
+            "UPDATE maz_trace_test SET value = :v WHERE id = :id",
+            {"id": "row1", "v": 1},
+            paramstyle="pyformat",
+        )
+        assert (row_resource, "weak_read") in log.events
+        assert (row_resource, "weak_write") in log.events
+        assert row_resource not in _io_tls._pending_row_locks
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        clear_sql_metadata()
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _io_tls._pending_row_locks = []
+        if hasattr(_io_tls, "_held_row_locks"):
+            del _io_tls._held_row_locks
+
+
+def test_for_update_dpor_reports_weak_read_and_row_lock() -> None:
+    """FOR UPDATE uses row-lock arbitration but still reports the row read."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()
+    set_dpor_scheduler(object())
+    set_dpor_thread_id(0)
+    row_resource = "sql:maz_trace_test:(('id', 'row1'),)"
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._pending_row_locks = []
+    try:
+        _report_sql_access(
+            "SELECT value FROM maz_trace_test WHERE id = :id FOR UPDATE",
+            {"id": "row1"},
+            paramstyle="pyformat",
+        )
+        assert (row_resource, "weak_read") in log.events
+        assert row_resource in _io_tls._pending_row_locks
+        assert (row_resource, "write") not in log.events
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        clear_sql_metadata()
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _io_tls._pending_row_locks = []
+
+
+def test_for_update_dpor_weak_read_conflicts_with_plain_writer_resource() -> None:
+    """A modeled row-lock reader and an unmodeled writer must share a row resource."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()
+    set_dpor_scheduler(object())
+    set_dpor_thread_id(0)
+    row_resource = "sql:maz_trace_test:(('id', 'row1'),)"
+    _io_tls._pending_row_locks = []
+    try:
+        _io_tls._in_transaction = True
+        _io_tls._is_autobegin = True
+        _report_sql_access(
+            "SELECT value FROM maz_trace_test WHERE id = :id FOR UPDATE",
+            {"id": "row1"},
+            paramstyle="pyformat",
+        )
+
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _report_sql_access(
+            "UPDATE maz_trace_test SET value = :v WHERE id = :id",
+            {"id": "row1", "v": 1},
+            paramstyle="pyformat",
+        )
+
+        assert (row_resource, "weak_read") in log.events
+        assert (row_resource, "write") in log.events
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        clear_sql_metadata()
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _io_tls._pending_row_locks = []
+
+
+def test_acquire_pending_row_locks_marks_only_acquired_resources() -> None:
+    """TLS held-lock state must not claim locks the scheduler did not acquire."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_row_locks import _acquire_pending_row_locks
+
+    class Scheduler:
+        def acquire_row_locks(self, _thread_id: int, resources: list[str]) -> list[str]:
+            assert resources == ["sql:t:(('id', 1),)", "sql:t:(('id', 2),)"]
+            return [resources[0]]
+
+    set_dpor_scheduler(Scheduler())
+    set_dpor_thread_id(0)
+    _io_tls._pending_row_locks = ["sql:t:(('id', 1),)", "sql:t:(('id', 2),)"]
+    try:
+        _acquire_pending_row_locks()
+        assert _io_tls._held_row_locks == {"sql:t:(('id', 1),)"}
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        _io_tls._pending_row_locks = []
+        if hasattr(_io_tls, "_held_row_locks"):
+            del _io_tls._held_row_locks
+
+
 def test_report_or_buffer_no_capture_outside_tx() -> None:
     """_report_or_buffer with force_immediate=True does NOT track row locks outside a tx.
 

@@ -69,7 +69,13 @@ class ReplayEngine:
     def report_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
         return None
 
+    def report_access_at(self, execution: Any, thread_id: int, object_id: int, kind: str, path_id: int) -> None:
+        return None
+
     def report_first_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
+        return None
+
+    def report_first_access_at(self, execution: Any, thread_id: int, object_id: int, kind: str, path_id: int) -> None:
         return None
 
     def report_io_access(self, execution: Any, thread_id: int, object_id: int, kind: str) -> None:
@@ -165,3 +171,37 @@ def dpor_exploration_iter(
         with engine_lock:
             if not engine.next_execution():
                 return
+
+
+# ---------------------------------------------------------------------------
+# Wake-edge sync-object ids (shared by sync and async DPOR)
+# ---------------------------------------------------------------------------
+
+#: High bits XORed with a thread/task id to form the sync-object id of that
+#: thread's virtual-clock wake edge ("WAKE" in ASCII).  The clock actor
+#: reports a ``lock_release`` on this object when it wakes a sleeper; the
+#: woken thread reports the matching ``lock_acquire``, giving the engine the
+#: happens-before edge "clock advanced → sleeper resumed".
+WAKE_SYNC_BASE = 0x57414B45_00000000
+
+#: Same idea for cooperative Event wakes ("EVTW"): ``set()`` reports one
+#: ``lock_release`` per engine-blocked waiter on that waiter's id, and each
+#: woken waiter reports the matching ``lock_acquire``.
+_EVENT_WAKE_BASE = 0x45565457_00000000
+
+_SYNC_ID_MASK = (1 << 63) - 1
+
+
+def wake_sync_id(thread_id: int) -> int:
+    """Sync-object id for a virtual-clock wake edge to *thread_id*."""
+    return WAKE_SYNC_BASE ^ thread_id
+
+
+def event_wake_sync_id(event_id: int, thread_id: int) -> int:
+    """Per-waiter sync-object id for an Event wake edge.
+
+    Mixes the event's stable id so distinct events never share wake ids
+    (the multiplier spreads small sequential stable ids across the id
+    space; masked to a non-negative 63-bit int for the engine).
+    """
+    return (_EVENT_WAKE_BASE ^ (event_id * 0x9E3779B1) ^ thread_id) & _SYNC_ID_MASK

@@ -6,27 +6,33 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+* **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
+  now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
+  workers with both DPOR and random strategies. Explored code reads scheduler
+  time, sleeps become zero-wall-time virtual deadlines, and ``clock="explored"``
+  makes timer firings schedulable. Sync cooperative timed waits now use virtual
+  deadlines; DPOR also keeps event state races, async post-await races, and
+  queue wakeups visible, avoids mislabeling wall-clock ``asyncio.wait_for``
+  timers as exact deadlocks, and rejects incompatible clock options. See
+  :doc:`virtual_clock`.
+
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,
-  interleaving separate processes that contend on shared external state (SQL and
-  Redis). Workers are serialised with dill (install the ``process`` extra), so
-  closures and lambdas work — not just module-level functions; ``setup()``
-  returns a handle to the external state that is passed to each ``worker(state)``
-  and to ``invariant(state)`` (the same shape as thread/async mode). The
-  lower-level ``frontrun.explore_processes(...)`` (with ``frontrun.Subprocess``)
-  spawns real OS processes from ``"module:callable"`` targets, takes the same
-  ``invariant(state)`` contract, and supports ``strategy="dpor"`` (default,
-  engine reduction + cross-worker deadlock detection) or ``"exhaustive"``. Both
-  entry points accept ``reuse_workers=True`` (spawn each worker once, re-run per
-  interleaving) and a ``count=`` shorthand to replicate a worker; an
-  unserialisable worker or an unimportable target now fails *fast* with a clear
-  frontrun-level message (the child's real error, not a bare connection timeout).
-  Process-mode failures carry the failure kind and the external-access trace in
-  their explanation; ``CrossProcessResult.exhausted`` honestly reports ``False``
-  when ``max_executions`` / ``total_timeout`` truncate the search; and options
-  that only affect in-process tracing (``serializable_invariant``,
-  ``error_on_any_race``, ...) are rejected rather than silently ignored. See
-  :doc:`cross_process`.
+  using the same ``setup`` / ``workers`` / ``invariant`` shape as thread mode
+  for shared SQL/Redis state. Workers are serialised with dill (install the
+  ``process`` extra), and process runs support ``count=`` and
+  ``reuse_workers=True``; the lower-level ``explore_processes`` API still
+  supports explicit ``Subprocess`` targets and exhaustive search. Process-mode
+  errors now fail fast with clearer messages, report truncation honestly via
+  ``CrossProcessResult.exhausted``, and reject in-process-only options instead
+  of silently ignoring them. See :doc:`cross_process`.
+
+* **DPOR correctness.** Accesses after ``await`` are now attributed before
+  scheduling successors, ``asyncio.Lock`` / event state races replay
+  consistently, async Redis commands create post-command scheduling boundaries
+  for TOCTOU races, SQL row-lock schedules stay exact without hiding row data
+  races, and pure-lock deadlocks are found reliably across supported Python
+  versions.
 
 0.6.0 (2026-06-30)
 ------------------

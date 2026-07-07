@@ -5,6 +5,8 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
+_POST_TIMEOUT_CLEANUP_JOIN_SECONDS = 0.5
+
 
 class PatchScope:
     """Apply runner patch/unpatch pairs with LIFO teardown."""
@@ -71,8 +73,6 @@ def notify_scheduler_timeout(scheduler: Any, alive: list[threading.Thread]) -> N
         scheduler._error = TimeoutError(f"Timed out waiting for {len(alive)} thread(s) to complete")
     with scheduler._condition:
         scheduler._condition.notify_all()
-    for thread in alive:
-        thread.join(timeout=0.5)
 
 
 def run_thread_group(
@@ -105,6 +105,7 @@ def run_thread_group(
         alive = join_threads_with_deadline(thread_store, timeout)
         if alive and on_timeout is not None:
             on_timeout(alive)
+            join_threads_with_deadline(alive, _POST_TIMEOUT_CLEANUP_JOIN_SECONDS)
         return alive
     finally:
         if teardown is not None:

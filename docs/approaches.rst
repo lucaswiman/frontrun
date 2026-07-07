@@ -390,6 +390,18 @@ processes and offers ``strategy="dpor"`` (default) or ``"exhaustive"``, plus
 :doc:`cross_process` for the full guide.
 
 
+Virtual Clock
+-------------
+
+Timeout, retry, and TTL races need time itself to be schedulable.
+``frontrun.explore(..., clock="virtual")`` gives each execution a
+scheduler-owned virtual clock (sleeps cost zero wall time, TTL expiry is
+reachable, timed lock acquires are deterministic), and ``clock="explored"``
+makes the clock advance a scheduling choice so DPOR can prove "the timer
+fired between your read and your write".  Works with both strategies, sync
+and async.  See :doc:`virtual_clock` for the full guide.
+
+
 Automatic I/O Detection
 -------------------------
 

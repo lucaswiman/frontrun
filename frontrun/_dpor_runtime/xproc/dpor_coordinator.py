@@ -171,17 +171,12 @@ def _relay_loop(
                 # attributed inside the critical section, making two workers'
                 # unlocked writes look lock-synchronized and pruning the race.
                 _flush_relay_pending_io(scheduler, worker_id, pending_io)
-                # Take the scheduling turn BEFORE acquiring. acquire_row_locks
-                # itself only waits for the row lock, not for the engine's
-                # pick: in-process that is safe because the opcode tracer means
-                # the acquiring thread already holds the turn, but relays have
-                # no opcode tracing, so two workers' ACQUIRE_LOCKS frames would
-                # race and the winner's lock_acquire lands at a step the
-                # engine committed to the other thread — desynchronizing the
-                # recorded schedule from the actual executor and corrupting
-                # backtracking (reachable acquisition-order reversals get
-                # silently pruned while still claiming exhausted=True).
-                if not scheduler.report_and_wait(None, worker_id):
+                # Take and hold the scheduling turn through the modeled row-lock
+                # acquire. A plain report_and_wait() schedules the next worker
+                # before acquire_row_locks() records lock_acquire, letting two
+                # relays race around the acquire and desynchronizing the engine
+                # trace from the executor.
+                if not scheduler.before_sync_retry(worker_id):
                     _reply(sock, False)
                     break
                 try:
@@ -191,6 +186,8 @@ def _relay_loop(
                     break
                 else:
                     _reply(sock, True)
+                finally:
+                    scheduler.after_sync_retry(worker_id)
             elif kind == proto.RELEASE_LOCKS:
                 scheduler.release_row_locks(worker_id)
             elif kind == proto.BEFORE_IO:
@@ -477,9 +474,11 @@ class DporCrossProcessCoordinator:
         ]
         for t in relays:
             t.start()
-        join_budget = self.deadlock_timeout * 2 + 10.0
+        join_budget = max(0.0, self.deadlock_timeout * 2 + 10.0)
+        deadline = time.monotonic() + join_budget
+        timeout_error: TimeoutError | None = None
         for t in relays:
-            t.join(join_budget)
+            t.join(max(0.0, deadline - time.monotonic()))
             # The deadlock_timeout-bounded scheduler normally guarantees every
             # relay terminates within the budget. If one is still alive, that
             # invariant was violated: abandoning it here would let a ghost
@@ -488,10 +487,30 @@ class DporCrossProcessCoordinator:
             # concurrent-engine data race. Fail loudly instead. The exploration
             # loop catches (TimeoutError, OSError) and returns a clean result.
             if t.is_alive():
-                raise TimeoutError(
+                timeout_error = TimeoutError(
                     f"cross-process relay thread {t.name!r} did not terminate within "
                     f"{join_budget}s; aborting to avoid a concurrent-engine data race"
                 )
+                break
+        if timeout_error is None:
+            return
+
+        report_error = getattr(scheduler, "report_error", None)
+        if callable(report_error):
+            report_error(timeout_error)
+        for sock in socks_by_id.values():
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        cleanup_deadline = time.monotonic() + max(1.0, min(self.deadlock_timeout, 5.0))
+        for t in relays:
+            t.join(max(0.0, cleanup_deadline - time.monotonic()))
+        raise timeout_error
 
     def _run_spawned(
         self,

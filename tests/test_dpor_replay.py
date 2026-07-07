@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import time
 
 import pytest
 
@@ -154,3 +155,35 @@ class TestIOAnchoredReplayScheduler:
         # The condition lock must be free — no busy-spin holding it.
         assert sched._lock.acquire(timeout=1.0), "condition lock still held by a busy-spinner"
         sched._lock.release()
+
+    def test_io_anchored_replay_advances_virtual_sleep(self) -> None:
+        from frontrun._dpor_runtime.replay import _run_dpor_schedule
+        from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
+
+        class State:
+            def __init__(self) -> None:
+                self.elapsed = 0.0
+
+        def worker(s: State) -> None:
+            start = time.monotonic()
+            time.sleep(1.0)
+            s.elapsed = time.monotonic() - start
+
+        clock = VirtualClock()
+        wall_start = time.monotonic()
+        state = _run_dpor_schedule(
+            [0],
+            State,
+            [worker],
+            timeout=1.0,
+            detect_io=True,
+            deadlock_timeout=0.1,
+            io_schedule=[(0, "dummy")],
+            clock="virtual",
+            virtual_clock=clock,
+        )
+        wall_elapsed = time.monotonic() - wall_start
+
+        assert state.elapsed >= 1.0
+        assert clock.now() >= VIRTUAL_EPOCH + 1.0
+        assert wall_elapsed < 0.5, f"virtual replay sleep burned wall time ({wall_elapsed:.3f}s)"

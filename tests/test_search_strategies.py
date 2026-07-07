@@ -342,7 +342,7 @@ def test_search_strategy_benchmark(capsys: pytest.CaptureFixture[str]) -> None:
 
     for scenario_fn in SCENARIOS:
         setup_fn, threads, invariant, name = scenario_fn()
-        is_deadlock = name == "dining_philosophers_3"
+        is_deadlock = name.startswith("dining_philosophers_")
 
         for strategy in STRATEGIES:
             kwargs: dict[str, object] = {

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from frontrun._dpor_core import is_reproduction_run
+from frontrun._virtual_clock import VirtualClock, clock_scope
 
 from ._shared import *
 from .runner import DporBytecodeRunner
@@ -21,6 +22,8 @@ def _run_dpor_schedule(
     io_schedule: list[tuple[int, str]] | None = None,
     patch_sleep: bool = True,
     access_schedule: list[tuple[int, str, str]] | None = None,
+    clock: str = "real",
+    virtual_clock: VirtualClock | None = None,
 ) -> T:
     """Replay a DPOR schedule using the DPOR runner rather than OpcodeScheduler.
 
@@ -32,7 +35,14 @@ def _run_dpor_schedule(
     When *access_schedule* is provided, the bytecode replay additionally
     gates accesses to the racing objects on the recorded access order
     (access-anchored replay, defect #20).
+
+    When *clock* is not ``"real"``, the recorded schedule may contain
+    clock-actor steps (id == ``len(threads)``); the replay schedulers
+    perform the corresponding clock advances against *virtual_clock*.
     """
+    if clock != "real" and virtual_clock is None:
+        virtual_clock = VirtualClock()
+    clock_actor_id = len(threads) if clock != "real" else None
     if io_schedule is not None and detect_io:
         scheduler: DporScheduler = _IOAnchoredReplayScheduler(
             io_schedule,
@@ -40,6 +50,9 @@ def _run_dpor_schedule(
             deadlock_timeout=deadlock_timeout,
             trace_recorder=trace_recorder,
             detect_io=detect_io,
+            virtual_clock=virtual_clock if clock != "real" else None,
+            clock_mode=clock,
+            clock_actor_id=clock_actor_id,
         )
     else:
         scheduler = _ReplayDporScheduler(
@@ -49,11 +62,15 @@ def _run_dpor_schedule(
             trace_recorder=trace_recorder,
             detect_io=detect_io,
             access_schedule=access_schedule,
+            virtual_clock=virtual_clock if clock != "real" else None,
+            clock_mode=clock,
+            clock_actor_id=clock_actor_id,
         )
     runner = DporBytecodeRunner(scheduler, detect_io=detect_io)
 
-    with runner.patch_scope(patch_sleep=patch_sleep):
-        state = setup()
+    with runner.patch_scope(patch_sleep=patch_sleep, virtual_time=clock != "real"):
+        with clock_scope(virtual_clock if clock != "real" else None):
+            state = setup()
 
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:
@@ -85,6 +102,7 @@ def _reproduce_dpor_counterexample(
     io_schedule: list[tuple[int, str]] | None = None,
     patch_sleep: bool = True,
     access_schedule: list[tuple[int, str, str]] | None = None,
+    clock: str = "real",
 ) -> tuple[int, int]:
     """Measure how often a DPOR counterexample reproduces under the DPOR runner.
 
@@ -115,6 +133,7 @@ def _reproduce_dpor_counterexample(
         for _ in range(reproduce_on_failure):
             deadlocked = False
             inv_failed = False
+            replay_clock = VirtualClock() if clock != "real" else None
             try:
                 replay_state = _run_dpor_schedule(
                     schedule_list,
@@ -126,6 +145,8 @@ def _reproduce_dpor_counterexample(
                     io_schedule=io_schedule,
                     patch_sleep=patch_sleep,
                     access_schedule=access_schedule,
+                    clock=clock,
+                    virtual_clock=replay_clock,
                 )
                 if invariant is not None:
                     # Use check_invariant so assert-style invariants (which
@@ -134,7 +155,8 @@ def _reproduce_dpor_counterexample(
                     # Evaluating the invariant raw here would let AssertionError
                     # escape into the broad ``except Exception: continue`` below,
                     # scoring every replay as a non-reproduction.
-                    inv_failed, _ = check_invariant(invariant, replay_state)
+                    with clock_scope(replay_clock):
+                        inv_failed, _ = check_invariant(invariant, replay_state)
             except DeadlockError:
                 deadlocked = True
             except Exception:

@@ -66,6 +66,8 @@ class _PreloadBridge:
         is_socket = event.resource_id.startswith("socket:")
         if is_sql_endpoint_suppressed(event.resource_id):
             return
+        if event.kind == "sql_write" and is_sql_write_suppressed(event.resource_id):
+            return
         if is_socket and is_tid_suppressed(event.tid):
             return
         if is_socket and is_redis_tid_suppressed(event.tid):

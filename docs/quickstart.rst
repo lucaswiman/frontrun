@@ -47,7 +47,9 @@ The rest of this guide covers **trace markers** --- the fully manual approach,
 for when you already know the interleaving you're after and want to pin it
 down as a deterministic regression test. If your workers are separate OS
 processes contending on a shared database or Redis rather than threads, see
-:doc:`cross_process`.
+:doc:`cross_process`. If the race you're hunting involves timeouts, retries,
+or TTL expiry, see :doc:`virtual_clock` (``clock="virtual"`` /
+``clock="explored"``).
 
 
 Triggering a Race Condition with Trace Markers

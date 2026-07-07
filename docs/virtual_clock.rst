@@ -1,0 +1,206 @@
+Virtual clock: timeout, retry, and TTL races
+============================================
+
+Races involving timeouts, retries with backoff, TTL caches, debouncing, and
+rate limiters are invisible to a scheduler that runs on wall-clock time:
+"the retry fired exactly between the read and the write" is not an
+interleaving the scheduler can choose — it is wall-clock luck.  The virtual
+clock makes time a *scheduled* quantity, so those races become explorable,
+deterministic, and replayable like any other interleaving.
+
+Enable it with the ``clock=`` parameter of :func:`frontrun.explore`:
+
+.. code-block:: python
+
+    import time
+    import frontrun
+
+    class Cache:
+        def __init__(self):
+            self.expires_at = time.monotonic() + 60.0
+
+        def expired(self):
+            return time.monotonic() >= self.expires_at
+
+    def worker(cache):
+        time.sleep(120.0)              # zero wall time under clock="virtual"
+        assert cache.expired()         # TTL expiry is actually reachable
+
+    result = frontrun.explore(
+        setup=Cache,
+        workers=[worker],
+        invariant=lambda c: c.expired(),
+        clock="virtual",               # default "real"
+    )
+    assert result.property_holds
+
+Both sync (threads) and async (asyncio tasks) workers are supported, with
+``strategy="dpor"`` and ``strategy="random"``.
+
+Rule of thumb: use ``"virtual"`` to make timeout/TTL logic reachable
+deterministically at zero wall cost; use ``"explored"`` when the *timing*
+of a timer firing is itself the race you are hunting — it makes the clock
+advance a scheduling choice the engine explores.
+
+What a virtual clock changes
+----------------------------
+
+With ``clock="virtual"`` each execution gets a fresh clock starting at an
+arbitrary epoch (1,000,000.0 seconds), owned by the scheduler:
+
+* **Clock reads are virtual.** ``time.time()``, ``time.monotonic()``,
+  ``time.perf_counter()`` (and their ``_ns`` variants) return virtual time
+  inside explored code.  Patching is gated per thread/context: worker
+  threads and tasks, ``setup()``, and the ``invariant`` see virtual time;
+  unrelated threads (pytest machinery, background daemons) see real time.
+* **Sleeps are timed blocks.** ``time.sleep(d)`` / ``asyncio.sleep(d)``
+  with ``d > 0`` register a deadline at ``now + d`` and block until the
+  clock reaches it — in zero wall time.  ``sleep(0)`` remains a pure yield,
+  matching stock Python semantics.
+* **Timed lock acquires are deterministic.** A contended
+  ``threading.Lock.acquire(timeout=t)`` registers a virtual deadline
+  instead of busy-waiting against the host clock; whether it succeeds no
+  longer depends on machine speed.
+* **The clock advances only when it must.** When no real worker is runnable
+  and at least one virtual deadline is pending, the clock jumps to the
+  *earliest* pending deadline and wakes due sleepers.  This is the
+  "autojump" model (prior art:
+  ``trio.testing.MockClock(autojump_threshold=0)``).
+* **Deadlocks are detected exactly (sync and async DPOR).** All workers
+  blocked with *no* pending deadline is a genuine deadlock; the DPOR
+  schedulers report it immediately instead of via the wall-clock fallback
+  timeout.  The async scheduler additionally requires that no *user* loop
+  timer is pending (a wall-clock ``asyncio.wait_for`` may still wake a
+  parked task) and that every parked task is on a frontrun-managed
+  primitive — tasks parked on unmanaged awaitables (``asyncio.Queue``,
+  ``asyncio.Condition``, bare futures) fall back to the wall-clock
+  ``deadlock_timeout``, as do the random schedulers.
+
+``clock="explored"``: timer firings as interleaving choices
+-----------------------------------------------------------
+
+Autojump always advances time as *late* as possible, so it explores only
+one timing.  The race you usually want — "the timer fired between your
+read and your write" — requires the clock advance itself to be a
+scheduling choice.
+
+With ``clock="explored"``, the clock is modelled as one extra DPOR actor:
+a synthetic thread whose only enabled transition, whenever at least one
+deadline is pending, is "advance the clock to the next deadline and wake
+its sleepers".  The engine then explores orderings of this clock step
+against the workers' steps like any other interleaving, and waking a
+sleeper carries a happens-before edge (the actor releases a virtual wake
+object; the woken worker acquires it), so DPOR's race reversal knows how
+to move timer firings around:
+
+.. code-block:: python
+
+    import time
+    import frontrun
+
+    class State:
+        def __init__(self):
+            self.x = 0
+
+    def rmw_worker(s):          # read-modify-write over two statements
+        tmp = s.x
+        s.x = tmp + 1
+
+    def delayed_writer(s):      # a retry/timer firing one virtual second later
+        time.sleep(1.0)
+        s.x = 100
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[rmw_worker, delayed_writer],
+        invariant=lambda s: s.x == 100,
+        clock="explored",
+    )
+    assert not result.property_holds   # found: timer fired inside the RMW window
+
+Under ``clock="virtual"`` the same test passes (the delayed write always
+lands last); under ``clock="explored"`` DPOR finds the interleaving where
+the timer fires between the read and the write, and the counterexample
+replays like any other frontrun schedule — the recorded schedule includes
+the clock steps.
+
+For ``strategy="random"``, ``clock="explored"`` gives the sampler a
+"maybe advance time" branch: whenever a random schedule entry lands on a
+sleeping worker, the clock advances to that worker's deadline and it wakes
+early.
+
+Search-space note: each pending deadline adds at most one clock step per
+wake, so the blowup is modest — comparable to adding one short worker per
+timer.  Clock *reads* are deliberately not scheduling points; only
+advancement and deadline wakes are events.
+
+Semantics and limitations
+-------------------------
+
+* ``clock=`` requires ``patch_sleep=True`` (the default) and thread/async
+  execution; ``execution="process"`` rejects it (worker processes read
+  real time).
+* ``serializable_invariant`` cannot be combined with a virtual clock: the
+  sequential baseline runs execute outside the scheduler, so their sleeps
+  and clock reads would use real wall-clock time.
+* ``time.time`` and ``time.monotonic`` return the *same* virtual value
+  (there is one clock).
+* **Async loop timers stay on the wall clock.** ``loop.time()``,
+  ``loop.call_later``, and therefore ``asyncio.wait_for`` /
+  ``asyncio.timeout`` deadlines are not virtualised: the scheduler's own
+  deadlock-timeout timers share the event loop's timer heap, and
+  virtualising it would let a clock jump fire them spuriously.  A
+  ``wait_for`` with a short real timeout still works — it just measures
+  wall time, not virtual time.  (This is the "spike" outcome from the
+  proposal; wrapping ``wait_for`` over virtual deadlines is future work.)
+* Sync timed waits on frontrun's cooperative primitives use virtual
+  deadlines: ``Lock`` / ``RLock`` / ``Semaphore`` acquire timeouts,
+  ``Event.wait(timeout=...)``, ``Condition.wait(timeout=...)`` /
+  ``wait_for(..., timeout=...)``, and ``Queue.get`` / ``put`` timeouts.
+  Async timeout wrappers such as ``asyncio.wait_for`` remain wall-clock
+  timers (see above).  Untimed ``Event.wait()`` is fully supported, sync
+  and async (under DPOR the waiter blocks in the engine until ``set()``,
+  with a proper happens-before edge).  Async ``Queue`` / ``Condition``
+  waiters are not yet engine-visible: they behave correctly but a
+  deadlock through them is reported via the wall-clock fallback, not
+  exactly.
+* An async ``Event.set()`` issued from outside the explored tasks (a
+  loop callback or a foreign thread) is invisible to exact deadlock
+  detection; if all tasks are otherwise blocked it may be reported as a
+  deadlock.  Setters inside explored tasks — the normal case — are fully
+  tracked.
+* **Captured references bypass the patch.** ``from time import monotonic``
+  (or storing ``time.monotonic`` in a local/default argument) captures the
+  real function before patching; such call sites keep reading wall-clock
+  time.  Call through the module (``time.monotonic()``) in code under
+  test.
+* ``strategy="random"`` with *async* workers cannot see tasks blocked on
+  raw ``asyncio`` primitives (e.g. ``asyncio.Lock``); a quiescence
+  heuristic advances the clock when nothing has progressed for a short
+  interval.  Prefer ``strategy="dpor"`` for lock-heavy async code — it
+  patches ``asyncio.Lock`` and needs no heuristic.
+* C-level sleeps (e.g. inside database drivers) are invisible to the
+  clock — the same boundary as the existing ``deadlock_timeout``
+  caveat for unmanaged C code.
+* ``datetime.datetime.now()`` is not patched; the supported surface is
+  ``time.time`` / ``time.monotonic`` / ``time.perf_counter`` (+ ``_ns``).
+
+How it works
+------------
+
+One design serves both modes.  The DPOR engine is constructed with one
+extra thread — the *clock actor* (id ``len(workers)``); its steps advance
+the clock to the earliest pending deadline and unblock the workers whose
+deadlines are due (equal deadlines wake in deterministic
+``(deadline, worker id)`` order).  The two modes differ only in when the
+actor is *enabled*:
+
+* ``"virtual"`` — the actor is enabled only when no real worker is
+  runnable, which is exactly when time must pass for anything to happen.
+* ``"explored"`` — the actor is enabled whenever a deadline is pending,
+  so the engine explores its position in the schedule.
+
+Because the actor's steps are ordinary engine steps, recorded schedules
+contain them, vector clocks order them (via the wake edges), and the
+replay schedulers perform the same advances at the same positions — the
+counterexample stays a deterministic, replayable proof.
