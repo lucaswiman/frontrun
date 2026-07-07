@@ -26,12 +26,14 @@ def _acquire_pending_row_locks() -> None:
         lock_resources = list(dict.fromkeys(lock_resources))
         ctx = _get_dpor_context()
         if ctx is not None:
-            ctx[0].acquire_row_locks(ctx[1], lock_resources)
+            acquired = ctx[0].acquire_row_locks(ctx[1], lock_resources)
+            if acquired is None:
+                acquired = lock_resources
             held = getattr(store, "_held_row_locks", None)
             if held is None:
                 held = set()
                 store._held_row_locks = held
-            held.update(lock_resources)
+            held.update(acquired)
 
 
 def _release_dpor_row_locks() -> None:

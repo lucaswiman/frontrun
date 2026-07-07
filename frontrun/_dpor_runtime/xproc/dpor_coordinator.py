@@ -474,9 +474,11 @@ class DporCrossProcessCoordinator:
         ]
         for t in relays:
             t.start()
-        join_budget = self.deadlock_timeout * 2 + 10.0
+        join_budget = max(0.0, self.deadlock_timeout * 2 + 10.0)
+        deadline = time.monotonic() + join_budget
+        timeout_error: TimeoutError | None = None
         for t in relays:
-            t.join(join_budget)
+            t.join(max(0.0, deadline - time.monotonic()))
             # The deadlock_timeout-bounded scheduler normally guarantees every
             # relay terminates within the budget. If one is still alive, that
             # invariant was violated: abandoning it here would let a ghost
@@ -485,10 +487,30 @@ class DporCrossProcessCoordinator:
             # concurrent-engine data race. Fail loudly instead. The exploration
             # loop catches (TimeoutError, OSError) and returns a clean result.
             if t.is_alive():
-                raise TimeoutError(
+                timeout_error = TimeoutError(
                     f"cross-process relay thread {t.name!r} did not terminate within "
                     f"{join_budget}s; aborting to avoid a concurrent-engine data race"
                 )
+                break
+        if timeout_error is None:
+            return
+
+        report_error = getattr(scheduler, "report_error", None)
+        if callable(report_error):
+            report_error(timeout_error)
+        for sock in socks_by_id.values():
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        cleanup_deadline = time.monotonic() + max(1.0, min(self.deadlock_timeout, 5.0))
+        for t in relays:
+            t.join(max(0.0, cleanup_deadline - time.monotonic()))
+        raise timeout_error
 
     def _run_spawned(
         self,

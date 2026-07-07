@@ -1303,7 +1303,7 @@ def test_for_update_pyformat_dict_resolves_sqlalchemy_named_bind() -> None:
         _io_tls._pending_row_locks = []
 
 
-def test_update_on_held_row_lock_does_not_duplicate_row_access() -> None:
+def test_update_on_held_row_lock_reports_weak_data_access_without_reacquire() -> None:
     """A held row lock suppresses only duplicate lock arbitration, not the write."""
     from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
     from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
@@ -1324,7 +1324,8 @@ def test_update_on_held_row_lock_does_not_duplicate_row_access() -> None:
             {"id": "row1", "v": 1},
             paramstyle="pyformat",
         )
-        assert (row_resource, "write") in log.events
+        assert (row_resource, "weak_read") in log.events
+        assert (row_resource, "weak_write") in log.events
         assert row_resource not in _io_tls._pending_row_locks
     finally:
         set_dpor_scheduler(None)

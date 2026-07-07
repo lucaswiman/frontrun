@@ -30,8 +30,9 @@ Unreleased
 * **DPOR correctness.** Accesses after ``await`` are now attributed before
   scheduling successors, ``asyncio.Lock`` / event state races replay
   consistently, async Redis commands create post-command scheduling boundaries
-  for TOCTOU races, and pure-lock deadlocks are found reliably across supported
-  Python versions.
+  for TOCTOU races, SQL row-lock schedules stay exact without hiding row data
+  races, and pure-lock deadlocks are found reliably across supported Python
+  versions.
 
 0.6.0 (2026-06-30)
 ------------------

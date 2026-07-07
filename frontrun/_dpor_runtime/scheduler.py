@@ -523,6 +523,8 @@ class DporScheduler:
                     if self._active_sync_thread is not None and self._active_sync_thread != thread_id:
                         pass
                     elif self._current_thread == thread_id:
+                        self._flush_other_pending_io_for_current_io_unlocked(thread_id)
+                        self._flush_pending_io_for_unlocked(thread_id)
                         next_thread = self._schedule_next()
                         _pp = self._last_scheduled_path_id
                         if _pp is not None:
@@ -1183,7 +1185,7 @@ class DporScheduler:
                 self._condition.notify_all()
                 return False
 
-    def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> None:
+    def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> list[str]:
         """Block until all *resource_ids* can be held by *thread_id*.
 
         If another thread holds a conflicting lock, waits on the condition
@@ -1197,6 +1199,7 @@ class DporScheduler:
         from frontrun._deadlock import DeadlockError, SchedulerAbort, format_cycle, get_wait_for_graph
 
         graph = get_wait_for_graph()
+        acquired: list[str] = []
         with self._condition:
             for res_id in resource_ids:
                 lock_int_id = self._row_lock_int_id(res_id)
@@ -1246,22 +1249,24 @@ class DporScheduler:
                         if graph is not None:
                             graph.remove_waiting(thread_id, lock_int_id, kind="row_lock")
                         if self._finished or self._error:
-                            return
+                            return acquired
                         # Timeout — the holder is probably blocked in C too.
                         # Let the C call proceed; lock_timeout safety net will handle it.
-                        return
+                        return acquired
                     self._row_lock_blocked.pop(thread_id, None)
                     self._engine_unblock_thread(thread_id)
                     if graph is not None:
                         graph.remove_waiting(thread_id, lock_int_id, kind="row_lock")
                     if self._finished or self._error:
-                        return
+                        return acquired
                     if not self._wait_for_row_lock_turn_unlocked(thread_id):
-                        return
+                        return acquired
                 if already_held:
+                    acquired.append(res_id)
                     continue
                 # Record ownership and notify graph — shared logic via registry.
                 self._row_lock_registry.record_acquire(thread_id, res_id, graph)
+                acquired.append(res_id)
                 # Report row-lock acquire to the DPOR engine so vector clocks
                 # reflect the serialization from database row locking.
                 _elock = getattr(self, "_engine_lock", None)
@@ -1269,6 +1274,7 @@ class DporScheduler:
                     _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                     with _elock:
                         self.engine.report_sync(self.execution, thread_id, "lock_acquire", lock_int_id, _saved_path_id)
+        return acquired
 
     def _release_row_locks_unlocked(self, thread_id: int) -> bool:
         """Remove row locks for *thread_id*. Caller must hold ``self._condition``."""

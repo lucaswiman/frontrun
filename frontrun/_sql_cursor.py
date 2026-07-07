@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from frontrun._deadlock import SchedulerAbort
 from frontrun._io_detection import _io_tls, get_io_reporter
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
@@ -211,10 +212,12 @@ def _dpor_schedule_and_suppress_sync(
         before_sync = getattr(scheduler, "before_sync_retry", None)
         after_sync = getattr(scheduler, "after_sync_retry", None)
         if callable(before_sync) and callable(after_sync):
-            before_sync(thread_id)
+            if not before_sync(thread_id):
+                raise SchedulerAbort("scheduler aborted before SQL execution")
             _held_sync_turn = True
         else:
-            scheduler.report_and_wait(None, thread_id)
+            if not scheduler.report_and_wait(None, thread_id):
+                raise SchedulerAbort("scheduler aborted before SQL execution")
     if reported:
         suppress_sql_write(operation, parameters, paramstyle)
 
