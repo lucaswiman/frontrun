@@ -1291,7 +1291,8 @@ def test_for_update_pyformat_dict_resolves_sqlalchemy_named_bind() -> None:
             {"id": "row1"},
             paramstyle="pyformat",
         )
-        assert "sql:maz_trace_test:(('id', 'row1'))" in _io_tls._pending_row_locks
+        assert "sql:maz_trace_test:(('id', 'row1'),)" in _io_tls._pending_row_locks
+        assert "sql:maz_trace_test" not in _io_tls._pending_row_locks
     finally:
         set_dpor_scheduler(None)
         set_dpor_thread_id(None)
@@ -1300,6 +1301,41 @@ def test_for_update_pyformat_dict_resolves_sqlalchemy_named_bind() -> None:
         _io_tls._in_transaction = False
         _io_tls._is_autobegin = False
         _io_tls._pending_row_locks = []
+
+
+def test_update_on_held_row_lock_does_not_duplicate_row_access() -> None:
+    """A row lock already serializes later writes to the same row."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _report_sql_access, clear_sql_metadata
+
+    log = IOLog()
+    set_io_reporter(log)
+    clear_sql_metadata()
+    set_dpor_scheduler(object())
+    set_dpor_thread_id(0)
+    row_resource = "sql:maz_trace_test:(('id', 'row1'),)"
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._pending_row_locks = []
+    _io_tls._held_row_locks = {row_resource}
+    try:
+        _report_sql_access(
+            "UPDATE maz_trace_test SET value = :v WHERE id = :id",
+            {"id": "row1", "v": 1},
+            paramstyle="pyformat",
+        )
+        assert row_resource not in [resource_id for resource_id, _kind in log.events]
+        assert row_resource not in _io_tls._pending_row_locks
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        clear_sql_metadata()
+        _io_tls._in_transaction = False
+        _io_tls._is_autobegin = False
+        _io_tls._pending_row_locks = []
+        if hasattr(_io_tls, "_held_row_locks"):
+            del _io_tls._held_row_locks
 
 
 def test_report_or_buffer_no_capture_outside_tx() -> None:
