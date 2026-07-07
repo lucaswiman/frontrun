@@ -144,6 +144,36 @@ class TestReportAndWaitCalledPerSqlOp:
             set_io_reporter(None)
         # If we got here without error, the guard worked correctly
 
+    def test_row_lock_acquire_happens_after_scheduling_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SQL row-lock arbitration must run after the DPOR scheduling boundary."""
+        from frontrun import _sql_cursor
+        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+
+        calls: list[str] = []
+
+        class Scheduler:
+            def report_and_wait(self, frame: object | None, thread_id: int) -> bool:
+                calls.append(f"report:{frame!r}:{thread_id}")
+                return True
+
+        monkeypatch.setattr(_sql_cursor, "_acquire_pending_row_locks", lambda: calls.append("acquire"))
+
+        set_dpor_scheduler(Scheduler())
+        set_dpor_thread_id(0)
+        try:
+            _sql_cursor._dpor_schedule_and_suppress_sync(
+                reported=True,
+                operation="SELECT value FROM maz_trace_test WHERE id = 'row1' FOR UPDATE",
+                parameters=None,
+                paramstyle="qmark",
+                execute=lambda: calls.append("execute"),
+            )
+        finally:
+            set_dpor_scheduler(None)
+            set_dpor_thread_id(None)
+
+        assert calls == ["report:None:0", "acquire", "execute"]
+
 
 # ---------------------------------------------------------------------------
 # Integration test: DPOR explores >1 interleaving for untraced library SQL
