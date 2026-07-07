@@ -55,6 +55,9 @@ arbitrary epoch (1,000,000.0 seconds), owned by the scheduler:
   is gated per thread/context: worker threads and tasks, ``setup()``, and
   the ``invariant`` see virtual time; unrelated threads (pytest machinery,
   background daemons) see real time.
+  ``datetime.datetime.fromtimestamp(ts, tz=...)`` is left alone because it is
+  a deterministic conversion from the supplied timestamp rather than a clock
+  read.
 * **Sleeps are timed blocks.** ``time.sleep(d)`` / ``asyncio.sleep(d)``
   with ``d > 0`` register a deadline at ``now + d`` and block until the
   clock reaches it — in zero wall time.  ``sleep(0)`` remains a pure yield,

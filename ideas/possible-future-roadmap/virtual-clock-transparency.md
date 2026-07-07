@@ -166,8 +166,9 @@ not as simple to monkey-patch as module-level `time` functions.
 Design sketch:
 
 - During virtual-time patch scopes, replace `datetime.datetime` with a subclass
-  whose `now()`, `utcnow()`, and possibly `fromtimestamp()` read the active
-  virtual clock.
+  whose current-time reads (`now()`, `utcnow()`) use the active virtual clock.
+  Leave `fromtimestamp(ts, tz=...)` as the normal deterministic conversion from
+  its supplied timestamp.
 - Replace `datetime.date` with a subclass for `today()` if needed.
 - Preserve timezone semantics for `datetime.now(tz=...)`.
 - Return instances that behave like normal `datetime` objects and pass common
