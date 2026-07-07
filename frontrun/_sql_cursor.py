@@ -179,9 +179,9 @@ def _dpor_schedule_and_suppress_sync(
     """DPOR scheduling point + endpoint I/O suppression for sync SQL execution.
 
     Sync counterpart to ``_sql_cursor_async._dpor_schedule_and_suppress_async``.
-    Acquires pending row locks, forces a DPOR scheduling point if *reported* or
-    *operation* is a string, suppresses endpoint-level and cooperative-lock I/O
-    during the actual driver call, and releases row locks on exception.
+    Forces a DPOR scheduling point if *reported* or *operation* is a string,
+    acquires pending row locks, suppresses endpoint-level and cooperative-lock
+    I/O during the actual driver call, and releases row locks on exception.
 
     Args:
         reported: Whether ``_report_sql_access`` recorded table accesses.
@@ -192,9 +192,6 @@ def _dpor_schedule_and_suppress_sync(
     """
     from frontrun._cooperative import suppress_sync_reporting, unsuppress_sync_reporting
 
-    # Block if another DPOR thread holds a conflicting row lock
-    _acquire_pending_row_locks()
-
     # Force a scheduling point so the scheduler can interleave between
     # SQL operations.  Without this, all code inside frontrun/ is skipped
     # by the tracer, so pending_io is never flushed between back-to-back
@@ -204,6 +201,11 @@ def _dpor_schedule_and_suppress_sync(
     _dpor_ctx = _get_dpor_context()
     if _dpor_ctx is not None and (reported or isinstance(operation, str)):
         _dpor_ctx[0].report_and_wait(None, _dpor_ctx[1])
+
+    # Block if another DPOR thread holds a conflicting row lock. This must run
+    # after the scheduling boundary above: otherwise a thread can become the
+    # modeled row-lock holder while it is still waiting to be scheduled.
+    _acquire_pending_row_locks()
 
     _set_active_sql_io_context(operation, parameters, paramstyle)
     # Suppress cooperative lock sync events during the actual DB call.
