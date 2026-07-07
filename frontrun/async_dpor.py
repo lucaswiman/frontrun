@@ -1038,6 +1038,7 @@ class _VirtualAsyncTimeoutContext:
         self._scheduler = scheduler
         self._task_id = task_id
         self._delay = delay
+        self._deadline: float | None = None
         self._token: _VirtualAsyncTimeoutToken | None = None
         self._task: asyncio.Task[Any] | None = None
 
@@ -1045,10 +1046,29 @@ class _VirtualAsyncTimeoutContext:
         if self._delay is None:
             return self
         clock = getattr(self._scheduler, "virtual_clock", None)
-        add_timeout = getattr(self._scheduler, "add_timeout_deadline", None)
-        if clock is None or add_timeout is None:
+        if clock is None:
             return self
         self._task = asyncio.current_task()
+        self.reschedule(clock.now() + max(0.0, self._delay))
+        return self
+
+    def when(self) -> float | None:
+        return self._deadline
+
+    def expired(self) -> bool:
+        return self._token.expired if self._token is not None else False
+
+    def reschedule(self, when: float | None) -> None:
+        remove_timeout = getattr(self._scheduler, "remove_timeout_deadline", None)
+        if self._token is not None and remove_timeout is not None:
+            remove_timeout(self._task_id, self._token)
+        self._token = None
+        self._deadline = when
+        if when is None or self._task is None:
+            return
+        add_timeout = getattr(self._scheduler, "add_timeout_deadline", None)
+        if add_timeout is None:
+            return
         token = _VirtualAsyncTimeoutToken()
         self._token = token
         original_fire = token.fire
@@ -1059,8 +1079,7 @@ class _VirtualAsyncTimeoutContext:
                 self._task.cancel()
 
         setattr(token, _ASYNC_TIMEOUT_FIRE, fire)
-        add_timeout(self._task_id, clock.now() + max(0.0, self._delay), token)
-        return self
+        add_timeout(self._task_id, when, token)
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         token = self._token
