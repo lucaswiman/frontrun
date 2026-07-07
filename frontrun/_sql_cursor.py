@@ -410,21 +410,24 @@ def _report_sql_access(
                         res_id,
                         kind,
                         force_immediate=lock_update,
-                        report_access=not (lock_update and dpor_ctx is not None),
                     )
 
             # Report explicit reads
             for table in access.read_tables:
-                # SELECT FOR UPDATE is both read and write to create conflicts.
-                # Under DPOR, row-lock acquire/release is modeled directly, so
-                # report_or_buffer enqueues the row lock but skips the duplicate
-                # row write access.
+                # SELECT FOR UPDATE reads row data and acquires an exclusive row
+                # lock. Under DPOR, the row lock itself models lock ordering; the
+                # row read is weak so it still conflicts with plain writers without
+                # duplicating the dependency between two lock-protected writers.
                 # SHARE locks are treated as reads (they don't block other shares).
-                kind = "write" if lock_update else "read"
-                # The row-level kind may be elevated to "write" for FOR UPDATE,
-                # but the access is still a read for bridge purposes — emit the
-                # primary READ bridge so it conflicts with non-primary-colset
-                # accesses to the same physical row.
+                if lock_update and dpor_ctx is not None:
+                    kind = "weak_read"
+                elif lock_update:
+                    kind = "write"
+                else:
+                    kind = "read"
+                # FOR UPDATE remains a read for bridge purposes — emit the primary
+                # READ bridge so it conflicts with non-primary-colset accesses to
+                # the same physical row.
                 report_or_buffer(table, kind, pred_rows, bridge_as_read=True)
 
             # Report implicit reads from Foreign Key dependencies

@@ -1250,9 +1250,14 @@ class DporScheduler:
                             graph.remove_waiting(thread_id, lock_int_id, kind="row_lock")
                         if self._finished or self._error:
                             return acquired
-                        # Timeout — the holder is probably blocked in C too.
-                        # Let the C call proceed; lock_timeout safety net will handle it.
-                        return acquired
+                        err = TimeoutError(
+                            f"DPOR row-lock wait timed out: thread {thread_id} waiting for {res_id!r} "
+                            f"held by thread {holder}"
+                        )
+                        if self._error is None:
+                            self._error = err
+                        self._condition.notify_all()
+                        raise SchedulerAbort(str(err))
                     self._row_lock_blocked.pop(thread_id, None)
                     self._engine_unblock_thread(thread_id)
                     if graph is not None:

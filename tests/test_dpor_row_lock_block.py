@@ -14,8 +14,8 @@ import threading
 import time
 from typing import Any
 
-from frontrun._deadlock import SchedulerAbort
 from frontrun._cooperative import real_condition, real_lock
+from frontrun._deadlock import SchedulerAbort
 from frontrun._dpor_core import RowLockRegistry
 from frontrun.dpor import DporScheduler
 
@@ -64,6 +64,9 @@ def _make_host() -> Any:
         _row_lock_int_id = DporScheduler._row_lock_int_id
         _engine_block_thread = DporScheduler._engine_block_thread
         _engine_unblock_thread = DporScheduler._engine_unblock_thread
+
+        def _wait_for_row_lock_turn_unlocked(self, _thread_id: int) -> bool:
+            return True
 
     return RowLockHost()
 

@@ -51,7 +51,6 @@ def _report_or_buffer(
     *,
     force_immediate: bool = False,
     track_row_lock: bool = True,
-    report_access: bool = True,
 ) -> None:
     """Report a SQL access immediately, or buffer it if inside a transaction.
 
@@ -61,10 +60,9 @@ def _report_or_buffer(
     Transaction atomicity is preserved because the DPOR scheduler still
     skips yielding inside transactions.
 
-    When ``report_access=False`` inside a transaction, only row-lock
-    arbitration is tracked. This is used for SELECT FOR UPDATE after the
-    scheduler models the row lock directly; reporting the row itself as a
-    second write creates redundant DPOR branches.
+    When a row lock is already held, the access is still reported, but as a
+    weak access. This keeps conflicts with plain readers/writers visible
+    without creating a second dependency between two row-lock-protected writers.
 
     Autobegin transactions (``_is_autobegin=True``) are NOT buffered: with
     READ COMMITTED isolation (PostgreSQL default), individual statements are
@@ -84,14 +82,12 @@ def _report_or_buffer(
         report_kind = "weak_read"
     else:
         report_kind = kind
-    should_report_access = report_access or not (track_row_lock and in_tx)
-    if should_report_access:
-        if in_tx and not force_immediate and not is_autobegin:
-            if not hasattr(store, "_tx_buffer"):
-                store._tx_buffer = []
-            store._tx_buffer.append((res_id, report_kind))
-        else:
-            reporter(res_id, report_kind)
+    if in_tx and not force_immediate and not is_autobegin:
+        if not hasattr(store, "_tx_buffer"):
+            store._tx_buffer = []
+        store._tx_buffer.append((res_id, report_kind))
+    else:
+        reporter(res_id, report_kind)
 
     # Track resources that need row-lock arbitration.
     # SELECT FOR UPDATE (force_immediate) always needs arbitration.
