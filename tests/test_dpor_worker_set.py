@@ -96,7 +96,6 @@ def test_on_timeout_called_with_alive_workers() -> None:
 
     def slow() -> None:
         release.wait(timeout=5.0)
-        time.sleep(0.05)
 
     def fast() -> None:
         pass
