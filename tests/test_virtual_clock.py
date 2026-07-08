@@ -608,6 +608,51 @@ def test_random_sleep_while_holding_lock() -> None:
     assert invariant_checks > 0
 
 
+class _SleepAndTimedWait:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.t1_elapsed: float | None = None
+
+
+def _sleep_20(s: _SleepAndTimedWait) -> None:
+    time.sleep(20.0)
+
+
+def _wait_10(s: _SleepAndTimedWait) -> None:
+    start = time.monotonic()
+    s.event.wait(timeout=10.0)  # nobody sets the event; must time out at t=10
+    s.t1_elapsed = time.monotonic() - start
+
+
+@pytest.mark.parametrize("clock", ["virtual", "explored"])
+def test_random_timed_wait_not_double_advanced_past_deadline(clock: str) -> None:
+    """Random strategy: a virtual timed wait (event.wait(timeout=10)) must
+    observe exactly its own deadline elapsing, even when another thread sleeps
+    to a *later* deadline.  Regression: ``_advance_clock_to`` popped the woken
+    timed-waiter from ``_timed_waits`` but not ``_spin_waiters``, so the
+    autojump loop still counted it as blocked and advanced straight to the
+    later sleeper's deadline (t=20), making the wait observe 20 virtual
+    seconds — an interleaving impossible in real time."""
+
+    def invariant(s: _SleepAndTimedWait) -> bool:
+        # If T1 finished its timed wait, it must have observed exactly its own
+        # 10s deadline, never the 20s sleeper's deadline.
+        return s.t1_elapsed is None or abs(s.t1_elapsed - 10.0) < 1e-9
+
+    result = frontrun.explore(
+        setup=_SleepAndTimedWait,
+        workers=[_sleep_20, _wait_10],
+        invariant=invariant,
+        strategy="random",
+        clock=clock,  # type: ignore[arg-type]
+        max_attempts=8,
+        seed=2,
+        reproduce_on_failure=0,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_event_deadlock_detected_exactly() -> None:
     """Two workers each waiting on the other's event is a genuine deadlock:
     with a virtual clock and no pending deadline it must be reported via
