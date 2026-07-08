@@ -1125,19 +1125,30 @@ class DporScheduler:
         return False
 
     def _wake_scheduled_sleeper(self) -> bool:
-        """Advance the clock when replay schedules a deadline-blocked thread.
+        """Advance the clock when replay schedules a *sleeping* thread.
 
         Safety net for schedule drift: when the positional/IO-anchored replay
-        points at a thread that is sleeping (or spinning on a virtual timed
-        acquire), the only way forward is for time to pass — jump to that
-        thread's deadline.  Caller must hold ``self._condition``.
+        points at a thread blocked in ``sleep_until``, the only way forward is
+        for time to pass — jump to that thread's deadline.  Caller must hold
+        ``self._condition``.
+
+        Timed lock acquires (``_timed_waits``) are deliberately excluded.  A
+        thread registers a timed wait for the whole duration of a contended
+        ``acquire(timeout=...)``, but — unlike a sleeper — it is not genuinely
+        stuck: ``ReplayExecution.block_thread`` is a no-op, so the waiter keeps
+        spinning through recorded probe entries and acquires the lock if the
+        recorded run did.  Advancing to its deadline here would force-expire a
+        wait that never timed out, flipping the acquire to its timeout branch
+        and dragging every earlier deadline due.  Recorded timeout expiries are
+        already replayed via the clock-actor entry handling in
+        ``_ReplayDporScheduler._schedule_next`` plus the owed-advance
+        bookkeeping.  (The async twin only checks sleepers as well; see
+        ``async_dpor.py::should_proceed``.)
         """
         cur = self._current_thread
         if cur is None or self.virtual_clock is None:
             return False
         deadline = self._sleepers.get(cur)
-        if deadline is None:
-            deadline = self._timed_waits.get(cur)
         if deadline is None:
             return False
         self._replay_advance_clock_to(deadline)
