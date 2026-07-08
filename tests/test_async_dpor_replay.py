@@ -21,8 +21,9 @@ from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_pa
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
 from frontrun.async_dpor import (
-    _async_parked_events,
+    AsyncDporScheduler,
     _async_parked_conditions,
+    _async_parked_events,
     _async_parked_queues,
     _CooperativeAsyncCondition,
     _CooperativeAsyncEvent,
@@ -31,7 +32,6 @@ from frontrun.async_dpor import (
     _ReplayAsyncScheduler,
     _reset_async_lock_state,
     _unpatch_asyncio_event,
-    AsyncDporScheduler,
 )
 from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active

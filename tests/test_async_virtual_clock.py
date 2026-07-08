@@ -1284,9 +1284,7 @@ def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
             # happen is a double-wake.
             workers=[lambda s: waiter("a", s), lambda s: waiter("b", s), notifier],
             invariant=lambda s: (
-                len(s.woken) <= 1
-                and s.remaining_after_first_notify <= 1
-                and len(s.woken) + len(s.timed_out) == 2
+                len(s.woken) <= 1 and s.remaining_after_first_notify <= 1 and len(s.woken) + len(s.timed_out) == 2
             ),
             clock="virtual",
             reproduce_on_failure=0,
