@@ -212,6 +212,17 @@ def _dpor_schedule_and_suppress_sync(
         before_sync = getattr(scheduler, "before_sync_retry", None)
         after_sync = getattr(scheduler, "after_sync_retry", None)
         if callable(before_sync) and callable(after_sync):
+            # Intentional: before_sync_retry grants this thread the exclusive
+            # scheduler turn and holds it through the entire real DB execute()
+            # below (after_sync_retry runs only in the outer finally).  This
+            # deterministically serializes driver I/O so replay is exact.  The
+            # trade-off is deliberate: any *modeled* contention is handed off
+            # inside the turn via _acquire_pending_row_locks (row-lock
+            # arbitration), while *unmodeled* DB-level blocking (advisory locks,
+            # unique-index waits, etc.) will stall the whole scheduler until the
+            # connection's lock_timeout aborts it.  Do not "fix" this by
+            # releasing the turn around execute() without preserving that
+            # determinism guarantee.
             if not before_sync(thread_id):
                 raise SchedulerAbort("scheduler aborted before SQL execution")
             _held_sync_turn = True

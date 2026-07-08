@@ -51,6 +51,17 @@ async def _dpor_schedule_and_suppress_async(
     suppresses endpoint-level I/O during the actual driver call, and releases
     row locks on exception.
 
+    Divergence from the sync path (``_sql_cursor._dpor_schedule_and_suppress_sync``):
+    the sync path grants the exclusive scheduler turn *before* execute() and
+    acquires row locks inside that turn, so a thread cannot become the modeled
+    row-lock holder while still waiting to be scheduled.  This async path keeps
+    the older ordering — ``_acquire_pending_row_locks()`` runs *before*
+    ``report_and_wait`` and no turn is held across the driver call — and that is
+    sound here because async tasks are cooperatively single-threaded: only one
+    task runs at a time and there is no preemption window between becoming the
+    modeled holder and being scheduled, so the sync path's serialization guard
+    is unnecessary.
+
     Args:
         reported: Whether ``_report_sql_access`` recorded table accesses.
         execute: A zero-argument async callable that performs the actual
