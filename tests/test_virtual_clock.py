@@ -925,6 +925,58 @@ def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
     assert scheduler._timed_waits.get(tid) == deadline, "the timed wait must be left intact"
 
 
+def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
+    """Regression guard for the give-up exact-deadlock false-positive window.
+
+    The old give-up path removed the timed-wait deadline BEFORE clearing the
+    engine block, in two separate lock acquisitions.  Between them the waiter
+    was engine-blocked with no pending deadline; if every other thread was also
+    blocked, ``_schedule_next`` could observe "no runnable thread and no
+    deadline" and (after the confirm window) raise a spurious DeadlockError.
+
+    ``give_up_timed_wait`` closes the window: it unblocks the waiter and drops
+    the deadline under a single lock, unblock-first, so no scheduler advance can
+    ever see the blocked-with-no-deadline state.  A deterministic test of the
+    OS-descheduling race itself is infeasible; this asserts the ordering and
+    atomicity contract instead."""
+    from frontrun._dpor_runtime.scheduler import DporScheduler, _TIMED_WAIT_TOKEN
+
+    unblock_observations: list[bool] = []
+
+    class _RecordingExecution(_FakeExecution):
+        def unblock_thread(self, thread_id: int) -> None:
+            # Record whether the deadline is still registered at unblock time.
+            if thread_id == 0:
+                unblock_observations.append(thread_id in scheduler._timed_waits)
+            super().unblock_thread(thread_id)
+
+    clock = VirtualClock()
+    execution = _RecordingExecution([0])
+    scheduler = DporScheduler(
+        _FakeEngine(),
+        execution,
+        num_threads=1,
+        virtual_clock=clock,
+        clock_mode="virtual",
+        clock_actor_id=99,
+    )
+    tid = 0
+    deadline = clock.now() + 5.0
+    scheduler._timed_waits[tid] = deadline
+    scheduler._deadlines.add_timeout(tid, deadline, _TIMED_WAIT_TOKEN)
+    execution.block_thread(tid)
+
+    scheduler.give_up_timed_wait(tid)
+
+    assert tid not in execution.blocked, "give_up_timed_wait must unblock the waiter"
+    assert tid not in scheduler._timed_waits, "give_up_timed_wait must drop the deadline"
+    assert not scheduler._deadlines.has_pending(), "the deadline must be cancelled"
+    assert unblock_observations == [True], (
+        "the waiter must be unblocked while its deadline is still registered "
+        "(unblock-first closes the exact-deadlock false-positive window)"
+    )
+
+
 def test_timed_semaphore_acquire_times_out_without_false_deadlock() -> None:
     class State:
         def __init__(self) -> None:
