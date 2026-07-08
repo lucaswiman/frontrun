@@ -10,6 +10,7 @@ Last reviewed: 2026-07-06.
 | [../fault_injection.md](../fault_injection.md) | Injected exceptions / async cancellation as schedulable events |
 | [../virtual_clock.md](../virtual_clock.md) | Virtualized time: timeout, retry, and TTL races as explorable schedules |
 | [virtual-clock-transparency.md](virtual-clock-transparency.md) | Follow-up work to make virtual-clock behavior more transparent |
+| [virtual-clock-hardening-deferred.md](virtual-clock-hardening-deferred.md) | Deferred fixes from the virtual-clock hardening wave (replay accounting, loop-timer diagnostics, HB edges, cleanups) |
 | [dpor-improvements.md](dpor-improvements.md) | Wakeup tree equivalence, redundant opcode suppression (all low priority) |
 | [integrations-and-detection.md](integrations-and-detection.md) | SQL/Redis/resource detection layers, FK analysis |
 | [formal-methods.md](formal-methods.md) | TLA+/Quint integration, spec-guided exploration, counterexample replay |
