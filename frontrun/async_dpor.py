@@ -803,7 +803,9 @@ class _CooperativeAsyncCondition:
         # engine still treats it as runnable (inconclusive timeout / false
         # counterexample).  A user-supplied lock is honoured as-is.
         self._lock = lock if lock is not None else _CooperativeAsyncLock()
-        self._real_condition = _real_asyncio_condition(self._lock)
+        # _CooperativeAsyncLock duck-types asyncio.Lock (used only on the
+        # no-scheduler-context fallback path).
+        self._real_condition = _real_asyncio_condition(self._lock)  # type: ignore[arg-type]
         self._waiters: list[tuple[int, asyncio.Future[None]]] = []
 
     def locked(self) -> bool:
