@@ -171,3 +171,70 @@ def test_cooperative_sleep_advances_active_clock_without_scheduler_ctx() -> None
         after = time.monotonic()
     assert after - before == pytest.approx(5.0)
     assert clock.now() == pytest.approx(VIRTUAL_EPOCH + 5.0)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: DeadlineCoordinator must be safe under concurrent mutation/iteration.
+# ---------------------------------------------------------------------------
+
+
+def test_deadline_coordinator_survives_concurrent_hammering() -> None:
+    """Concurrent add / cancel / advance must not raise or corrupt state.
+
+    Exploration mutators hold the scheduler engine lock while replay advance
+    paths hold only the scheduler condition, so both can touch the coordinator's
+    deadline dict at once.  Without an internal lock, an insert during an
+    ``advance_to`` iteration raises ``RuntimeError: dictionary changed size
+    during iteration`` (near-certain on free-threaded builds) and torpedoes the
+    reproduction.  The coordinator must serialise its own mutation/iteration.
+    """
+    coord = DeadlineCoordinator()
+    clock = VirtualClock()
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def adder() -> None:
+        i = 0
+        try:
+            while not stop.is_set():
+                base = clock.now()
+                coord.add_sleep(i % 16, base + (i % 7) + 0.001, None)
+                coord.add_timeout((i % 16) + 100, base + (i % 5) + 0.001, object())
+                i += 1
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def canceller() -> None:
+        try:
+            while not stop.is_set():
+                for actor in range(16):
+                    coord.cancel(actor)
+                    coord.cancel_sleep(actor)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def advancer() -> None:
+        try:
+            while not stop.is_set():
+                coord.next_deadline()
+                coord.has_pending()
+                coord.advance_to_next(clock)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=adder),
+        threading.Thread(target=adder),
+        threading.Thread(target=canceller),
+        threading.Thread(target=advancer),
+    ]
+    for t in threads:
+        t.start()
+    time.sleep(1.5)
+    stop.set()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"coordinator raised under concurrency: {errors!r}"
+    # Clock only ever moves forward.
+    assert clock.now() >= VIRTUAL_EPOCH
