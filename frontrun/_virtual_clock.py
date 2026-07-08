@@ -65,20 +65,23 @@ _REAL_TIME_FUNCTIONS = {
 }
 _warned_captured_refs: set[tuple[str, str, str, str]] = set()
 
-# Values that were *installed* on the ``time`` / ``datetime`` modules when
-# ``patch_time`` last transitioned 0->1.  Unlike the ``_real_*`` C functions
-# above (captured once at import), these track whatever third-party patcher
-# (freezegun, time-machine, ...) was already active when we patched.  The
-# gated fallback (no active virtual clock) calls *these*, and ``unpatch_time``
-# restores *these*, so an outer freeze survives a nested ``clock_scope``.
-_saved_time = _real_time
-_saved_monotonic = _real_monotonic
-_saved_perf_counter = _real_perf_counter
-_saved_time_ns = _real_time_ns
-_saved_monotonic_ns = _real_monotonic_ns
-_saved_perf_counter_ns = _real_perf_counter_ns
-_saved_datetime: type[_datetime.datetime] = _real_datetime
-_saved_date: type[_datetime.date] = _real_date
+# Objects that were *installed* on the ``time`` / ``datetime`` modules when
+# ``patch_time`` last transitioned 0->1, keyed by attribute name.  Unlike the
+# ``_real_*`` C functions above (captured once at import), these track whatever
+# third-party patcher (freezegun, time-machine, ...) was already active when we
+# patched.  The gated fallback (no active virtual clock) and the datetime shims
+# call *these*, and ``unpatch_time`` restores *these*, so an outer freeze
+# survives a nested ``clock_scope``.  See ``_PATCHES`` for the driving table.
+_saved_originals: dict[str, Any] = {
+    "time": _real_time,
+    "monotonic": _real_monotonic,
+    "perf_counter": _real_perf_counter,
+    "time_ns": _real_time_ns,
+    "monotonic_ns": _real_monotonic_ns,
+    "perf_counter_ns": _real_perf_counter_ns,
+    "datetime": _real_datetime,
+    "date": _real_date,
+}
 
 
 def real_monotonic() -> float:
@@ -249,23 +252,21 @@ class ClockConfig:
 
 @dataclass(frozen=True)
 class WakeEvent:
-    """A deadline that became due after a virtual-clock advance."""
+    """A registered virtual deadline; also the record returned once it is due.
+
+    :class:`DeadlineCoordinator` stores these and, on advance, returns the ones
+    that became due directly (no field-by-field copy).  ``order`` is a
+    per-coordinator monotonic tiebreaker that makes the due ordering
+    deterministic when several deadlines share a virtual time; it is internal
+    bookkeeping that consumers of the wake event ignore.
+    """
 
     actor_id: int
     deadline: float
     token: object
     kind: str
     wake_id: int | None
-
-
-@dataclass(frozen=True)
-class _Deadline:
-    actor_id: int
-    deadline: float
-    order: int
-    token: object
-    kind: str
-    wake_id: int | None
+    order: int = 0
 
 
 _SLEEP_TOKEN = object()
@@ -301,14 +302,16 @@ class DeadlineCoordinator:
     """
 
     def __init__(self) -> None:
-        self._deadlines: dict[tuple[int, object], _Deadline] = {}
+        self._deadlines: dict[tuple[int, object], WakeEvent] = {}
         self._next_order = 0
         self._lock = _rt.lock()
 
-    def _new_deadline(self, actor_id: int, deadline: float, token: object, kind: str, wake_id: int | None) -> _Deadline:
+    def _new_deadline(self, actor_id: int, deadline: float, token: object, kind: str, wake_id: int | None) -> WakeEvent:
         """Allocate a deadline with the next order token.  Caller holds ``_lock``."""
         self._next_order += 1
-        return _Deadline(actor_id, deadline, self._next_order, token, kind, wake_id)
+        return WakeEvent(
+            actor_id=actor_id, deadline=deadline, token=token, kind=kind, wake_id=wake_id, order=self._next_order
+        )
 
     def add_sleep(self, actor_id: int, deadline: float, wake_id: int | None, token: object = _SLEEP_TOKEN) -> None:
         with self._lock:
@@ -380,16 +383,7 @@ class DeadlineCoordinator:
             due.sort(key=lambda entry: (entry.deadline, entry.actor_id, entry.order))
             for entry in due:
                 self._deadlines.pop((entry.actor_id, entry.token), None)
-            return [
-                WakeEvent(
-                    actor_id=entry.actor_id,
-                    deadline=entry.deadline,
-                    token=entry.token,
-                    kind=entry.kind,
-                    wake_id=entry.wake_id,
-                )
-                for entry in due
-            ]
+            return due
 
 
 class _VirtualDateTimeMeta(type):
@@ -416,7 +410,7 @@ class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
     @classmethod
     def now(cls, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
         clock = _active_virtual_clock()
-        real = _saved_datetime
+        real = _saved_originals["datetime"]
         if clock is None:
             return real.now(tz)
         return real.fromtimestamp(clock.now(), tz)
@@ -424,7 +418,7 @@ class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
     @classmethod
     def utcnow(cls) -> _datetime.datetime:
         clock = _active_virtual_clock()
-        real = _saved_datetime
+        real = _saved_originals["datetime"]
         if clock is None:
             return real.now(_datetime.timezone.utc).replace(tzinfo=None)
         return real.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
@@ -435,8 +429,8 @@ class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):
     def today(cls) -> _datetime.date:
         clock = _active_virtual_clock()
         if clock is None:
-            return _saved_date.today()
-        return _saved_datetime.fromtimestamp(clock.now()).date()
+            return _saved_originals["date"].today()
+        return _saved_originals["datetime"].fromtimestamp(clock.now()).date()
 
 
 # ---------------------------------------------------------------------------
@@ -520,33 +514,46 @@ clock_scope = clock_context
 
 def _virtual_time() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _saved_time()
+    return clock.now() if clock is not None else _saved_originals["time"]()
 
 
 def _virtual_monotonic() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _saved_monotonic()
+    return clock.now() if clock is not None else _saved_originals["monotonic"]()
 
 
 def _virtual_perf_counter() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _saved_perf_counter()
+    return clock.now() if clock is not None else _saved_originals["perf_counter"]()
 
 
 def _virtual_time_ns() -> int:
     clock = _active_virtual_clock()
-    return round(clock.now() * 1e9) if clock is not None else _saved_time_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_originals["time_ns"]()
 
 
 def _virtual_monotonic_ns() -> int:
     clock = _active_virtual_clock()
-    return round(clock.now() * 1e9) if clock is not None else _saved_monotonic_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_originals["monotonic_ns"]()
 
 
 def _virtual_perf_counter_ns() -> int:
     clock = _active_virtual_clock()
-    return round(clock.now() * 1e9) if clock is not None else _saved_perf_counter_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_originals["perf_counter_ns"]()
 
+
+#: The single table driving :func:`patch_time` / :func:`unpatch_time` and the
+#: 0->1 save of currently-installed values: ``(module, attr, virtual_obj)``.
+_PATCHES: tuple[tuple[Any, str, Any], ...] = (
+    (time, "time", _virtual_time),
+    (time, "monotonic", _virtual_monotonic),
+    (time, "perf_counter", _virtual_perf_counter),
+    (time, "time_ns", _virtual_time_ns),
+    (time, "monotonic_ns", _virtual_monotonic_ns),
+    (time, "perf_counter_ns", _virtual_perf_counter_ns),
+    (_datetime, "datetime", _VirtualDateTime),
+    (_datetime, "date", _VirtualDate),
+)
 
 _time_patch_count = 0
 _time_patch_lock = _rt.lock()
@@ -557,9 +564,6 @@ def patch_time() -> None:
     active virtual clock.  Reference-counted; unaffected threads see real time.
     """
     global _time_patch_count  # noqa: PLW0603
-    global _saved_time, _saved_monotonic, _saved_perf_counter  # noqa: PLW0603
-    global _saved_time_ns, _saved_monotonic_ns, _saved_perf_counter_ns  # noqa: PLW0603
-    global _saved_datetime, _saved_date  # noqa: PLW0603
     with _time_patch_lock:
         _time_patch_count += 1
         if _time_patch_count > 1:
@@ -567,22 +571,9 @@ def patch_time() -> None:
         # Snapshot whatever is currently installed (possibly a third-party
         # fake) *before* overwriting, so the gated fallback and unpatch_time
         # honor it rather than the pristine import-time C functions.
-        _saved_time = time.time
-        _saved_monotonic = time.monotonic
-        _saved_perf_counter = time.perf_counter
-        _saved_time_ns = time.time_ns
-        _saved_monotonic_ns = time.monotonic_ns
-        _saved_perf_counter_ns = time.perf_counter_ns
-        _saved_datetime = _datetime.datetime
-        _saved_date = _datetime.date
-        time.time = _virtual_time
-        time.monotonic = _virtual_monotonic
-        time.perf_counter = _virtual_perf_counter
-        time.time_ns = _virtual_time_ns
-        time.monotonic_ns = _virtual_monotonic_ns
-        time.perf_counter_ns = _virtual_perf_counter_ns
-        _datetime.datetime = _VirtualDateTime
-        _datetime.date = _VirtualDate
+        for module, attr, virtual_obj in _PATCHES:
+            _saved_originals[attr] = getattr(module, attr)
+            setattr(module, attr, virtual_obj)
 
 
 def unpatch_time() -> None:
@@ -596,14 +587,8 @@ def unpatch_time() -> None:
             return
         # Restore whatever was installed when we patched (Fix 1): an outer
         # freezegun/time-machine patch must survive our scope.
-        time.time = _saved_time
-        time.monotonic = _saved_monotonic
-        time.perf_counter = _saved_perf_counter
-        time.time_ns = _saved_time_ns
-        time.monotonic_ns = _saved_monotonic_ns
-        time.perf_counter_ns = _saved_perf_counter_ns
-        _datetime.datetime = _saved_datetime
-        _datetime.date = _saved_date
+        for module, attr, _ in _PATCHES:
+            setattr(module, attr, _saved_originals[attr])
 
 
 __all__ = [

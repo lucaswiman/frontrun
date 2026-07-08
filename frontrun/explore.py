@@ -31,7 +31,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from frontrun._strategy import ASYNC_STRATEGIES, STRATEGIES
-from frontrun._virtual_clock import ClockMode
+from frontrun._virtual_clock import ClockMode, validate_clock_options
 from frontrun.common import any_async
 
 Strategy = Literal["dpor", "random"]
@@ -172,8 +172,6 @@ def explore(
             ``serializable_invariant``, or ``execution="process"``.
     """
     worker_list = _resolve_workers(workers, count)
-
-    from frontrun._virtual_clock import validate_clock_options
 
     validate_clock_options(
         clock,
