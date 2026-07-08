@@ -371,20 +371,24 @@ class DeadlineCoordinator:
             return min(entry.deadline for entry in self._deadlines.values())
 
     def advance_to_next(self, clock: VirtualClock) -> list[WakeEvent]:
-        deadline = self.next_deadline()
-        if deadline is None:
-            return []
-        return self.advance_to(clock, deadline)
+        with self._lock:
+            if not self._deadlines:
+                return []
+            deadline = min(entry.deadline for entry in self._deadlines.values())
+            return self._advance_to_locked(clock, deadline)
 
     def advance_to(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
         with self._lock:
-            clock.advance_to(deadline)
-            now = clock.now()
-            due = [entry for entry in self._deadlines.values() if entry.deadline <= now]
-            due.sort(key=lambda entry: (entry.deadline, entry.actor_id, entry.order))
-            for entry in due:
-                self._deadlines.pop((entry.actor_id, entry.token), None)
-            return due
+            return self._advance_to_locked(clock, deadline)
+
+    def _advance_to_locked(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
+        clock.advance_to(deadline)
+        now = clock.now()
+        due = [entry for entry in self._deadlines.values() if entry.deadline <= now]
+        due.sort(key=lambda entry: (entry.deadline, entry.actor_id, entry.order))
+        for entry in due:
+            self._deadlines.pop((entry.actor_id, entry.token), None)
+        return due
 
 
 class _VirtualDateTimeMeta(type):
@@ -404,10 +408,9 @@ class _VirtualDateMeta(type):
 
 
 class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
-    # Only the *class* on the datetime module is virtual; the values these
-    # constructors return are plain instances of the real datetime class saved
-    # when we patched (Fix 6), so ``type(x) is datetime.datetime`` holds and the
-    # objects survive unpatch (pydantic strict, sqlite adapters, ...).
+    def __new__(cls, *args: Any, **kwargs: Any) -> _datetime.datetime:
+        return _saved_originals["datetime"](*args, **kwargs)
+
     @classmethod
     def now(cls, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
         clock = _active_virtual_clock()
@@ -424,14 +427,29 @@ class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
             return real.now(_datetime.timezone.utc).replace(tzinfo=None)
         return real.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
 
+    @classmethod
+    def fromtimestamp(cls, timestamp: float, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
+        return _saved_originals["datetime"].fromtimestamp(timestamp, tz)
+
+    @classmethod
+    def utcfromtimestamp(cls, timestamp: float) -> _datetime.datetime:
+        return _saved_originals["datetime"].fromtimestamp(timestamp, _datetime.timezone.utc).replace(tzinfo=None)
+
 
 class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):
+    def __new__(cls, *args: Any, **kwargs: Any) -> _datetime.date:
+        return _saved_originals["date"](*args, **kwargs)
+
     @classmethod
     def today(cls) -> _datetime.date:
         clock = _active_virtual_clock()
         if clock is None:
             return _saved_originals["date"].today()
         return _saved_originals["datetime"].fromtimestamp(clock.now()).date()
+
+    @classmethod
+    def fromtimestamp(cls, timestamp: float) -> _datetime.date:
+        return _saved_originals["date"].fromtimestamp(timestamp)
 
 
 # ---------------------------------------------------------------------------
@@ -512,10 +530,8 @@ def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
         _clock_var.reset(token)
 
 
-#: The sync exploration drivers historically used a distinct ``clock_scope``
-#: backed by a thread-local dict; it now shares the contextvar implementation
-#: (contextvars are per-thread, so the driver reads back what it set).  Kept as
-#: a separate public name for the sync call sites.
+#: Public sync-driver spelling for :func:`clock_context`; contextvars are
+#: per-thread, so the driver reads back what it set.
 clock_scope = clock_context
 
 
@@ -597,7 +613,7 @@ def unpatch_time() -> None:
         _time_patch_count -= 1
         if _time_patch_count > 0:
             return
-        # Restore whatever was installed when we patched (Fix 1): an outer
+        # Restore whatever was installed when we patched; an outer
         # freezegun/time-machine patch must survive our scope.
         for module, attr, _ in _PATCHES:
             setattr(module, attr, _saved_originals[attr])

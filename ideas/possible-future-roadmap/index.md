@@ -63,11 +63,11 @@ Python, run frontrun inside them.
 
 **Virtual clock** (`frontrun.explore(clock="virtual"|"explored")`) is implemented
 for sync and async workers under DPOR and random strategies. It covers
-scheduler-visible Python timing (`time.*`, `time.sleep`, `asyncio.sleep`, sync
-cooperative timed waits) and keeps timer firings replayable via autojump or the
-DPOR clock actor. Follow-up transparency work, such as virtual `asyncio.wait_for`,
-`datetime` support, and captured-reference diagnostics, is tracked in
-`virtual-clock-transparency.md`.
+scheduler-visible Python timing (`time.*`, module-qualified `datetime` current
+time, `time.sleep`, `asyncio.sleep`, sync cooperative timed waits, and async
+`wait_for` / `timeout` / `timeout_at`) and keeps timer firings replayable via
+autojump or the DPOR clock actor. Remaining limitations and cleanup ideas are
+tracked in `virtual-clock-hardening-deferred.md`.
 
 ## Dropped (2026-06-12 cleanup)
 
@@ -89,9 +89,9 @@ test generation. Originals in git history.
    design (white-box vs. Jepsen-shaped; see above) — a separate tool, if ever.
 2. **Fault-point exploration** (fault_injection.md) — start with the async cancellation
    sweep (v1), which needs no new exploration machinery.
-3. **Virtual clock transparency follow-ups** (virtual-clock-transparency.md) —
-   virtual `asyncio.wait_for`, async Queue/Condition visibility, `datetime`
-   support, and diagnostics for captured real-time references.
+3. **Virtual clock hardening follow-ups** (virtual-clock-hardening-deferred.md) —
+   replay accounting, raw loop-timer diagnostics, remaining sync/async cleanup,
+   and sync Condition/Queue wake happens-before edges.
 
 ### P1 — Carried over
 

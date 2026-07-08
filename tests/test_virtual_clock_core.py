@@ -52,7 +52,7 @@ class _FakeFrame:
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: patch/unpatch must not stomp a pre-existing third-party time patch.
+# Third-party time patch preservation.
 # ---------------------------------------------------------------------------
 
 
@@ -92,7 +92,6 @@ def test_patch_time_preserves_preexisting_patch(monkeypatch: pytest.MonkeyPatch)
         th.start()
         th.join()
 
-    # After the scope, the pre-existing patch is restored (not the C function).
     assert time.time is fake_time
     assert time.monotonic is fake_monotonic
     assert time.time() == sentinel
@@ -101,7 +100,7 @@ def test_patch_time_preserves_preexisting_patch(monkeypatch: pytest.MonkeyPatch)
 
 
 # ---------------------------------------------------------------------------
-# Fix 6: virtual datetime/date instances must have the real concrete type.
+# Concrete datetime/date values.
 # ---------------------------------------------------------------------------
 
 
@@ -169,7 +168,7 @@ def test_virtual_datetime_direct_constructors_return_real_concrete_types() -> No
 
 
 # ---------------------------------------------------------------------------
-# Fix 3: an active scheduler context is authoritative for clock resolution.
+# Active scheduler context precedence.
 # ---------------------------------------------------------------------------
 
 
@@ -205,7 +204,7 @@ def test_scheduler_context_with_none_clock_is_authoritative(monkeypatch: pytest.
 
 
 # ---------------------------------------------------------------------------
-# Fix 5: time.sleep under an active clock (no scheduler ctx) advances the clock.
+# Driver-thread sleep under an active clock.
 # ---------------------------------------------------------------------------
 
 
@@ -229,7 +228,7 @@ def test_cooperative_sleep_advances_active_clock_without_scheduler_ctx() -> None
 
 
 # ---------------------------------------------------------------------------
-# Fix 2: DeadlineCoordinator must be safe under concurrent mutation/iteration.
+# DeadlineCoordinator concurrency.
 # ---------------------------------------------------------------------------
 
 
@@ -238,30 +237,29 @@ def test_deadline_coordinator_survives_concurrent_hammering() -> None:
 
     Exploration mutators hold the scheduler engine lock while replay advance
     paths hold only the scheduler condition, so both can touch the coordinator's
-    deadline dict at once.  Without an internal lock, an insert during an
-    ``advance_to`` iteration raises ``RuntimeError: dictionary changed size
-    during iteration`` (near-certain on free-threaded builds) and torpedoes the
-    reproduction.  The coordinator must serialise its own mutation/iteration.
+    deadline dict at once.  The coordinator serializes its own
+    mutation/iteration.
     """
     coord = DeadlineCoordinator()
     clock = VirtualClock()
     errors: list[BaseException] = []
-    stop = threading.Event()
+    barrier = threading.Barrier(4)
+    iterations = 2_000
 
-    def adder() -> None:
-        i = 0
+    def adder(offset: int) -> None:
         try:
-            while not stop.is_set():
+            barrier.wait()
+            for i in range(iterations):
                 base = clock.now()
-                coord.add_sleep(i % 16, base + (i % 7) + 0.001, None)
-                coord.add_timeout((i % 16) + 100, base + (i % 5) + 0.001, object())
-                i += 1
+                coord.add_sleep((i + offset) % 16, base + (i % 7) + 0.001, None)
+                coord.add_timeout(((i + offset) % 16) + 100, base + (i % 5) + 0.001, object())
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
     def canceller() -> None:
         try:
-            while not stop.is_set():
+            barrier.wait()
+            for _ in range(iterations):
                 for actor in range(16):
                     coord.cancel(actor)
                     coord.cancel_sleep(actor)
@@ -270,7 +268,8 @@ def test_deadline_coordinator_survives_concurrent_hammering() -> None:
 
     def advancer() -> None:
         try:
-            while not stop.is_set():
+            barrier.wait()
+            for _ in range(iterations):
                 coord.next_deadline()
                 coord.has_pending()
                 coord.advance_to_next(clock)
@@ -278,15 +277,13 @@ def test_deadline_coordinator_survives_concurrent_hammering() -> None:
             errors.append(exc)
 
     threads = [
-        threading.Thread(target=adder),
-        threading.Thread(target=adder),
+        threading.Thread(target=adder, args=(0,)),
+        threading.Thread(target=adder, args=(8,)),
         threading.Thread(target=canceller),
         threading.Thread(target=advancer),
     ]
     for t in threads:
         t.start()
-    time.sleep(1.5)
-    stop.set()
     for t in threads:
         t.join()
 
@@ -319,7 +316,7 @@ def test_deadline_coordinator_advance_to_next_selects_and_advances_atomically() 
 
 
 # ---------------------------------------------------------------------------
-# Fix 4: make clock_diagnostics usable.
+# Clock diagnostics.
 # ---------------------------------------------------------------------------
 
 

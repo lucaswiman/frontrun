@@ -7,11 +7,9 @@ cooperative-primitive-facing surface for virtual timeouts and blocking spins:
 ``note_blocking_spin`` / ``note_spin_release`` (called from ``_cooperative.py``)
 plus a ``blocks_clock_progress`` query and the "process due deadlines" advance.
 
-Before this port those methods were implemented twice with near-identical
-bodies; two wave-1 bugs lived in that duplication.  :class:`VirtualClockPort`
-owns the single :class:`~frontrun._virtual_clock.DeadlineCoordinator` and the
-``spin_waiters`` map, and parameterises the two schedulers' differences with
-callbacks:
+:class:`VirtualClockPort` owns the shared
+:class:`~frontrun._virtual_clock.DeadlineCoordinator` and the ``spin_waiters``
+map, and parameterises the two schedulers' differences with callbacks:
 
 * ``block`` / ``unblock`` / ``sync`` — DPOR marks the actor blocked/unblocked in
   the Rust engine and re-syncs the clock actor; the random scheduler has no
@@ -168,12 +166,12 @@ class VirtualClockPort:
     ) -> list[WakeEvent]:
         """Advance the clock and process every deadline that becomes due.
 
-        Pops each due actor's spin flag (the wave-1 random-scheduler fix, now
-        applied for all users: a due virtual timed wait must re-probe before it
-        can be counted as blocked again) and invokes *on_wake* per event for
-        engine-unblock / happens-before reporting.  With ``target=None`` jumps to
-        the earliest pending deadline.  The coordinator itself drops every due
-        entry, so this is the sole source of sleep/timed-wait membership updates.
+        Pops each due actor's spin flag so a due virtual timed wait must
+        re-probe before it can be counted as blocked again, then invokes
+        *on_wake* per event for engine-unblock / happens-before reporting.
+        With ``target=None`` jumps to the earliest pending deadline.  The
+        coordinator itself drops every due entry, so this is the sole source of
+        sleep/timed-wait membership updates.
         """
         due = self.coordinator.advance_to_next(clock) if target is None else self.coordinator.advance_to(clock, target)
         for event in due:

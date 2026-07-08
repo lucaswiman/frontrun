@@ -728,30 +728,13 @@ class _CooperativeAsyncCondition:
                 await self.wait()
         return predicate()
 
-    def notify(self, n: int = 1) -> None:
-        if not self.locked():
-            raise RuntimeError("cannot notify on un-acquired lock")
-        task_id = _task_id_var.get()
-        scheduler = _scheduler_var.get()
-        budget = n
-        if scheduler is None or task_id is None:
-            # Wake real-condition waiters first, then count those against the
-            # budget so the cooperative-waiter loop below cannot push the total
-            # number of wakes past n (notify(1) with a mixed population used to
-            # wake two).
-            real_waiters = getattr(self._real_condition, "_waiters", ())
-            pending_before = sum(1 for waiter_fut in real_waiters if not waiter_fut.done())
-            self._real_condition.notify(n)
-            pending_after = sum(1 for waiter_fut in real_waiters if not waiter_fut.done())
-            budget = max(0, n - (pending_before - pending_after))
-            if budget == 0 or not self._waiters:
-                return
+    def _wake_cooperative_waiters(self, n: int, scheduler: Any, task_id: int | None) -> None:
         woke = 0
-        while self._waiters and woke < budget:
+        while self._waiters and woke < n:
             waiter, fut = self._waiters.pop(0)
             if fut.done():
                 continue
-            if scheduler is not None and task_id is not None and scheduler._error is None:
+            if scheduler is not None and task_id is not None and getattr(scheduler, "_error", None) is None:
                 scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
                 scheduler.execution.unblock_thread(waiter)
             fut.set_result(None)
@@ -759,16 +742,25 @@ class _CooperativeAsyncCondition:
         if not self._waiters:
             _async_parked_conditions.discard(self)
 
+    def notify(self, n: int = 1) -> None:
+        if not self.locked():
+            raise RuntimeError("cannot notify on un-acquired lock")
+        task_id = _task_id_var.get()
+        scheduler = _scheduler_var.get()
+        real_waiters = getattr(self._real_condition, "_waiters", ())
+        pending_before = sum(1 for waiter_fut in real_waiters if not waiter_fut.done())
+        self._real_condition.notify(n)
+        pending_after = sum(1 for waiter_fut in real_waiters if not waiter_fut.done())
+        budget = max(0, n - (pending_before - pending_after))
+        self._wake_cooperative_waiters(budget, scheduler, task_id)
+
     def notify_all(self) -> None:
         task_id = _task_id_var.get()
         scheduler = _scheduler_var.get()
-        if scheduler is None or task_id is None:
-            if not self.locked():
-                raise RuntimeError("cannot notify on un-acquired lock")
-            self._real_condition.notify_all()
-            if not self._waiters:
-                return
-        self.notify(len(self._waiters))
+        if not self.locked():
+            raise RuntimeError("cannot notify on un-acquired lock")
+        self._real_condition.notify_all()
+        self._wake_cooperative_waiters(len(self._waiters), scheduler, task_id)
 
 
 def _patch_asyncio_queue_condition() -> None:

@@ -385,6 +385,7 @@ class InterleavedLoop:
         async with self._condition:
             if self._error is None:
                 self._error = error
+                self._on_error_set()
             self._condition.notify_all()
 
     async def run_all(
@@ -448,7 +449,7 @@ class InterleavedLoop:
         # every subsequent ``pause()`` short-circuit, so the tasks free-run to
         # completion and the gather above returns normally.  Surface that error
         # here instead of silently scoring the free-run as a valid exploration
-        # (finding F1).  The exploration loop classifies it (deadlock vs
+        # run.  The exploration loop classifies it (deadlock vs.
         # scheduler-timeout) just like the sync driver does.
         if self._error is not None:
             raise self._error

@@ -6,11 +6,7 @@ Status: phases 1-5 implemented. The remaining open item is Python
 cross-process virtual clocks, which stays exploratory until a real workload
 needs it.
 
-A subsequent hardening pass fixed a batch of reproduction and false-positive
-bugs on top of these phases; the fixes it deliberately deferred (replay
-accounting for spurious clock-actor steps, raw loop-timer diagnostics,
-happens-before edges for `Condition`/`Queue` wakes, and several cleanups) are
-tracked separately in
+Known remaining virtual-clock follow-ups are tracked in
 [virtual-clock-hardening-deferred.md](virtual-clock-hardening-deferred.md).
 
 ## Summary

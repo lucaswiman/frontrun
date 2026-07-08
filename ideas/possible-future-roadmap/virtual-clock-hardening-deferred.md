@@ -1,14 +1,12 @@
-# Virtual Clock Hardening: Deferred Fixes
+# Virtual Clock Hardening Follow-Ups
 
 Last reviewed: 2026-07-08.
 
-Status: open. These are the items the `virtual-clock-hardening` wave deliberately
-deferred after fixing the reproduction and false-positive bugs it set out to
-close. Each is scoped, understood, and non-blocking; several have DEFERRED
-comments at the exact code sites. None is a missed-bug hazard — the costs are
-extra branches, possible false race reports, best-effort determinism, or
+Status: open. These are scoped, non-blocking virtual-clock limitations and
+cleanup items. None is a missed-bug hazard; the costs are extra branches,
+possible false race reports, best-effort determinism, replay-accounting debt, or
 maintainability debt. The shipped limitations are documented in
-`docs/virtual_clock.rst`; this file tracks the fixes.
+`docs/virtual_clock.rst`.
 
 ## 1. Spurious clock-actor steps vs replay accounting
 
@@ -24,14 +22,13 @@ the same file) treats *every* recorded actor entry as either a real advance (a
 deadline is pending) or an owed advance (positional drift — sleeper not yet
 registered), and cannot tell the no-op apart. For a no-op step exploration
 advanced nothing, but replay's owed advance fires at the next deadline
-registration. Reachability is defensive today (no test hits the no-op branch),
-so the two live DEFERRED comments mark it rather than a fix.
+registration.
 
 **Fix directions.** Record an effective-advance flag or target per actor step in
 the trace so replay can distinguish real, owed, and no-op advances; *or* prevent
 exploration from committing no-op actor steps at all (needs engine support to
 un-schedule a step already offered). The trace-format change is invasive and
-belongs to a later trace/refactor wave. See the DEFERRED comments at both sites.
+belongs with a later trace/refactor pass.
 
 ## 2. Explored-clock advance past intermediate deadlines (random strategy)
 
@@ -56,13 +53,12 @@ before any further advance.
 ## 3. Raw loop-timer diagnostics
 
 **Symptom.** A `time.monotonic()`-derived absolute deadline passed to
-`loop.call_at` inside an explored task silently never fires; the run dies by the
-wall-clock watchdog with no diagnostic pointing at the cause (the companion
-limitation is documented in `docs/virtual_clock.rst`, "Hazard: virtual-derived
-deadlines in raw loop-timer APIs").
+`loop.call_at` inside an explored task is in the wrong clock domain; the callback
+can run at the wrong wall-clock time or the run can die by the wall-clock
+watchdog with no diagnostic pointing at the cause.
 
 **Mechanism.** `loop.time` is pinned to real monotonic, but virtual-derived
-`when` values land ≈ `VIRTUAL_EPOCH` seconds in the loop's real-time future. The
+`when` values are compared against the loop's real-time clock. The
 frontrun timer-tagging wrapper (`_install_frontrun_timer_tagging` in
 `async_scheduler.py`) already sees every `call_at` / `call_later` and tags
 frontrun's own watchdog timers, so it is positioned to notice untagged timers.
@@ -146,18 +142,7 @@ decisions stop inferring it. Adjacent cleanups live in
 and mogrified-parameter mismatch produce under/over-suppression asymmetries) and
 could be addressed in the same pass.
 
-## 9. `notify_all` no-context redundancy (minor)
-
-**Symptom.** `real_condition.notify_all` followed by a delegate to `notify(len)`
-re-touches already-done futures.
-
-**Mechanism.** With no scheduler context the notify_all path double-handles
-served waiters.
-
-**Fix direction.** Simplify to direct cooperative wakes instead of routing
-through `notify(len)`.
-
-## 10. Happens-before edges for `Condition` / `Queue` wakes
+## 9. Happens-before edges for sync `Condition` / `Queue` wakes
 
 **Symptom.** DPOR may explore, or flag as racy, some `Condition` / `Queue`
 orderings that are actually ordered (companion to the documented limitation in
@@ -173,57 +158,3 @@ release/acquire edges; `Condition` / `Queue` wakes do not.
 **Fix direction.** Report per-waiter release/acquire edges on notify / put wakes
 the way `Event` does (the `event_wake_sync_id` pattern), eliminating the false
 race branches. Needs stable wake ids and replay compatibility.
-
-## 11. Cross-test SQL connection-thread teardown leak
-
-**Symptom.** `tests/test_async_shuffler_timeout.py::test_detect_sql_reports_table_accesses`
-intermittently errors at teardown (a non-daemon `_connection_worker_thread` is
-still alive) when run after other tests; it passes in isolation.
-
-**Mechanism.** Pre-existing and unrelated to the clock — a SQL connection worker
-thread outlives the test under some run orders.
-
-**Fix direction.** Track separately so it does not get pinned on future clock
-work; ensure the connection worker thread is joined/torn down deterministically
-at test end.
-
-## 12. Pre-existing 3.14t flake: random queue waiter starves the autojump
-
-**Symptom.** `tests/test_virtual_clock.py::test_random_queue_waiter_does_not_starve_virtual_sleep_autojump`
-intermittently fails on 3.14t (roughly 1 in 3 full-selection runs on a loaded
-arm64 box; passes reliably in isolation) with
-`TimeoutError: run_with_schedule timed out after 1.0s; worker threads did not
-complete`. Reproduced at the pre-hardening baseline (03ecc35) at the same rate,
-so it predates the hardening branch.
-
-**Mechanism.** Not yet root-caused. The 1.0 s budget is the starvation symptom
-the test exists to catch, so it must not simply be raised: either there is a
-genuine intermittent starvation window on the free-threaded build (untimed
-queue waiter's spin flag racing the producer's `sleep_until` autojump, or the
-fixed schedule exhausting into the `_finished` free-run path at an unlucky
-moment), or thread startup under load eats the budget. Distinguish before
-touching the test.
-
-**Fix direction.** Instrument the autojump decision and the `_finished`
-free-run path on 3.14t under load (in-memory event log — file/socket I/O
-self-deadlocks under the preload library); classify as product starvation vs.
-test budget; fix accordingly.
-
-## 13. Pre-existing xproc flake: reuse explores a different iteration count
-
-**Symptom.** `tests/test_xproc_reuse.py::test_reuse_matches_spawn_execution_count`
-intermittently fails (`reuse.iterations != spawn.iterations`, e.g. 5 vs 3; seen
-on 3.12 in CI and locally ~2 in 8 runs). Reproduced at the pre-hardening
-baseline (03ecc35), so it predates the hardening branch. Version-agnostic
-timing sensitivity; failures correlate with cold/loaded runs.
-
-**Mechanism.** Not yet root-caused: the DPOR search driven through the xproc
-relay threads is timing-sensitive somewhere — reuse mode and spawn mode explore
-different numbers of schedules for the same program, which should be
-deterministic. Since exploration determinism is the product's core contract,
-this deserves a real investigation, not a test relaxation.
-
-**Fix direction.** Add a deterministic trace of engine `schedule()` decisions
-per iteration in both modes and diff the first divergent iteration; suspects
-are relay-thread wakeup ordering in `dpor_coordinator._drive_relays` and
-iteration-boundary state carried across reused workers.

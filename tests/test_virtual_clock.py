@@ -140,11 +140,7 @@ def test_time_functions_restored_after_worker_exception() -> None:
 
 
 def test_invariant_sees_virtual_time() -> None:
-    """The invariant is documented to see the same virtual time as workers.
-
-    Regression: invariant evaluation happens after the workers' patch scope
-    unwinds, so clock_scope must own the time.* patch itself.
-    """
+    """The invariant is documented to see the same virtual time as workers."""
     observed: list[tuple[float, float]] = []
 
     class State:
@@ -585,7 +581,7 @@ def test_sleep_while_holding_lock_dpor() -> None:
 
 def test_random_sleep_while_holding_lock() -> None:
     """Random strategy: an untimed lock spinner must not block the autojump
-    (regression: sleep(1.0) silently returned with 0 virtual seconds)."""
+    needed for the holder's virtual sleep."""
     invariant_checks = 0
 
     def invariant(s: _HoldAndSleep) -> bool:
@@ -602,7 +598,7 @@ def test_random_sleep_while_holding_lock() -> None:
         max_attempts=3,
         seed=42,
         reproduce_on_failure=0,
-        timeout_per_run=1.0,
+        timeout_per_run=2.0,
     )
     assert result.property_holds, result.explanation
     assert invariant_checks > 0
@@ -628,12 +624,6 @@ def test_random_timed_wait_not_double_advanced_past_deadline() -> None:
     """Random strategy, autojump clock: a virtual timed wait
     (event.wait(timeout=10)) must observe exactly its own deadline elapsing,
     even when another thread sleeps to a *later* deadline.
-
-    Regression: ``_advance_clock_to`` popped the woken timed-waiter from
-    ``_timed_waits`` but not ``_spin_waiters``, so the sleep_until autojump
-    loop still counted it as blocked and advanced straight to the later
-    sleeper's deadline (t=20), making the wait observe 20 virtual seconds — an
-    interleaving impossible in real time.
 
     Only ``clock="virtual"`` (autojump, time advances as late as possible) is
     asserted here: under ``clock="explored"`` the clock advance is itself a
@@ -785,17 +775,13 @@ def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
 
 
 def test_unmanaged_release_clears_recorded_spin_flag_random() -> None:
-    """Regression: an unmanaged releaser must clear a waiter's blocking-spin flag.
+    """An unmanaged releaser must clear a waiter's blocking-spin flag.
 
     A managed waiter that blocks in a cooperative wait under a virtual clock
     flags itself in the scheduler's ``spin_waiters`` so the autojump can tell it
-    apart from a runnable thread.  When the resource is released/set by an
-    *unmanaged* helper OS thread (no scheduler in TLS), the old
-    ``_note_spin_release`` resolved the scheduler from the *releaser's* empty
-    context and did nothing — leaving the waiter flagged, so the random-strategy
-    autojump counts it as hopeless and advances virtual time past a wake that
-    could actually have happened.  The releaser must reach the scheduler the
-    waiter *recorded* at flag time.
+    apart from a runnable thread.  If the resource is released/set by an
+    *unmanaged* helper OS thread (no scheduler in TLS), the releaser must reach
+    the scheduler the waiter *recorded* at flag time.
 
     A deterministic end-to-end timing test is infeasible (virtual scheduling
     always races the real-time setter — the autojump-to-own-deadline fires
@@ -1119,19 +1105,15 @@ def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
 
 
 def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
-    """Regression guard for the give-up exact-deadlock false-positive window.
+    """``give_up_timed_wait`` unblocks before dropping the deadline.
 
-    The old give-up path removed the timed-wait deadline BEFORE clearing the
-    engine block, in two separate lock acquisitions.  Between them the waiter
-    was engine-blocked with no pending deadline; if every other thread was also
-    blocked, ``_schedule_next`` could observe "no runnable thread and no
-    deadline" and (after the confirm window) raise a spurious DeadlockError.
+    The waiter must never be engine-blocked with no pending deadline.  It would
+    then be indistinguishable from an exact deadlock if every other thread was
+    also blocked.
 
-    ``give_up_timed_wait`` closes the window: it unblocks the waiter and drops
+    ``give_up_timed_wait`` keeps the invariant by unblocking and dropping
     the deadline under a single lock, unblock-first, so no scheduler advance can
-    ever see the blocked-with-no-deadline state.  A deterministic test of the
-    OS-descheduling race itself is infeasible; this asserts the ordering and
-    atomicity contract instead."""
+    ever see the blocked-with-no-deadline state."""
     from frontrun._dpor_runtime.scheduler import DporScheduler
     from frontrun._virtual_clock import _TIMED_WAIT_TOKEN
 

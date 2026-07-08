@@ -8,40 +8,13 @@ Unreleased
 
 * **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
   now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
-  workers with both DPOR and random strategies. Explored code reads scheduler
-  time (including module-qualified ``datetime`` current-time reads), sleeps
-  and async timeout wrappers become zero-wall-time virtual deadlines, and
-  ``clock="explored"`` makes timer firings schedulable. DPOR also models
-  cooperative timed waits, async queue/condition wakeups, and captured
-  ``time.*`` clock-read diagnostics. See :doc:`virtual_clock`.
-
-* **Virtual clock hardening.** A correctness pass over the virtual clock closed
-  a batch of reproduction and false-positive bugs: sync replay no longer
-  force-expires successful timed acquires (a reproduction-rate bug); timed waits
-  give up atomically, closing an exact-deadlock false-positive window; baseline
-  threads are tracked weakly (sync and async) so thread-id reuse cannot
-  misclassify explored versus external threads; async ``Condition.wait``
-  cancellation no longer releases another task's lock, its default lock is now
-  engine-visible, and ``notify(n)`` wakes are capped across both waiter
-  populations; async exact-deadlock detection declines while an external thread
-  is alive; every abort path (including the base-class deadlock and progress
-  watchdogs) now wakes parked primitive waiters; the random strategy no longer
-  double-advances the clock past a timed wait; ``OpcodeScheduler`` gained the
-  SQL row-lock stubs it was missing (an ``AttributeError`` crash); ``patch_time``
-  / ``unpatch_time`` preserve a pre-existing third-party time patch
-  (freezegun / time-machine); driver-thread ``time.sleep`` advances the clock
-  under ``clock_scope``; virtual ``datetime`` / ``date`` instances are now real
-  concrete instances; and ``clock_diagnostics=True`` is usable (deduplicated,
-  once per code object, snapshot-safe iteration, central validation, and an
-  honest warning that async random cannot inspect frames). Remaining deferred
-  fixes are tracked in ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
-
-* **Virtual clock internals** (no API change). Deadline state is consolidated
-  behind a shared ``DeadlineCoordinator`` / ``VirtualClockPort``; the sync and
-  async schedulers share ``_dpor_core/clock_actor.py``; ``async_dpor.py`` was
-  split into modules (``async_scheduler.py``, ``_async_cooperative.py``); each
-  execution installs a single ``time.*`` patch scope; and ``ClockConfig``
-  centralizes clock derivation.
+  workers with DPOR and random strategies. Explored code reads scheduler time,
+  sleeps and timeout wrappers use zero-wall-time virtual deadlines, and
+  ``clock="explored"`` makes timer firings schedulable. This includes
+  cooperative timed waits, async ``wait_for`` / ``timeout`` / ``timeout_at``,
+  async Event/Queue/Condition wakeups, concrete ``datetime`` / ``date`` values,
+  captured ``time.*`` diagnostics where tracing is available, and preservation
+  of pre-existing third-party time patches. See :doc:`virtual_clock`.
 
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,

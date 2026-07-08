@@ -157,8 +157,13 @@ class _VirtualAsyncTimeoutContext:
         self._task: asyncio.Task[Any] | None = None
         self._cancelling = 0
         self._immediate_handle: asyncio.Handle | None = None
+        self._entered = False
+        self._exited = False
 
     async def __aenter__(self) -> _VirtualAsyncTimeoutContext:
+        if self._entered:
+            raise RuntimeError("Timeout has already been entered")
+        self._entered = True
         self._task = asyncio.current_task()
         if self._task is not None:
             self._cancelling = self._task.cancelling()
@@ -181,6 +186,12 @@ class _VirtualAsyncTimeoutContext:
         return clock.now() + max(0.0, delay)
 
     def reschedule(self, when: float | None) -> None:
+        if not self._entered:
+            raise RuntimeError("Timeout has not been entered")
+        if self._exited:
+            raise RuntimeError("Timeout has already exited")
+        if self.expired():
+            raise RuntimeError("Timeout has already expired")
         if self._immediate_handle is not None:
             self._immediate_handle.cancel()
             self._immediate_handle = None
@@ -205,21 +216,24 @@ class _VirtualAsyncTimeoutContext:
         self._scheduler.add_timeout_deadline(self._task_id, deadline, token)
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        token = self._token
-        expired = bool(token is not None and token.expired)
-        if self._immediate_handle is not None:
-            self._immediate_handle.cancel()
-            self._immediate_handle = None
-        if token is not None:
-            self._scheduler.remove_timeout_deadline(self._task_id, token)
-        if expired:
-            uncancel = getattr(self._task, "uncancel", None)
-            remaining_cancels = uncancel() if uncancel is not None else self._cancelling
-            if self._scheduler._error is None:
-                await self._scheduler.wait_until_scheduled_after_block(self._task_id, "asyncio.timeout")
-            if exc_type is asyncio.CancelledError and (uncancel is None or remaining_cancels <= self._cancelling):
-                raise TimeoutError from exc
-        return False
+        try:
+            token = self._token
+            expired = bool(token is not None and token.expired)
+            if self._immediate_handle is not None:
+                self._immediate_handle.cancel()
+                self._immediate_handle = None
+            if token is not None:
+                self._scheduler.remove_timeout_deadline(self._task_id, token)
+            if expired:
+                uncancel = getattr(self._task, "uncancel", None)
+                remaining_cancels = uncancel() if uncancel is not None else self._cancelling
+                if self._scheduler._error is None:
+                    await self._scheduler.wait_until_scheduled_after_block(self._task_id, "asyncio.timeout")
+                if exc_type is asyncio.CancelledError and (uncancel is None or remaining_cancels <= self._cancelling):
+                    raise TimeoutError from exc
+            return False
+        finally:
+            self._exited = True
 
 
 async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | None) -> Any:

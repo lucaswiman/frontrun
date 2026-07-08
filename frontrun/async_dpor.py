@@ -1223,6 +1223,8 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             via a synthetic clock-actor task). ``asyncio.wait_for``,
             ``asyncio.timeout``, and ``asyncio.timeout_at`` inside explored
             tasks use virtual deadlines. See :doc:`/virtual_clock`.
+        clock_diagnostics: With a virtual clock, warn when traced worker frames
+            hold captured real ``time.*`` clock-read functions.
 
     Returns:
         InterleavingResult with exploration statistics and any counterexample.

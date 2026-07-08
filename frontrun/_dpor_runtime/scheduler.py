@@ -276,19 +276,10 @@ class DporScheduler:
         if clock is None:
             return
         # The shared port pops each due actor's spin flag; the on-wake callback
-        # closes the engine/HB side.  ``advance_clock_to`` returning no events is
-        # a spurious actor step (e.g. a stale wakeup-tree branch): the trailing
-        # ``_sync_clock_actor_locked`` re-blocks the actor either way.
-        #
-        # DEFERRED (Item 4 — replay accounting divergence): engine.schedule()
-        # has ALREADY committed a no-op actor step to the recorded trace, but
-        # replay (_ReplayDporScheduler._schedule_next, below) treats every
-        # recorded actor entry as a real or owed advance and cannot tell this
-        # no-op apart from positional drift, so it can perform an advance
-        # exploration never performed (the owed advance instantly expires the
-        # next registered deadline).  A clean fix needs effective-advance info in
-        # the trace — invasive, owned by the later trace/refactor wave.
-        # Reachability is defensive today (no test hits the no-op branch).
+        # closes the engine/HB side.  A clock-actor pick can arrive after all
+        # deadlines were canceled, in which case this is a no-op and the
+        # trailing sync re-blocks the actor.  Replay accounting for no-op clock
+        # actor entries is tracked in the virtual-clock hardening roadmap.
         self._clock_port.advance_clock_to(clock, None, self._on_clock_wake)
         self._sync_clock_actor_locked()
 
@@ -1127,9 +1118,8 @@ class DporScheduler:
         clock = self.virtual_clock
         if clock is None:
             return
-        # Shared core: drops every due entry from the coordinator and pops due
-        # actors' spin flags (the wave-1 fix, now for replay too).  Replay has no
-        # engine, so there is no per-event wake work.
+        # Shared core drops due entries and spin flags; replay has no engine, so
+        # there is no per-event wake work.
         self._clock_port.advance_clock_to(clock, target, noop_on_wake)
 
     def _replay_sleep_self_wake(self, thread_id: int) -> bool:
@@ -1486,20 +1476,10 @@ class _ReplayDporScheduler(DporScheduler):
             )
             if next_actor is not None and self._clock_actor_id is not None and next_actor == self._clock_actor_id:
                 # Recorded clock-actor step: advance to the earliest pending
-                # deadline (waking its sleepers) and keep walking the schedule.
-                #
-                # DEFERRED (Item 4 — replay accounting divergence): this treats
-                # EVERY recorded actor entry as a real advance (when a deadline is
-                # registered) or an owed advance (when none is yet — positional
-                # drift).  It cannot distinguish a *spurious* actor step that
-                # exploration recorded but did not act on (see the "Spurious actor
-                # step" no-op in _advance_virtual_clock_locked above): for such a
-                # step exploration advanced nothing, but here the owed advance
-                # fires at the next deadline registration and instantly expires
-                # it, diverging the reproduction.  Distinguishing the two needs
-                # effective-advance info in the trace (or exploration to not
-                # record the no-op) — invasive, owned by the later trace/refactor
-                # wave; defensive today (no test reaches the no-op branch).
+                # deadline and keep walking the schedule.  If the sleeper has not
+                # registered its deadline yet, carry the advance until deadline
+                # registration; the current trace format does not distinguish
+                # that positional drift from a recorded no-op actor entry.
                 if self._deadlines.has_pending():
                     self._replay_advance_clock_to()
                 else:

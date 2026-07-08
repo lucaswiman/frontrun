@@ -219,16 +219,17 @@ Semantics and limitations
   different interleavings.  Async DPOR's autojump is engine-state-driven and
   stays deterministic; prefer ``strategy="dpor"`` when you need a reproducible
   schedule.
-* **Cooperative ``Condition`` / ``Queue`` wakes report no happens-before edge.**
-  A ``notify`` / ``put`` wake goes through the spin-release path
+* **Sync cooperative ``Condition`` / ``Queue`` wakes report no happens-before edge.**
+  A sync ``notify`` / ``put`` wake goes through the spin-release path
   (``_note_spin_release`` in ``_cooperative.py``), which only clears the
   waiter's blocking-spin flag so it re-probes.  Unlike ``Event`` (whose
   ``set()`` -> ``wait()``-return carries an ``event_set`` / ``event_wait`` edge)
   and sleeper / timed-wait wakes (release / acquire edges), vector clocks
   under-order notify->wake, so DPOR may explore, or flag as racy, some orderings
-  that are actually ordered.  This matches pre-clock behavior; the cost is extra
-  branches and possible false race reports, never missed bugs.  A fix is tracked
-  in ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
+  that are actually ordered.  Async DPOR Queue/Condition wakeups do report wake
+  edges.  The sync limitation costs extra branches and possible false race
+  reports, not missed bugs; a fix is tracked in
+  ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
 * C-level clock reads and sleeps (including inside extension modules) are
   outside the virtual clock unless a frontrun integration explicitly models
   them.
@@ -242,8 +243,7 @@ event loop's own timer heap.  Under a virtual clock the runners pin
 ``loop.time`` to the real monotonic clock (``_pin_loop_time`` in
 ``async_scheduler.py``) so that frontrun's own watchdog timers — and any raw
 ``loop.call_later`` / ``loop.call_at`` callbacks — compare against the same
-wall-clock reference the loop uses to fire them.  That pin has two consequences,
-and the second is a silent hang.
+wall-clock reference the loop uses to fire them.  That pin has two consequences.
 
 **Relative loop timers still fire, but on the wall clock.**
 ``loop.call_later(delay, cb)`` computes ``when = loop.time() + delay``; with
@@ -255,24 +255,22 @@ replayable), and is invisible to exact deadlock detection.  A third-party
 library that builds timeouts on ``loop.call_later`` (an aiohttp timeout handle,
 say) keeps working but reintroduces wall-clock timing.
 
-**Absolute loop timers derived from ``time.monotonic()`` never fire.** Inside an
-explored task ``time.monotonic()`` returns virtual time (≈ ``VIRTUAL_EPOCH`` =
-1,000,000 s), so:
+**Absolute loop timers derived from ``time.monotonic()`` use the wrong time
+domain.** Inside an explored task ``time.monotonic()`` returns virtual time
+(starting at ``VIRTUAL_EPOCH`` = 1,000,000 s), so:
 
 .. code-block:: python
 
     loop.call_at(time.monotonic() + 1.0, callback)   # HAZARD
 
-schedules ``callback`` roughly one million seconds into the loop's *real-time*
-future.  ``_run_once`` compares that ``when`` against ``loop.time()`` (real), so
-the callback is never due within the run.  A task awaiting that timer — a future
-the callback was meant to resolve, a cancellation it was meant to deliver —
-blocks forever.  Because a *user* loop timer is still pending, exact deadlock
-detection declines (it cannot prove the state is a real deadlock), and the run
-instead dies by the wall-clock watchdog: a ``SchedulerTimeoutError`` or an
-inconclusive "all executions timed out before completion" result, with **no
-diagnostic pointing at the epoch mismatch**.  The callback simply never ran, and
-nothing hints that a virtual timestamp leaked into a real-clock API.
+schedules ``callback`` in the loop's real-time timer heap using a virtual-clock
+timestamp.  Depending on the host's real monotonic value, that can be far in the
+future, already due, or otherwise unrelated to the intended virtual deadline.  A
+task awaiting that timer — a future the callback was meant to resolve, a
+cancellation it was meant to deliver — can therefore hang until the wall-clock
+watchdog, complete at an unintended wall-clock time, or produce an inconclusive
+"all executions timed out before completion" result, with **no diagnostic
+pointing at the clock-domain mismatch**.
 
 **Workaround.** Inside explored tasks, express timeouts with
 ``asyncio.wait_for`` / ``asyncio.timeout`` / ``asyncio.timeout_at`` — these are

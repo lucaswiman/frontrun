@@ -865,6 +865,8 @@ def explore_random(
             entries landing on a sleeping thread advance the clock, so the
             random sampler also explores early timer firings).  See
             :doc:`/virtual_clock`.
+        clock_diagnostics: With a virtual clock, warn when traced worker frames
+            hold captured real ``time.*`` clock-read functions.
 
     Returns:
         InterleavingResult with the outcome.  The ``unique_interleavings``

@@ -1478,10 +1478,7 @@ class _AsyncHoldAndSleep:
 
 
 def test_async_sleep_while_holding_lock() -> None:
-    """A task sleeping while holding an asyncio.Lock must autojump, not die
-    by deadlock timeout (regression: the run was scored as a false deadlock
-    counterexample — the blocked contender has no scheduling points, so
-    nothing ever asked the engine to reschedule)."""
+    """A task sleeping while holding an asyncio.Lock must autojump quickly."""
 
     async def a(s: _AsyncHoldAndSleep) -> None:
         async with s.lock:
@@ -1595,13 +1592,7 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
 def test_async_condition_wait_timeout_does_not_release_other_task_lock() -> None:
     """A ``cond.wait_for`` that times out while another task holds the lock must
     re-acquire the lock before propagating, not skip re-acquire and let the
-    caller's ``async with cond:`` __aexit__ release the *other* task's lock.
-
-    Regression: ``wait()``'s ``finally`` re-acquired only ``if not locked()``,
-    but ``locked()`` asks whether ANYONE holds the lock, not whether THIS task
-    does; releasing the holder's lock corrupts its critical section and makes
-    its later ``release()`` raise ``RuntimeError``.
-    """
+    caller's ``async with cond:`` __aexit__ release the *other* task's lock."""
 
     class State:
         def __init__(self) -> None:
