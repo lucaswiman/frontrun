@@ -743,6 +743,65 @@ def test_async_timeout_context_reschedule_from_none_uses_virtual_deadline() -> N
     assert result.property_holds, result.explanation
 
 
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_cannot_reschedule_after_exit() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.reschedule_rejected = False
+
+    async def worker(s: State) -> None:
+        loop = asyncio.get_running_loop()
+        async with asyncio.timeout(None) as timeout_cm:
+            pass
+
+        with pytest.raises(RuntimeError):
+            timeout_cm.reschedule(loop.time())
+        s.reschedule_rejected = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.reschedule_rejected,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_cannot_reschedule_after_expiry() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.reschedule_rejected = False
+
+    async def worker(s: State) -> None:
+        try:
+            async with asyncio.timeout(0) as timeout_cm:
+                try:
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    with pytest.raises(RuntimeError):
+                        timeout_cm.reschedule(None)
+                    s.reschedule_rejected = True
+                    raise
+        except TimeoutError:
+            s.timed_out = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.reschedule_rejected,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_uncaught_async_wait_for_timeout_is_task_crash_not_deadlock() -> None:
     class State:
         pass

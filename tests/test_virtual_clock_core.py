@@ -136,6 +136,24 @@ def test_virtual_datetime_instances_have_real_concrete_type() -> None:
     assert aware.tzinfo is dt.timezone.utc
 
 
+def test_virtual_datetime_fromtimestamp_is_input_deterministic_and_real_type() -> None:
+    real_datetime = dt.datetime
+    real_date = dt.date
+    timestamp = 123_456.0
+
+    with clock_scope(VirtualClock()):
+        aware = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
+        naive = dt.datetime.fromtimestamp(timestamp)
+        today = dt.date.fromtimestamp(timestamp)
+
+    assert type(aware) is real_datetime
+    assert type(naive) is real_datetime
+    assert type(today) is real_date
+    assert aware.timestamp() == pytest.approx(timestamp)
+    assert naive.timestamp() == pytest.approx(timestamp)
+    assert today == real_datetime.fromtimestamp(timestamp).date()
+
+
 # ---------------------------------------------------------------------------
 # Fix 3: an active scheduler context is authoritative for clock resolution.
 # ---------------------------------------------------------------------------
@@ -261,6 +279,29 @@ def test_deadline_coordinator_survives_concurrent_hammering() -> None:
     assert not errors, f"coordinator raised under concurrency: {errors!r}"
     # Clock only ever moves forward.
     assert clock.now() >= VIRTUAL_EPOCH
+
+
+def test_deadline_coordinator_advance_to_next_selects_and_advances_atomically() -> None:
+    class InsertingCoordinator(DeadlineCoordinator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inserted = False
+
+        def next_deadline(self) -> float | None:
+            deadline = super().next_deadline()
+            if not self.inserted:
+                self.inserted = True
+                self.add_sleep(2, VIRTUAL_EPOCH + 1.0, None, token=object())
+            return deadline
+
+    coord = InsertingCoordinator()
+    clock = VirtualClock()
+    coord.add_sleep(1, VIRTUAL_EPOCH + 10.0, None, token=object())
+
+    due = coord.advance_to_next(clock)
+
+    assert [event.actor_id for event in due] == [1]
+    assert clock.now() == pytest.approx(VIRTUAL_EPOCH + 10.0)
 
 
 # ---------------------------------------------------------------------------

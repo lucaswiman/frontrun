@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 import frontrun
+from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
 from frontrun.async_shuffler import (
     AsyncShuffler,
     AwaitScheduler,
@@ -135,6 +136,16 @@ def test_scheduler_skips_done_tasks():
         assert scheduler._finished is True
 
     asyncio.run(_test())
+
+
+def test_scheduler_virtual_autojump_skips_only_sleeping_slot():
+    scheduler = AwaitScheduler([0, 1, 1], num_tasks=2, virtual_clock=VirtualClock(), clock_mode="virtual")
+    scheduler._sleepers[0] = VIRTUAL_EPOCH + 1.0
+
+    assert scheduler.should_proceed(1)
+    assert scheduler._index == 1
+    scheduler.on_proceed(1)
+    assert scheduler._index == 2
 
 
 # ---------------------------------------------------------------------------
