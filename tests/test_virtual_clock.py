@@ -977,6 +977,51 @@ def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
     )
 
 
+def test_baseline_threads_tracked_weakly_so_dead_ids_drop() -> None:
+    """Baseline threads must be tracked by weak reference, not by raw id.
+
+    ``_has_live_external_threads`` subtracts the baseline threads captured at
+    construction to decide whether some non-worker thread could still unblock a
+    waiter (which suppresses exact-deadlock detection).  Keying by ``id(Thread)``
+    is unsound: if a baseline thread exits and is GC'd, a new external thread can
+    reuse its id and be wrongly subtracted, re-enabling exact-deadlock while that
+    thread could still make progress.  Storing weak references makes dead
+    baseline threads drop out so their ids cannot mask a reused id."""
+    import gc
+    import weakref
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _run() -> None:
+        started.set()
+        release.wait()
+
+    t = threading.Thread(target=_run)
+    t.start()
+    try:
+        assert started.wait(timeout=5.0)
+        scheduler = _make_virtual_clock_scheduler()  # captures baseline incl. t
+        assert any(bt is t for bt in scheduler._baseline_thread_keys), (
+            "baseline must store live Thread objects (weakly), not raw ids"
+        )
+        tid = id(t)
+        wr = weakref.ref(t)
+    finally:
+        release.set()
+        t.join(timeout=5.0)
+
+    del t
+    gc.collect()
+
+    assert wr() is None, "a finished baseline thread must not be strongly pinned"
+    baseline_ids = {id(bt) for bt in scheduler._baseline_thread_keys}
+    assert tid not in baseline_ids, (
+        "a dead+GC'd baseline thread's id must drop out of the tracking set so a "
+        "reused id on a new external thread cannot be misclassified as baseline"
+    )
+
+
 def test_timed_semaphore_acquire_times_out_without_false_deadlock() -> None:
     class State:
         def __init__(self) -> None:
