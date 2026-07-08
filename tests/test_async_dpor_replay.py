@@ -175,6 +175,38 @@ def test_event_blocked_replay_skips_drifted_waiter_slots() -> None:
     assert asyncio.run(scenario()) == ["setter", "waiter"]
 
 
+def test_condition_notify_no_context_wakes_at_most_n_across_both_waiter_sets() -> None:
+    """Without scheduler context, ``notify(n)`` must wake at most ``n`` waiters
+    total across the real-condition and cooperative waiter populations.
+
+    The no-context path delegates to the wrapped real condition AND then also
+    resolves cooperative-waiter futures; with a mix of both, ``notify(1)``
+    used to wake two.
+    """
+
+    async def scenario() -> int:
+        condition = _CooperativeAsyncCondition()
+        loop = asyncio.get_running_loop()
+        real_fut: asyncio.Future[bool] = loop.create_future()
+        coop_fut: asyncio.Future[None] = loop.create_future()
+        # One real-condition waiter (what the no-context wait() path registers).
+        condition._real_condition._waiters.append(real_fut)  # type: ignore[attr-defined]
+        # One cooperative waiter (what the with-context wait() path registers).
+        condition._waiters.append((123, coop_fut))
+        await condition.acquire()
+        try:
+            condition.notify(1)
+        finally:
+            condition.release()
+        woke = sum(1 for fut in (real_fut, coop_fut) if fut.done())
+        for fut in (real_fut, coop_fut):
+            if not fut.done():
+                fut.cancel()
+        return woke
+
+    assert asyncio.run(scenario()) == 1
+
+
 def test_reset_async_lock_state_clears_all_parked_primitive_sets() -> None:
     """``_reset_async_lock_state`` must clear the parked-queue and
     parked-condition sets too, not only parked events.  Otherwise a stale
