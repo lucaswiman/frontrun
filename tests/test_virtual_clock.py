@@ -1525,3 +1525,37 @@ def test_random_strategy_explored_clock_can_fire_timer_early() -> None:
         reproduce_on_failure=0,
     )
     _assert_invariant_failure(result, "expected delayed writer")
+
+
+def test_stale_timed_wait_spin_flag_is_refused() -> None:
+    """A timed-wait spin flag must not land after its deadline already fired.
+
+    TOCTOU race (reliable on 3.14t, where threads run truly concurrently;
+    possible on GIL builds): a timed Event/Condition/Queue waiter passes its
+    expiry check, then blocks on the scheduler condition inside
+    ``note_blocking_spin`` while another thread's autojump advances the clock
+    past its deadline (popping deadline and flag).  The queued flag then lands
+    with no deadline behind it, the waiter counts as clock-blocked, and the
+    next autojump advances past the waiter's own deadline before it re-probes
+    — ``event.wait(timeout=10)`` observes 20 elapsed virtual seconds.
+
+    The port must refuse a ``timed_wait`` flag when the actor no longer has a
+    pending timeout deadline (flag and deadline share the scheduler condition,
+    so the check is race-free).
+    """
+    clock = VirtualClock()
+    scheduler = OpcodeScheduler([], num_threads=2, virtual_clock=clock, clock_mode="virtual")
+    resource_id = 0xC0FFEE
+
+    # Actor 1 registers a timed wait, then its deadline fires (another
+    # thread's autojump pops deadline + flag)...
+    scheduler.add_timed_wait(1, clock.now() + 10.0)
+    scheduler._advance_clock_to(clock.now() + 10.0)
+    # ...and only then does the queued flag land: it must be refused.
+    scheduler.note_blocking_spin(1, resource_id, True, timed_wait=True)
+    assert 1 not in scheduler._spin_waiters
+
+    # Control: with a pending deadline the flag lands normally.
+    scheduler.add_timed_wait(1, clock.now() + 5.0)
+    scheduler.note_blocking_spin(1, resource_id, True, timed_wait=True)
+    assert 1 in scheduler._spin_waiters
