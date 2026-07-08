@@ -201,39 +201,58 @@ class DeadlineCoordinator:
     time, and returns the events that became due.  It supports more than one
     deadline per actor, which is required for ``asyncio.wait_for`` wrapping an
     awaitable that also has its own virtual sleep deadline.
+
+    Thread-safety: every method that mutates or iterates ``_deadlines`` (and
+    the ``_next_order`` counter) is serialised on an internal *real* lock.
+    Callers already hold a scheduler lock (``_engine_lock`` for exploration
+    mutators, ``_condition`` for replay advance paths), but those are two
+    different locks — so an insert on one and an ``advance_to`` iteration on the
+    other could race the dict without this internal guard.  The lock is a real,
+    never-cooperative lock (like :class:`VirtualClock._lock`) because these
+    methods run inside scheduler machinery; a patched ``threading.Lock`` would
+    report sync events back into the scheduler.  Nesting order is always
+    scheduler-lock -> coordinator-lock -> ``clock._lock``; no method calls back
+    into scheduler code while holding ``self._lock``, so there is no inversion.
     """
 
     def __init__(self) -> None:
         self._deadlines: dict[tuple[int, object], _Deadline] = {}
         self._next_order = 0
+        self._lock = _rt.lock()
 
     def _new_deadline(self, actor_id: int, deadline: float, token: object, kind: str, wake_id: int | None) -> _Deadline:
+        """Allocate a deadline with the next order token.  Caller holds ``_lock``."""
         self._next_order += 1
         return _Deadline(actor_id, deadline, self._next_order, token, kind, wake_id)
 
     def add_sleep(self, actor_id: int, deadline: float, wake_id: int | None, token: object = _SLEEP_TOKEN) -> None:
-        self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "sleep", wake_id)
+        with self._lock:
+            self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "sleep", wake_id)
 
     def add_timeout(self, actor_id: int, deadline: float, token: object, wake_id: int | None = None) -> None:
-        self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "timeout", wake_id)
+        with self._lock:
+            self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "timeout", wake_id)
 
     def cancel(self, actor_id: int, token: object | None = None) -> None:
-        if token is not None:
-            self._deadlines.pop((actor_id, token), None)
-            return
-        for key in [key for key in self._deadlines if key[0] == actor_id]:
-            del self._deadlines[key]
+        with self._lock:
+            if token is not None:
+                self._deadlines.pop((actor_id, token), None)
+                return
+            for key in [key for key in self._deadlines if key[0] == actor_id]:
+                del self._deadlines[key]
 
     def cancel_sleep(self, actor_id: int) -> None:
         self.cancel(actor_id, _SLEEP_TOKEN)
 
     def has_pending(self) -> bool:
-        return bool(self._deadlines)
+        with self._lock:
+            return bool(self._deadlines)
 
     def next_deadline(self) -> float | None:
-        if not self._deadlines:
-            return None
-        return min(entry.deadline for entry in self._deadlines.values())
+        with self._lock:
+            if not self._deadlines:
+                return None
+            return min(entry.deadline for entry in self._deadlines.values())
 
     def advance_to_next(self, clock: VirtualClock) -> list[WakeEvent]:
         deadline = self.next_deadline()
@@ -242,22 +261,23 @@ class DeadlineCoordinator:
         return self.advance_to(clock, deadline)
 
     def advance_to(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
-        clock.advance_to(deadline)
-        now = clock.now()
-        due = [entry for entry in self._deadlines.values() if entry.deadline <= now]
-        due.sort(key=lambda entry: (entry.deadline, entry.actor_id, entry.order))
-        for entry in due:
-            self._deadlines.pop((entry.actor_id, entry.token), None)
-        return [
-            WakeEvent(
-                actor_id=entry.actor_id,
-                deadline=entry.deadline,
-                token=entry.token,
-                kind=entry.kind,
-                wake_id=entry.wake_id,
-            )
-            for entry in due
-        ]
+        with self._lock:
+            clock.advance_to(deadline)
+            now = clock.now()
+            due = [entry for entry in self._deadlines.values() if entry.deadline <= now]
+            due.sort(key=lambda entry: (entry.deadline, entry.actor_id, entry.order))
+            for entry in due:
+                self._deadlines.pop((entry.actor_id, entry.token), None)
+            return [
+                WakeEvent(
+                    actor_id=entry.actor_id,
+                    deadline=entry.deadline,
+                    token=entry.token,
+                    kind=entry.kind,
+                    wake_id=entry.wake_id,
+                )
+                for entry in due
+            ]
 
 
 class _VirtualDateTimeMeta(type):
