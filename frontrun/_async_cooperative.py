@@ -96,20 +96,14 @@ def _report_state_access(obj: object, suffix: str, kind: str) -> None:
     engine = getattr(scheduler, "engine", None)
     if scheduler is None or engine is None or task_id is None or scheduler._error is not None:
         return
-    stable_ids = getattr(scheduler, "_stable_ids", None)
+    stable_ids = scheduler._stable_ids
     obj_id = stable_ids.get(obj) if stable_ids is not None else id(obj)
     key = _make_object_key(obj_id, suffix)
-    report_task_access = getattr(scheduler, "report_task_access", None)
-    if report_task_access is not None:
-        report_task_access(task_id, key, kind)
-        return
-    report_access = getattr(engine, "report_access", None)
-    if report_access is not None:
-        report_access(scheduler.execution, task_id, key, kind)
+    scheduler.report_task_access(task_id, key, kind)
 
 
 def _async_wake_sync_id(scheduler: Any, obj: object, waiter: int) -> int:
-    stable_ids = getattr(scheduler, "_stable_ids", None)
+    stable_ids = scheduler._stable_ids
     obj_id = stable_ids.get(obj) if stable_ids is not None else id(obj)
     return event_wake_sync_id(obj_id, waiter)
 
@@ -150,7 +144,7 @@ async def _engine_parked_wait(
       this is where ``Condition.wait`` runs its exception-safe lock re-acquire.
     """
     parked_set.add(obj)
-    event_blocked = getattr(scheduler, "_event_blocked", None)
+    event_blocked = scheduler._event_blocked
     if event_blocked is not None:
         event_blocked.add(task_id)
     scheduler.execution.block_thread(task_id)
@@ -158,9 +152,7 @@ async def _engine_parked_wait(
     _in_scheduler_pause.set(depth + 1)
     unblocked = False
     try:
-        kick = getattr(scheduler, "kick_stalled_schedule", None)
-        if kick is not None:
-            await kick(task_id)
+        await scheduler.kick_stalled_schedule(task_id)
         result = await fut
         scheduler.execution.unblock_thread(task_id)
         unblocked = True
@@ -168,16 +160,10 @@ async def _engine_parked_wait(
             event_blocked.discard(task_id)
         if on_wake is not None:
             await on_wake()
-        wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
-        if scheduler._error is None and wait_scheduled is not None:
-            await wait_scheduled(task_id, reason)
         if scheduler._error is None:
-            report_task_sync = getattr(scheduler, "report_task_sync", None)
-            wake_id = _async_wake_sync_id(scheduler, obj, task_id)
-            if report_task_sync is not None:
-                report_task_sync(task_id, "lock_acquire", wake_id)
-            else:
-                scheduler.engine.report_sync(scheduler.execution, task_id, "lock_acquire", wake_id)
+            await scheduler.wait_until_scheduled_after_block(task_id, reason)
+        if scheduler._error is None:
+            scheduler.report_task_sync(task_id, "lock_acquire", _async_wake_sync_id(scheduler, obj, task_id))
         return result
     finally:
         cleanup()
@@ -305,9 +291,8 @@ class _CooperativeAsyncLock:
                 # points until the clock advances), hand the turn onward now
                 # — otherwise no one ever calls _schedule_next and the run
                 # dies by deadlock timeout: a false deadlock counterexample.
-                kick = getattr(scheduler, "kick_stalled_schedule", None)
-                if kick is not None:
-                    await kick(task_id)
+                if scheduler is not None:
+                    await scheduler.kick_stalled_schedule(task_id)
                 result = await self._lock.acquire()
             finally:
                 _in_scheduler_pause.set(depth)
@@ -327,11 +312,7 @@ class _CooperativeAsyncLock:
             graph.add_holding(task_id, lock_id)
             scheduler = _scheduler_var.get()
             if scheduler is not None:
-                report_task_sync = getattr(scheduler, "report_task_sync", None)
-                if report_task_sync is not None:
-                    report_task_sync(task_id, "lock_acquire", lock_id)
-                else:
-                    scheduler.engine.report_sync(scheduler.execution, task_id, "lock_acquire", lock_id)
+                scheduler.report_task_sync(task_id, "lock_acquire", lock_id)
                 _report_state_access(self, "__lock_state__", "weak_write")
                 if not already_holds_lock and not lock_was_held and _in_scheduler_pause.get() == 0:
                     await scheduler.pause(task_id, ("lock_held", lock_id))
@@ -355,11 +336,7 @@ class _CooperativeAsyncLock:
                 held.discard(self)
             scheduler = _scheduler_var.get()
             if scheduler is not None:
-                report_task_sync = getattr(scheduler, "report_task_sync", None)
-                if report_task_sync is not None:
-                    report_task_sync(task_id, "lock_release", lock_id)
-                else:
-                    scheduler.engine.report_sync(scheduler.execution, task_id, "lock_release", lock_id)
+                scheduler.report_task_sync(task_id, "lock_release", lock_id)
                 _report_state_access(self, "__lock_state__", "weak_write")
             self._owner = None
         self._lock.release()
@@ -502,14 +479,8 @@ class _CooperativeAsyncEvent:
         engine = getattr(scheduler, "engine", None)
         if scheduler is not None and engine is not None and task_id is not None and scheduler._error is None:
             _report_state_access(self, "__event_state__", "write")
-            report_task_sync = getattr(scheduler, "report_task_sync", None)
             for waiter in list(self._waiters):
-                if report_task_sync is not None:
-                    report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-                else:
-                    engine.report_sync(
-                        scheduler.execution, task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter)
-                    )
+                scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
                 scheduler.execution.unblock_thread(waiter)
         self._event.set()
 
@@ -561,9 +532,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             return
         waiter, fut = waiter_info
         if scheduler is not None and task_id is not None:
-            report_task_sync = getattr(scheduler, "report_task_sync", None)
-            if report_task_sync is not None:
-                report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
+            scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
             scheduler.execution.unblock_thread(waiter)
         fut.set_result(None)
 
@@ -783,9 +752,7 @@ class _CooperativeAsyncCondition:
             if fut.done():
                 continue
             if scheduler is not None and task_id is not None and scheduler._error is None:
-                report_task_sync = getattr(scheduler, "report_task_sync", None)
-                if report_task_sync is not None:
-                    report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
+                scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
                 scheduler.execution.unblock_thread(waiter)
             fut.set_result(None)
             woke += 1

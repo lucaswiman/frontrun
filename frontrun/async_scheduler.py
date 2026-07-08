@@ -176,6 +176,47 @@ class InterleavedLoop:
         Error propagation, timeout handling, and done-task tracking
     """
 
+    # ------------------------------------------------------------------
+    # Async scheduler protocol defaults
+    #
+    # The cooperative primitives (_async_cooperative) and virtual-timeout
+    # wrappers (_async_virtual_timeouts) drive whichever scheduler is active
+    # (DPOR exploration, replay, or the random shuffler) through the hooks
+    # below.  Defining no-op / None defaults here lets those call sites invoke
+    # them unconditionally instead of probing with getattr; each concrete
+    # scheduler overrides the subset it actually implements.
+    # ------------------------------------------------------------------
+
+    #: Active virtual clock, or None in real-time mode.
+    virtual_clock: Any = None
+    #: Tasks parked inside a cooperative primitive; None when unused.
+    _event_blocked: "set[int] | None" = None
+    #: Stable object-id registry, or None (fall back to id()).
+    _stable_ids: Any = None
+
+    async def kick_stalled_schedule(self, task_id: int) -> None:
+        """Hand the turn onward after a task engine-blocked itself (no-op default)."""
+
+    async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
+        """Wait for a physically-woken task to be scheduled again (no-op default)."""
+
+    def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
+        """Report a happens-before sync edge to the engine (no-op default)."""
+
+    def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
+        """Report a memory / resource access to the engine (no-op default)."""
+
+    def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
+        """Register a virtual timeout deadline (no-op default)."""
+
+    def remove_timeout_deadline(self, task_id: int, token: object) -> None:
+        """Cancel a virtual timeout deadline (no-op default)."""
+
+    def _advance_virtual_deadline_for_idle(self) -> bool:
+        """Advance the virtual clock to the next pending deadline when the run is
+        idle; returns True if it made progress (default: no virtual clock)."""
+        return False
+
     def __init__(self, *, deadlock_timeout: float = 5.0):
         self._condition = asyncio.Condition()
         self._finished = False
@@ -434,12 +475,11 @@ class InterleavedLoop:
                 return
             if self._progress == before:
                 async with self._condition:
-                    advance_virtual_deadline = getattr(self, "_advance_virtual_deadline_for_idle", None)
-                    if advance_virtual_deadline is not None and advance_virtual_deadline():
+                    # A virtual clock can still move time forward to the next
+                    # pending deadline (default: no clock, returns False).
+                    if self._advance_virtual_deadline_for_idle():
                         self._condition.notify_all()
                         continue
-            if self._progress == before:
-                async with self._condition:
                     if self._error is None:
                         self._error = SchedulerTimeoutError(
                             f"Deadlock: no task progressed for {self.deadlock_timeout}s and no task is "

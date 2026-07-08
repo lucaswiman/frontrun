@@ -320,7 +320,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         # cooperative-primitive code populates ``scheduler._event_blocked`` on
         # either scheduler, and the replay scheduler reads it to skip drifted
         # positional schedule slots that point at a parked waiter.
-        self._event_blocked: set[int] = set()
+        self._event_blocked: set[int] = set()  # pyright: ignore[reportIncompatibleVariableOverride]
 
         # Row lock tracking: state and _row_lock_int_id() live in RowLockRegistry;
         # alias dicts into this namespace so the rest of the class is unchanged.

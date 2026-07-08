@@ -66,7 +66,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         # Recorded actor entries reached before any deadline was registered
         # (drift): the owed advance is performed at the next registration.
         self._pending_clock_advances = 0
-        self._event_blocked: set[int] = set()
+        self._event_blocked: set[int] = set()  # pyright: ignore[reportIncompatibleVariableOverride]
         self._current_task: int | None = None
         self._current_task_consumed = False
         if schedule:

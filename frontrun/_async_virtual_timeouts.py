@@ -90,7 +90,7 @@ async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # 
     scheduler = _scheduler_var.get()
     task_id = _task_id_var.get()
     if scheduler is not None and task_id is not None and delay and delay > 0:
-        clock = getattr(scheduler, "virtual_clock", None)
+        clock = scheduler.virtual_clock
         sleep_until = getattr(scheduler, "sleep_until", None)
         if clock is not None and sleep_until is not None:
             await sleep_until(task_id, clock.now() + delay)
@@ -125,7 +125,7 @@ def _virtual_timeout_impl(value: float | None, *, at: bool) -> Any:
     """
     scheduler = _scheduler_var.get()
     task_id = _task_id_var.get()
-    clock = getattr(scheduler, "virtual_clock", None)
+    clock = scheduler.virtual_clock if scheduler is not None else None
     real = _real_asyncio_timeout_at if at else _real_asyncio_timeout
     if _in_frontrun_timer.get() or scheduler is None or task_id is None or clock is None or real is None:
         if real is None:
@@ -174,26 +174,22 @@ class _VirtualAsyncTimeoutContext:
     def _to_virtual_deadline(self, when: float | None) -> float | None:
         if when is None:
             return None
-        clock = getattr(self._scheduler, "virtual_clock", None)
+        clock = self._scheduler.virtual_clock
         if clock is None:
             return None
         delay = when - asyncio.get_running_loop().time()
         return clock.now() + max(0.0, delay)
 
     def reschedule(self, when: float | None) -> None:
-        remove_timeout = getattr(self._scheduler, "remove_timeout_deadline", None)
         if self._immediate_handle is not None:
             self._immediate_handle.cancel()
             self._immediate_handle = None
-        if self._token is not None and remove_timeout is not None:
-            remove_timeout(self._task_id, self._token)
+        if self._token is not None:
+            self._scheduler.remove_timeout_deadline(self._task_id, self._token)
         self._token = None
         self._when = when
         deadline = self._to_virtual_deadline(when)
         if deadline is None or self._task is None:
-            return
-        add_timeout = getattr(self._scheduler, "add_timeout_deadline", None)
-        if add_timeout is None:
             return
 
         def _on_fire() -> None:
@@ -202,11 +198,11 @@ class _VirtualAsyncTimeoutContext:
 
         token = _VirtualAsyncTimeoutToken(on_fire=_on_fire)
         self._token = token
-        clock = getattr(self._scheduler, "virtual_clock", None)
+        clock = self._scheduler.virtual_clock
         if clock is not None and deadline <= clock.now():
             self._immediate_handle = asyncio.get_running_loop().call_soon(token.fire)
             return
-        add_timeout(self._task_id, deadline, token)
+        self._scheduler.add_timeout_deadline(self._task_id, deadline, token)
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         token = self._token
@@ -215,15 +211,12 @@ class _VirtualAsyncTimeoutContext:
             self._immediate_handle.cancel()
             self._immediate_handle = None
         if token is not None:
-            remove_timeout = getattr(self._scheduler, "remove_timeout_deadline", None)
-            if remove_timeout is not None:
-                remove_timeout(self._task_id, token)
+            self._scheduler.remove_timeout_deadline(self._task_id, token)
         if expired:
             uncancel = getattr(self._task, "uncancel", None)
             remaining_cancels = uncancel() if uncancel is not None else self._cancelling
-            wait_scheduled = getattr(self._scheduler, "wait_until_scheduled_after_block", None)
-            if wait_scheduled is not None and getattr(self._scheduler, "_error", None) is None:
-                await wait_scheduled(self._task_id, "asyncio.timeout")
+            if self._scheduler._error is None:
+                await self._scheduler.wait_until_scheduled_after_block(self._task_id, "asyncio.timeout")
             if exc_type is asyncio.CancelledError and (uncancel is None or remaining_cancels <= self._cancelling):
                 raise TimeoutError from exc
         return False
@@ -232,18 +225,10 @@ class _VirtualAsyncTimeoutContext:
 async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | None) -> Any:
     scheduler = _scheduler_var.get()
     task_id = _task_id_var.get()
-    clock = getattr(scheduler, "virtual_clock", None)
-    add_timeout = getattr(scheduler, "add_timeout_deadline", None)
-    remove_timeout = getattr(scheduler, "remove_timeout_deadline", None)
-    if (
-        timeout is None
-        or _in_frontrun_timer.get()
-        or scheduler is None
-        or task_id is None
-        or clock is None
-        or add_timeout is None
-        or remove_timeout is None
-    ):
+    clock = scheduler.virtual_clock if scheduler is not None else None
+    if timeout is None or _in_frontrun_timer.get() or scheduler is None or task_id is None or clock is None:
+        # A scheduler with a virtual clock always provides the timeout-deadline
+        # methods, so ``clock is None`` is the only gate needed here.
         return await _real_asyncio_wait_for(awaitable, timeout)
 
     if timeout <= 0:
@@ -264,8 +249,8 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
     inner = asyncio.ensure_future(inner_awaitable)
 
     token = _VirtualAsyncTimeoutToken()
-    add_timeout(task_id, clock.now() + timeout, token)
-    event_blocked = getattr(scheduler, "_event_blocked", None)
+    scheduler.add_timeout_deadline(task_id, clock.now() + timeout, token)
+    event_blocked = scheduler._event_blocked
     engine_execution = None if wraps_logical_task else getattr(scheduler, "execution", None)
     if engine_execution is not None and event_blocked is not None:
         event_blocked.add(task_id)
@@ -275,23 +260,21 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
     _in_scheduler_pause.set(depth + 1)
     unblocked = False
     try:
-        kick = getattr(scheduler, "kick_stalled_schedule", None)
-        if engine_execution is not None and kick is not None:
-            await kick(task_id)
+        if engine_execution is not None:
+            await scheduler.kick_stalled_schedule(task_id)
         done, _pending = await asyncio.wait({inner, token.future}, return_when=asyncio.FIRST_COMPLETED)
         if engine_execution is not None:
             engine_execution.unblock_thread(task_id)
             unblocked = True
         if engine_execution is not None and event_blocked is not None:
             event_blocked.discard(task_id)
-        wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
-        if engine_execution is not None and getattr(scheduler, "_error", None) is None and wait_scheduled is not None:
-            await wait_scheduled(task_id, "virtual wait_for")
+        if engine_execution is not None and scheduler._error is None:
+            await scheduler.wait_until_scheduled_after_block(task_id, "virtual wait_for")
         if inner in done and token.future not in done:
             return await inner
         if token.future in done:
-            if engine_execution is None and getattr(scheduler, "_error", None) is None and wait_scheduled is not None:
-                await wait_scheduled(task_id, "virtual wait_for timeout")
+            if engine_execution is None and scheduler._error is None:
+                await scheduler.wait_until_scheduled_after_block(task_id, "virtual wait_for timeout")
             if not inner.done():
                 inner.cancel()
             try:
@@ -301,7 +284,7 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
         return await inner
     finally:
         _in_scheduler_pause.set(depth)
-        remove_timeout(task_id, token)
+        scheduler.remove_timeout_deadline(task_id, token)
         if engine_execution is not None and event_blocked is not None:
             event_blocked.discard(task_id)
         if engine_execution is not None and not unblocked:

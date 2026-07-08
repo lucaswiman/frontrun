@@ -15,7 +15,6 @@ DeadlockError or phantom ownership in later replays.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
 from frontrun._dpor_core import event_wake_sync_id
@@ -281,11 +280,7 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
     """Event wake edges must be keyed by stable event id, not raw id(event)."""
 
     class Engine:
-        def __init__(self) -> None:
-            self.syncs: list[tuple[int, str, int]] = []
-
-        def report_sync(self, execution: Any, task_id: int, event: str, object_id: int) -> None:
-            self.syncs.append((task_id, event, object_id))
+        pass
 
     class Execution:
         def __init__(self) -> None:
@@ -300,6 +295,13 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
             self.execution = Execution()
             self._stable_ids = StableObjectIds()
             self._error = None
+            self.syncs: list[tuple[int, str, int]] = []
+
+        def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
+            self.syncs.append((task_id, event_type, sync_id))
+
+        def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
+            pass
 
     _patch_asyncio_event()
     try:
@@ -316,7 +318,7 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
             _task_id_var.reset(task_token)
             _scheduler_var.reset(scheduler_token)
 
-        assert scheduler.engine.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
+        assert scheduler.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
         assert scheduler.execution.unblocked == [1]
     finally:
         _unpatch_asyncio_event()
