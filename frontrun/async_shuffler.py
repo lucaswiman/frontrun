@@ -54,6 +54,7 @@ from frontrun._async_autopause import (
     await_point,  # noqa: F401
     wrap_auto_paused_tasks,
 )
+from frontrun._async_cooperative import _real_asyncio_sleep
 from frontrun._random_schedules import fair_schedule_strategy, random_round_robin_schedule
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
@@ -67,13 +68,16 @@ from frontrun._virtual_clock import (
     validate_clock_options,
 )
 from frontrun.async_dpor import (
-    _pin_loop_time,
-    _real_asyncio_sleep,
     _sql_async_available,
     patch_sql_async,
     unpatch_sql_async,
 )
-from frontrun.async_scheduler import InterleavedLoop, SchedulerTimeoutError, frontrun_wait_for
+from frontrun.async_scheduler import (
+    InterleavedLoop,
+    SchedulerTimeoutError,
+    _pin_loop_time,
+    frontrun_wait_for,
+)
 from frontrun.common import (
     InterleavingResult,
     check_invariant,
@@ -85,7 +89,6 @@ from frontrun.common import (
 #: are parked on something the scheduler cannot see (e.g. an unpatched
 #: asyncio.Lock) and autojumps the virtual clock.
 _QUIESCENCE_SLICE = 0.25
-_ASYNC_TIMEOUT_FIRE = "fire"
 
 
 class AwaitScheduler(InterleavedLoop):
@@ -141,7 +144,7 @@ class AwaitScheduler(InterleavedLoop):
             if event.kind == "sleep":
                 self._sleepers.pop(event.actor_id, None)
             elif event.kind == "timeout":
-                fire = getattr(event.token, _ASYNC_TIMEOUT_FIRE, None)
+                fire = getattr(event.token, "fire", None)
                 if fire is not None:
                     fire()
 
@@ -395,7 +398,7 @@ def _patch_async_runtime(
     with PatchScope() as patch_scope:
         patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
         if patch_sleep:
-            from frontrun.async_dpor import (
+            from frontrun._async_virtual_timeouts import (
                 _patch_asyncio_sleep,
                 _patch_asyncio_timeouts,
                 _unpatch_asyncio_sleep,

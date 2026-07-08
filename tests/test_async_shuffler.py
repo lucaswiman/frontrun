@@ -408,8 +408,8 @@ def test_explore_async_random_unwinds_patch_stack_in_reverse_order(monkeypatch: 
     monkeypatch.setattr("frontrun.async_shuffler._sql_async_available", True)
     monkeypatch.setattr("frontrun.async_shuffler.patch_sql_async", patch_sql)
     monkeypatch.setattr("frontrun.async_shuffler.unpatch_sql_async", unpatch_sql)
-    monkeypatch.setattr("frontrun.async_dpor._patch_asyncio_sleep", patch_sleep)
-    monkeypatch.setattr("frontrun.async_dpor._unpatch_asyncio_sleep", unpatch_sleep)
+    monkeypatch.setattr("frontrun._async_virtual_timeouts._patch_asyncio_sleep", patch_sleep)
+    monkeypatch.setattr("frontrun._async_virtual_timeouts._unpatch_asyncio_sleep", unpatch_sleep)
 
     async def _test() -> None:
         with pytest.raises(RuntimeError, match="setup boom"):

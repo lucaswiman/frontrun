@@ -40,11 +40,29 @@ Example — a simple round-robin scheduler:
 """
 
 import asyncio
+import contextlib
 import contextvars
+import weakref
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
+from frontrun._virtual_clock import real_monotonic
+
+__all__ = [
+    "InterleavedLoop",
+    "SchedulerTimeoutError",
+    "_in_frontrun_timer",
+    "_install_frontrun_timer_tagging",
+    "_patch_loop_instance_attr",
+    "_pin_loop_time",
+    "frontrun_wait_for",
+]
+
 _T = TypeVar("_T")
+
+# Sentinel for "attribute was absent" when temporarily overriding a loop's
+# instance attributes (call_at / call_later / time) and restoring them.
+_MISSING = object()
 
 # True while a frontrun-internal timed wait is creating its loop timer.
 # Exact async deadlock detection must tell the scheduler's own watchdog
@@ -65,6 +83,78 @@ async def frontrun_wait_for(awaitable: Coroutine[Any, Any, _T] | Awaitable[_T], 
         return await asyncio.wait_for(awaitable, timeout)
     finally:
         _in_frontrun_timer.reset(token)
+
+
+def _patch_loop_instance_attr(loop: Any, name: str, value: Any) -> Callable[[], None]:
+    """Temporarily override ``loop.<name>``; returns a restore callback."""
+    previous = getattr(loop, "__dict__", {}).get(name, _MISSING)
+    setattr(loop, name, value)
+
+    def restore() -> None:
+        if previous is _MISSING:
+            with contextlib.suppress(AttributeError):
+                delattr(loop, name)
+        else:
+            setattr(loop, name, previous)
+
+    return restore
+
+
+def _pin_loop_time(loop: Any) -> Callable[[], None]:
+    """Pin the loop's own clock to real monotonic time; returns a restore callback."""
+    return _patch_loop_instance_attr(loop, "time", real_monotonic)
+
+
+def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Callable[[], None]]:
+    """Wrap ``loop.call_at`` so frontrun's own watchdog timers are tagged.
+
+    Exact deadlock detection may only fire when every pending loop timer is
+    one of frontrun's own (a pending *user* timer — e.g. a wall-clock
+    ``asyncio.wait_for`` — may still wake a parked task, so the state is not
+    a proven deadlock).  Timers created while ``_in_frontrun_timer`` is set
+    (see ``frontrun_wait_for``) are collected in a WeakSet; everything else
+    counts as a user timer.
+
+    Returns ``(user_timers_pending, uninstall)``.  ``user_timers_pending``
+    is conservative: if the loop's timer heap cannot be inspected (a
+    non-standard loop without ``_scheduled``), it reports True so exact
+    detection stays off and the wall-clock fallback applies.
+    """
+    tagged: weakref.WeakSet[Any] = weakref.WeakSet()
+    orig_call_at = loop.call_at
+    orig_call_later = loop.call_later
+
+    def _tagging_call_at(when: float, callback: Any, *args: Any, context: Any = None) -> Any:
+        handle = orig_call_at(when, callback, *args, context=context)
+        if _in_frontrun_timer.get():
+            tagged.add(handle)
+        return handle
+
+    def _tagging_call_later(delay: float, callback: Any, *args: Any, context: Any = None) -> Any:
+        handle = orig_call_later(delay, callback, *args, context=context)
+        if _in_frontrun_timer.get():
+            tagged.add(handle)
+        return handle
+
+    restore_call_at = _patch_loop_instance_attr(loop, "call_at", _tagging_call_at)
+    restore_call_later = _patch_loop_instance_attr(loop, "call_later", _tagging_call_later)
+
+    def _user_timers_pending() -> bool:
+        scheduled = getattr(loop, "_scheduled", None)
+        ready = getattr(loop, "_ready", None)
+        if scheduled is None:
+            return True
+        if any(not handle.cancelled() and handle not in tagged for handle in scheduled):
+            return True
+        if ready is None:
+            return True
+        return any(not handle.cancelled() for handle in ready)
+
+    def _uninstall() -> None:
+        restore_call_later()
+        restore_call_at()
+
+    return _user_timers_pending, _uninstall
 
 
 class InterleavedLoop:
