@@ -1405,6 +1405,53 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
     assert wall_elapsed < 2.0, f"async random lock+sleep took {wall_elapsed:.1f}s"
 
 
+def test_async_condition_wait_timeout_does_not_release_other_task_lock() -> None:
+    """A ``cond.wait_for`` that times out while another task holds the lock must
+    re-acquire the lock before propagating, not skip re-acquire and let the
+    caller's ``async with cond:`` __aexit__ release the *other* task's lock.
+
+    Regression: ``wait()``'s ``finally`` re-acquired only ``if not locked()``,
+    but ``locked()`` asks whether ANYONE holds the lock, not whether THIS task
+    does; releasing the holder's lock corrupts its critical section and makes
+    its later ``release()`` raise ``RuntimeError``.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.cond = asyncio.Condition()
+            self.a_timed_out = False
+            self.b_in_critical = False
+            self.b_done = False
+
+    async def a(s: State) -> None:
+        async with s.cond:
+            try:
+                await asyncio.wait_for(s.cond.wait(), timeout=0.5)
+            except (TimeoutError, asyncio.TimeoutError):
+                s.a_timed_out = True
+
+    async def b(s: State) -> None:
+        await asyncio.sleep(0.1)  # let A park in wait() first
+        async with s.cond:  # hold the lock across A's timeout at t=0.5
+            s.b_in_critical = True
+            await asyncio.sleep(1.0)
+            s.b_done = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[a, b],
+            invariant=lambda s: s.a_timed_out and s.b_in_critical and s.b_done,
+            clock="virtual",
+            deadlock_timeout=2.0,
+            timeout_per_run=3.0,
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+    assert "Task crash" not in (result.explanation or ""), result.explanation
+
+
 def test_async_default_condition_lock_is_engine_visible() -> None:
     """A default-constructed ``asyncio.Condition()`` under patching must use an
     engine-visible lock.  Otherwise a task contending on ``async with cond:``
