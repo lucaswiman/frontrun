@@ -1274,8 +1274,20 @@ def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
     result = asyncio.run(
         frontrun.explore(
             setup=State,
+            # The notify-one guarantee is "at most one waiter is woken" and
+            # "notify(1) removes at most one waiter from the queue".  It is NOT
+            # "exactly one wakes and one times out": under the virtual clock the
+            # notifier may be starved past the 2.0s deadline (both time out), and
+            # even a notified waiter can lose the wake if it cannot re-acquire the
+            # lock before its own deadline — both are legitimate asyncio
+            # interleavings (verified against stock asyncio).  What must never
+            # happen is a double-wake.
             workers=[lambda s: waiter("a", s), lambda s: waiter("b", s), notifier],
-            invariant=lambda s: s.remaining_after_first_notify == 1 and len(s.woken) == 1 and len(s.timed_out) == 1,
+            invariant=lambda s: (
+                len(s.woken) <= 1
+                and s.remaining_after_first_notify <= 1
+                and len(s.woken) + len(s.timed_out) == 2
+            ),
             clock="virtual",
             reproduce_on_failure=0,
         )

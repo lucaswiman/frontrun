@@ -796,7 +796,13 @@ class _CooperativeAsyncCondition:
     """asyncio.Condition wrapper with engine-visible wait/notify."""
 
     def __init__(self, lock: Any | None = None) -> None:
-        self._lock = lock if lock is not None else _real_asyncio_lock()
+        # Default to an engine-visible cooperative lock: since patching makes
+        # asyncio.Condition() produce this class, a raw asyncio.Lock default
+        # would be invisible to the DPOR engine, so a task contending on
+        # `async with cond:` would park in an unmodelled acquire while the
+        # engine still treats it as runnable (inconclusive timeout / false
+        # counterexample).  A user-supplied lock is honoured as-is.
+        self._lock = lock if lock is not None else _CooperativeAsyncLock()
         self._real_condition = _real_asyncio_condition(self._lock)
         self._waiters: list[tuple[int, asyncio.Future[None]]] = []
 
@@ -840,6 +846,7 @@ class _CooperativeAsyncCondition:
         depth = _in_scheduler_pause.get()
         _in_scheduler_pause.set(depth + 1)
         unblocked = False
+        acquired = False
         try:
             kick = getattr(scheduler, "kick_stalled_schedule", None)
             if kick is not None:
@@ -850,6 +857,7 @@ class _CooperativeAsyncCondition:
             if event_blocked is not None:
                 event_blocked.discard(task_id)
             await self.acquire()
+            acquired = True
             wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
             if scheduler._error is None and wait_scheduled is not None:
                 await wait_scheduled(task_id, "condition wait")
@@ -859,7 +867,6 @@ class _CooperativeAsyncCondition:
                     report_task_sync(task_id, "lock_acquire", _async_wake_sync_id(scheduler, self, task_id))
             return True
         finally:
-            _in_scheduler_pause.set(depth)
             self._waiters = [(waiter, waiter_fut) for waiter, waiter_fut in self._waiters if waiter_fut is not fut]
             if not self._waiters:
                 _async_parked_conditions.discard(self)
@@ -867,8 +874,32 @@ class _CooperativeAsyncCondition:
                 event_blocked.discard(task_id)
             if not unblocked:
                 scheduler.execution.unblock_thread(task_id)
-            if not self.locked():
-                await self.acquire()
+            try:
+                if not acquired:
+                    # Mirror stock asyncio.Condition.wait: always re-acquire the
+                    # lock before propagating, even under cancellation.  Only
+                    # this task's own re-acquire counts — checking locked() is
+                    # wrong because it reports whether ANYONE holds the lock, so
+                    # skipping re-acquire while another task holds it would let
+                    # the caller's `async with cond:` __aexit__ release that
+                    # other task's lock.  Loop to shield the acquire itself from
+                    # cancellation, re-raising the caught CancelledError after.
+                    # _in_scheduler_pause stays elevated so the cooperative lock
+                    # re-acquires without inserting a fresh scheduling point.
+                    err: BaseException | None = None
+                    while True:
+                        try:
+                            await self.acquire()
+                            break
+                        except asyncio.CancelledError as exc:  # noqa: PERF203
+                            err = exc
+                    if err is not None:
+                        try:
+                            raise err
+                        finally:
+                            err = None
+            finally:
+                _in_scheduler_pause.set(depth)
 
     async def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> Any:
         if timeout is not None:
