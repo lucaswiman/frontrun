@@ -394,3 +394,34 @@ def test_async_random_warns_clock_diagnostics_unsupported() -> None:
                 reproduce_on_failure=0,
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Threads spawned inside a clock scope are not part of the exploration.
+# ---------------------------------------------------------------------------
+
+
+def test_thread_spawned_inside_clock_scope_sees_real_time() -> None:
+    """A thread spawned inside ``clock_scope`` must see real time.
+
+    Regression (3.14t): the free-threaded build starts ``threading.Thread``
+    with a copy of the caller's contextvars context (GIL builds start threads
+    with an empty context), so a bare contextvar registration leaked the
+    driver's virtual clock into threads spawned inside the scope.  The
+    registration is ident-gated: only the registering thread resolves it.
+    """
+    real_before = time.monotonic()
+    clock = VirtualClock()
+    seen: dict[str, float] = {}
+    with clock_scope(clock):
+        assert time.monotonic() == clock.now()
+
+        def other() -> None:
+            seen["monotonic"] = time.monotonic()
+
+        th = threading.Thread(target=other)
+        th.start()
+        th.join()
+    # The helper saw real monotonic time (close to our pre-scope sample), not
+    # the virtual epoch.
+    assert abs(seen["monotonic"] - real_before) < 60.0
