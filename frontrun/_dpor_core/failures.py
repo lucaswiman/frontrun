@@ -40,3 +40,25 @@ def record_dpor_failure(
         if explanation is not None:
             result.explanation = explanation
     return schedule_list
+
+
+def format_exact_deadlock_desc(
+    *,
+    noun: str,
+    sleepers: list[int],
+    done: list[int],
+    spin_waiters: list[int] | None = None,
+) -> str:
+    """Describe an exact virtual-clock deadlock (shared by sync + async DPOR).
+
+    Every live thread/task is blocked with no deadline pending, so no transition
+    can ever fire.  *noun* is ``"threads"`` (sync) or ``"tasks"`` (async); the
+    sync scheduler also has cooperative spin waiters to report, the async one
+    does not (pass ``spin_waiters=None`` to omit that clause).  All list
+    arguments are expected pre-sorted.
+    """
+    parts = [f"sleepers={sleepers}"]
+    if spin_waiters is not None:
+        parts.append(f"spin_waiters={spin_waiters}")
+    parts.append(f"done={done}")
+    return f"all live {noun} are blocked and no virtual-clock deadline is pending ({', '.join(parts)})"
