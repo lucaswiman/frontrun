@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from frontrun._dpor_core.clock_port import VirtualClockPort, noop_on_wake
 from frontrun._dpor_core.concurrency import (
     ExplorationStep,
     NoOpLock,
@@ -38,6 +39,7 @@ __all__ = [
     "ReplayEngine",
     "ReplayExecution",
     "RowLockRegistry",
+    "VirtualClockPort",
     "WorkerSet",
     "WorkerTarget",
     "advance_replay_index",
@@ -52,6 +54,7 @@ __all__ = [
     "is_reproduction_run",
     "make_deadline",
     "make_dpor_engine",
+    "noop_on_wake",
     "record_dpor_failure",
     "reset_execution_state",
     "wake_sync_id",

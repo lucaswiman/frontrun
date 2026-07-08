@@ -9,13 +9,15 @@ from frontrun._dpor_core import ReplayEngine as _ReplayEngine
 from frontrun._dpor_core import ReplayExecution as _ReplayExecution
 from frontrun._dpor_core import (
     RowLockRegistry,
+    VirtualClockPort,
     advance_replay_index,
     apply_lock_blocked_override,
     extend_replay_schedule,
+    noop_on_wake,
     wake_sync_id,
 )
 from frontrun._opcode_observer import anchor_label as _anchor_label
-from frontrun._virtual_clock import _TIMED_WAIT_TOKEN, DeadlineCoordinator, VirtualClock, real_monotonic
+from frontrun._virtual_clock import VirtualClock, WakeEvent, real_monotonic
 
 from ._shared import *
 from ._shared import _dpor_tls, _get_instructions, _process_opcode
@@ -72,16 +74,6 @@ class DporScheduler:
         self._clock_mode = clock_mode
         self._clock_actor_id = clock_actor_id
         self._clock_diagnostics = clock_diagnostics
-        # Single source of truth for virtual deadline membership + ordering:
-        # sleepers (kind "sleep") and timed lock acquires (kind "timeout").
-        # The timed-wait thread stays in its spin loop; the clock advance
-        # unblocks it in the engine so it can observe the expired deadline and
-        # give up.
-        self._deadlines = DeadlineCoordinator()
-        # thread_id → resource id for threads blocked in cooperative spin
-        # loops that do not have a richer DPOR sync event (Condition/Queue).
-        # NOT deadline state — kept here (stage 2 folds it into the port).
-        self._spin_waiters: dict[int, int] = {}
         # Replay only: clock-actor schedule entries reached before any
         # deadline was registered (schedule drift).  The owed advance is
         # performed at the next deadline registration instead of being lost
@@ -107,6 +99,22 @@ class DporScheduler:
         self._engine_lock: threading.Lock = engine_lock if engine_lock is not None else real_lock()
         self._lock = real_lock()
         self._condition = real_condition(self._lock)
+        # Shared virtual-clock protocol (single source of deadline membership +
+        # blocking-spin flags).  DPOR wires the engine block/unblock + clock-actor
+        # sync into it; the callbacks run under the engine_lock the port holds.
+        # ``_deadlines`` / ``_spin_waiters`` alias the port's state so the rest of
+        # the scheduler (sleep_until, _schedule_next, mark_done) is unchanged.
+        self._clock_port = VirtualClockPort(
+            condition=self._condition,
+            engine_lock=self._engine_lock,
+            block=self._port_engine_block,
+            unblock=self._port_engine_unblock,
+            sync=self._sync_clock_actor_locked,
+            on_give_up=self._scrub_lock_waiters,
+            on_added=self._perform_owed_clock_advance,
+        )
+        self._deadlines = self._clock_port.coordinator
+        self._spin_waiters = self._clock_port.spin_waiters
         self._finished = False
         self._error: Exception | None = None
         self._threads_done: set[int] = set()
@@ -270,66 +278,74 @@ class DporScheduler:
         clock = self.virtual_clock
         if clock is None:
             return
-        due = self._deadlines.advance_to_next(clock)
-        if not due:
-            # Spurious actor step (e.g. a stale wakeup-tree branch): re-block.
-            #
-            # DEFERRED (Item 4 — replay accounting divergence): engine.schedule()
-            # has ALREADY committed this actor step to the recorded trace, but no
-            # deadline was due, so the clock did not advance.  Replay
-            # (_ReplayDporScheduler._schedule_next, below) treats every recorded
-            # actor entry as a real or owed advance and cannot tell this no-op
-            # apart from genuine positional drift, so it can perform an advance
-            # exploration never performed (the owed advance instantly expires the
-            # next registered deadline).  A clean fix needs the trace to record
-            # whether the actor step was effective (or exploration to avoid
-            # committing the step at all) — both invasive and owned by the later
-            # trace/refactor wave.  Reachability is defensive today (no test hits
-            # this branch); the risk is a corrupted reproduction, not a crash.
-            self._sync_clock_actor_locked()
-            return
-        for event in due:
-            tid = event.actor_id
-            # The coordinator already dropped every due entry; we only close
-            # the engine/HB side of each wake here.
-            if event.kind == "sleep":
-                self.execution.unblock_thread(tid)
-                self.engine.report_sync(
-                    self.execution,
-                    self._clock_actor_id,
-                    "lock_release",
-                    event.wake_id if event.wake_id is not None else self._wake_sync_id(tid),
-                    self._last_scheduled_path_id,
-                )
-                continue
-            if event.kind == "timeout":
-                # Timed-wait wakes deliberately carry no happens-before edge:
-                # the waiter re-reports lock_wait (re-blocking itself) before
-                # it can observe expiry, and the give-up path ends in
-                # clear_engine_block. Sleeper wakes (above) need the edge
-                # because a sleeper's next step has no other synchronization
-                # with the advance.
-                self.execution.unblock_thread(tid)
+        # The shared port pops each due actor's spin flag; the on-wake callback
+        # closes the engine/HB side.  ``advance_clock_to`` returning no events is
+        # a spurious actor step (e.g. a stale wakeup-tree branch): the trailing
+        # ``_sync_clock_actor_locked`` re-blocks the actor either way.
+        #
+        # DEFERRED (Item 4 — replay accounting divergence): engine.schedule()
+        # has ALREADY committed a no-op actor step to the recorded trace, but
+        # replay (_ReplayDporScheduler._schedule_next, below) treats every
+        # recorded actor entry as a real or owed advance and cannot tell this
+        # no-op apart from positional drift, so it can perform an advance
+        # exploration never performed (the owed advance instantly expires the
+        # next registered deadline).  A clean fix needs effective-advance info in
+        # the trace — invasive, owned by the later trace/refactor wave.
+        # Reachability is defensive today (no test hits the no-op branch).
+        self._clock_port.advance_clock_to(clock, None, self._on_clock_wake)
         self._sync_clock_actor_locked()
 
-    def add_timed_wait(self, thread_id: int, deadline: float) -> None:
-        """Register a virtual deadline for a timed lock acquire."""
-        with self._engine_lock:
-            self._deadlines.add_timeout(thread_id, deadline, _TIMED_WAIT_TOKEN)
-            self._sync_clock_actor_locked()
+    def _port_engine_block(self, thread_id: int) -> None:
+        """Mark *thread_id* engine-blocked (port callback; caller holds ``_engine_lock``)."""
+        self.execution.block_thread(thread_id)
+
+    def _port_engine_unblock(self, thread_id: int) -> None:
+        """Clear *thread_id*'s engine block (port callback; caller holds ``_engine_lock``)."""
+        self.execution.unblock_thread(thread_id)
+
+    def _on_clock_wake(self, event: WakeEvent) -> None:
+        """Per-due-deadline engine/HB side of a clock advance (caller holds ``_engine_lock``)."""
+        tid = event.actor_id
+        if event.kind == "sleep":
+            self.execution.unblock_thread(tid)
+            self.engine.report_sync(
+                self.execution,
+                self._clock_actor_id,
+                "lock_release",
+                event.wake_id if event.wake_id is not None else self._wake_sync_id(tid),
+                self._last_scheduled_path_id,
+            )
+        elif event.kind == "timeout":
+            # Timed-wait wakes deliberately carry no happens-before edge: the
+            # waiter re-reports lock_wait (re-blocking itself) before it can
+            # observe expiry, and the give-up path ends in clear_engine_block.
+            self.execution.unblock_thread(tid)
+
+    def _scrub_lock_waiters(self, thread_id: int) -> None:
+        """Remove *thread_id* from every lock-waiter set (give-up cleanup).
+
+        A thread waits on at most one resource at a time, so scrubbing it from
+        every waiter set is equivalent to knowing the lock id.
+        """
+        for waiters in self._lock_waiters.values():
+            waiters.discard(thread_id)
+
+    def _perform_owed_clock_advance(self) -> None:
+        """Perform a replay-owed clock advance after a deadline registration."""
         if self._pending_clock_advances > 0:
-            # Replay owed us an actor step (see _pending_clock_advances).
             with self._condition:
                 if self._pending_clock_advances > 0:
                     self._pending_clock_advances -= 1
                     self._replay_advance_clock_to()
                     self._condition.notify_all()
 
+    def add_timed_wait(self, thread_id: int, deadline: float) -> None:
+        """Register a virtual deadline for a timed lock acquire."""
+        self._clock_port.add_timed_wait(thread_id, deadline)
+
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""
-        with self._engine_lock:
-            self._deadlines.cancel(thread_id, _TIMED_WAIT_TOKEN)
-            self._sync_clock_actor_locked()
+        self._clock_port.remove_timed_wait(thread_id)
 
     def clear_engine_block(self, thread_id: int) -> None:
         """Unblock *thread_id* after a timed acquire gives up.
@@ -349,50 +365,21 @@ class DporScheduler:
     def give_up_timed_wait(self, thread_id: int) -> None:
         """Atomically unblock a timed-acquire waiter and drop its deadline.
 
-        Combines ``clear_engine_block`` and ``remove_timed_wait`` under a single
-        ``_condition``/``_engine_lock`` acquisition, unblocking *before* the
-        deadline is removed.  Doing the two separately (deadline first, then
-        unblock) opened a window in which the waiter was engine-blocked with no
-        pending deadline; if every other thread was also blocked,
-        ``_schedule_next`` could observe "no runnable thread and no deadline"
-        and raise a spurious exact-deadlock ``DeadlockError``.  A transiently
-        stale deadline is harmless (the next clock advance no-ops on it); a
-        transiently missing one arms the false positive — so unblock first.
+        Delegates to the shared port, which unblocks *before* dropping the
+        deadline under a single lock hold (``on_give_up`` = ``_scrub_lock_waiters``
+        runs the lock-waiter cleanup).  Doing the two separately opened a window
+        in which the waiter was engine-blocked with no pending deadline, arming a
+        spurious exact-deadlock ``DeadlockError``.
         """
-        with self._condition:
-            with self._engine_lock:
-                self.execution.unblock_thread(thread_id)
-                self._deadlines.cancel(thread_id, _TIMED_WAIT_TOKEN)
-                self._sync_clock_actor_locked()
-            # A thread waits on at most one resource at a time, so scrubbing
-            # it from every waiter set is equivalent to knowing the lock id.
-            for waiters in self._lock_waiters.values():
-                waiters.discard(thread_id)
-            self._condition.notify_all()
+        self._clock_port.give_up_timed_wait(thread_id)
 
     def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool) -> None:
         """Mark cooperative Condition/Queue polling as engine-blocked."""
-        with self._condition:
-            with self._engine_lock:
-                if waiting:
-                    self._spin_waiters[thread_id] = resource_id
-                    self.execution.block_thread(thread_id)
-                else:
-                    if self._spin_waiters.pop(thread_id, None) is not None:
-                        self.execution.unblock_thread(thread_id)
-                self._sync_clock_actor_locked()
-            self._condition.notify_all()
+        self._clock_port.note_blocking_spin(thread_id, resource_id, waiting)
 
     def note_spin_release(self, resource_id: int) -> None:
         """Wake spin waiters for a cooperative resource that changed state."""
-        with self._condition:
-            with self._engine_lock:
-                for tid, res in list(self._spin_waiters.items()):
-                    if res == resource_id:
-                        del self._spin_waiters[tid]
-                        self.execution.unblock_thread(tid)
-                self._sync_clock_actor_locked()
-            self._condition.notify_all()
+        self._clock_port.note_spin_release(resource_id)
 
     def sleep_until(self, thread_id: int, deadline: float) -> None:
         """Block *thread_id* until the virtual clock reaches *deadline*.
@@ -1151,13 +1138,10 @@ class DporScheduler:
         clock = self.virtual_clock
         if clock is None:
             return
-        # advance_to[_next] already drops every due entry from the coordinator,
-        # which is now the single source of sleep/timed-wait membership — so the
-        # replay side no longer maintains any mirror to pop here.
-        if target is None:
-            self._deadlines.advance_to_next(clock)
-        else:
-            self._deadlines.advance_to(clock, target)
+        # Shared core: drops every due entry from the coordinator and pops due
+        # actors' spin flags (the wave-1 fix, now for replay too).  Replay has no
+        # engine, so there is no per-event wake work.
+        self._clock_port.advance_clock_to(clock, target, noop_on_wake)
 
     def _replay_sleep_self_wake(self, thread_id: int) -> bool:
         """Replay-only escape from ``sleep_until`` phase 1 (base: no-op).

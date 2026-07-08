@@ -55,6 +55,7 @@ from frontrun._cooperative import (
     unpatch_sleep,
 )
 from frontrun._deadlock import DeadlockError, SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
+from frontrun._dpor_core import VirtualClockPort, noop_on_wake
 from frontrun._io_detection import (
     patch_io,
     set_dpor_scheduler,
@@ -82,9 +83,7 @@ from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun._virtual_clock import (
-    _TIMED_WAIT_TOKEN,
     ClockMode,
-    DeadlineCoordinator,
     VirtualClock,
     clock_scope,
     patch_time,
@@ -147,17 +146,6 @@ class OpcodeScheduler:
         self.virtual_clock = virtual_clock
         self.clock_mode = clock_mode
         self._clock_diagnostics = clock_diagnostics
-        # Single source of truth for virtual deadline membership + ordering
-        # (sleepers: kind "sleep", timed lock acquires: kind "timeout").
-        self._deadlines = DeadlineCoordinator()
-        # thread_id → resource id for threads spinning on an *untimed*
-        # cooperative acquire/wait (lock, event, semaphore).  Without this,
-        # a spinner blocks the "every live thread is deadline-blocked"
-        # autojump forever: the sleeper never wakes, the schedule extends to
-        # max_ops, and sleep(d) silently returns with 0 virtual seconds
-        # elapsed.  Entries are cleared on release/set of the resource so a
-        # freshly-unblocked spinner re-probes before counting as hopeless.
-        self._spin_waiters: dict[int, int] = {}
         self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10000
         # Deterministic RNG for dynamic schedule extension.  Seeded from the
         # initial schedule so the extension is reproducible for a given run
@@ -166,6 +154,18 @@ class OpcodeScheduler:
         self._index = 0
         self._lock = real_lock()
         self._condition = real_condition(self._lock)
+        # Shared virtual-clock protocol.  Random exploration has no DPOR engine,
+        # so the block/unblock/sync callbacks default to no-ops; the port still
+        # owns the single DeadlineCoordinator and the blocking-spin flags.
+        # ``_deadlines`` / ``_spin_waiters`` alias the port's state so the rest
+        # of the scheduler is unchanged.  The spin flags matter because an
+        # untimed spinner otherwise blocks the "every live thread is
+        # deadline-blocked" autojump forever (see sleep_until); entries clear on
+        # release/set so a freshly-unblocked spinner re-probes before counting
+        # as hopeless.
+        self._clock_port = VirtualClockPort(condition=self._condition)
+        self._deadlines = self._clock_port.coordinator
+        self._spin_waiters = self._clock_port.spin_waiters
         self._finished = False
         self._error: Exception | None = None
         self._threads_done: set[int] = set()
@@ -194,11 +194,7 @@ class OpcodeScheduler:
         return True
 
     def _blocks_clock_progress(self, thread_id: int) -> bool:
-        return (
-            self._deadlines.is_sleeping(thread_id)
-            or self._deadlines.in_timed_wait(thread_id)
-            or thread_id in self._spin_waiters
-        )
+        return self._clock_port.blocks_clock_progress(thread_id)
 
     def wait_for_turn(self, thread_id: int) -> bool:
         """Block until it's this thread's turn. Returns False when done."""
@@ -288,22 +284,20 @@ class OpcodeScheduler:
     def _advance_clock_to(self, target: float) -> None:
         """Jump the clock to *target* and wake every due deadline.
 
-        Caller must hold ``self._condition``.
+        Caller must hold ``self._condition``.  The shared port drops each due
+        deadline from the coordinator and pops the due actor's spin flag.  That
+        spin-flag pop is load-bearing: a virtual timed wait registers a
+        "timeout" deadline AND a ``_spin_waiters`` flag (see
+        ``_cooperative._spin_hook_for_wait``); its deadline firing means
+        "re-probe before being counted as blocked again", so without clearing
+        the flag the autojump loop in ``sleep_until`` would keep seeing it as
+        blocked and advance straight to the next deadline, making the wait
+        observe more elapsed virtual time than its own timeout.
         """
         clock = self.virtual_clock
         if clock is None:
             return
-        for event in self._deadlines.advance_to(clock, target):
-            # advance_to already dropped every due deadline from the coordinator.
-            # A virtual timed wait registers a "timeout" deadline AND a
-            # _spin_waiters flag (see _cooperative._spin_hook_for_wait).  Its
-            # deadline firing means "re-probe before being counted as blocked
-            # again", so clear the spin flag too; otherwise the autojump loop
-            # in sleep_until still sees it as blocked and advances straight to
-            # the next deadline, making the wait observe more elapsed virtual
-            # time than its own timeout.  (A pure "sleep" wake has no spin flag;
-            # popping defensively is harmless.)
-            self._spin_waiters.pop(event.actor_id, None)
+        self._clock_port.advance_clock_to(clock, target, noop_on_wake)
 
     def sleep_until(self, thread_id: int, deadline: float) -> None:
         """Block *thread_id* until the virtual clock reaches *deadline*.
@@ -349,32 +343,19 @@ class OpcodeScheduler:
         via :meth:`note_spin_release` so the spinner re-probes before being
         counted as blocked by the autojump check in :meth:`sleep_until`.
         """
-        with self._condition:
-            if waiting:
-                self._spin_waiters[thread_id] = resource_id
-            else:
-                self._spin_waiters.pop(thread_id, None)
-            self._condition.notify_all()
+        self._clock_port.note_blocking_spin(thread_id, resource_id, waiting)
 
     def note_spin_release(self, resource_id: int) -> None:
         """Clear spin flags for *resource_id* (it may now be acquirable)."""
-        with self._condition:
-            for tid, res in list(self._spin_waiters.items()):
-                if res == resource_id:
-                    del self._spin_waiters[tid]
-            self._condition.notify_all()
+        self._clock_port.note_spin_release(resource_id)
 
     def add_timed_wait(self, thread_id: int, deadline: float) -> None:
         """Register a virtual deadline for a timed lock acquire."""
-        with self._condition:
-            self._deadlines.add_timeout(thread_id, deadline, _TIMED_WAIT_TOKEN)
-            self._condition.notify_all()
+        self._clock_port.add_timed_wait(thread_id, deadline)
 
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""
-        with self._condition:
-            self._deadlines.cancel(thread_id, _TIMED_WAIT_TOKEN)
-            self._condition.notify_all()
+        self._clock_port.remove_timed_wait(thread_id)
 
     def clear_engine_block(self, thread_id: int) -> None:
         """No-op: the random scheduler has no engine-level blocked state."""
@@ -402,11 +383,11 @@ class OpcodeScheduler:
         """Deregister a timed-acquire deadline on give-up.
 
         Mirror of :meth:`DporScheduler.give_up_timed_wait`.  The random
-        scheduler has no engine-level blocked state (``clear_engine_block`` is a
-        no-op), so this only drops the deadline; there is no false-positive
-        window to close here.
+        scheduler has no engine-level blocked state (the port's ``unblock`` /
+        ``on_give_up`` callbacks are no-ops), so this only drops the deadline;
+        there is no false-positive window to close here.
         """
-        self.remove_timed_wait(thread_id)
+        self._clock_port.give_up_timed_wait(thread_id)
 
     def report_error(self, error: Exception):
         """Report an error and unblock all threads."""
