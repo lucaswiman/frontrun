@@ -123,11 +123,26 @@ class VirtualClockPort:
             self._on_give_up(actor_id)
             self._condition.notify_all()
 
-    def note_blocking_spin(self, actor_id: int, resource_id: int, waiting: bool) -> None:
-        """Flag/unflag an actor as spinning on a cooperative wait."""
+    def note_blocking_spin(self, actor_id: int, resource_id: int, waiting: bool, *, timed_wait: bool = False) -> None:
+        """Flag/unflag an actor as spinning on a cooperative wait.
+
+        ``timed_wait=True`` marks a spin backed by a virtual timeout deadline.
+        Such a flag is *refused* when the actor no longer has a pending timeout
+        deadline: the deadline already fired between the caller's expiry check
+        and this call (the caller was queued on ``condition`` while an autojump
+        advanced past it), and a stale flag would count the waiter as
+        clock-blocked — letting the next autojump advance past the waiter's own
+        deadline before it re-probes (a timed wait observing more virtual time
+        than its timeout), or engine-blocking it with no deadline pending (the
+        exact-deadlock false-positive window).  Flag and deadline share
+        ``condition``, so the check is race-free; the refused waiter re-probes
+        and observes expiry on its next loop iteration.
+        """
         with self._condition:
             with self._engine_lock:
                 if waiting:
+                    if timed_wait and not self.coordinator.in_timed_wait(actor_id):
+                        return
                     self.spin_waiters[actor_id] = resource_id
                     self._block(actor_id)
                 elif self.spin_waiters.pop(actor_id, None) is not None:

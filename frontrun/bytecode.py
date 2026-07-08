@@ -333,15 +333,17 @@ class OpcodeScheduler:
             finally:
                 self._deadlines.cancel_sleep(thread_id)
 
-    def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool) -> None:
+    def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool, *, timed_wait: bool = False) -> None:
         """Flag *thread_id* as spinning on an untimed cooperative wait.
 
         Cooperative primitives set the flag after a failed probe and clear it
         once they acquire (or give up); release/set of the resource clears it
         via :meth:`note_spin_release` so the spinner re-probes before being
         counted as blocked by the autojump check in :meth:`sleep_until`.
+        ``timed_wait=True`` flags are refused once their deadline has fired
+        (see :meth:`VirtualClockPort.note_blocking_spin`).
         """
-        self._clock_port.note_blocking_spin(thread_id, resource_id, waiting)
+        self._clock_port.note_blocking_spin(thread_id, resource_id, waiting, timed_wait=timed_wait)
 
     def note_spin_release(self, resource_id: int) -> None:
         """Clear spin flags for *resource_id* (it may now be acquirable)."""

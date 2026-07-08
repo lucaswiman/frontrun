@@ -369,9 +369,9 @@ class DporScheduler:
         """
         self._clock_port.give_up_timed_wait(thread_id)
 
-    def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool) -> None:
+    def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool, *, timed_wait: bool = False) -> None:
         """Mark cooperative Condition/Queue polling as engine-blocked."""
-        self._clock_port.note_blocking_spin(thread_id, resource_id, waiting)
+        self._clock_port.note_blocking_spin(thread_id, resource_id, waiting, timed_wait=timed_wait)
 
     def note_spin_release(self, resource_id: int) -> None:
         """Wake spin waiters for a cooperative resource that changed state."""

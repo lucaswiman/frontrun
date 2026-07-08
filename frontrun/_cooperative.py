@@ -242,9 +242,14 @@ def _timed_wait_deadline(timeout: float | None, scheduler: Any, thread_id: int) 
 
 
 def _spin_hook_for_wait(scheduler: Any, timeout: float | None, clock: Any) -> Any | None:
-    """Untimed waits and virtual timed waits must be visible as blocked spins."""
+    """Untimed waits and virtual timed waits must be visible as blocked spins.
+
+    Virtual timed waits pass ``timed=True`` so a flag queued behind an autojump
+    that already fired the wait's deadline is refused rather than landing stale
+    (see ``VirtualClockPort.note_blocking_spin``).
+    """
     if timeout is None or clock is not None:
-        return _spin_note_hook(scheduler)
+        return _spin_note_hook(scheduler, timed=timeout is not None)
     return None
 
 
@@ -285,14 +290,16 @@ def _spin_schedulers_for(resource_id: int) -> list[Any]:
     return list(deduped.values())
 
 
-def _spin_note_hook(scheduler: Any) -> Any | None:
+def _spin_note_hook(scheduler: Any, *, timed: bool = False) -> Any | None:
     """``note_blocking_spin`` hook, if the scheduler has one *and* runs a
     virtual clock (random-strategy autojump needs to know about untimed
     spinners; see OpcodeScheduler._spin_waiters).  ``None`` otherwise.
 
     The returned hook records/forgets the scheduler on the shared spin-flag
     registry alongside flagging the spin, so a later release from an unmanaged
-    thread can still resolve the scheduler that must clear it."""
+    thread can still resolve the scheduler that must clear it.  ``timed=True``
+    (virtual timed waits) lets the scheduler refuse a flag whose deadline has
+    already fired."""
     if getattr(scheduler, "virtual_clock", None) is None:
         return None
     note = getattr(scheduler, "note_blocking_spin", None)
@@ -304,7 +311,7 @@ def _spin_note_hook(scheduler: Any) -> Any | None:
             _record_spin_scheduler(resource_id, thread_id, scheduler)
         else:
             _forget_spin_scheduler(resource_id, thread_id)
-        note(thread_id, resource_id, waiting)
+        note(thread_id, resource_id, waiting, timed_wait=timed)
 
     return _hook
 
