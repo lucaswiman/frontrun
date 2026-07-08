@@ -1554,6 +1554,8 @@ class AsyncDporScheduler(InterleavedLoop):
                         self._condition.notify_all()
                         self._sleepers.pop(task_id, None)
                         self._deadlines.cancel_sleep(task_id)
+                        self.execution.unblock_thread(task_id)
+                        _wake_parked_async_primitive_waiters()
                         return
                 # Phase 2: woken — wait until the engine schedules us again.
                 while not (self._finished or self._error) and self._current_task != task_id:
@@ -1564,6 +1566,7 @@ class AsyncDporScheduler(InterleavedLoop):
                             f"Deadlock: task {task_id} woke at t={deadline} but was never rescheduled"
                         )
                         self._condition.notify_all()
+                        _wake_parked_async_primitive_waiters()
                         return
                 if self._finished or self._error:
                     return
@@ -1773,6 +1776,9 @@ class AsyncDporScheduler(InterleavedLoop):
             f"but task {task_id} is waiting at marker {marker!r}"
         )
         self._condition.notify_all()
+        # Wake tasks parked on cooperative Event/Queue/Condition wrappers so
+        # they free-run to completion instead of hanging until timeout_per_run.
+        _wake_parked_async_primitive_waiters()
 
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)
