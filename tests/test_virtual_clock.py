@@ -939,7 +939,7 @@ def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
     ever see the blocked-with-no-deadline state.  A deterministic test of the
     OS-descheduling race itself is infeasible; this asserts the ordering and
     atomicity contract instead."""
-    from frontrun._dpor_runtime.scheduler import DporScheduler, _TIMED_WAIT_TOKEN
+    from frontrun._dpor_runtime.scheduler import _TIMED_WAIT_TOKEN, DporScheduler
 
     unblock_observations: list[bool] = []
 
