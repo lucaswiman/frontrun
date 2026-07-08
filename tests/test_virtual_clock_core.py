@@ -89,6 +89,8 @@ def test_virtual_datetime_instances_have_real_concrete_type() -> None:
     so values stored into user state keep working after unpatch (``type(x) is
     datetime.datetime``, pydantic strict, sqlite adapters).
     """
+    real_datetime = dt.datetime
+    real_date = dt.date
     clock = VirtualClock()
     with clock_scope(clock):
         now = dt.datetime.now()
@@ -97,10 +99,10 @@ def test_virtual_datetime_instances_have_real_concrete_type() -> None:
         today = dt.date.today()
         # Inside the scope the module attribute is the virtual class, but the
         # instances themselves must already be the real concrete type.
-        assert type(now) is dt.datetime
-        assert type(utc) is dt.datetime
-        assert type(aware) is dt.datetime
-        assert type(today) is dt.date
+        assert type(now) is real_datetime
+        assert type(utc) is real_datetime
+        assert type(aware) is real_datetime
+        assert type(today) is real_date
         # Values reflect virtual time.
         assert now.timestamp() == pytest.approx(VIRTUAL_EPOCH)
 

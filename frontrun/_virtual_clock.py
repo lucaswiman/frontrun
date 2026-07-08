@@ -277,48 +277,34 @@ class _VirtualDateMeta(type):
 
 
 class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
+    # Only the *class* on the datetime module is virtual; the values these
+    # constructors return are plain instances of the real datetime class saved
+    # when we patched (Fix 6), so ``type(x) is datetime.datetime`` holds and the
+    # objects survive unpatch (pydantic strict, sqlite adapters, ...).
     @classmethod
-    def now(cls, tz: _datetime.tzinfo | None = None) -> _VirtualDateTime:
+    def now(cls, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
         clock = _active_virtual_clock()
-        value = _real_datetime.now(tz) if clock is None else _real_datetime.fromtimestamp(clock.now(), tz)
-        return cls(
-            value.year,
-            value.month,
-            value.day,
-            value.hour,
-            value.minute,
-            value.second,
-            value.microsecond,
-            tzinfo=value.tzinfo,
-            fold=value.fold,
-        )
+        real = _saved_datetime
+        if clock is None:
+            return real.now(tz)
+        return real.fromtimestamp(clock.now(), tz)
 
     @classmethod
-    def utcnow(cls) -> _VirtualDateTime:
+    def utcnow(cls) -> _datetime.datetime:
         clock = _active_virtual_clock()
-        value = (
-            _real_datetime.now(_datetime.timezone.utc).replace(tzinfo=None)
-            if clock is None
-            else _real_datetime.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
-        )
-        return cls(
-            value.year,
-            value.month,
-            value.day,
-            value.hour,
-            value.minute,
-            value.second,
-            value.microsecond,
-            fold=value.fold,
-        )
+        real = _saved_datetime
+        if clock is None:
+            return real.now(_datetime.timezone.utc).replace(tzinfo=None)
+        return real.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
 
 
 class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):
     @classmethod
-    def today(cls) -> _VirtualDate:
+    def today(cls) -> _datetime.date:
         clock = _active_virtual_clock()
-        value = _real_date.today() if clock is None else _real_datetime.fromtimestamp(clock.now()).date()
-        return cls(value.year, value.month, value.day)
+        if clock is None:
+            return _saved_date.today()
+        return _saved_datetime.fromtimestamp(clock.now()).date()
 
 
 # ---------------------------------------------------------------------------
