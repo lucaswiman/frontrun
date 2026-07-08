@@ -1093,40 +1093,40 @@ async def _reproduce_async_counterexample(
             virtual_clock=replay_clock,
             clock_actor_id=num_tasks if clock != "real" else None,
         )
+        # One clock_context owns the time.* patch across setup + tasks +
+        # invariant for this replay attempt.
         with clock_context(replay_clock):
             state = setup()
-        task_funcs: dict[int, Callable[..., Awaitable[None]]] = {}
-        for i, task in enumerate(tasks):
+            task_funcs: dict[int, Callable[..., Awaitable[None]]] = {}
+            for i, task in enumerate(tasks):
 
-            def _make_task(task_fn: Callable[[T], Coroutine[Any, Any, None]]) -> Callable[..., Awaitable[None]]:
-                def _wrapped_task() -> Awaitable[None]:
-                    return task_fn(state)
+                def _make_task(task_fn: Callable[[T], Coroutine[Any, Any, None]]) -> Callable[..., Awaitable[None]]:
+                    def _wrapped_task() -> Awaitable[None]:
+                        return task_fn(state)
 
-                return _wrapped_task
+                    return _wrapped_task
 
-            task_funcs[i] = _make_task(task)
+                task_funcs[i] = _make_task(task)
 
-        task_funcs = wrap_auto_paused_tasks(task_funcs, scheduler)
+            task_funcs = wrap_auto_paused_tasks(task_funcs, scheduler)
 
-        deadlocked = False
-        try:
-            with clock_context(replay_clock):
+            deadlocked = False
+            try:
                 await scheduler.run_all(task_funcs, timeout=timeout_per_run)
-        except DeadlockError:
-            deadlocked = True
-        except TimeoutError:
-            # Run didn't complete within the budget — a failed reproduction.
-            continue
-        except (AttributeError, TypeError, NameError):
-            # Programming errors in our own replay plumbing (e.g. a missing
-            # scheduler attribute) must NOT be silently scored as a failed
-            # reproduction; surface them instead of hiding the bug.
-            raise
-        except Exception:
-            # The user's task body raised: the run produced no usable state,
-            # so this attempt did not reproduce the counterexample.
-            continue
-        with clock_context(replay_clock):
+            except DeadlockError:
+                deadlocked = True
+            except TimeoutError:
+                # Run didn't complete within the budget — a failed reproduction.
+                continue
+            except (AttributeError, TypeError, NameError):
+                # Programming errors in our own replay plumbing (e.g. a missing
+                # scheduler attribute) must NOT be silently scored as a failed
+                # reproduction; surface them instead of hiding the bug.
+                raise
+            except Exception:
+                # The user's task body raised: the run produced no usable state,
+                # so this attempt did not reproduce the counterexample.
+                continue
             inv_failed, _ = (
                 check_invariant(invariant, state) if (invariant is not None and not deadlocked) else (False, None)
             )
@@ -1347,118 +1347,120 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                     clock_diagnostics=clock_diagnostics,
                 )
 
+                # One clock_context owns the time.* patch for this execution
+                # across setup + tasks + invariant; worker tasks created by
+                # run_all inherit the contextvar (contexts copy at create_task
+                # time), so they see the same virtual time as the driver.
                 with clock_context(virtual_clock):
                     state = setup()
-                stable_ids.pre_register(state)
+                    stable_ids.pre_register(state)
 
-                task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
-                    i: (lambda s=state, t=t: t(s))  # type: ignore[assignment]
-                    for i, t in enumerate(tasks)
-                }
+                    task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
+                        i: (lambda s=state, t=t: t(s))  # type: ignore[assignment]
+                        for i, t in enumerate(tasks)
+                    }
 
-                deadlock_error: DeadlockError | None = None
-                task_error: Exception | None = None
-                timed_out = False
-                try:
-                    # clock_context propagates to the worker tasks: contexts
-                    # copy at create_task time (inside run_all).
-                    with clock_context(virtual_clock):
+                    deadlock_error: DeadlockError | None = None
+                    task_error: Exception | None = None
+                    timed_out = False
+                    try:
                         await scheduler.run_all(task_funcs, timeout=timeout_per_run)  # type: ignore[arg-type]
-                except DeadlockError as e:
-                    deadlock_error = e
-                except SchedulerTimeoutError:
-                    timed_out = True
-                except Exception as e:
-                    # Task raised an exception (not deadlock/timeout).
-                    # This is a valid exploration outcome — the cleanup already
-                    # happened in _run's finally block, so lock state is clean.
-                    # Record it and check the invariant below.
-                    task_error = e
+                    except DeadlockError as e:
+                        deadlock_error = e
+                    except SchedulerTimeoutError:
+                        timed_out = True
+                    except Exception as e:
+                        # Task raised an exception (not deadlock/timeout).
+                        # This is a valid exploration outcome — the cleanup already
+                        # happened in _run's finally block, so lock state is clean.
+                        # Record it and check the invariant below.
+                        task_error = e
 
-                # Mark any unfinished tasks as done in the DPOR engine
-                unfinished = [i for i in range(num_tasks) if i not in scheduler._tasks_done]
-                for i in unfinished:
-                    scheduler.finish_task(i)
+                    # Mark any unfinished tasks as done in the DPOR engine
+                    unfinished = [i for i in range(num_tasks) if i not in scheduler._tasks_done]
+                    for i in unfinished:
+                        scheduler.finish_task(i)
 
-                result.num_explored += 1
+                    result.num_explored += 1
 
-                # Check for deadlock: explicit DeadlockError from wait-for
-                # graph cycle detection / exact virtual-clock detection.  A
-                # plain SchedulerTimeoutError is only an inconclusive partial
-                # run: the task may simply be waiting on a wall-clock awaitable
-                # the scheduler does not model, so do not score it as a
-                # constructive deadlock.
-                is_deadlock = False
-                deadlock_explanation = ""
-                if deadlock_error is not None:
-                    is_deadlock = True
-                    deadlock_explanation = f"Deadlock detected: {deadlock_error.cycle_description}"
+                    # Check for deadlock: explicit DeadlockError from wait-for
+                    # graph cycle detection / exact virtual-clock detection.  A
+                    # plain SchedulerTimeoutError is only an inconclusive partial
+                    # run: the task may simply be waiting on a wall-clock awaitable
+                    # the scheduler does not model, so do not score it as a
+                    # constructive deadlock.
+                    is_deadlock = False
+                    deadlock_explanation = ""
+                    if deadlock_error is not None:
+                        is_deadlock = True
+                        deadlock_explanation = f"Deadlock detected: {deadlock_error.cycle_description}"
 
-                if timed_out and not is_deadlock:
-                    inconclusive_timeouts += 1
-                    continue
-                decisive_executions += 1
+                    if timed_out and not is_deadlock:
+                        inconclusive_timeouts += 1
+                        continue
+                    decisive_executions += 1
 
-                if is_deadlock:
-                    schedule_list = record_dpor_failure(result, list(execution.schedule_trace), deadlock_explanation)
-                    await _record_reproduction(schedule_list, None)
-                    if stop_on_first:
-                        return result
-                elif task_error is not None:
-                    exc_type = type(task_error).__name__
-                    record_dpor_failure(
-                        result,
-                        list(execution.schedule_trace),
-                        f"Task crash in execution {result.num_explored}: {exc_type}: {task_error}",
-                    )
-                    if stop_on_first:
-                        return result
-
-                if warn_nondeterministic_sql:
-                    check_uncaptured_inserts()
-
-                # --- error_on_any_race: treat unsynchronized races as failures ---
-                if error_on_any_race and not is_deadlock and task_error is None:
-                    raw_races_check = engine.attribute_races()
-                    if raw_races_check:
+                    if is_deadlock:
+                        schedule_list = record_dpor_failure(
+                            result, list(execution.schedule_trace), deadlock_explanation
+                        )
+                        await _record_reproduction(schedule_list, None)
+                        if stop_on_first:
+                            return result
+                    elif task_error is not None:
+                        exc_type = type(task_error).__name__
                         record_dpor_failure(
                             result,
                             list(execution.schedule_trace),
-                            format_race_failure_explanation(
-                                result.num_explored,
-                                len(raw_races_check),
-                                actor_plural="tasks",
-                            ),
-                            races_detected=True,
+                            f"Task crash in execution {result.num_explored}: {exc_type}: {task_error}",
                         )
                         if stop_on_first:
                             return result
 
-                # --- serializable_invariant: check against sequential baselines ---
-                if serial_valid_states is not None and not is_deadlock and task_error is None:
-                    ser_explanation = check_serializability_violation(
-                        state, serial_valid_states, serial_hash_fn, result.num_explored
-                    )
-                    if ser_explanation is not None:
-                        record_dpor_failure(result, list(execution.schedule_trace), ser_explanation)
-                        if stop_on_first:
-                            return result
+                    if warn_nondeterministic_sql:
+                        check_uncaptured_inserts()
 
-                if not is_deadlock and task_error is None:
-                    with clock_context(virtual_clock):
+                    # --- error_on_any_race: treat unsynchronized races as failures ---
+                    if error_on_any_race and not is_deadlock and task_error is None:
+                        raw_races_check = engine.attribute_races()
+                        if raw_races_check:
+                            record_dpor_failure(
+                                result,
+                                list(execution.schedule_trace),
+                                format_race_failure_explanation(
+                                    result.num_explored,
+                                    len(raw_races_check),
+                                    actor_plural="tasks",
+                                ),
+                                races_detected=True,
+                            )
+                            if stop_on_first:
+                                return result
+
+                    # --- serializable_invariant: check against sequential baselines ---
+                    if serial_valid_states is not None and not is_deadlock and task_error is None:
+                        ser_explanation = check_serializability_violation(
+                            state, serial_valid_states, serial_hash_fn, result.num_explored
+                        )
+                        if ser_explanation is not None:
+                            record_dpor_failure(result, list(execution.schedule_trace), ser_explanation)
+                            if stop_on_first:
+                                return result
+
+                    if not is_deadlock and task_error is None:
                         invariant_failed, assertion_msg = check_invariant(invariant, state)
-                    if invariant_failed:
-                        schedule_list = list(execution.schedule_trace)
-                        trace_explanation = _format_async_trace(schedule_list, num_tasks)
-                        explanation = (
-                            f"AssertionError: {assertion_msg}\n\n{trace_explanation}"
-                            if assertion_msg
-                            else trace_explanation
-                        )
-                        schedule_list = record_dpor_failure(result, schedule_list, explanation)
-                        await _record_reproduction(schedule_list, invariant)
-                        if stop_on_first:
-                            return result
+                        if invariant_failed:
+                            schedule_list = list(execution.schedule_trace)
+                            trace_explanation = _format_async_trace(schedule_list, num_tasks)
+                            explanation = (
+                                f"AssertionError: {assertion_msg}\n\n{trace_explanation}"
+                                if assertion_msg
+                                else trace_explanation
+                            )
+                            schedule_list = record_dpor_failure(result, schedule_list, explanation)
+                            await _record_reproduction(schedule_list, invariant)
+                            if stop_on_first:
+                                return result
     finally:
         if trace_packages is not None:
             _set_active_trace_filter(None)

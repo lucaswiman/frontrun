@@ -68,9 +68,10 @@ def _run_dpor_schedule(
         )
     runner = DporBytecodeRunner(scheduler, detect_io=detect_io)
 
-    with runner.patch_scope(patch_sleep=patch_sleep, virtual_time=clock != "real"):
-        with clock_scope(virtual_clock if clock != "real" else None):
-            state = setup()
+    # One clock_scope owns the time.* patch across setup + the worker phase;
+    # the workers resolve their virtual clock via scheduler TLS.
+    with clock_scope(virtual_clock if clock != "real" else None), runner.patch_scope(patch_sleep=patch_sleep):
+        state = setup()
 
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:

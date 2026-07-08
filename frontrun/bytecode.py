@@ -86,8 +86,6 @@ from frontrun._virtual_clock import (
     ClockMode,
     VirtualClock,
     clock_scope,
-    patch_time,
-    unpatch_time,
     validate_clock_options,
     warn_if_captured_time_reference,
 )
@@ -476,14 +474,13 @@ class BytecodeShuffler:
             unpatch_io()
             self._io_patched = False
 
-    def patch_scope(self, *, patch_sleep: bool = True, virtual_time: bool = False) -> PatchScope:
+    def patch_scope(self, *, patch_sleep: bool = True) -> PatchScope:
+        # The time.* patch is owned by the caller's clock_scope, held once
+        # across setup/run/invariant, rather than churned here per phase.
         scope = PatchScope()
         scope.add(self._patch_locks, self._unpatch_locks)
         scope.add(self._patch_io, self._unpatch_io)
         scope.add(self._patch_sleep, self._unpatch_sleep, enabled=patch_sleep)
-        # Route time.time/monotonic/perf_counter through the scheduler's
-        # virtual clock (gated per-thread; see frontrun._virtual_clock).
-        scope.add(patch_time, unpatch_time, enabled=virtual_time)
         return scope
 
     def _start_opcode_trace(self) -> None:
@@ -754,10 +751,10 @@ def run_with_schedule(
     )
     runner = BytecodeShuffler(scheduler, detect_io=detect_io)
 
-    # Patch locks BEFORE setup() so any locks created there are cooperative
-    with runner.patch_scope(patch_sleep=patch_sleep, virtual_time=virtual_clock is not None):
-        with clock_scope(virtual_clock):
-            state = setup()
+    # The clock_scope owns the time.* patch for the whole run (setup + workers);
+    # patch_locks BEFORE setup() so any locks created there are cooperative.
+    with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
+        state = setup()
 
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:

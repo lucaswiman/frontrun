@@ -628,77 +628,78 @@ async def explore_async_random(
                 clock_mode=clock,
             )
             runner = AsyncShuffler(scheduler)
+            # One clock_context owns the time.* patch for this attempt across
+            # setup + tasks + invariant; tasks created by runner.run inherit the
+            # contextvar, so they see the same virtual time as the driver.
             with clock_context(attempt_clock):
                 state = setup()
-            funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
-                lambda s=state, t=t: t(s)  # type: ignore[misc]
-                for t in tasks
-            ]
+                funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
+                    lambda s=state, t=t: t(s)  # type: ignore[misc]
+                    for t in tasks
+                ]
 
-            try:
-                with clock_context(attempt_clock):
+                try:
                     await runner.run(funcs, timeout=timeout_per_run)
-            except Exception as task_err:  # noqa: BLE001
-                # A task raised under this interleaving.  That is a legitimate
-                # counterexample (IndexError/KeyError/AssertionError in the task
-                # body is a common way a race manifests), not a fatal error that
-                # should abort exploration.  Surface it the same way the DPOR
-                # path does instead of letting it propagate.
-                result.num_explored += 1
-                seen_schedule_hashes.add(hash(tuple(schedule)))
-                result.property_holds = False
-                result.counterexample = schedule
-                result.unique_interleavings = len(seen_schedule_hashes)
-                result.explanation = (
-                    f"Task crash in execution {result.num_explored}: {type(task_err).__name__}: {task_err}"
-                )
-                return result
-            result.num_explored += 1
-            seen_schedule_hashes.add(hash(tuple(schedule)))
-
-            # A timeout/deadlock means tasks were cancelled mid-flight: the
-            # state is partial and does not describe any completed interleaving,
-            # so the invariant must NOT be evaluated against it (finding F6).
-            #
-            # Distinguish the two cases the way the sync bytecode explorer does
-            # (finding 9d): a genuinely-detected deadlock (the scheduler proved
-            # no task can proceed — e.g. a lock-order inversion) is a
-            # constructive counterexample and is surfaced; a plain wall-clock
-            # timeout with no scheduler-detected deadlock only means the worker
-            # was slow, which is inconclusive — skip it rather than reporting a
-            # false "Deadlock detected" violation for correct-but-slow code.
-            if runner.scheduler.had_error:
-                result.property_holds = False
-                result.counterexample = schedule
-                result.unique_interleavings = len(seen_schedule_hashes)
-                sched_err = runner.scheduler._error
-                detail = str(sched_err) if sched_err is not None else "tasks did not complete within the timeout"
-                result.explanation = f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
-                return result
-            if runner.timed_out:
-                continue
-
-            # --- serializable_invariant check ---
-            if serial_valid_states is not None:
-                explanation = check_serializability_violation(
-                    state, serial_valid_states, serial_hash_fn, result.num_explored
-                )
-                if explanation is not None:
+                except Exception as task_err:  # noqa: BLE001
+                    # A task raised under this interleaving.  That is a legitimate
+                    # counterexample (IndexError/KeyError/AssertionError in the task
+                    # body is a common way a race manifests), not a fatal error that
+                    # should abort exploration.  Surface it the same way the DPOR
+                    # path does instead of letting it propagate.
+                    result.num_explored += 1
+                    seen_schedule_hashes.add(hash(tuple(schedule)))
                     result.property_holds = False
                     result.counterexample = schedule
                     result.unique_interleavings = len(seen_schedule_hashes)
-                    result.explanation = explanation
+                    result.explanation = (
+                        f"Task crash in execution {result.num_explored}: {type(task_err).__name__}: {task_err}"
+                    )
                     return result
+                result.num_explored += 1
+                seen_schedule_hashes.add(hash(tuple(schedule)))
 
-            with clock_context(attempt_clock):
+                # A timeout/deadlock means tasks were cancelled mid-flight: the
+                # state is partial and does not describe any completed interleaving,
+                # so the invariant must NOT be evaluated against it (finding F6).
+                #
+                # Distinguish the two cases the way the sync bytecode explorer does
+                # (finding 9d): a genuinely-detected deadlock (the scheduler proved
+                # no task can proceed — e.g. a lock-order inversion) is a
+                # constructive counterexample and is surfaced; a plain wall-clock
+                # timeout with no scheduler-detected deadlock only means the worker
+                # was slow, which is inconclusive — skip it rather than reporting a
+                # false "Deadlock detected" violation for correct-but-slow code.
+                if runner.scheduler.had_error:
+                    result.property_holds = False
+                    result.counterexample = schedule
+                    result.unique_interleavings = len(seen_schedule_hashes)
+                    sched_err = runner.scheduler._error
+                    detail = str(sched_err) if sched_err is not None else "tasks did not complete within the timeout"
+                    result.explanation = f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
+                    return result
+                if runner.timed_out:
+                    continue
+
+                # --- serializable_invariant check ---
+                if serial_valid_states is not None:
+                    explanation = check_serializability_violation(
+                        state, serial_valid_states, serial_hash_fn, result.num_explored
+                    )
+                    if explanation is not None:
+                        result.property_holds = False
+                        result.counterexample = schedule
+                        result.unique_interleavings = len(seen_schedule_hashes)
+                        result.explanation = explanation
+                        return result
+
                 invariant_failed, assertion_msg = check_invariant(invariant, state)
-            if invariant_failed:
-                result.property_holds = False
-                result.counterexample = schedule
-                result.unique_interleavings = len(seen_schedule_hashes)
-                if assertion_msg:
-                    result.explanation = f"AssertionError: {assertion_msg}"
-                return result
+                if invariant_failed:
+                    result.property_holds = False
+                    result.counterexample = schedule
+                    result.unique_interleavings = len(seen_schedule_hashes)
+                    if assertion_msg:
+                        result.explanation = f"AssertionError: {assertion_msg}"
+                    return result
 
         result.unique_interleavings = len(seen_schedule_hashes)
         return result
