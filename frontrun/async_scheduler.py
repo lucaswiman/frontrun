@@ -51,6 +51,7 @@ from frontrun._virtual_clock import real_monotonic
 __all__ = [
     "InterleavedLoop",
     "SchedulerTimeoutError",
+    "_AsyncSchedulerBase",
     "_in_frontrun_timer",
     "_install_frontrun_timer_tagging",
     "_patch_loop_instance_attr",
@@ -460,3 +461,86 @@ class InterleavedLoop:
     def had_error(self) -> bool:
         """True if an error was reported during execution."""
         return self._error is not None
+
+
+class _AsyncSchedulerBase(InterleavedLoop):
+    """Shared machinery for the async DPOR exploration and replay schedulers.
+
+    Both drive tasks through the same condition-gated park/wake protocol and
+    differ only in how they pick the next task: the exploration scheduler asks
+    the DPOR engine (``_schedule_next`` / ``_set_current_task``), while the
+    replay scheduler walks a recorded schedule (``_advance``).  The common
+    kick / wait / notify skeleton lives here; subclasses fill in the
+    scheduling-specific hooks.
+
+    Subclasses set ``_current_task`` / ``_current_task_consumed`` in their own
+    ``__init__`` and may override ``_deadlock_prefix`` for error messages.
+    """
+
+    _current_task: int | None
+    _current_task_consumed: bool
+    #: Prefix for the "never scheduled" watchdog error (replay overrides it).
+    _deadlock_prefix: str = "Deadlock"
+
+    def _notify_waiters_soon(self) -> None:
+        async def _notify() -> None:
+            async with self._condition:
+                self._condition.notify_all()
+
+        asyncio.get_running_loop().create_task(_notify())
+
+    # -- scheduling hooks (subclass-provided) ---------------------------
+
+    def _should_kick(self, task_id: int) -> bool:
+        """Whether ``kick_stalled_schedule`` should hand the turn onward now."""
+        raise NotImplementedError
+
+    def _perform_kick(self, task_id: int) -> None:
+        """Reschedule after ``_should_kick`` returned True (holding the condition)."""
+        raise NotImplementedError
+
+    def _recover_stalled_schedule(self) -> bool:
+        """While waiting to be scheduled, try to unstick a stalled current task.
+
+        Returns True if it made progress (the caller re-checks and continues),
+        False to fall through to the condition wait.
+        """
+        return False
+
+    def _on_scheduled_after_block(self, task_id: int) -> None:
+        """Run once the task is scheduled again after a physical wake."""
+        self._current_task_consumed = True
+
+    # -- shared park/wake control ---------------------------------------
+
+    async def kick_stalled_schedule(self, task_id: int) -> None:
+        """Hand the turn onward after *task_id* engine-blocked itself.
+
+        Called by the cooperative primitives right after they block the task:
+        the blocked task parks with no further scheduling points, so if it held
+        the turn (or nothing else is runnable) no other path would drive the
+        next scheduling decision and the run would die by deadlock timeout.
+        """
+        async with self._condition:
+            if self._finished or self._error:
+                return
+            if self._should_kick(task_id):
+                self._perform_kick(task_id)
+                self._condition.notify_all()
+
+    async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
+        """Wait for a physically-woken blocked task to be scheduled again."""
+        async with self._condition:
+            while not (self._finished or self._error) and self._current_task != task_id:
+                if self._recover_stalled_schedule():
+                    continue
+                try:
+                    await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                except asyncio.TimeoutError:
+                    self._error = SchedulerTimeoutError(
+                        f"{self._deadlock_prefix}: task {task_id} woke from {reason} but was never scheduled"
+                    )
+                    self._condition.notify_all()
+                    return
+            if not (self._finished or self._error):
+                self._on_scheduled_after_block(task_id)
