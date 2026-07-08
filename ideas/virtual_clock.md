@@ -38,6 +38,28 @@ from this proposal:
   bare futures still look runnable to the engine, so the check safely declines
   and the wall fallback applies.
 
+### Post-merge hardening (2026-07-08)
+
+A dedicated hardening pass (`virtual-clock-hardening` branch) closed a batch of
+reproduction and false-positive bugs surfaced by a multi-agent audit: sync
+replay no longer force-expires successful timed acquires; timed waits give up
+atomically (exact-deadlock false-positive window); baseline threads are tracked
+weakly (sync + async); async `Condition` cancellation / notify / default-lock
+accounting was corrected; every abort path wakes parked waiters; the random
+strategy no longer double-advances past a timed wait; `patch_time` preserves a
+pre-existing third-party time patch; virtual `datetime` / `date` instances are
+real concrete instances; and `clock_diagnostics` was made usable. The wave also
+refactored the internals (shared `DeadlineCoordinator` / `VirtualClockPort` /
+`_dpor_core/clock_actor.py`, `async_dpor.py` split into modules, single
+`time.*` patch scope, `ClockConfig`). Deferred items — spurious clock-actor
+step vs replay accounting, explored-clock advance past intermediate deadlines,
+raw loop-timer diagnostics, `_spin_until` consolidation, remaining sync/async
+divergences, `_PathPinnedEngine`, row-lock capability modeling, and per-waiter
+happens-before edges for `Condition` / `Queue` wakes — are tracked in
+`possible-future-roadmap/virtual-clock-hardening-deferred.md`. See
+`docs/virtual_clock.rst` for the documented limitations (notably the
+virtual-derived `loop.call_at` hazard).
+
 ## Problem statement
 
 Before virtual clocks, races involving timeouts, retries with backoff, TTL
