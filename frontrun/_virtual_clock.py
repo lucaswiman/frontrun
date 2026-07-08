@@ -334,9 +334,11 @@ def _active_virtual_clock() -> VirtualClock | None:
 
     ctx = _get_context()
     if ctx is not None:
-        clock = getattr(ctx[0], "virtual_clock", None)
-        if clock is not None:
-            return clock  # type: ignore[no-any-return]
+        # An active scheduler context is authoritative: return its clock even
+        # when None (a clock="real" exploration).  Falling through would let an
+        # outer clock_scope / contextvar leak its virtual clock into a nested
+        # real-clock exploration.
+        return getattr(ctx[0], "virtual_clock", None)  # type: ignore[no-any-return]
     clock = _thread_clocks.get(threading.get_ident())
     if clock is not None:
         return clock
