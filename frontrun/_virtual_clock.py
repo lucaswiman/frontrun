@@ -34,6 +34,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from threading import get_ident
 from types import CodeType
 from typing import Any, Literal
 
@@ -438,11 +439,16 @@ class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):
 # ---------------------------------------------------------------------------
 
 #: The exploration driver sets this contextvar around setup/tasks/invariant.
-#: contextvars are per-thread *and* per-context: the sync driver reads it on the
-#: thread it set it on, and async task contexts inherit it (task contexts copy
-#: the creating context) while the event loop's base context does not — so loop
-#: timers stay on the wall clock.
-_clock_var: ContextVar[VirtualClock | None] = ContextVar("frontrun_virtual_clock", default=None)
+#: The entry is ``(registering thread ident, clock)`` and only resolves from
+#: the registering thread: the sync driver reads it on the thread it set it
+#: on, and async task contexts inherit it (task contexts copy the creating
+#: context) while running on the same loop thread.  The ident gate matters on
+#: the free-threaded build (3.14t), where ``threading.Thread`` starts with a
+#: *copy* of the caller's context (GIL builds start threads with an empty
+#: context) — without it, threads spawned inside a clock scope would inherit
+#: the registration and wrongly see virtual time.  The event loop's base
+#: context never carries the entry, so loop timers stay on the wall clock.
+_clock_var: ContextVar[tuple[int, VirtualClock] | None] = ContextVar("frontrun_virtual_clock", default=None)
 
 
 # One-time lazy bind of _cooperative.get_context (function-level import would
@@ -465,7 +471,10 @@ def _active_virtual_clock() -> VirtualClock | None:
         # outer clock_scope / contextvar leak its virtual clock into a nested
         # real-clock exploration.
         return getattr(ctx[0], "virtual_clock", None)  # type: ignore[no-any-return]
-    return _clock_var.get()
+    entry = _clock_var.get()
+    if entry is not None and entry[0] == get_ident():
+        return entry[1]
+    return None
 
 
 @contextmanager
@@ -477,21 +486,24 @@ def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
     after the workers' patch scope has already been unwound.  A ``None`` clock
     makes this a no-op.
 
-    contextvars are per-thread and per-context, so this serves both callers:
+    The registration is gated to the registering thread (see
+    :data:`_clock_var` — on the free-threaded build spawned threads inherit
+    the caller's context, so a bare contextvar would leak).  It serves both
+    callers:
 
     - sync exploration drivers wrap ``setup()`` / invariant evaluation, so state
       created / inspected on the driver thread sees the same virtual time as the
-      workers;
+      workers (which resolve via their scheduler context instead);
     - async exploration wraps setup/tasks/invariant — asyncio tasks created
-      inside the block inherit the contextvar (task contexts copy the creating
-      context), while the event loop's own ``_run_once`` machinery runs in the
-      loop's base context and keeps seeing real time, so loop timers stay on the
-      wall clock.
+      inside the block inherit the contextvar and run on the same loop thread,
+      while the event loop's own ``_run_once`` machinery runs in the loop's
+      base context and keeps seeing real time, so loop timers stay on the wall
+      clock.
     """
     if clock is None:
         yield
         return
-    token = _clock_var.set(clock)
+    token = _clock_var.set((get_ident(), clock))
     patch_time()
     try:
         yield

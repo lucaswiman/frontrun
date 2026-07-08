@@ -157,7 +157,7 @@ def test_scheduler_context_with_none_clock_is_authoritative(monkeypatch: pytest.
     monkeypatch.setattr(time, "time", lambda: sentinel)
 
     clock = VirtualClock()
-    token = _clock_var.set(clock)  # simulate an outer clock_scope registration
+    token = _clock_var.set((threading.get_ident(), clock))  # simulate an outer clock_scope registration
     _cooperative.set_context(FakeScheduler(), 1)
     patch_time()
     try:
