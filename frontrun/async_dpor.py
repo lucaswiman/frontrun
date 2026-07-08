@@ -96,15 +96,21 @@ from frontrun._deadlock import DeadlockError, format_cycle
 from frontrun._dpor_core import (
     NoOpLock,
     RowLockRegistry,
+    advance_and_dispatch,
     apply_lock_blocked_override,
+    can_autojump,
     compute_serializable_baseline_async,
     dpor_exploration_iter,
+    format_exact_deadlock_desc,
     format_race_failure_explanation,
     group_schedule_runs,
     is_reproduction_run,
     make_deadline,
     make_dpor_engine,
     record_dpor_failure,
+    report_clock_sleep_wake,
+    retire_actor_if_done,
+    sync_clock_actor,
     wake_sync_id,
 )
 from frontrun._opcode_observer import (
@@ -127,6 +133,7 @@ from frontrun._virtual_clock import (
     ClockMode,
     DeadlineCoordinator,
     VirtualClock,
+    WakeEvent,
     clock_context,
     patch_time,
     unpatch_time,
@@ -351,12 +358,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
 
     def _sync_clock_actor(self) -> None:
         """Keep the clock actor's enabledness in step with pending deadlines."""
-        if self._clock_actor_id is None:
-            return
-        if self._clock_mode == "explored" and self._has_pending_deadlines():
-            self.execution.unblock_thread(self._clock_actor_id)
-        else:
-            self.execution.block_thread(self._clock_actor_id)
+        sync_clock_actor(self.execution, self._clock_actor_id, self._clock_mode, self._has_pending_deadlines())
 
     def _set_current_task(self, task_id: int | None) -> None:
         self._current_task = task_id
@@ -379,35 +381,35 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 self._current_task_consumed = False
             self._notify_waiters_soon()
 
+    def _on_clock_sleep_wake(self, event: WakeEvent) -> None:
+        """Sleep-arm of a clock advance: drop the sleeper, close the wake edge."""
+        self._sleepers.pop(event.actor_id, None)
+        report_clock_sleep_wake(
+            self.engine.report_sync,
+            self.execution,
+            self._clock_actor_id,
+            event,
+            self._last_scheduled_path_id,
+        )
+
+    def _on_clock_timeout(self, event: WakeEvent) -> None:
+        """Timeout-arm of a clock advance: fire the token, scrub blocked sets."""
+        tid = event.actor_id
+        fire = getattr(event.token, "fire", None)
+        if fire is not None:
+            fire()
+        self._lock_blocked.pop(tid, None)
+        self._event_blocked.discard(tid)
+        self.execution.unblock_thread(tid)
+
     def _advance_virtual_clock(self) -> None:
         """One clock-actor step: jump to the earliest deadline, wake sleepers."""
         clock = self.virtual_clock
         if clock is None:
             return
-        due = self._deadlines.advance_to_next(clock)
-        if not due:
-            self._sync_clock_actor()
-            return
-        for event in due:
-            tid = event.actor_id
-            if event.kind == "sleep":
-                self._sleepers.pop(tid, None)
-                self.execution.unblock_thread(tid)
-                self.engine.report_sync(
-                    self.execution,
-                    self._clock_actor_id,
-                    "lock_release",
-                    event.wake_id if event.wake_id is not None else wake_sync_id(tid),
-                    self._last_scheduled_path_id,
-                )
-                continue
-            if event.kind == "timeout":
-                fire = getattr(event.token, "fire", None)
-                if fire is not None:
-                    fire()
-                self._lock_blocked.pop(tid, None)
-                self._event_blocked.discard(tid)
-                self.execution.unblock_thread(tid)
+        advance_and_dispatch(
+            self._deadlines, clock, None, on_sleep=self._on_clock_sleep_wake, on_timeout=self._on_clock_timeout
+        )
         self._sync_clock_actor()
 
     def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
@@ -571,9 +573,10 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                         # exact deadlock or waiting for timeout_per_run.
                         pass
                     else:
-                        desc = (
-                            "all live tasks are blocked and no virtual-clock deadline is pending "
-                            f"(sleepers={sorted(self._sleepers)}, done={sorted(self._tasks_done)})"
+                        desc = format_exact_deadlock_desc(
+                            noun="tasks",
+                            sleepers=sorted(self._sleepers),
+                            done=sorted(self._tasks_done),
                         )
                         self._error = DeadlockError(f"Deadlock detected by virtual clock: {desc}", desc)
                         # Wake tasks parked on cooperative events so they
@@ -603,11 +606,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         while True:
             runnable = self.execution.runnable_threads()
             if not runnable:
-                if (
-                    self.virtual_clock is not None
-                    and self._clock_actor_id is not None
-                    and self._has_pending_deadlines()
-                ):
+                if can_autojump(self.virtual_clock, self._clock_actor_id, self._has_pending_deadlines()):
                     # Autojump: everything is blocked and timers are pending —
                     # the clock advance is the only possible transition.
                     self.execution.unblock_thread(self._clock_actor_id)
@@ -780,9 +779,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 self._sleepers.pop(task_id, None)
                 self._deadlines.cancel(task_id)
                 self._sync_clock_actor()
-            if self._clock_actor_id is not None and len(self._tasks_done) >= self._num_engine_tasks:
-                self.execution.unblock_thread(self._clock_actor_id)
-                self.execution.finish_thread(self._clock_actor_id)
+            retire_actor_if_done(self.execution, self._clock_actor_id, len(self._tasks_done), self._num_engine_tasks)
             if self._current_task == task_id:
                 next_task = self._schedule_next()
                 self._set_current_task(next_task)
