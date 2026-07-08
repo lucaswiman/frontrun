@@ -470,7 +470,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                         self._sleepers.pop(task_id, None)
                         self._deadlines.cancel_sleep(task_id)
                         self.execution.unblock_thread(task_id)
-                        _wake_parked_async_primitive_waiters()
+                        self._on_error_set()
                         return
                 # Phase 2: woken — wait until the engine schedules us again.
                 while not (self._finished or self._error) and self._current_task != task_id:
@@ -481,7 +481,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                             f"Deadlock: task {task_id} woke at t={deadline} but was never rescheduled"
                         )
                         self._condition.notify_all()
-                        _wake_parked_async_primitive_waiters()
+                        self._on_error_set()
                         return
                 if self._finished or self._error:
                     return
@@ -580,7 +580,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                         # free-run to completion and run_all can raise the
                         # DeadlockError (tasks parked on cooperative locks
                         # unstick when their holders finish and force-release).
-                        _wake_parked_async_primitive_waiters()
+                        self._on_error_set()
                         self._condition.notify_all()
                         return
                 await _real_asyncio_sleep(min(0.01, max(0.001, self.deadlock_timeout / 10.0)))
@@ -668,15 +668,22 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
 
         self._current_task_consumed = True
 
+    def _on_error_set(self) -> None:
+        # Wake tasks parked on cooperative Event/Queue/Condition wrappers so
+        # they free-run to completion instead of hanging until timeout_per_run.
+        # Routed through the base _on_error_set hook so every abort path — the
+        # watchdog _handle_timeout, the base _handle_all_waiting_deadlock /
+        # _wait_watching_progress, sleep_until, and the exact-deadlock confirm —
+        # goes through one mechanism.
+        _wake_parked_async_primitive_waiters()
+
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         self._error = SchedulerTimeoutError(
             f"Deadlock: DPOR async scheduler wants task {self._current_task} "
             f"but task {task_id} is waiting at marker {marker!r}"
         )
         self._condition.notify_all()
-        # Wake tasks parked on cooperative Event/Queue/Condition wrappers so
-        # they free-run to completion instead of hanging until timeout_per_run.
-        _wake_parked_async_primitive_waiters()
+        self._on_error_set()
 
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)

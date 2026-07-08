@@ -331,6 +331,14 @@ class InterleavedLoop:
             finally:
                 self._waiting_count -= 1
 
+    def _on_error_set(self) -> None:
+        """Hook run right after any abort path sets ``self._error`` (no-op default).
+
+        The single point where a scheduler reacts to an abort.  The async DPOR
+        scheduler overrides it to wake tasks parked in cooperative primitives so
+        they free-run to completion instead of hanging until ``timeout_per_run``.
+        """
+
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         """Handle a timeout in pause(). Sets the error and wakes everyone.
 
@@ -339,6 +347,7 @@ class InterleavedLoop:
         self._error = SchedulerTimeoutError(
             f"Deadlock: task {task_id!r} timed out waiting at marker {marker!r} (fallback timeout)"
         )
+        self._on_error_set()
         self._condition.notify_all()
 
     def _handle_all_waiting_deadlock(self, task_id: Any, marker: Any = None) -> None:
@@ -351,6 +360,7 @@ class InterleavedLoop:
             f"Deadlock: all {alive} alive tasks are waiting but none can proceed "
             f"(task {task_id!r} at marker {marker!r})"
         )
+        self._on_error_set()
         self._condition.notify_all()
 
     # ------------------------------------------------------------------
@@ -486,6 +496,7 @@ class InterleavedLoop:
                             "inside the scheduler; unfinished tasks are blocked on unmanaged awaitables "
                             "(e.g. stock asyncio locks)"
                         )
+                        self._on_error_set()
                     self._condition.notify_all()
                 break
         # Mirror asyncio.wait_for's contract on timeout: cancel the awaited
