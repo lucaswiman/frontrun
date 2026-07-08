@@ -25,7 +25,7 @@ from frontrun._virtual_clock import (
     DeadlineCoordinator,
     VirtualClock,
     _active_virtual_clock,
-    _thread_clocks,
+    _clock_var,
     clock_scope,
     patch_time,
     unpatch_time,
@@ -157,8 +157,7 @@ def test_scheduler_context_with_none_clock_is_authoritative(monkeypatch: pytest.
     monkeypatch.setattr(time, "time", lambda: sentinel)
 
     clock = VirtualClock()
-    ident = threading.get_ident()
-    _thread_clocks[ident] = clock  # simulate an outer clock_scope registration
+    token = _clock_var.set(clock)  # simulate an outer clock_scope registration
     _cooperative.set_context(FakeScheduler(), 1)
     patch_time()
     try:
@@ -170,7 +169,7 @@ def test_scheduler_context_with_none_clock_is_authoritative(monkeypatch: pytest.
     finally:
         unpatch_time()
         _cooperative.clear_context()
-        _thread_clocks.pop(ident, None)
+        _clock_var.reset(token)
 
 
 # ---------------------------------------------------------------------------

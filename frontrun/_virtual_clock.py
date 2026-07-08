@@ -28,7 +28,6 @@ machinery, unrelated code) always see real time:
 from __future__ import annotations
 
 import datetime as _datetime
-import threading
 import time
 import warnings
 from collections.abc import Callable, Generator
@@ -400,11 +399,11 @@ class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):
 # Active-clock resolution
 # ---------------------------------------------------------------------------
 
-# Threads registered explicitly (exploration driver during setup()/invariant()).
-_thread_clocks: dict[int, VirtualClock] = {}
-
-#: Async exploration sets this contextvar around setup/tasks/invariant; task
-#: contexts inherit it, the event loop's base context does not.
+#: The exploration driver sets this contextvar around setup/tasks/invariant.
+#: contextvars are per-thread *and* per-context: the sync driver reads it on the
+#: thread it set it on, and async task contexts inherit it (task contexts copy
+#: the creating context) while the event loop's base context does not — so loop
+#: timers stay on the wall clock.
 _clock_var: ContextVar[VirtualClock | None] = ContextVar("frontrun_virtual_clock", default=None)
 
 
@@ -428,51 +427,28 @@ def _active_virtual_clock() -> VirtualClock | None:
         # outer clock_scope / contextvar leak its virtual clock into a nested
         # real-clock exploration.
         return getattr(ctx[0], "virtual_clock", None)  # type: ignore[no-any-return]
-    clock = _thread_clocks.get(threading.get_ident())
-    if clock is not None:
-        return clock
     return _clock_var.get()
 
 
 @contextmanager
-def clock_scope(clock: VirtualClock | None) -> Generator[None, None, None]:
-    """Register *clock* for the current thread for the duration of the block.
-
-    Used by exploration drivers around ``setup()`` and invariant evaluation so
-    that state created / inspected on the driver thread sees the same virtual
-    time as the workers.  A ``None`` clock makes this a no-op.
-
-    Owns the ``time.*`` patch for its duration (reference-counted), so it works
-    even outside a runner's patch scope — invariant evaluation happens after
-    the workers' patch scope has already been unwound.
-    """
-    if clock is None:
-        yield
-        return
-    ident = threading.get_ident()
-    prev = _thread_clocks.get(ident)
-    _thread_clocks[ident] = clock
-    patch_time()
-    try:
-        yield
-    finally:
-        unpatch_time()
-        if prev is None:
-            _thread_clocks.pop(ident, None)
-        else:
-            _thread_clocks[ident] = prev
-
-
-@contextmanager
 def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
-    """Set :data:`_clock_var` for the current *context* (async exploration).
+    """Register *clock* on :data:`_clock_var` for the duration of the block.
 
-    asyncio tasks created inside the block inherit the contextvar (task
-    contexts copy the creating context), while the event loop's own
-    ``_run_once`` machinery — which runs in the loop's base context — keeps
-    seeing real time, so loop timers stay on the wall clock.
+    Sets the contextvar and owns the ``time.*`` patch (reference-counted) so it
+    works even outside a runner's patch scope — invariant evaluation happens
+    after the workers' patch scope has already been unwound.  A ``None`` clock
+    makes this a no-op.
 
-    Like :func:`clock_scope`, owns the ``time.*`` patch for its duration.
+    contextvars are per-thread and per-context, so this serves both callers:
+
+    - sync exploration drivers wrap ``setup()`` / invariant evaluation, so state
+      created / inspected on the driver thread sees the same virtual time as the
+      workers;
+    - async exploration wraps setup/tasks/invariant — asyncio tasks created
+      inside the block inherit the contextvar (task contexts copy the creating
+      context), while the event loop's own ``_run_once`` machinery runs in the
+      loop's base context and keeps seeing real time, so loop timers stay on the
+      wall clock.
     """
     if clock is None:
         yield
@@ -484,6 +460,13 @@ def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
     finally:
         unpatch_time()
         _clock_var.reset(token)
+
+
+#: The sync exploration drivers historically used a distinct ``clock_scope``
+#: backed by a thread-local dict; it now shares the contextvar implementation
+#: (contextvars are per-thread, so the driver reads back what it set).  Kept as
+#: a separate public name for the sync call sites.
+clock_scope = clock_context
 
 
 # ---------------------------------------------------------------------------
