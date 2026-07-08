@@ -130,6 +130,7 @@ from frontrun._threaded_runner import PatchScope
 from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._virtual_clock import (
+    ClockConfig,
     ClockMode,
     DeadlineCoordinator,
     VirtualClock,
@@ -137,7 +138,6 @@ from frontrun._virtual_clock import (
     clock_context,
     patch_time,
     unpatch_time,
-    validate_clock_options,
     warn_if_captured_time_reference,
 )
 from frontrun.async_scheduler import (
@@ -1081,17 +1081,18 @@ async def _reproduce_async_counterexample(
 ) -> tuple[int, int]:
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
+    clock_config = ClockConfig(mode=clock)
     for _ in range(reproduce_on_failure):
         # Clear cooperative-lock global state before each replay attempt.
         _reset_async_lock_state()
 
-        replay_clock = VirtualClock() if clock != "real" else None
+        replay_clock = clock_config.new_clock()
         scheduler = _ReplayAsyncScheduler(
             schedule_list,
             num_tasks,
             deadlock_timeout=deadlock_timeout,
             virtual_clock=replay_clock,
-            clock_actor_id=num_tasks if clock != "real" else None,
+            clock_actor_id=clock_config.actor_id(num_tasks),
         )
         # One clock_context owns the time.* patch across setup + tasks +
         # invariant for this replay attempt.
@@ -1226,12 +1227,11 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     Returns:
         InterleavingResult with exploration statistics and any counterexample.
     """
-    clock = validate_clock_options(
-        clock,
+    clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
         patch_sleep=patch_sleep,
         serializable_invariant=serializable_invariant,
-        clock_diagnostics=clock_diagnostics,
     )
+    clock = clock_config.mode
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 
@@ -1243,7 +1243,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     num_tasks = len(tasks)
     # With a virtual clock the engine gets one extra thread — the clock actor
     # (id == num_tasks); see AsyncDporScheduler.
-    clock_actor_id = num_tasks if clock != "real" else None
+    clock_actor_id = clock_config.actor_id(num_tasks)
     engine = make_dpor_engine(
         num_threads=num_tasks + (1 if clock_actor_id is not None else 0),
         preemption_bound=preemption_bound,
@@ -1331,7 +1331,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
 
                 # Fresh virtual clock per execution so every interleaving
                 # starts from the same deterministic epoch.
-                virtual_clock = VirtualClock() if clock != "real" else None
+                virtual_clock = clock_config.new_clock()
                 scheduler = AsyncDporScheduler(
                     engine,
                     execution,

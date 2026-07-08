@@ -58,6 +58,7 @@ from frontrun._async_cooperative import _real_asyncio_sleep
 from frontrun._random_schedules import fair_schedule_strategy, random_round_robin_schedule
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
+    ClockConfig,
     ClockMode,
     DeadlineCoordinator,
     VirtualClock,
@@ -65,7 +66,6 @@ from frontrun._virtual_clock import (
     clock_context,
     patch_time,
     unpatch_time,
-    validate_clock_options,
 )
 from frontrun.async_dpor import (
     _sql_async_available,
@@ -573,12 +573,11 @@ async def explore_async_random(
     """
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    clock = validate_clock_options(
-        clock,
+    clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
         patch_sleep=patch_sleep,
         serializable_invariant=serializable_invariant,
-        clock_diagnostics=clock_diagnostics,
     )
+    clock = clock_config.mode
     if clock_diagnostics:
         # The async random strategy operates at await-point granularity and does
         # not trace worker opcodes, so it cannot detect captured time references.
@@ -618,7 +617,7 @@ async def explore_async_random(
             # test harness is an error that must propagate, not a
             # "counterexample".  Only exceptions from the task bodies are turned
             # into findings.  (Mirrors _run_with_schedule_status construction.)
-            attempt_clock = VirtualClock() if clock != "real" else None
+            attempt_clock = clock_config.new_clock()
             scheduler = AwaitScheduler(
                 schedule,
                 num_tasks,

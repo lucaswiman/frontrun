@@ -204,6 +204,50 @@ class VirtualClock:
 
 
 @dataclass(frozen=True)
+class ClockConfig:
+    """The static clock options plus the per-execution derivations built on them.
+
+    Every exploration entry point stamped the same trio: derive a fresh
+    per-execution :class:`VirtualClock` when the mode is not ``"real"``, derive
+    the synthetic clock-actor id (``== num_actors``), and validate the clock
+    against the options it constrains.  ``ClockConfig`` centralizes those so the
+    entry points construct one and read the derivations off it.  It intentionally
+    holds only the *static* options (``mode`` / ``diagnostics``); the mutable,
+    per-execution clock comes from :meth:`new_clock`.
+    """
+
+    mode: ClockMode = "real"
+    diagnostics: bool = False
+
+    def validate(self, *, patch_sleep: bool = True, serializable_invariant: object = False) -> ClockConfig:
+        """Validate ``mode`` against the options it constrains; return self.
+
+        Wraps :func:`validate_clock_options` so the error text is identical
+        everywhere.  Raises ``ValueError`` on an invalid or conflicting mode.
+        """
+        validate_clock_options(
+            self.mode,
+            patch_sleep=patch_sleep,
+            serializable_invariant=serializable_invariant,
+            clock_diagnostics=self.diagnostics,
+        )
+        return self
+
+    @property
+    def active(self) -> bool:
+        """Whether a virtual clock is in effect (``mode != "real"``)."""
+        return self.mode != "real"
+
+    def new_clock(self) -> VirtualClock | None:
+        """A fresh per-execution :class:`VirtualClock`, or ``None`` under ``"real"``."""
+        return VirtualClock() if self.active else None
+
+    def actor_id(self, num_actors: int) -> int | None:
+        """The synthetic clock-actor id (``== num_actors``), or ``None`` if inactive."""
+        return num_actors if self.active else None
+
+
+@dataclass(frozen=True)
 class WakeEvent:
     """A deadline that became due after a virtual-clock advance."""
 
@@ -564,6 +608,7 @@ def unpatch_time() -> None:
 
 __all__ = [
     "VIRTUAL_EPOCH",
+    "ClockConfig",
     "ClockMode",
     "DeadlineCoordinator",
     "VirtualClock",

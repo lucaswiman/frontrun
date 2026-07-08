@@ -83,10 +83,10 @@ from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun._virtual_clock import (
+    ClockConfig,
     ClockMode,
     VirtualClock,
     clock_scope,
-    validate_clock_options,
     warn_if_captured_time_reference,
 )
 from frontrun.cli import require_active as _require_frontrun_env
@@ -736,10 +736,11 @@ def run_with_schedule(
     Returns:
         The state object after execution.
     """
-    clock = validate_clock_options(clock, patch_sleep=patch_sleep, clock_diagnostics=clock_diagnostics)
+    clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(patch_sleep=patch_sleep)
+    clock = clock_config.mode
     if _virtual_clock is not None and clock == "real":
         raise ValueError("_virtual_clock requires clock='virtual' or clock='explored'")
-    virtual_clock = _virtual_clock if _virtual_clock is not None else (VirtualClock() if clock != "real" else None)
+    virtual_clock = _virtual_clock if _virtual_clock is not None else clock_config.new_clock()
     scheduler = OpcodeScheduler(
         schedule,
         len(threads),
@@ -871,12 +872,11 @@ def explore_random(
     _require_frontrun_env("explore_random")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    clock = validate_clock_options(
-        clock,
+    clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
         patch_sleep=patch_sleep,
         serializable_invariant=serializable_invariant,
-        clock_diagnostics=clock_diagnostics,
     )
+    clock = clock_config.mode
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
     try:
@@ -899,7 +899,7 @@ def explore_random(
             if debug:
                 print(f"Running with {schedule=} {threads=}", flush=True)
             recorder = TraceRecorder()
-            attempt_clock = VirtualClock() if clock != "real" else None
+            attempt_clock = clock_config.new_clock()
             try:
                 state = run_with_schedule(
                     schedule,
@@ -965,7 +965,7 @@ def explore_random(
                     successes = 0
                     for _ in range(reproduce_on_failure):
                         try:
-                            replay_clock = VirtualClock() if clock != "real" else None
+                            replay_clock = clock_config.new_clock()
                             replay_state = run_with_schedule(
                                 schedule,
                                 setup,

@@ -10,7 +10,7 @@ from frontrun._dpor_core import (
     make_dpor_engine,
     record_dpor_failure,
 )
-from frontrun._virtual_clock import ClockMode, VirtualClock, clock_scope, validate_clock_options
+from frontrun._virtual_clock import ClockConfig, ClockMode, clock_scope
 
 from ._shared import *
 from ._shared import _require_frontrun_env, _set_active_trace_filter, _TraceFilter
@@ -162,12 +162,11 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
        automatically skipped.
     """
     _require_frontrun_env("frontrun.explore")
-    clock = validate_clock_options(
-        clock,
+    clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
         patch_sleep=patch_sleep,
         serializable_invariant=serializable_invariant,
-        clock_diagnostics=clock_diagnostics,
     )
+    clock = clock_config.mode
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 
@@ -177,7 +176,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
     num_threads = len(threads)
     # With a virtual clock the engine gets one extra thread: the clock actor
     # (id == num_threads), whose steps advance the clock (see scheduler.py).
-    clock_actor_id = num_threads if clock != "real" else None
+    clock_actor_id = clock_config.actor_id(num_threads)
     engine = make_dpor_engine(
         num_threads=num_threads + (1 if clock_actor_id is not None else 0),
         preemption_bound=preemption_bound,
@@ -327,7 +326,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
             switch_points: list[Any] = []
             # Fresh virtual clock per execution so every interleaving starts
             # from the same deterministic epoch.
-            virtual_clock = VirtualClock() if clock != "real" else None
+            virtual_clock = clock_config.new_clock()
             scheduler = DporScheduler(
                 engine,
                 execution,
