@@ -799,6 +799,132 @@ def test_timed_acquire_succeeds_before_virtual_deadline(lock_factory: Callable[[
     assert result.property_holds, result.explanation
 
 
+class _TimedAcquireReplayRace:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.holding = threading.Event()
+        self.x = 0
+        self.contender_ran = False
+
+
+def _timed_acquire_holder(s: _TimedAcquireReplayRace) -> None:
+    s.lock.acquire()
+    s.holding.set()
+    time.sleep(1.0)
+    s.lock.release()
+    # Unprotected increment after release — races with the contender's
+    # under-lock increment (which only happens if the timed acquire succeeds).
+    tmp = s.x
+    s.x = tmp + 1
+
+
+def _timed_acquire_contender(s: _TimedAcquireReplayRace) -> None:
+    # Wait until the holder actually holds the lock so the timed acquire is
+    # guaranteed contended: it registers a virtual timed wait, the clock
+    # advances to the holder's t=1.0 release, and the acquire SUCCEEDS well
+    # before its own 5.0s deadline.
+    s.holding.wait()
+    got = s.lock.acquire(timeout=5.0)
+    if got:
+        s.contender_ran = True
+        tmp = s.x
+        s.x = tmp + 1
+        s.lock.release()
+
+
+def test_replay_preserves_successful_timed_acquire() -> None:
+    """End-to-end guard: a counterexample whose schedule contains a SUCCESSFUL
+    contended timed acquire must reproduce.  The lost-update failure requires
+    ``contender_ran`` (i.e. the acquire returned True); if replay ever
+    force-expired the timed wait the acquire would take the timeout branch and
+    the failure could not reproduce.  See
+    ``test_wake_scheduled_sleeper_ignores_timed_waits`` for the deterministic
+    unit-level check of the underlying ``_wake_scheduled_sleeper`` behaviour."""
+    result = frontrun.explore(
+        setup=_TimedAcquireReplayRace,
+        workers=[_timed_acquire_holder, _timed_acquire_contender],
+        invariant=lambda s: not (s.contender_ran and s.x < 2),
+        clock="virtual",
+    )
+    _assert_invariant_failure(result)
+    assert result.counterexample is not None
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10, (
+        f"successful timed acquire was force-expired on replay: "
+        f"{result.reproduction_successes}/{result.reproduction_attempts}"
+    )
+
+
+class _FakeExecution:
+    def __init__(self, runnable: list[int]) -> None:
+        self._runnable = list(runnable)
+        self.blocked: set[int] = set()
+        self.finished: set[int] = set()
+
+    def runnable_threads(self) -> list[int]:
+        return [t for t in self._runnable if t not in self.blocked and t not in self.finished]
+
+    def block_thread(self, thread_id: int) -> None:
+        self.blocked.add(thread_id)
+
+    def unblock_thread(self, thread_id: int) -> None:
+        self.blocked.discard(thread_id)
+
+    def finish_thread(self, thread_id: int) -> None:
+        self.finished.add(thread_id)
+
+
+class _FakeEngine:
+    def schedule(self, execution: _FakeExecution) -> int | None:
+        runnable = execution.runnable_threads()
+        return runnable[0] if runnable else None
+
+
+def _make_virtual_clock_scheduler() -> Any:
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    clock = VirtualClock()
+    return DporScheduler(
+        _FakeEngine(),
+        _FakeExecution([]),
+        num_threads=1,
+        virtual_clock=clock,
+        clock_mode="virtual",
+        clock_actor_id=99,
+    )
+
+
+def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
+    """Deterministic regression for the replay force-expiry bug.
+
+    ``_wake_scheduled_sleeper`` is the replay safety net that advances the
+    virtual clock when the recorded schedule points at a *sleeping* thread.  A
+    thread in a contended ``acquire(timeout=...)`` is registered in
+    ``_timed_waits`` for the whole spin, but — unlike a sleeper — it is not
+    genuinely stuck (``ReplayExecution.block_thread`` is a no-op) and it may
+    have acquired the lock before its deadline in the recorded run.  Advancing
+    the clock to that deadline force-expires a wait that never timed out,
+    flipping the acquire to the timeout branch and dragging every earlier
+    deadline due.  So the safety net must only fire for sleepers."""
+    from frontrun._dpor_runtime.scheduler import _TIMED_WAIT_TOKEN
+
+    scheduler = _make_virtual_clock_scheduler()
+    clock = scheduler.virtual_clock
+    tid = 0
+    deadline = clock.now() + 5.0
+    scheduler._timed_waits[tid] = deadline
+    scheduler._deadlines.add_timeout(tid, deadline, _TIMED_WAIT_TOKEN)
+    scheduler._current_thread = tid
+
+    before = clock.now()
+    with scheduler._condition:
+        advanced = scheduler._wake_scheduled_sleeper()
+
+    assert advanced is False, "timed waits must not drive the replay clock advance"
+    assert clock.now() == before, "the virtual clock must not jump to a timed-wait deadline"
+    assert scheduler._timed_waits.get(tid) == deadline, "the timed wait must be left intact"
+
+
 def test_timed_semaphore_acquire_times_out_without_false_deadlock() -> None:
     class State:
         def __init__(self) -> None:
