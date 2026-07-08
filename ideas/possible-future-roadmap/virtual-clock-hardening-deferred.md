@@ -186,3 +186,44 @@ thread outlives the test under some run orders.
 **Fix direction.** Track separately so it does not get pinned on future clock
 work; ensure the connection worker thread is joined/torn down deterministically
 at test end.
+
+## 12. Pre-existing 3.14t flake: random queue waiter starves the autojump
+
+**Symptom.** `tests/test_virtual_clock.py::test_random_queue_waiter_does_not_starve_virtual_sleep_autojump`
+intermittently fails on 3.14t (roughly 1 in 3 full-selection runs on a loaded
+arm64 box; passes reliably in isolation) with
+`TimeoutError: run_with_schedule timed out after 1.0s; worker threads did not
+complete`. Reproduced at the pre-hardening baseline (03ecc35) at the same rate,
+so it predates the hardening branch.
+
+**Mechanism.** Not yet root-caused. The 1.0 s budget is the starvation symptom
+the test exists to catch, so it must not simply be raised: either there is a
+genuine intermittent starvation window on the free-threaded build (untimed
+queue waiter's spin flag racing the producer's `sleep_until` autojump, or the
+fixed schedule exhausting into the `_finished` free-run path at an unlucky
+moment), or thread startup under load eats the budget. Distinguish before
+touching the test.
+
+**Fix direction.** Instrument the autojump decision and the `_finished`
+free-run path on 3.14t under load (in-memory event log — file/socket I/O
+self-deadlocks under the preload library); classify as product starvation vs.
+test budget; fix accordingly.
+
+## 13. Pre-existing xproc flake: reuse explores a different iteration count
+
+**Symptom.** `tests/test_xproc_reuse.py::test_reuse_matches_spawn_execution_count`
+intermittently fails (`reuse.iterations != spawn.iterations`, e.g. 5 vs 3; seen
+on 3.12 in CI and locally ~2 in 8 runs). Reproduced at the pre-hardening
+baseline (03ecc35), so it predates the hardening branch. Version-agnostic
+timing sensitivity; failures correlate with cold/loaded runs.
+
+**Mechanism.** Not yet root-caused: the DPOR search driven through the xproc
+relay threads is timing-sensitive somewhere — reuse mode and spawn mode explore
+different numbers of schedules for the same program, which should be
+deterministic. Since exploration determinism is the product's core contract,
+this deserves a real investigation, not a test relaxation.
+
+**Fix direction.** Add a deterministic trace of engine `schedule()` decisions
+per iteration in both modes and diff the first divergent iteration; suspects
+are relay-thread wakeup ordering in `dpor_coordinator._drive_relays` and
+iteration-boundary state carried across reused workers.
