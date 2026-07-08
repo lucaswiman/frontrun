@@ -1025,6 +1025,12 @@ class CooperativeEvent:
                 self._yield_after_state_access()
             return True
 
+        # timeout == 0 is a pure probe (matches threading.Event.wait(0)): the
+        # event is not set, so return False now rather than registering a
+        # zero-length virtual deadline (a pointless schedulable clock step).
+        if timeout == 0:
+            return False
+
         ctx = get_context()
         if ctx is None:
             return self._event.wait(timeout=timeout)
@@ -1278,6 +1284,15 @@ class CooperativeCondition:
                     return served
 
             scheduler, thread_id = ctx
+            if timeout == 0:
+                # Pure probe (matches threading.Condition.wait(0)): a freshly
+                # taken ticket can only be served if a notify already passed it,
+                # so return now without registering a zero-length virtual
+                # deadline.  The lock is already released (``_release_save``
+                # above); the outer ``finally`` re-acquires it and reconciles the
+                # ticket exactly as the spin path would on immediate expiry.
+                served = my_ticket < self._served
+                return served
             deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
             note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
 
@@ -1441,7 +1456,10 @@ class CooperativeQueue:
             _note_spin_release(self._object_id)
             return item
         except queue.Empty:
-            if not block:
+            # timeout == 0 is a pure probe (matches queue.Queue.get(timeout=0)):
+            # the queue is empty, so raise now rather than registering a
+            # zero-length virtual deadline (a pointless schedulable clock step).
+            if not block or timeout == 0:
                 raise
 
         ctx = get_context()
@@ -1490,7 +1508,10 @@ class CooperativeQueue:
             _note_spin_release(self._object_id)
             return
         except queue.Full:
-            if not block:
+            # timeout == 0 is a pure probe (matches queue.Queue.put(timeout=0)):
+            # the queue is full, so raise now rather than registering a
+            # zero-length virtual deadline (a pointless schedulable clock step).
+            if not block or timeout == 0:
                 raise
 
         ctx = get_context()

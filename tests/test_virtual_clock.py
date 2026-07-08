@@ -871,6 +871,59 @@ def test_unmanaged_release_unblocks_engine_spin_waiter_dpor() -> None:
     assert tid not in execution.blocked, "an unmanaged release must engine-unblock the recorded spin waiter"
 
 
+def test_zero_timeout_waits_are_pure_probes() -> None:
+    """Event / Condition / Queue with ``timeout == 0`` must be pure probes that
+    match threading/queue stdlib semantics exactly: succeed if satisfiable now,
+    else immediate ``False`` / ``Empty`` / ``Full``.  (Characterisation test:
+    the *result* is unchanged by the refactor that stops these paths from
+    registering a zero-length virtual deadline; it passes before and after.)"""
+
+    class State:
+        def __init__(self) -> None:
+            self.event_unset = threading.Event()
+            self.event_set = threading.Event()
+            self.event_set.set()
+            self.q_empty: queue.Queue[str] = queue.Queue()
+            self.q_full: queue.Queue[str] = queue.Queue(maxsize=1)
+            self.q_full.put("x")
+            self.cond = threading.Condition()
+            self.results: dict[str, object] = {}
+
+    def worker(s: State) -> None:
+        s.results["event_unset"] = s.event_unset.wait(timeout=0)
+        s.results["event_set"] = s.event_set.wait(timeout=0)
+        try:
+            s.q_empty.get(timeout=0)
+            s.results["get_empty"] = "item"
+        except queue.Empty:
+            s.results["get_empty"] = "empty"
+        try:
+            s.q_full.put("y", timeout=0)
+            s.results["put_full"] = "ok"
+        except queue.Full:
+            s.results["put_full"] = "full"
+        with s.cond:
+            s.results["cond"] = s.cond.wait(timeout=0)
+
+    def invariant(s: State) -> bool:
+        r = s.results
+        assert r.get("event_unset") is False, r
+        assert r.get("event_set") is True, r
+        assert r.get("get_empty") == "empty", r
+        assert r.get("put_full") == "full", r
+        assert r.get("cond") is False, r
+        return True
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=invariant,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
 # ---------------------------------------------------------------------------
 # Timed lock acquires
 # ---------------------------------------------------------------------------

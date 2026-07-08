@@ -213,9 +213,6 @@ class DporScheduler:
     # Virtual clock
     # ------------------------------------------------------------------
 
-    def _wake_sync_id(self, thread_id: int) -> int:
-        return wake_sync_id(thread_id)
-
     def _has_pending_deadlines(self) -> bool:
         return self._deadlines.has_pending()
 
@@ -312,7 +309,7 @@ class DporScheduler:
                 self.execution,
                 self._clock_actor_id,
                 "lock_release",
-                event.wake_id if event.wake_id is not None else self._wake_sync_id(tid),
+                event.wake_id if event.wake_id is not None else wake_sync_id(tid),
                 self._last_scheduled_path_id,
             )
         elif event.kind == "timeout":
@@ -399,7 +396,7 @@ class DporScheduler:
                 if self._finished or self._error:
                     return
                 with self._engine_lock:
-                    self._deadlines.add_sleep(thread_id, deadline, self._wake_sync_id(thread_id))
+                    self._deadlines.add_sleep(thread_id, deadline, wake_sync_id(thread_id))
                     self.execution.block_thread(thread_id)
                     self._sync_clock_actor_locked()
                 if self._pending_clock_advances > 0:
@@ -429,12 +426,7 @@ class DporScheduler:
                     if self._replay_sleep_self_wake(thread_id):
                         continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
-                        if self._current_thread in self._threads_done:
-                            next_thread = self._schedule_next()
-                            self._current_thread = next_thread
-                            if next_thread is None and len(self._threads_done) >= self.num_threads:
-                                self._finished = True
-                            self._condition.notify_all()
+                        if self._reschedule_done_current_unlocked():
                             continue
                         self._error = TimeoutError(
                             f"DPOR sleep deadlock: thread {thread_id} sleeping until t={deadline}, "
@@ -447,12 +439,7 @@ class DporScheduler:
                 while self._current_thread != thread_id:
                     if self._finished or self._error:
                         return
-                    if self._current_thread in self._threads_done:
-                        next_thread = self._schedule_next()
-                        self._current_thread = next_thread
-                        if next_thread is None and len(self._threads_done) >= self.num_threads:
-                            self._finished = True
-                        self._condition.notify_all()
+                    if self._reschedule_done_current_unlocked():
                         continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         self._error = TimeoutError(
@@ -465,9 +452,55 @@ class DporScheduler:
                 report_sync = getattr(self.engine, "report_sync", None)
                 if report_sync is not None:
                     with self._engine_lock:
-                        report_sync(self.execution, thread_id, "lock_acquire", self._wake_sync_id(thread_id), None)
+                        report_sync(self.execution, thread_id, "lock_acquire", wake_sync_id(thread_id), None)
             finally:
                 _scheduler_tls._in_dpor_machinery = prev_machinery
+
+    def _try_autojump_locked(self) -> bool:
+        """Enable the clock actor when everything is blocked but timers pend.
+
+        Caller holds ``_engine_lock``.  Returns True (``_schedule_next`` should
+        re-poll) when the autojump actor was enabled: with no runnable thread and
+        a pending deadline, advancing the clock is the only schedulable
+        transition, which is exactly when it *must* happen.
+        """
+        if self.virtual_clock is not None and self._clock_actor_id is not None and self._has_pending_deadlines():
+            self.execution.unblock_thread(self._clock_actor_id)
+            self._exact_deadlock_candidate_at = None
+            return True
+        return False
+
+    def _check_exact_deadlock_locked(self) -> None:
+        """Record an exact deadlock when it is confirmed (caller holds ``_engine_lock``).
+
+        Every live thread is blocked and no deadline is pending, so no transition
+        can ever become enabled.  Confirmed only after a short window (tolerating
+        the transient all-blocked states during turn hand-off) and only when no
+        live external thread could still unblock a waiter — then reported
+        immediately instead of via the wall-clock fallback timeout.
+        """
+        if not (
+            self.virtual_clock is not None
+            and self._error is None
+            and not self._finished
+            and len(self._threads_done) < self.num_threads
+        ):
+            return
+        if self._has_live_external_threads():
+            self._exact_deadlock_candidate_at = None
+            return
+        if self._exact_deadlock_candidate_at is None:
+            self._exact_deadlock_candidate_at = real_monotonic()
+            return
+        if real_monotonic() - self._exact_deadlock_candidate_at < _EXACT_DEADLOCK_CONFIRM_SECONDS:
+            return
+        desc = (
+            "all live threads are blocked and no virtual-clock deadline is pending "
+            f"(sleepers={self._deadlines.sleeping_actors()}, "
+            f"spin_waiters={sorted(self._spin_waiters)}, "
+            f"done={sorted(self._threads_done)})"
+        )
+        self._error = DeadlockError(f"Deadlock detected by virtual clock: {desc}", desc)
 
     def _schedule_next(self) -> int | None:
         """Ask the DPOR engine which thread to run next.
@@ -491,43 +524,10 @@ class DporScheduler:
             while True:
                 runnable = self.execution.runnable_threads()
                 if not runnable:
-                    if (
-                        self.virtual_clock is not None
-                        and self._clock_actor_id is not None
-                        and self._has_pending_deadlines()
-                    ):
-                        # Autojump: everything is blocked and timers are
-                        # pending — enable the clock actor so its advance
-                        # step is the (only) schedulable transition.
-                        self.execution.unblock_thread(self._clock_actor_id)
-                        self._exact_deadlock_candidate_at = None
+                    if self._try_autojump_locked():
                         continue
                     self._last_scheduled_path_id = None
-                    if (
-                        self.virtual_clock is not None
-                        and self._error is None
-                        and not self._finished
-                        and len(self._threads_done) < self.num_threads
-                    ):
-                        if self._has_live_external_threads():
-                            self._exact_deadlock_candidate_at = None
-                            return None
-                        if self._exact_deadlock_candidate_at is None:
-                            self._exact_deadlock_candidate_at = real_monotonic()
-                            return None
-                        if real_monotonic() - self._exact_deadlock_candidate_at < _EXACT_DEADLOCK_CONFIRM_SECONDS:
-                            return None
-                        # Exact deadlock: every live thread is blocked and no
-                        # deadline is pending, so no transition can ever
-                        # become enabled.  Report it now instead of via the
-                        # wall-clock fallback timeout.
-                        desc = (
-                            "all live threads are blocked and no virtual-clock deadline is pending "
-                            f"(sleepers={self._deadlines.sleeping_actors()}, "
-                            f"spin_waiters={sorted(self._spin_waiters)}, "
-                            f"done={sorted(self._threads_done)})"
-                        )
-                        self._error = DeadlockError(f"Deadlock detected by virtual clock: {desc}", desc)
+                    self._check_exact_deadlock_locked()
                     return None
 
                 self._exact_deadlock_candidate_at = None
@@ -587,12 +587,7 @@ class DporScheduler:
                                 self._finished = True
                             self._condition.notify_all()
                             continue
-                        if self._current_thread in self._threads_done:
-                            next_thread = self._schedule_next()
-                            self._current_thread = next_thread
-                            if next_thread is None and len(self._threads_done) >= self.num_threads:
-                                self._finished = True
-                            self._condition.notify_all()
+                        if self._reschedule_done_current_unlocked():
                             continue
                         self._error = TimeoutError(
                             f"DPOR sync deadlock: waiting for thread {thread_id}, current is {self._current_thread}"
@@ -880,12 +875,7 @@ class DporScheduler:
                         return
 
                     if not self._condition.wait(timeout=self.deadlock_timeout):
-                        if self._current_thread in self._threads_done:
-                            next_thread = self._schedule_next()
-                            self._current_thread = next_thread
-                            if next_thread is None and len(self._threads_done) >= self.num_threads:
-                                self._finished = True
-                            self._condition.notify_all()
+                        if self._reschedule_done_current_unlocked():
                             continue
                         self._error = TimeoutError(
                             f"DPOR I/O deadlock before {resource_id}: waiting for thread {thread_id}, "
