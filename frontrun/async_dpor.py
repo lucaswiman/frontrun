@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import threading
 import weakref
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
@@ -1351,6 +1352,16 @@ class AsyncDporScheduler(InterleavedLoop):
         self._deadlock_confirm_pending = False
         self._deadlock_confirm_task: asyncio.Task[None] | None = None
         self._deadlock_confirm_progress: int | None = None
+        # Baseline OS threads alive at scheduler construction (weak refs so a
+        # baseline thread that exits and is GC'd drops out, and a new external
+        # thread reusing its id() cannot be misclassified as baseline).  A live
+        # non-baseline thread — e.g. one the explored code spawned — may still
+        # wake a parked task via loop.call_soon_threadsafe, so exact-deadlock
+        # detection must decline while any such thread is alive (mirrors the
+        # sync DporScheduler._has_live_external_threads guard).
+        self._baseline_thread_keys: weakref.WeakSet[threading.Thread] = weakref.WeakSet(
+            t for t in threading.enumerate() if t.is_alive()
+        )
         # Virtual clock (ideas/virtual_clock.md), mirroring the sync
         # DporScheduler: an extra engine thread (the clock actor) whose steps
         # advance the clock to the earliest pending deadline.  "virtual" =
@@ -1408,6 +1419,13 @@ class AsyncDporScheduler(InterleavedLoop):
 
     def _has_pending_deadlines(self) -> bool:
         return self._deadlines.has_pending()
+
+    def _has_live_external_threads(self) -> bool:
+        # WeakSet auto-drops dead baseline threads, so resolving ids here never
+        # subtracts a stale id that a new external thread might have reused.
+        baseline_ids = {id(t) for t in self._baseline_thread_keys}
+        current = {id(t) for t in threading.enumerate() if t.is_alive()}
+        return bool(current - baseline_ids)
 
     def _sync_clock_actor(self) -> None:
         """Keep the clock actor's enabledness in step with pending deadlines."""
@@ -1644,10 +1662,11 @@ class AsyncDporScheduler(InterleavedLoop):
                     if self._has_pending_deadlines():
                         return
                     checker = self._user_timers_pending
-                    if checker is not None and checker():
-                        # A pending user timer (e.g. asyncio.wait_for) may
-                        # still wake a parked task. Recheck shortly after it
-                        # has a chance to fire instead of reporting a stale
+                    if (checker is not None and checker()) or self._has_live_external_threads():
+                        # A pending user timer (e.g. asyncio.wait_for) or a live
+                        # external OS thread (which may call
+                        # loop.call_soon_threadsafe) can still wake a parked
+                        # task. Recheck shortly instead of reporting a stale
                         # exact deadlock or waiting for timeout_per_run.
                         pass
                     else:
