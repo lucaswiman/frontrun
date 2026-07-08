@@ -784,6 +784,93 @@ def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_unmanaged_release_clears_recorded_spin_flag_random() -> None:
+    """Regression: an unmanaged releaser must clear a waiter's blocking-spin flag.
+
+    A managed waiter that blocks in a cooperative wait under a virtual clock
+    flags itself in the scheduler's ``spin_waiters`` so the autojump can tell it
+    apart from a runnable thread.  When the resource is released/set by an
+    *unmanaged* helper OS thread (no scheduler in TLS), the old
+    ``_note_spin_release`` resolved the scheduler from the *releaser's* empty
+    context and did nothing — leaving the waiter flagged, so the random-strategy
+    autojump counts it as hopeless and advances virtual time past a wake that
+    could actually have happened.  The releaser must reach the scheduler the
+    waiter *recorded* at flag time.
+
+    A deterministic end-to-end timing test is infeasible (virtual scheduling
+    always races the real-time setter — the autojump-to-own-deadline fires
+    before a delayed set() lands); this asserts the recording/resolution
+    contract directly, as ``test_give_up_timed_wait_is_atomic_and_unblocks_first``
+    does for its OS-descheduling race."""
+    from frontrun._cooperative import (
+        _note_spin_release,
+        _spin_note_hook,
+        clear_context,
+        get_context,
+        set_context,
+    )
+
+    scheduler = OpcodeScheduler([], num_threads=1, virtual_clock=VirtualClock(), clock_mode="virtual")
+    resource_id = 0xC0FFEE
+    tid = 0
+
+    # A managed waiter flags its blocking spin (this must record the scheduler).
+    set_context(scheduler, tid)
+    try:
+        note_spin = _spin_note_hook(scheduler)
+        assert note_spin is not None
+        note_spin(tid, resource_id, True)
+    finally:
+        clear_context()
+    assert tid in scheduler._spin_waiters
+
+    # Unmanaged releaser: no scheduler in TLS.
+    assert get_context() is None
+    _note_spin_release(resource_id)
+
+    assert tid not in scheduler._spin_waiters, (
+        "an unmanaged release must clear the spin flag via the scheduler the waiter recorded"
+    )
+
+
+def test_unmanaged_release_unblocks_engine_spin_waiter_dpor() -> None:
+    """Regression (DPOR): an unmanaged set()/release() must engine-unblock a
+    timed cooperative waiter.
+
+    A DPOR timed ``Event.wait(timeout=...)`` waiter blocks itself in the engine
+    via ``note_blocking_spin``; only the *untimed* Event path had an
+    ``_engine_blocked`` fallback for unmanaged setters, so an unmanaged ``set()``
+    on the timed path left the waiter engine-blocked until the deadlock timeout.
+    Resolving the scheduler from the waiter's recording fixes it."""
+    from frontrun._cooperative import _note_spin_release, _spin_note_hook, clear_context, set_context
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    execution = _FakeExecution([0])
+    scheduler = DporScheduler(
+        _FakeEngine(),
+        execution,
+        num_threads=1,
+        virtual_clock=VirtualClock(),
+        clock_mode="virtual",
+        clock_actor_id=99,
+    )
+    resource_id = 0xBEEF
+    tid = 0
+
+    set_context(scheduler, tid)
+    try:
+        note_spin = _spin_note_hook(scheduler)
+        assert note_spin is not None
+        note_spin(tid, resource_id, True)  # engine-blocks tid + records scheduler
+    finally:
+        clear_context()
+    assert tid in execution.blocked, "note_blocking_spin must engine-block the waiter"
+
+    _note_spin_release(resource_id)  # unmanaged releaser: no scheduler in TLS
+
+    assert tid not in execution.blocked, "an unmanaged release must engine-unblock the recorded spin waiter"
+
+
 # ---------------------------------------------------------------------------
 # Timed lock acquires
 # ---------------------------------------------------------------------------
