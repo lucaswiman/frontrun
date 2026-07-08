@@ -1333,6 +1333,94 @@ def test_async_condition_patch_preserves_unmanaged_wait_notify() -> None:
         _unpatch_asyncio_queue_condition()
 
 
+def test_async_condition_notify_all_wakes_mixed_waiters() -> None:
+    from frontrun._async_autopause import _scheduler_var, _task_id_var
+    from frontrun.async_dpor import _patch_asyncio_queue_condition, _unpatch_asyncio_queue_condition
+
+    class FakeExecution:
+        def block_thread(self, task_id: int) -> None:
+            pass
+
+        def unblock_thread(self, task_id: int) -> None:
+            pass
+
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.engine = object()
+            self.execution = FakeExecution()
+            self._event_blocked: set[int] = set()
+            self._stable_ids = None
+            self._error = None
+
+        async def kick_stalled_schedule(self, task_id: int) -> None:
+            pass
+
+        async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
+            pass
+
+        def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
+            pass
+
+        def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
+            pass
+
+    async def scenario() -> tuple[bool, bool]:
+        condition = asyncio.Condition()
+        ready = asyncio.Event()
+        ready_count = 0
+        unmanaged_woke = False
+        managed_woke = False
+        scheduler = FakeScheduler()
+
+        def mark_ready() -> None:
+            nonlocal ready_count
+            ready_count += 1
+            if ready_count == 2:
+                ready.set()
+
+        async def unmanaged_waiter() -> None:
+            nonlocal unmanaged_woke
+            async with condition:
+                mark_ready()
+                await condition.wait()
+                unmanaged_woke = True
+
+        async def managed_waiter() -> None:
+            nonlocal managed_woke
+            scheduler_token = _scheduler_var.set(scheduler)
+            task_token = _task_id_var.set(1)
+            try:
+                async with condition:
+                    mark_ready()
+                    await condition.wait()
+                    managed_woke = True
+            finally:
+                _task_id_var.reset(task_token)
+                _scheduler_var.reset(scheduler_token)
+
+        unmanaged = asyncio.create_task(unmanaged_waiter())
+        managed = asyncio.create_task(managed_waiter())
+        await ready.wait()
+
+        scheduler_token = _scheduler_var.set(scheduler)
+        task_token = _task_id_var.set(2)
+        try:
+            async with condition:
+                condition.notify_all()
+        finally:
+            _task_id_var.reset(task_token)
+            _scheduler_var.reset(scheduler_token)
+
+        await asyncio.wait_for(asyncio.gather(unmanaged, managed), timeout=1.0)
+        return unmanaged_woke, managed_woke
+
+    _patch_asyncio_queue_condition()
+    try:
+        assert asyncio.run(scenario()) == (True, True)
+    finally:
+        _unpatch_asyncio_queue_condition()
+
+
 def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
     class State:
         def __init__(self) -> None:
