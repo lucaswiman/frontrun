@@ -147,3 +147,27 @@ def test_scheduler_context_with_none_clock_is_authoritative(monkeypatch: pytest.
         unpatch_time()
         _cooperative.clear_context()
         _thread_clocks.pop(ident, None)
+
+
+# ---------------------------------------------------------------------------
+# Fix 5: time.sleep under an active clock (no scheduler ctx) advances the clock.
+# ---------------------------------------------------------------------------
+
+
+def test_cooperative_sleep_advances_active_clock_without_scheduler_ctx() -> None:
+    """Sleeping during setup()/invariant (no worker turn) must age the clock.
+
+    Under ``clock_scope`` the driver thread has an active virtual clock but no
+    cooperative scheduler context.  ``time.sleep(n)`` must advance the clock by
+    ``n`` virtual seconds (deterministic — the driver is the only clock user at
+    that moment), not silently no-op.
+    """
+    _cooperative.clear_context()
+    assert _cooperative.get_context() is None
+    clock = VirtualClock()
+    with clock_scope(clock):
+        before = time.monotonic()
+        _cooperative._cooperative_sleep(5.0)
+        after = time.monotonic()
+    assert after - before == pytest.approx(5.0)
+    assert clock.now() == pytest.approx(VIRTUAL_EPOCH + 5.0)
