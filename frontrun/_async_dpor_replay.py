@@ -274,15 +274,6 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         _scheduler_var.set(None)
         _task_id_var.set(None)
 
-    async def pause(self, task_id: Any, marker: Any = None) -> None:
-        depth = _in_scheduler_pause.get()
-        _in_scheduler_pause.set(depth + 1)
-        try:
-            await _real_asyncio_sleep(0)
-            await super().pause(task_id, marker)
-        finally:
-            _in_scheduler_pause.set(depth)
-
     def finish_task(self, task_id: int) -> None:
         self._tasks_done.add(task_id)
 

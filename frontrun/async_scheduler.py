@@ -46,7 +46,13 @@ import weakref
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
+from frontrun._async_autopause import _in_scheduler_pause
 from frontrun._virtual_clock import real_monotonic
+
+# Real asyncio.sleep captured before any patching, for the shared pause() yield.
+# async_scheduler loads before explore() patches asyncio.sleep, so this is the
+# genuine original (same object _async_cooperative captures independently).
+_real_asyncio_sleep = asyncio.sleep
 
 __all__ = [
     "InterleavedLoop",
@@ -595,3 +601,23 @@ class _AsyncSchedulerBase(InterleavedLoop):
                     return
             if not (self._finished or self._error):
                 self._on_scheduled_after_block(task_id)
+
+    async def pause(self, task_id: Any, marker: Any = None) -> None:
+        """DPOR/replay-aware pause that ensures fair task wakeup.
+
+        After proceeding from a pause, yields to the event loop so other tasks
+        that were notified can process their condition waits.  Without this, a
+        single task can reacquire the condition lock before other notified tasks,
+        causing false deadlock detection.
+
+        Sets ``_in_scheduler_pause`` so the coroutine wrapper knows not to insert
+        a redundant scheduling point for this pause's own yields.
+        """
+        depth = _in_scheduler_pause.get()
+        _in_scheduler_pause.set(depth + 1)
+        try:
+            # Yield to let any previously-notified tasks process their wakeups.
+            await _real_asyncio_sleep(0)
+            await super().pause(task_id, marker)
+        finally:
+            _in_scheduler_pause.set(depth)

@@ -765,26 +765,6 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             self._stop_opcode_trace()
             self._shadow_stacks.clear()
 
-    async def pause(self, task_id: Any, marker: Any = None) -> None:
-        """DPOR-aware pause that ensures fair task wakeup.
-
-        After proceeding from a pause, yields to the event loop so other
-        tasks that were notified can process their condition waits.
-        Without this, a single task can reacquire the condition lock
-        before other notified tasks, causing false deadlock detection.
-
-        Sets ``_in_scheduler_pause`` so the coroutine wrapper knows not
-        to insert a redundant scheduling point for this pause's yields.
-        """
-        depth = _in_scheduler_pause.get()
-        _in_scheduler_pause.set(depth + 1)
-        try:
-            # Yield to let any previously-notified tasks process their wakeups
-            await _real_asyncio_sleep(0)
-            await super().pause(task_id, marker)
-        finally:
-            _in_scheduler_pause.set(depth)
-
     async def _mark_done(self, task_id: Any) -> None:
         """Mark a task as finished in both InterleavedLoop and the DPOR engine."""
         self._progress += 1
