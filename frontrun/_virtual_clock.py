@@ -63,7 +63,22 @@ _REAL_TIME_FUNCTIONS = {
     _real_monotonic_ns: "time.monotonic_ns",
     _real_perf_counter_ns: "time.perf_counter_ns",
 }
-_warned_captured_refs: set[tuple[str, int, str, str]] = set()
+_warned_captured_refs: set[tuple[str, str, str, str]] = set()
+
+# Values that were *installed* on the ``time`` / ``datetime`` modules when
+# ``patch_time`` last transitioned 0->1.  Unlike the ``_real_*`` C functions
+# above (captured once at import), these track whatever third-party patcher
+# (freezegun, time-machine, ...) was already active when we patched.  The
+# gated fallback (no active virtual clock) calls *these*, and ``unpatch_time``
+# restores *these*, so an outer freeze survives a nested ``clock_scope``.
+_saved_time = _real_time
+_saved_monotonic = _real_monotonic
+_saved_perf_counter = _real_perf_counter
+_saved_time_ns = _real_time_ns
+_saved_monotonic_ns = _real_monotonic_ns
+_saved_perf_counter_ns = _real_perf_counter_ns
+_saved_datetime: type[_datetime.datetime] = _real_datetime
+_saved_date: type[_datetime.date] = _real_date
 
 
 def real_monotonic() -> float:
@@ -401,32 +416,32 @@ def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
 
 def _virtual_time() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _real_time()
+    return clock.now() if clock is not None else _saved_time()
 
 
 def _virtual_monotonic() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _real_monotonic()
+    return clock.now() if clock is not None else _saved_monotonic()
 
 
 def _virtual_perf_counter() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _real_perf_counter()
+    return clock.now() if clock is not None else _saved_perf_counter()
 
 
 def _virtual_time_ns() -> int:
     clock = _active_virtual_clock()
-    return int(clock.now() * 1e9) if clock is not None else _real_time_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_time_ns()
 
 
 def _virtual_monotonic_ns() -> int:
     clock = _active_virtual_clock()
-    return int(clock.now() * 1e9) if clock is not None else _real_monotonic_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_monotonic_ns()
 
 
 def _virtual_perf_counter_ns() -> int:
     clock = _active_virtual_clock()
-    return int(clock.now() * 1e9) if clock is not None else _real_perf_counter_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_perf_counter_ns()
 
 
 _time_patch_count = 0
@@ -438,10 +453,24 @@ def patch_time() -> None:
     active virtual clock.  Reference-counted; unaffected threads see real time.
     """
     global _time_patch_count  # noqa: PLW0603
+    global _saved_time, _saved_monotonic, _saved_perf_counter  # noqa: PLW0603
+    global _saved_time_ns, _saved_monotonic_ns, _saved_perf_counter_ns  # noqa: PLW0603
+    global _saved_datetime, _saved_date  # noqa: PLW0603
     with _time_patch_lock:
         _time_patch_count += 1
         if _time_patch_count > 1:
             return
+        # Snapshot whatever is currently installed (possibly a third-party
+        # fake) *before* overwriting, so the gated fallback and unpatch_time
+        # honor it rather than the pristine import-time C functions.
+        _saved_time = time.time
+        _saved_monotonic = time.monotonic
+        _saved_perf_counter = time.perf_counter
+        _saved_time_ns = time.time_ns
+        _saved_monotonic_ns = time.monotonic_ns
+        _saved_perf_counter_ns = time.perf_counter_ns
+        _saved_datetime = _datetime.datetime
+        _saved_date = _datetime.date
         time.time = _virtual_time
         time.monotonic = _virtual_monotonic
         time.perf_counter = _virtual_perf_counter
@@ -461,14 +490,16 @@ def unpatch_time() -> None:
         _time_patch_count -= 1
         if _time_patch_count > 0:
             return
-        time.time = _real_time
-        time.monotonic = _real_monotonic
-        time.perf_counter = _real_perf_counter
-        time.time_ns = _real_time_ns
-        time.monotonic_ns = _real_monotonic_ns
-        time.perf_counter_ns = _real_perf_counter_ns
-        _datetime.datetime = _real_datetime
-        _datetime.date = _real_date
+        # Restore whatever was installed when we patched (Fix 1): an outer
+        # freezegun/time-machine patch must survive our scope.
+        time.time = _saved_time
+        time.monotonic = _saved_monotonic
+        time.perf_counter = _saved_perf_counter
+        time.time_ns = _saved_time_ns
+        time.monotonic_ns = _saved_monotonic_ns
+        time.perf_counter_ns = _saved_perf_counter_ns
+        _datetime.datetime = _saved_datetime
+        _datetime.date = _saved_date
 
 
 __all__ = [
