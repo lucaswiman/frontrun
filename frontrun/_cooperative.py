@@ -248,26 +248,75 @@ def _spin_hook_for_wait(scheduler: Any, timeout: float | None, clock: Any) -> An
     return None
 
 
+# Records, per (resource_id, thread_id), the scheduler a managed waiter flagged a
+# blocking spin with.  release()/set()/put() resolve which scheduler(s) to clear
+# from THIS recording rather than from the releaser's TLS context, so an
+# *unmanaged* releaser — a helper OS thread spawned by user code, with no
+# scheduler in TLS — can still clear the flag (random-strategy autojump) and
+# engine-unblock the waiter (DPOR timed Event.wait via note_blocking_spin).
+# Mirrors CooperativeEvent._engine_blocked, which does the same waiter->scheduler
+# recording for the untimed DPOR engine-block path (kept separate below: it
+# clears via clear_engine_block, a different unblock call for a waiter that never
+# set a spin flag).  Only virtual-clock schedulers ever register here (see
+# _spin_note_hook), so the old "has a virtual clock" guard is implicit.  Keyed
+# per thread and forgotten when the waiter clears its flag, so multi-waiter
+# resources stay correct and the map does not leak.
+_spin_flag_schedulers: dict[tuple[int, int], Any] = {}
+_spin_flag_lock = real_lock()
+
+
+def _record_spin_scheduler(resource_id: int, thread_id: int, scheduler: Any) -> None:
+    with _spin_flag_lock:
+        _spin_flag_schedulers[(resource_id, thread_id)] = scheduler
+
+
+def _forget_spin_scheduler(resource_id: int, thread_id: int) -> None:
+    with _spin_flag_lock:
+        _spin_flag_schedulers.pop((resource_id, thread_id), None)
+
+
+def _spin_schedulers_for(resource_id: int) -> list[Any]:
+    """Distinct schedulers a waiter flagged a spin on *resource_id* with."""
+    with _spin_flag_lock:
+        found = [s for (rid, _tid), s in _spin_flag_schedulers.items() if rid == resource_id]
+    deduped: dict[int, Any] = {}
+    for scheduler in found:
+        deduped.setdefault(id(scheduler), scheduler)
+    return list(deduped.values())
+
+
 def _spin_note_hook(scheduler: Any) -> Any | None:
     """``note_blocking_spin`` hook, if the scheduler has one *and* runs a
     virtual clock (random-strategy autojump needs to know about untimed
-    spinners; see OpcodeScheduler._spin_waiters).  ``None`` otherwise."""
+    spinners; see OpcodeScheduler._spin_waiters).  ``None`` otherwise.
+
+    The returned hook records/forgets the scheduler on the shared spin-flag
+    registry alongside flagging the spin, so a later release from an unmanaged
+    thread can still resolve the scheduler that must clear it."""
     if getattr(scheduler, "virtual_clock", None) is None:
         return None
-    return getattr(scheduler, "note_blocking_spin", None)
+    note = getattr(scheduler, "note_blocking_spin", None)
+    if note is None:
+        return None
+
+    def _hook(thread_id: int, resource_id: int, waiting: bool) -> None:
+        if waiting:
+            _record_spin_scheduler(resource_id, thread_id, scheduler)
+        else:
+            _forget_spin_scheduler(resource_id, thread_id)
+        note(thread_id, resource_id, waiting)
+
+    return _hook
 
 
 def _note_spin_release(resource_id: int) -> None:
-    """Tell a virtual-clock random scheduler that *resource_id* was
-    released/set, so its spinners re-probe before counting as blocked."""
-    ctx = get_context()
-    if ctx is None:
-        return
-    if getattr(ctx[0], "virtual_clock", None) is None:
-        return
-    note = getattr(ctx[0], "note_spin_release", None)
-    if note is not None:
-        note(resource_id)
+    """Clear blocking-spin flags for *resource_id* on every scheduler a waiter
+    recorded, so spinners re-probe before counting as blocked — and so an
+    *unmanaged* releaser (no scheduler in TLS) still reaches them."""
+    for scheduler in _spin_schedulers_for(resource_id):
+        note = getattr(scheduler, "note_spin_release", None)
+        if note is not None:
+            note(resource_id)
 
 
 def _record_holding(thread_id: int, object_id: int) -> None:
