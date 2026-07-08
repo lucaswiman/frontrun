@@ -8,13 +8,18 @@ deadline coordinator's thread-safety) rather than going through a full
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import threading
 import time
+import warnings
+from typing import Any
 
 import pytest
 
+import frontrun
 from frontrun import _cooperative
+from frontrun import _virtual_clock as vc
 from frontrun._virtual_clock import (
     VIRTUAL_EPOCH,
     DeadlineCoordinator,
@@ -24,7 +29,26 @@ from frontrun._virtual_clock import (
     clock_scope,
     patch_time,
     unpatch_time,
+    validate_clock_options,
+    warn_if_captured_time_reference,
 )
+
+
+def _reset_diag_caches() -> None:
+    vc._warned_captured_refs.clear()
+    scanned = getattr(vc, "_scanned_code_objects", None)
+    if scanned is not None:
+        scanned.clear()
+
+
+class _FakeFrame:
+    """Minimal stand-in for a Python frame for the diagnostic scanner."""
+
+    def __init__(self, code: Any, locals_: dict[str, Any], globals_: dict[str, Any], lineno: int) -> None:
+        self.f_code = code
+        self.f_locals = locals_
+        self.f_globals = globals_
+        self.f_lineno = lineno
 
 
 # ---------------------------------------------------------------------------
@@ -238,3 +262,135 @@ def test_deadline_coordinator_survives_concurrent_hammering() -> None:
     assert not errors, f"coordinator raised under concurrency: {errors!r}"
     # Clock only ever moves forward.
     assert clock.now() >= VIRTUAL_EPOCH
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: make clock_diagnostics usable.
+# ---------------------------------------------------------------------------
+
+
+def _probe() -> None:  # a stable, distinct code object for scanner tests
+    pass
+
+
+def test_clock_diagnostics_warns_once_per_capture_across_lines() -> None:
+    """(a)/(b) The dedup key drops f_lineno and each code object scans once.
+
+    Two frames sharing one code object but differing in f_lineno (as a per-line
+    tracer would supply) must yield exactly one warning, not one per line.
+    """
+    _reset_diag_caches()
+    captured = time.monotonic
+    code = _probe.__code__
+    globs: dict[str, Any] = {}
+    frame_a = _FakeFrame(code, {"cap": captured}, globs, 10)
+    frame_b = _FakeFrame(code, {"cap": captured}, globs, 20)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warn_if_captured_time_reference(frame_a)
+        warn_if_captured_time_reference(frame_b)
+    captured_warnings = [w for w in caught if "captured" in str(w.message)]
+    assert len(captured_warnings) == 1
+
+
+def test_clock_diagnostics_scans_each_code_object_at_most_once() -> None:
+    """(b) A cache hit early-returns before touching frame locals/globals."""
+    _reset_diag_caches()
+
+    class CountingDict(dict[str, Any]):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.items_calls = 0
+
+        def items(self):  # type: ignore[override]
+            self.items_calls += 1
+            return super().items()
+
+    captured = time.monotonic
+    code = _probe.__code__
+    locals_a = CountingDict({"cap": captured})
+    globals_a = CountingDict()
+    warn_if_captured_time_reference(_FakeFrame(code, locals_a, globals_a, 1))
+    assert locals_a.items_calls == 1
+    assert globals_a.items_calls == 1
+
+    # Second frame, same code object: must early-return without scanning.
+    locals_b = CountingDict({"cap": captured})
+    globals_b = CountingDict()
+    warn_if_captured_time_reference(_FakeFrame(code, locals_b, globals_b, 2))
+    assert locals_b.items_calls == 0
+    assert globals_b.items_calls == 0
+
+
+def test_clock_diagnostics_survives_racing_dict_mutation() -> None:
+    """(c) A RuntimeError from concurrent global stores is retried, not raised."""
+    _reset_diag_caches()
+
+    class FlakyDict(dict[str, Any]):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.calls = 0
+
+        def items(self):  # type: ignore[override]
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("dictionary changed size during iteration")
+            return super().items()
+
+    captured = time.monotonic
+    code = _probe.__code__
+    flaky_globals = FlakyDict({"cap": captured})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        # Must not raise despite the first items() blowing up.
+        warn_if_captured_time_reference(_FakeFrame(code, {}, flaky_globals, 1))
+    assert flaky_globals.calls == 2  # retried once
+    captured_warnings = [w for w in caught if "captured" in str(w.message)]
+    assert len(captured_warnings) == 1
+
+
+def test_validate_rejects_clock_diagnostics_with_real_clock() -> None:
+    """(d) clock_diagnostics=True with clock='real' is a ValueError, centrally."""
+    with pytest.raises(ValueError, match="clock_diagnostics"):
+        validate_clock_options("real", clock_diagnostics=True)
+
+
+def test_explore_rejects_clock_diagnostics_with_real_clock() -> None:
+    """(d) The public explore() surface rejects diagnostics under clock='real'."""
+
+    class State:
+        pass
+
+    with pytest.raises(ValueError, match="clock_diagnostics"):
+        frontrun.explore(
+            setup=State,
+            workers=[lambda s: None],
+            invariant=lambda s: True,
+            clock="real",
+            clock_diagnostics=True,
+        )
+
+
+def test_async_random_warns_clock_diagnostics_unsupported() -> None:
+    """(e) The async random strategy warns that clock_diagnostics is ignored."""
+
+    class State:
+        def __init__(self) -> None:
+            self.value = 0
+
+    async def worker(s: State) -> None:
+        s.value += 1
+
+    with pytest.warns(RuntimeWarning, match="clock_diagnostics is not supported"):
+        asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[worker],
+                invariant=lambda s: True,
+                strategy="random",
+                clock="virtual",
+                clock_diagnostics=True,
+                max_attempts=2,
+                reproduce_on_failure=0,
+            )
+        )
