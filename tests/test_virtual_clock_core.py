@@ -310,14 +310,15 @@ def test_clock_diagnostics_scans_each_code_object_at_most_once() -> None:
     code = _probe.__code__
     locals_a = CountingDict({"cap": captured})
     globals_a = CountingDict()
-    warn_if_captured_time_reference(_FakeFrame(code, locals_a, globals_a, 1))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        warn_if_captured_time_reference(_FakeFrame(code, locals_a, globals_a, 1))
+        # Second frame, same code object: must early-return without scanning.
+        locals_b = CountingDict({"cap": captured})
+        globals_b = CountingDict()
+        warn_if_captured_time_reference(_FakeFrame(code, locals_b, globals_b, 2))
     assert locals_a.items_calls == 1
     assert globals_a.items_calls == 1
-
-    # Second frame, same code object: must early-return without scanning.
-    locals_b = CountingDict({"cap": captured})
-    globals_b = CountingDict()
-    warn_if_captured_time_reference(_FakeFrame(code, locals_b, globals_b, 2))
     assert locals_b.items_calls == 0
     assert globals_b.items_calls == 0
 
