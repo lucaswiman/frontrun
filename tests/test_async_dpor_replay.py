@@ -199,6 +199,36 @@ def test_handle_timeout_wakes_parked_primitive_waiters() -> None:
     assert asyncio.run(scenario()) is True
 
 
+def test_handle_all_waiting_deadlock_wakes_parked_primitive_waiters() -> None:
+    """The all-waiting-deadlock abort path in the base InterleavedLoop must also
+    wake tasks parked on cooperative primitives.
+
+    Wave-1 Fix E wired the ``_handle_timeout`` watchdog to wake parked waiters,
+    but ``_handle_all_waiting_deadlock`` is a sibling abort path that sets
+    ``self._error`` too; without waking, a task parked in a cooperative wrapper
+    stays parked until ``timeout_per_run`` instead of free-running to completion.
+    """
+
+    async def scenario() -> bool:
+        scheduler = object.__new__(AsyncDporScheduler)
+        scheduler._error = None
+        scheduler._current_task = 0
+        scheduler._condition = asyncio.Condition()
+        scheduler._num_tasks = 2
+        scheduler._tasks_done = set()
+        event = _CooperativeAsyncEvent()
+        _async_parked_events.add(event)
+        try:
+            assert not event._event.is_set()
+            async with scheduler._condition:
+                scheduler._handle_all_waiting_deadlock(1, marker="x")
+            return event._event.is_set()
+        finally:
+            _async_parked_events.clear()
+
+    assert asyncio.run(scenario()) is True
+
+
 def test_condition_notify_no_context_wakes_at_most_n_across_both_waiter_sets() -> None:
     """Without scheduler context, ``notify(n)`` must wake at most ``n`` waiters
     total across the real-condition and cooperative waiter populations.
