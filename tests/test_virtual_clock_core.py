@@ -74,3 +74,37 @@ def test_patch_time_preserves_preexisting_patch(monkeypatch: pytest.MonkeyPatch)
     assert time.time() == sentinel
     assert other_thread_saw["time"] == sentinel
     assert other_thread_saw["monotonic"] == sentinel
+
+
+# ---------------------------------------------------------------------------
+# Fix 6: virtual datetime/date instances must have the real concrete type.
+# ---------------------------------------------------------------------------
+
+
+def test_virtual_datetime_instances_have_real_concrete_type() -> None:
+    """``now()``/``utcnow()``/``today()`` return plain real datetime/date.
+
+    Only the *class* on the ``datetime`` module is swapped during the patch
+    window; instances must be exactly ``datetime.datetime`` / ``datetime.date``
+    so values stored into user state keep working after unpatch (``type(x) is
+    datetime.datetime``, pydantic strict, sqlite adapters).
+    """
+    clock = VirtualClock()
+    with clock_scope(clock):
+        now = dt.datetime.now()
+        utc = dt.datetime.utcnow()
+        aware = dt.datetime.now(dt.timezone.utc)
+        today = dt.date.today()
+        # Inside the scope the module attribute is the virtual class, but the
+        # instances themselves must already be the real concrete type.
+        assert type(now) is dt.datetime
+        assert type(utc) is dt.datetime
+        assert type(aware) is dt.datetime
+        assert type(today) is dt.date
+        # Values reflect virtual time.
+        assert now.timestamp() == pytest.approx(VIRTUAL_EPOCH)
+
+    # After the scope, the stashed instances are still the real type.
+    assert type(now) is dt.datetime
+    assert type(today) is dt.date
+    assert aware.tzinfo is dt.timezone.utc
