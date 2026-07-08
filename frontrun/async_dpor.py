@@ -884,12 +884,21 @@ class _CooperativeAsyncCondition:
             raise RuntimeError("cannot notify on un-acquired lock")
         task_id = _task_id_var.get()
         scheduler = _scheduler_var.get()
+        budget = n
         if scheduler is None or task_id is None:
+            # Wake real-condition waiters first, then count those against the
+            # budget so the cooperative-waiter loop below cannot push the total
+            # number of wakes past n (notify(1) with a mixed population used to
+            # wake two).
+            real_waiters = getattr(self._real_condition, "_waiters", ())
+            pending_before = sum(1 for waiter_fut in real_waiters if not waiter_fut.done())
             self._real_condition.notify(n)
-            if not self._waiters:
+            pending_after = sum(1 for waiter_fut in real_waiters if not waiter_fut.done())
+            budget = max(0, n - (pending_before - pending_after))
+            if budget == 0 or not self._waiters:
                 return
         woke = 0
-        while self._waiters and woke < n:
+        while self._waiters and woke < budget:
             waiter, fut = self._waiters.pop(0)
             if fut.done():
                 continue
