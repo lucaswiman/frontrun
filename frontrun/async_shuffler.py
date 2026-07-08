@@ -41,6 +41,7 @@ an additional checkpoint.
 
 import asyncio
 import random
+import warnings
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -569,8 +570,21 @@ async def explore_async_random(
     """
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    _ = clock_diagnostics
-    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
+    clock = validate_clock_options(
+        clock,
+        patch_sleep=patch_sleep,
+        serializable_invariant=serializable_invariant,
+        clock_diagnostics=clock_diagnostics,
+    )
+    if clock_diagnostics:
+        # The async random strategy operates at await-point granularity and does
+        # not trace worker opcodes, so it cannot detect captured time references.
+        warnings.warn(
+            "clock_diagnostics is not supported for the async random strategy "
+            "(it does not trace worker opcodes); use strategy='dpor' for diagnostics",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     from frontrun._dpor_core import compute_serializable_baseline_async
 

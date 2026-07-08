@@ -761,7 +761,7 @@ def run_with_schedule(
     Returns:
         The state object after execution.
     """
-    clock = validate_clock_options(clock, patch_sleep=patch_sleep)
+    clock = validate_clock_options(clock, patch_sleep=patch_sleep, clock_diagnostics=clock_diagnostics)
     if _virtual_clock is not None and clock == "real":
         raise ValueError("_virtual_clock requires clock='virtual' or clock='explored'")
     virtual_clock = _virtual_clock if _virtual_clock is not None else (VirtualClock() if clock != "real" else None)
@@ -896,7 +896,12 @@ def explore_random(
     _require_frontrun_env("explore_random")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
+    clock = validate_clock_options(
+        clock,
+        patch_sleep=patch_sleep,
+        serializable_invariant=serializable_invariant,
+        clock_diagnostics=clock_diagnostics,
+    )
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
     try:

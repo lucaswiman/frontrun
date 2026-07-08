@@ -2658,7 +2658,12 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     Returns:
         InterleavingResult with exploration statistics and any counterexample.
     """
-    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
+    clock = validate_clock_options(
+        clock,
+        patch_sleep=patch_sleep,
+        serializable_invariant=serializable_invariant,
+        clock_diagnostics=clock_diagnostics,
+    )
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 

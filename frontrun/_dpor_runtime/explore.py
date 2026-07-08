@@ -162,7 +162,12 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
        automatically skipped.
     """
     _require_frontrun_env("frontrun.explore")
-    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
+    clock = validate_clock_options(
+        clock,
+        patch_sleep=patch_sleep,
+        serializable_invariant=serializable_invariant,
+        clock_diagnostics=clock_diagnostics,
+    )
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 

@@ -35,6 +35,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from types import CodeType
 from typing import Any, Literal
 
 from frontrun import _real_threading as _rt
@@ -98,6 +99,7 @@ def validate_clock_options(
     *,
     patch_sleep: bool = True,
     serializable_invariant: object = False,
+    clock_diagnostics: bool = False,
 ) -> ClockMode:
     """Validate ``clock=`` against the options it constrains.
 
@@ -114,7 +116,19 @@ def validate_clock_options(
                 "the sequential baseline runs execute outside the scheduler, so their sleeps "
                 "and clock reads would use real wall-clock time"
             )
+    elif clock_diagnostics:
+        raise ValueError(
+            "clock_diagnostics=True requires clock='virtual' or clock='explored' "
+            "(there is no virtual clock to diagnose captured time references against under clock='real')"
+        )
     return mode
+
+
+#: Code objects already scanned by :func:`warn_if_captured_time_reference`.
+#: Scanning is O(globals+locals), so we do it at most once per code object per
+#: process.  ``id``-reuse across freed code objects is possible but harmless
+#: here (code objects for explored workers stay alive for the run's duration).
+_scanned_code_objects: set[CodeType] = set()
 
 
 def warn_if_captured_time_reference(frame: Any) -> None:
@@ -123,13 +137,34 @@ def warn_if_captured_time_reference(frame: Any) -> None:
     This is an opt-in diagnostic called by tracers.  It intentionally does
     not rewrite the reference: function objects captured before frontrun's
     patch scope cannot be safely swapped out in general.
+
+    Cost control: each code object is scanned at most once per process (the
+    tracer fires per opcode, so re-scanning would be O(globals) per
+    instruction).  The cache hit early-returns *before* touching the frame's
+    locals/globals.  The dedup key omits the line number so a capture warns
+    once, not once per executed line.
     """
+    code = frame.f_code
+    if code in _scanned_code_objects:
+        return
+    _scanned_code_objects.add(code)
+    qualname = getattr(code, "co_qualname", code.co_name)
     for scope_name, mapping in (("local", frame.f_locals), ("global", frame.f_globals)):
-        for name, value in mapping.items():
+        # Iterating a live f_globals can race concurrent module-global stores on
+        # free-threaded builds; snapshot into a list, retrying once on the
+        # transient "dictionary changed size during iteration".
+        try:
+            items = list(mapping.items())
+        except RuntimeError:
+            try:
+                items = list(mapping.items())
+            except RuntimeError:
+                continue
+        for name, value in items:
             label = next((candidate for func, candidate in _REAL_TIME_FUNCTIONS.items() if value is func), None)
             if label is None:
                 continue
-            key = (frame.f_code.co_filename, frame.f_lineno, name, label)
+            key = (code.co_filename, qualname, name, label)
             if key in _warned_captured_refs:
                 continue
             _warned_captured_refs.add(key)
