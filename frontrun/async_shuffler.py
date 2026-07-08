@@ -88,7 +88,7 @@ from frontrun.common import (
 #: no task completions) before a sleeper concludes that the remaining tasks
 #: are parked on something the scheduler cannot see (e.g. an unpatched
 #: asyncio.Lock) and autojumps the virtual clock.
-_QUIESCENCE_SLICE = 0.25
+_QUIESCENCE_SLICE = 0.01
 
 
 class AwaitScheduler(InterleavedLoop):

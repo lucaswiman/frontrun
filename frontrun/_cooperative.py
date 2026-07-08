@@ -253,37 +253,33 @@ def _spin_hook_for_wait(scheduler: Any, timeout: float | None, clock: Any) -> An
     return None
 
 
-# Records, per (resource_id, thread_id), the scheduler a managed waiter flagged a
-# blocking spin with.  release()/set()/put() resolve which scheduler(s) to clear
-# from THIS recording rather than from the releaser's TLS context, so an
-# *unmanaged* releaser — a helper OS thread spawned by user code, with no
-# scheduler in TLS — can still clear the flag (random-strategy autojump) and
-# engine-unblock the waiter (DPOR timed Event.wait via note_blocking_spin).
-# Mirrors CooperativeEvent._engine_blocked, which does the same waiter->scheduler
-# recording for the untimed DPOR engine-block path (kept separate below: it
-# clears via clear_engine_block, a different unblock call for a waiter that never
-# set a spin flag).  Only virtual-clock schedulers ever register here (see
-# _spin_note_hook), so the old "has a virtual clock" guard is implicit.  Keyed
-# per thread and forgotten when the waiter clears its flag, so multi-waiter
-# resources stay correct and the map does not leak.
-_spin_flag_schedulers: dict[tuple[int, int], Any] = {}
+# Records, per resource and thread, the scheduler a managed waiter flagged a
+# blocking spin with.  release()/set()/put() resolve from this recording rather
+# than from the releaser's TLS context, so unmanaged helper threads can still
+# clear random-strategy autojump flags and DPOR timed-wait engine blocks.
+_spin_flag_schedulers: dict[int, dict[int, Any]] = {}
 _spin_flag_lock = real_lock()
 
 
 def _record_spin_scheduler(resource_id: int, thread_id: int, scheduler: Any) -> None:
     with _spin_flag_lock:
-        _spin_flag_schedulers[(resource_id, thread_id)] = scheduler
+        _spin_flag_schedulers.setdefault(resource_id, {})[thread_id] = scheduler
 
 
 def _forget_spin_scheduler(resource_id: int, thread_id: int) -> None:
     with _spin_flag_lock:
-        _spin_flag_schedulers.pop((resource_id, thread_id), None)
+        schedulers = _spin_flag_schedulers.get(resource_id)
+        if schedulers is None:
+            return
+        schedulers.pop(thread_id, None)
+        if not schedulers:
+            _spin_flag_schedulers.pop(resource_id, None)
 
 
 def _spin_schedulers_for(resource_id: int) -> list[Any]:
     """Distinct schedulers a waiter flagged a spin on *resource_id* with."""
     with _spin_flag_lock:
-        found = [s for (rid, _tid), s in _spin_flag_schedulers.items() if rid == resource_id]
+        found = list(_spin_flag_schedulers.get(resource_id, {}).values())
     deduped: dict[int, Any] = {}
     for scheduler in found:
         deduped.setdefault(id(scheduler), scheduler)
