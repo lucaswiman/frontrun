@@ -1405,6 +1405,44 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
     assert wall_elapsed < 2.0, f"async random lock+sleep took {wall_elapsed:.1f}s"
 
 
+def test_async_default_condition_lock_is_engine_visible() -> None:
+    """A default-constructed ``asyncio.Condition()`` under patching must use an
+    engine-visible lock.  Otherwise a task contending on ``async with cond:``
+    parks in a raw (engine-invisible) acquire while the engine still considers
+    it runnable, and the contended interleavings die as inconclusive
+    SchedulerTimeoutError instead of being explored.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.cond = asyncio.Condition()
+            self.value = 0
+
+    async def worker(s: State) -> None:
+        async with s.cond:
+            tmp = s.value
+            await asyncio.sleep(0)
+            s.value = tmp + 1
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker, worker],
+            invariant=lambda s: s.value == 2,
+            clock="virtual",
+            deadlock_timeout=1.0,
+            timeout_per_run=2.0,
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    # The condition lock serializes the read-modify-write, so no lost update.
+    assert result.property_holds, result.explanation
+    assert "timed out" not in (result.explanation or ""), result.explanation
+    assert wall_elapsed < 6.0, f"default condition lock contention burned {wall_elapsed:.1f}s wall time"
+
+
 def test_async_exact_deadlock_declines_with_live_external_thread() -> None:
     """A live external OS thread can still wake a parked task via
     ``loop.call_soon_threadsafe``, so exact-deadlock detection must decline
