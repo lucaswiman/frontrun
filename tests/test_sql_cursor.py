@@ -1752,3 +1752,40 @@ def test_detect_autobegin_callable_autocommit_on() -> None:
     finally:
         _io_tls._in_transaction = False
         _io_tls._is_autobegin = False
+
+
+def test_acquire_pending_row_locks_with_opcode_scheduler_context() -> None:
+    """Random-strategy (OpcodeScheduler) + in-transaction SQL must not crash.
+
+    ``BytecodeShuffler._thread_runtime`` registers the ``OpcodeScheduler`` as
+    the DPOR context.  An in-transaction UPDATE buffers ``_pending_row_locks``,
+    which ``_acquire_pending_row_locks`` drains by calling
+    ``ctx[0].acquire_row_locks(...)``.  OpcodeScheduler models no SQL row
+    locks, so it must expose no-op ``acquire_row_locks`` / ``release_row_locks``
+    stubs (mirroring the async shuffler) rather than raising AttributeError.
+    """
+    from frontrun._io_detection import (
+        set_dpor_scheduler,
+        set_dpor_thread_id,
+    )
+    from frontrun._sql_row_locks import _acquire_pending_row_locks, _release_dpor_row_locks
+    from frontrun.bytecode import OpcodeScheduler
+
+    scheduler = OpcodeScheduler([], num_threads=1)
+    set_dpor_scheduler(scheduler)
+    set_dpor_thread_id(0)
+    _io_tls._pending_row_locks = ["public.accounts:1", "public.accounts:1"]
+    _io_tls._held_row_locks = set()
+    try:
+        # Must not raise AttributeError.
+        _acquire_pending_row_locks()
+        # OpcodeScheduler models no row locks, so nothing is recorded as held.
+        assert _io_tls._held_row_locks == set()
+        # Release path (used by _sql_cursor's error handler) must also be safe.
+        _release_dpor_row_locks()
+        assert _io_tls._held_row_locks == set()
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        _io_tls._pending_row_locks = []
+        _io_tls._held_row_locks = set()
