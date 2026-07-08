@@ -382,6 +382,25 @@ class OpcodeScheduler:
     def clear_engine_block(self, thread_id: int) -> None:
         """No-op: the random scheduler has no engine-level blocked state."""
 
+    def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> list[str]:
+        """No-op DPOR-compat stub: random exploration models no SQL row locks.
+
+        ``_acquire_pending_row_locks`` calls this when the OpcodeScheduler is
+        registered as the DPOR context (in-transaction SQL under
+        ``explore_random``).  Returning an empty list (rather than ``None``)
+        records nothing as held, which is correct because nothing is modeled.
+        Mirrors ``async_shuffler.OpcodeShuffler.acquire_row_locks`` and keeps
+        the signature compatible with ``DporScheduler.acquire_row_locks``.
+        """
+        return []
+
+    def release_row_locks(self, thread_id: int, resources: object = None) -> None:
+        """No-op DPOR-compat stub: random exploration models no SQL row locks.
+
+        Called by ``_release_dpor_row_locks`` (including the SQL error handler).
+        Mirrors ``async_shuffler.OpcodeShuffler.release_row_locks``.
+        """
+
     def give_up_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline on give-up.
 
