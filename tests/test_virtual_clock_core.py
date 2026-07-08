@@ -110,3 +110,40 @@ def test_virtual_datetime_instances_have_real_concrete_type() -> None:
     assert type(now) is dt.datetime
     assert type(today) is dt.date
     assert aware.tzinfo is dt.timezone.utc
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: an active scheduler context is authoritative for clock resolution.
+# ---------------------------------------------------------------------------
+
+
+def test_scheduler_context_with_none_clock_is_authoritative(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scheduler ctx whose virtual_clock is None means *real* time.
+
+    A ``clock="real"`` exploration nested inside an outer ``clock_scope`` /
+    contextvar registration must not leak the outer virtual clock: when a
+    scheduler context is present, its clock (even ``None``) wins over the TLS
+    registration and the contextvar.
+    """
+
+    class FakeScheduler:
+        virtual_clock = None
+
+    sentinel = 4242.0
+    monkeypatch.setattr(time, "time", lambda: sentinel)
+
+    clock = VirtualClock()
+    ident = threading.get_ident()
+    _thread_clocks[ident] = clock  # simulate an outer clock_scope registration
+    _cooperative.set_context(FakeScheduler(), 1)
+    patch_time()
+    try:
+        # The scheduler ctx with virtual_clock=None wins -> no active clock.
+        assert _active_virtual_clock() is None
+        # ... so the patched time.time() falls through to the (saved) real fn,
+        # not the virtual epoch.
+        assert time.time() == sentinel
+    finally:
+        unpatch_time()
+        _cooperative.clear_context()
+        _thread_clocks.pop(ident, None)
