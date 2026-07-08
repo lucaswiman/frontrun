@@ -21,11 +21,18 @@ from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_pa
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
 from frontrun.async_dpor import (
+    _async_parked_conditions,
+    _async_parked_events,
+    _async_parked_queues,
+    _CooperativeAsyncCondition,
+    _CooperativeAsyncEvent,
+    _CooperativeAsyncQueue,
     _patch_asyncio_event,
     _ReplayAsyncScheduler,
     _reset_async_lock_state,
     _unpatch_asyncio_event,
 )
+from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active
 
 
@@ -166,6 +173,51 @@ def test_event_blocked_replay_skips_drifted_waiter_slots() -> None:
             _reset_async_lock_state()
 
     assert asyncio.run(scenario()) == ["setter", "waiter"]
+
+
+def test_reset_async_lock_state_clears_all_parked_primitive_sets() -> None:
+    """``_reset_async_lock_state`` must clear the parked-queue and
+    parked-condition sets too, not only parked events.  Otherwise a stale
+    cooperative queue/condition from a prior execution or replay attempt
+    leaks into the next one (only cleared at unpatch).
+    """
+
+    async def _make() -> tuple[_CooperativeAsyncQueue[str], _CooperativeAsyncCondition, _CooperativeAsyncEvent]:
+        return _CooperativeAsyncQueue(), _CooperativeAsyncCondition(), _CooperativeAsyncEvent()
+
+    queue_obj, condition_obj, event_obj = asyncio.run(_make())
+    _async_parked_queues.add(queue_obj)
+    _async_parked_conditions.add(condition_obj)
+    _async_parked_events.add(event_obj)
+    try:
+        _reset_async_lock_state()
+        assert not _async_parked_events
+        assert not _async_parked_queues
+        assert not _async_parked_conditions
+    finally:
+        _async_parked_queues.clear()
+        _async_parked_conditions.clear()
+        _async_parked_events.clear()
+
+
+def test_replay_on_task_yielded_respects_error_guard() -> None:
+    """``_ReplayAsyncScheduler.on_task_yielded`` must short-circuit once the
+    run has an error (mirroring the exploration scheduler), rather than
+    advancing the replay cursor after an abort.
+    """
+
+    async def scenario() -> tuple[int, int | None]:
+        scheduler = _ReplayAsyncScheduler([0, 1], 2)
+        scheduler._current_task_consumed = True
+        scheduler._error = SchedulerTimeoutError("aborted")
+        scheduler.on_task_yielded(0)
+        await asyncio.sleep(0)  # let any wrongly-created notify task run
+        return scheduler._replay_index, scheduler._current_task
+
+    replay_index, current_task = asyncio.run(scenario())
+    # With the guard the cursor stays put (index 1, current task 0).
+    assert replay_index == 1
+    assert current_task == 0
 
 
 def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
