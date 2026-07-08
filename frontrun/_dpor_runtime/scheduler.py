@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import weakref
+
 from frontrun._dpor_core import ReplayEngine as _ReplayEngine
 from frontrun._dpor_core import ReplayExecution as _ReplayExecution
 from frontrun._dpor_core import (
@@ -110,7 +112,13 @@ class DporScheduler:
         self._error: Exception | None = None
         self._threads_done: set[int] = set()
         self._current_thread: int | None = None
-        self._baseline_thread_keys = {id(t) for t in threading.enumerate() if t.is_alive()}
+        # Weak references: a baseline thread that exits and is GC'd drops out,
+        # so a new external thread that reuses its id() cannot be misclassified
+        # as baseline in _has_live_external_threads (id reuse would otherwise
+        # wrongly re-enable exact-deadlock detection).
+        self._baseline_thread_keys: weakref.WeakSet[threading.Thread] = weakref.WeakSet(
+            t for t in threading.enumerate() if t.is_alive()
+        )
         self._worker_thread_keys: set[int] = set()
 
         # Shadow stacks are per-thread (each thread only accesses its own),
@@ -232,8 +240,11 @@ class DporScheduler:
             self._worker_thread_keys.discard(key)
 
     def _has_live_external_threads(self) -> bool:
+        # WeakSet auto-drops dead baseline threads, so resolving ids here never
+        # subtracts a stale id that a new external thread might have reused.
+        baseline_ids = {id(t) for t in self._baseline_thread_keys}
         current = {id(t) for t in threading.enumerate() if t.is_alive()}
-        external = current - self._baseline_thread_keys - self._worker_thread_keys
+        external = current - baseline_ids - self._worker_thread_keys
         return bool(external)
 
     def _sync_clock_actor_locked(self) -> None:
