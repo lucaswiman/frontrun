@@ -21,7 +21,7 @@ scheduler.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from frontrun._async_autopause import _in_scheduler_pause, _scheduler_var, _task_id_var
@@ -112,6 +112,82 @@ def _async_wake_sync_id(scheduler: Any, obj: object, waiter: int) -> int:
     stable_ids = getattr(scheduler, "_stable_ids", None)
     obj_id = stable_ids.get(obj) if stable_ids is not None else id(obj)
     return event_wake_sync_id(obj_id, waiter)
+
+
+async def _engine_parked_wait(
+    scheduler: Any,
+    task_id: int,
+    fut: Awaitable[Any],
+    *,
+    parked_set: set[Any],
+    obj: Any,
+    reason: str,
+    cleanup: Callable[[], None],
+    on_wake: Callable[[], Awaitable[None]] | None = None,
+    on_finally: Callable[[], Awaitable[None]] | None = None,
+) -> Any:
+    """Shared park/wake protocol for cooperative Event/Queue/Condition waits.
+
+    Centralises the sequence that was copy-pasted across ``Event.wait`` /
+    ``Queue.get`` / ``Queue.put`` / ``Condition.wait``: register in *parked_set*
+    → engine-``block_thread`` → bump ``_in_scheduler_pause`` → ``kick`` the turn
+    onward → ``await`` the physical wake *fut* → ``unblock_thread`` →
+    ``wait_until_scheduled_after_block`` → report the ``lock_acquire`` wake edge,
+    with a finally that runs *cleanup*, unblocks if the wake never landed, runs
+    *on_finally*, and finally restores the pause depth.
+
+    The caller performs any primitive-specific setup (registering its waiter,
+    and for ``Condition`` releasing its lock) *before* calling, and passes:
+
+    - *cleanup*: removes the caller's waiter and drops *obj* from *parked_set*
+      when none remain; runs exactly once in the finally.
+    - *on_wake*: optional hook run after the physical unblock and before the
+      reschedule wait — this is where ``Condition.wait`` re-acquires its lock
+      (kept in the caller, not inlined here) and ``Event.wait`` self-removes its
+      waiter before a possible concurrent ``set()``.
+    - *on_finally*: optional hook run in the finally after the unblock-if-needed
+      and before the pause-depth restore, still under the elevated pause depth —
+      this is where ``Condition.wait`` runs its exception-safe lock re-acquire.
+    """
+    parked_set.add(obj)
+    event_blocked = getattr(scheduler, "_event_blocked", None)
+    if event_blocked is not None:
+        event_blocked.add(task_id)
+    scheduler.execution.block_thread(task_id)
+    depth = _in_scheduler_pause.get()
+    _in_scheduler_pause.set(depth + 1)
+    unblocked = False
+    try:
+        kick = getattr(scheduler, "kick_stalled_schedule", None)
+        if kick is not None:
+            await kick(task_id)
+        result = await fut
+        scheduler.execution.unblock_thread(task_id)
+        unblocked = True
+        if event_blocked is not None:
+            event_blocked.discard(task_id)
+        if on_wake is not None:
+            await on_wake()
+        wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
+        if scheduler._error is None and wait_scheduled is not None:
+            await wait_scheduled(task_id, reason)
+        if scheduler._error is None:
+            report_task_sync = getattr(scheduler, "report_task_sync", None)
+            wake_id = _async_wake_sync_id(scheduler, obj, task_id)
+            if report_task_sync is not None:
+                report_task_sync(task_id, "lock_acquire", wake_id)
+            else:
+                scheduler.engine.report_sync(scheduler.execution, task_id, "lock_acquire", wake_id)
+        return result
+    finally:
+        cleanup()
+        if event_blocked is not None:
+            event_blocked.discard(task_id)
+        if not unblocked:
+            scheduler.execution.unblock_thread(task_id)
+        if on_finally is not None:
+            await on_finally()
+        _in_scheduler_pause.set(depth)
 
 
 def _reset_async_lock_state() -> None:
@@ -397,56 +473,28 @@ class _CooperativeAsyncEvent:
         # in unobserved (the sync CooperativeEvent needs an engine-lock
         # dance for the same guarantee).
         self._waiters.append(task_id)
-        _async_parked_events.add(self)
-        event_blocked = getattr(scheduler, "_event_blocked", None)
-        if event_blocked is not None:
-            event_blocked.add(task_id)
-        scheduler.execution.block_thread(task_id)
-        depth = _in_scheduler_pause.get()
-        _in_scheduler_pause.set(depth + 1)
-        unblocked = False
-        try:
-            # Blocking ourselves may have left nothing engine-runnable
-            # (see _CooperativeAsyncLock.acquire): hand the turn onward.
-            kick = getattr(scheduler, "kick_stalled_schedule", None)
-            if kick is not None:
-                await kick(task_id)
-            result = await self._event.wait()
+
+        def _drop_waiter() -> None:
+            # set() iterates _waiters without removing, so a woken waiter must
+            # self-remove before a possible concurrent second set() re-reports it.
             if task_id in self._waiters:
                 self._waiters.remove(task_id)
             if not self._waiters:
                 _async_parked_events.discard(self)
-            scheduler.execution.unblock_thread(task_id)
-            unblocked = True
-            if event_blocked is not None:
-                event_blocked.discard(task_id)
-            # A real event wake is only the physical unblock.  The task must
-            # still wait for the DPOR/replay scheduler to select it before
-            # returning to user code after ``await event.wait()``.
-            wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
-            if scheduler._error is None and wait_scheduled is not None:
-                await wait_scheduled(task_id, "event wait")
-            # Close the set() → wake happens-before edge (skip if the run was
-            # aborted — the free-run's events are not part of the exploration).
-            if scheduler._error is None:
-                report_task_sync = getattr(scheduler, "report_task_sync", None)
-                if report_task_sync is not None:
-                    report_task_sync(task_id, "lock_acquire", _async_wake_sync_id(scheduler, self, task_id))
-                else:
-                    engine.report_sync(
-                        scheduler.execution, task_id, "lock_acquire", _async_wake_sync_id(scheduler, self, task_id)
-                    )
-            return result
-        finally:
-            _in_scheduler_pause.set(depth)
-            if task_id in self._waiters:
-                self._waiters.remove(task_id)
-            if not self._waiters:
-                _async_parked_events.discard(self)
-            if event_blocked is not None:
-                event_blocked.discard(task_id)
-            if not unblocked:
-                scheduler.execution.unblock_thread(task_id)
+
+        async def _on_wake() -> None:
+            _drop_waiter()
+
+        return await _engine_parked_wait(
+            scheduler,
+            task_id,
+            self._event.wait(),
+            parked_set=_async_parked_events,
+            obj=self,
+            reason="event wait",
+            cleanup=_drop_waiter,
+            on_wake=_on_wake,
+        )
 
     def set(self) -> None:
         task_id = _task_id_var.get()
@@ -548,43 +596,25 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
                 raise SchedulerTimeoutError("queue get aborted by scheduler")
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._frontrun_get_waiters.append((task_id, fut))
-            _async_parked_queues.add(self)
-            event_blocked = getattr(scheduler, "_event_blocked", None)
-            if event_blocked is not None:
-                event_blocked.add(task_id)
-            scheduler.execution.block_thread(task_id)
-            depth = _in_scheduler_pause.get()
-            _in_scheduler_pause.set(depth + 1)
-            unblocked = False
-            try:
-                kick = getattr(scheduler, "kick_stalled_schedule", None)
-                if kick is not None:
-                    await kick(task_id)
-                await fut
-                scheduler.execution.unblock_thread(task_id)
-                unblocked = True
-                if event_blocked is not None:
-                    event_blocked.discard(task_id)
-                wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
-                if scheduler._error is None and wait_scheduled is not None:
-                    await wait_scheduled(task_id, "queue get")
-                if scheduler._error is None:
-                    report_task_sync = getattr(scheduler, "report_task_sync", None)
-                    if report_task_sync is not None:
-                        report_task_sync(task_id, "lock_acquire", _async_wake_sync_id(scheduler, self, task_id))
-                if not self.empty():
-                    break
-            finally:
-                _in_scheduler_pause.set(depth)
+
+            def _cleanup(fut: asyncio.Future[None] = fut) -> None:
                 self._frontrun_get_waiters = [
                     (waiter, waiter_fut) for waiter, waiter_fut in self._frontrun_get_waiters if waiter_fut is not fut
                 ]
                 if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
                     _async_parked_queues.discard(self)
-                if event_blocked is not None:
-                    event_blocked.discard(task_id)
-                if not unblocked:
-                    scheduler.execution.unblock_thread(task_id)
+
+            await _engine_parked_wait(
+                scheduler,
+                task_id,
+                fut,
+                parked_set=_async_parked_queues,
+                obj=self,
+                reason="queue get",
+                cleanup=_cleanup,
+            )
+            if not self.empty():
+                break
         return self.get_nowait()
 
     async def put(self, item: Any) -> None:
@@ -597,41 +627,23 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         while self.full():
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._frontrun_put_waiters.append((task_id, fut))
-            _async_parked_queues.add(self)
-            event_blocked = getattr(scheduler, "_event_blocked", None)
-            if event_blocked is not None:
-                event_blocked.add(task_id)
-            scheduler.execution.block_thread(task_id)
-            depth = _in_scheduler_pause.get()
-            _in_scheduler_pause.set(depth + 1)
-            unblocked = False
-            try:
-                kick = getattr(scheduler, "kick_stalled_schedule", None)
-                if kick is not None:
-                    await kick(task_id)
-                await fut
-                scheduler.execution.unblock_thread(task_id)
-                unblocked = True
-                if event_blocked is not None:
-                    event_blocked.discard(task_id)
-                wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
-                if scheduler._error is None and wait_scheduled is not None:
-                    await wait_scheduled(task_id, "queue put")
-                if scheduler._error is None:
-                    report_task_sync = getattr(scheduler, "report_task_sync", None)
-                    if report_task_sync is not None:
-                        report_task_sync(task_id, "lock_acquire", _async_wake_sync_id(scheduler, self, task_id))
-            finally:
-                _in_scheduler_pause.set(depth)
+
+            def _cleanup(fut: asyncio.Future[None] = fut) -> None:
                 self._frontrun_put_waiters = [
                     (waiter, waiter_fut) for waiter, waiter_fut in self._frontrun_put_waiters if waiter_fut is not fut
                 ]
-                if event_blocked is not None:
-                    event_blocked.discard(task_id)
-                if not unblocked:
-                    scheduler.execution.unblock_thread(task_id)
                 if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
                     _async_parked_queues.discard(self)
+
+            await _engine_parked_wait(
+                scheduler,
+                task_id,
+                fut,
+                parked_set=_async_parked_queues,
+                obj=self,
+                reason="queue put",
+                cleanup=_cleanup,
+            )
         self.put_nowait(item)
 
 
@@ -682,69 +694,60 @@ class _CooperativeAsyncCondition:
             return await self._real_condition.wait()
         fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._waiters.append((task_id, fut))
-        _async_parked_conditions.add(self)
-        event_blocked = getattr(scheduler, "_event_blocked", None)
-        if event_blocked is not None:
-            event_blocked.add(task_id)
+        # Release before parking so a notifier can take the lock; re-acquired on
+        # the way out (below).  The park/block/report protocol is shared via
+        # _engine_parked_wait; only the lock re-acquire stays here.
         self.release()
-        scheduler.execution.block_thread(task_id)
-        depth = _in_scheduler_pause.get()
-        _in_scheduler_pause.set(depth + 1)
-        unblocked = False
         acquired = False
-        try:
-            kick = getattr(scheduler, "kick_stalled_schedule", None)
-            if kick is not None:
-                await kick(task_id)
-            await fut
-            scheduler.execution.unblock_thread(task_id)
-            unblocked = True
-            if event_blocked is not None:
-                event_blocked.discard(task_id)
+
+        async def _reacquire_on_wake() -> None:
+            nonlocal acquired
             await self.acquire()
             acquired = True
-            wait_scheduled = getattr(scheduler, "wait_until_scheduled_after_block", None)
-            if scheduler._error is None and wait_scheduled is not None:
-                await wait_scheduled(task_id, "condition wait")
-            if scheduler._error is None:
-                report_task_sync = getattr(scheduler, "report_task_sync", None)
-                if report_task_sync is not None:
-                    report_task_sync(task_id, "lock_acquire", _async_wake_sync_id(scheduler, self, task_id))
-            return True
-        finally:
+
+        def _cleanup() -> None:
             self._waiters = [(waiter, waiter_fut) for waiter, waiter_fut in self._waiters if waiter_fut is not fut]
             if not self._waiters:
                 _async_parked_conditions.discard(self)
-            if event_blocked is not None:
-                event_blocked.discard(task_id)
-            if not unblocked:
-                scheduler.execution.unblock_thread(task_id)
-            try:
-                if not acquired:
-                    # Mirror stock asyncio.Condition.wait: always re-acquire the
-                    # lock before propagating, even under cancellation.  Only
-                    # this task's own re-acquire counts — checking locked() is
-                    # wrong because it reports whether ANYONE holds the lock, so
-                    # skipping re-acquire while another task holds it would let
-                    # the caller's `async with cond:` __aexit__ release that
-                    # other task's lock.  Loop to shield the acquire itself from
-                    # cancellation, re-raising the caught CancelledError after.
-                    # _in_scheduler_pause stays elevated so the cooperative lock
-                    # re-acquires without inserting a fresh scheduling point.
-                    err: BaseException | None = None
-                    while True:
-                        try:
-                            await self.acquire()
-                            break
-                        except asyncio.CancelledError as exc:  # noqa: PERF203
-                            err = exc
-                    if err is not None:
-                        try:
-                            raise err
-                        finally:
-                            err = None
-            finally:
-                _in_scheduler_pause.set(depth)
+
+        async def _reacquire_exception_safe() -> None:
+            if acquired:
+                return
+            # Mirror stock asyncio.Condition.wait: always re-acquire the lock
+            # before propagating, even under cancellation.  Only this task's own
+            # re-acquire counts — checking locked() is wrong because it reports
+            # whether ANYONE holds the lock, so skipping re-acquire while another
+            # task holds it would let the caller's `async with cond:` __aexit__
+            # release that other task's lock.  Loop to shield the acquire itself
+            # from cancellation, re-raising the caught CancelledError after.
+            # _in_scheduler_pause stays elevated (_engine_parked_wait restores it
+            # only after this hook) so the cooperative lock re-acquires without
+            # inserting a fresh scheduling point.
+            err: BaseException | None = None
+            while True:
+                try:
+                    await self.acquire()
+                    break
+                except asyncio.CancelledError as exc:  # noqa: PERF203
+                    err = exc
+            if err is not None:
+                try:
+                    raise err
+                finally:
+                    err = None
+
+        await _engine_parked_wait(
+            scheduler,
+            task_id,
+            fut,
+            parked_set=_async_parked_conditions,
+            obj=self,
+            reason="condition wait",
+            cleanup=_cleanup,
+            on_wake=_reacquire_on_wake,
+            on_finally=_reacquire_exception_safe,
+        )
+        return True
 
     async def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> Any:
         if timeout is not None:
