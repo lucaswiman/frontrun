@@ -10,14 +10,14 @@ from this proposal:
   `lock_release` (actor) / `lock_acquire` (woken worker) sync events.
 - The async `loop.time()` spike concluded **against** virtualising loop time:
   the scheduler's own deadlock-timeout timers share the loop's timer heap, so
-  a clock jump would fire them spuriously. `asyncio.wait_for` / `asyncio.timeout`
-  therefore stay wall-clock (documented); wrapping them over virtual deadlines
-  remains future work.
+  a clock jump would fire them spuriously. `asyncio.wait_for` /
+  `asyncio.timeout` / `asyncio.timeout_at` are patched directly inside explored
+  task contexts instead.
 - Sync cooperative timed waits now use virtual deadlines: lock/RLock/semaphore
   acquires, `Event.wait(timeout=...)`, `Condition.wait(timeout=...)`,
   `Condition.wait_for(..., timeout=...)`, and `Queue.get`/`put` timeouts.
-  Async loop timeouts such as `asyncio.wait_for` and `asyncio.timeout` remain
-  wall-clock for now; see `possible-future-roadmap/virtual-clock-transparency.md`.
+  Async `asyncio.wait_for`, `asyncio.timeout`, and `asyncio.timeout_at` use
+  virtual deadlines.
 - `serializable_invariant` is rejected with a virtual clock (the sequential
   baseline runs execute outside the scheduler).
 - Post-review hardening: cooperative `Event.wait()` engine-blocks under DPOR
@@ -27,23 +27,24 @@ from this proposal:
   `time.*` patch so invariants see virtual time; replay defers recorded
   clock-actor steps that arrive before their sleeper registers (drift);
   async random uses a quiescence heuristic for tasks parked on unpatched
-  asyncio primitives.
+  asyncio primitives. Async `Queue` and `Condition` waiters are now patched;
+  bare futures remain outside exact detection.
 - Exact deadlock detection covers async DPOR too: `asyncio.Event` is patched
   (waiters engine-block with wake happens-before edges, like `asyncio.Lock`),
   and a "nobody runnable, no deadline pending" observation is confirmed after
   draining in-flight loop wakes and checking that no *user* loop timer is
   pending (frontrun's own watchdog timers are tagged via a `loop.call_at`
-  wrapper). Tasks parked on unmanaged awaitables (`asyncio.Queue` /
-  `Condition` / bare futures) still look runnable to the engine, so the check
-  safely declines and the wall fallback applies.
+  wrapper). `asyncio.Queue` and `asyncio.Condition` waiters are now managed;
+  bare futures still look runnable to the engine, so the check safely declines
+  and the wall fallback applies.
 
 ## Problem statement
 
-Races involving timeouts, retries with backoff, TTL caches, debouncing, and rate limiters
-are invisible to frontrun today because `time.time()` / `time.monotonic()` / `sleep()` are
-real. "The retry fired exactly between the read and the write" is not an interleaving the
-scheduler can choose — it is wall-clock luck. The tenacity and cachetools case studies both
-sit squarely in this space, so validation targets already exist in-repo.
+Before virtual clocks, races involving timeouts, retries with backoff, TTL
+caches, debouncing, and rate limiters were invisible to frontrun because
+`time.time()` / `time.monotonic()` / `sleep()` were real. "The retry fired
+exactly between the read and the write" was wall-clock luck rather than an
+interleaving the scheduler could choose.
 
 Concretely, wall-clock time leaks into exploration in three places today:
 
@@ -114,8 +115,10 @@ explode the search space for nothing. Only **advancement** (the clock actor's st
 - `loop.time()` stays wall-clock. While `time.monotonic()` is patched for explored
   tasks, the runners pin the event loop's own clock to the saved real monotonic
   function so scheduler watchdogs and user loop timers remain real.
-- `asyncio.wait_for` / `asyncio.timeout` therefore keep wall-clock deadlines. Wrapping
-  them over virtual deadlines remains future work.
+- `asyncio.wait_for` / `asyncio.timeout` / `asyncio.timeout_at` are patched
+  directly during exploration. Raw loop timers remain wall-clock; `timeout_at`
+  and timeout context `reschedule(when)` keep asyncio's loop-time API and are
+  translated to virtual deadlines internally.
 
 ### Timed lock acquires
 
@@ -133,7 +136,7 @@ import frontrun
 
 result = frontrun.explore(
     strategy="dpor",
-    threads={...},
+    workers=[...],
     invariant=...,
     clock="virtual",        # default "real"; "virtual" implies autojump (v1)
     # v2: clock="explored" adds the clock actor
@@ -158,9 +161,8 @@ result = frontrun.explore(
   events), but v1 autojump needs a deterministic tiebreak (thread id).
 - Should `time.sleep(0)` remain a pure yield (current Python semantics) rather than a
   deadline? Yes — special-case it.
-- Third-party clock reads via `datetime.now()`: patch `datetime` too, or document
-  `time.*` as the supported surface? Proposal: start with `time.*` + `loop.time()`, add
-  `datetime.datetime.now/utcnow` behind the same flag if case studies need it
-  (freezegun-style; don't import freezegun, the scheduler must own advancement).
+- Third-party clock reads via module-qualified `datetime.datetime.now()` /
+  `utcnow()` and `datetime.date.today()` are patched. Captured datetime class
+  references still bypass the patch.
 - C-level sleeps (e.g. drivers) are invisible; document as out of scope (same boundary as
   the existing `deadlock_timeout` C-code caveat).

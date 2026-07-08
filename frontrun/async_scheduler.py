@@ -343,6 +343,12 @@ class InterleavedLoop:
                 return
             if self._progress == before:
                 async with self._condition:
+                    advance_virtual_deadline = getattr(self, "_advance_virtual_deadline_for_idle", None)
+                    if advance_virtual_deadline is not None and advance_virtual_deadline():
+                        self._condition.notify_all()
+                        continue
+            if self._progress == before:
+                async with self._condition:
                     if self._error is None:
                         self._error = SchedulerTimeoutError(
                             f"Deadlock: no task progressed for {self.deadlock_timeout}s and no task is "

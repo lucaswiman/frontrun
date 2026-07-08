@@ -15,7 +15,7 @@ from frontrun._opcode_observer import (
     uninstall_thread_opcode_trace,
 )
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
-from frontrun._virtual_clock import patch_time, unpatch_time
+from frontrun._virtual_clock import patch_time, unpatch_time, warn_if_captured_time_reference
 
 from ._shared import *
 from ._shared import (
@@ -109,6 +109,8 @@ class DporBytecodeRunner:
             return None
 
         def _on_opcode(code: Any, offset: int, frame: Any, tid: int) -> bool:
+            if scheduler._clock_diagnostics:
+                warn_if_captured_time_reference(frame)
             return process_opcode_with_coarsening(code, offset, frame, scheduler, tid, _detect_io)
 
         self._opcode_handle = start_opcode_trace(

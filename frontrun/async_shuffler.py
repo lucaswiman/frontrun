@@ -57,6 +57,7 @@ from frontrun._random_schedules import fair_schedule_strategy, random_round_robi
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
     ClockMode,
+    DeadlineCoordinator,
     VirtualClock,
     _real_monotonic,
     clock_context,
@@ -71,7 +72,7 @@ from frontrun.async_dpor import (
     patch_sql_async,
     unpatch_sql_async,
 )
-from frontrun.async_scheduler import InterleavedLoop, SchedulerTimeoutError
+from frontrun.async_scheduler import InterleavedLoop, SchedulerTimeoutError, frontrun_wait_for
 from frontrun.common import (
     InterleavingResult,
     check_invariant,
@@ -83,6 +84,7 @@ from frontrun.common import (
 #: are parked on something the scheduler cannot see (e.g. an unpatched
 #: asyncio.Lock) and autojumps the virtual clock.
 _QUIESCENCE_SLICE = 0.25
+_ASYNC_TIMEOUT_FIRE = "fire"
 
 
 class AwaitScheduler(InterleavedLoop):
@@ -118,6 +120,7 @@ class AwaitScheduler(InterleavedLoop):
         # live task is deadline-blocked, sleep_until autojumps.
         self.virtual_clock = virtual_clock
         self.clock_mode = clock_mode
+        self._deadlines = DeadlineCoordinator()
         self._sleepers: dict[int, float] = {}
         # Table/row accesses observed via SQL interception, in arrival order.
         # Exposed so callers can inspect cross-task table conflicts.
@@ -133,11 +136,28 @@ class AwaitScheduler(InterleavedLoop):
         clock = self.virtual_clock
         if clock is None:
             return
-        clock.advance_to(target)
-        now = clock.now()
-        for tid, dl in list(self._sleepers.items()):
-            if dl <= now:
-                del self._sleepers[tid]
+        for event in self._deadlines.advance_to(clock, target):
+            if event.kind == "sleep":
+                self._sleepers.pop(event.actor_id, None)
+            elif event.kind == "timeout":
+                fire = getattr(event.token, _ASYNC_TIMEOUT_FIRE, None)
+                if fire is not None:
+                    fire()
+
+    def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
+        self._deadlines.add_timeout(task_id, deadline, token)
+
+    def remove_timeout_deadline(self, task_id: int, token: object) -> None:
+        self._deadlines.cancel(task_id, token)
+
+    def _advance_virtual_deadline_for_idle(self) -> bool:
+        if self.virtual_clock is None:
+            return False
+        next_deadline = self._deadlines.next_deadline()
+        if next_deadline is None:
+            return False
+        self._advance_clock_to(next_deadline)
+        return True
 
     async def sleep_until(self, task_id: int, deadline: float) -> None:
         """Block *task_id* until the virtual clock reaches *deadline*."""
@@ -150,6 +170,7 @@ class AwaitScheduler(InterleavedLoop):
                 if self._finished or self._error:
                     return
                 self._sleepers[task_id] = deadline
+                self._deadlines.add_sleep(task_id, deadline, wake_id=None)
                 self._condition.notify_all()
                 try:
                     wait_started = _real_monotonic()
@@ -159,13 +180,15 @@ class AwaitScheduler(InterleavedLoop):
                         alive = [t for t in range(self.num_tasks) if t not in self._tasks_done]
                         if alive and all(t in self._sleepers for t in alive):
                             # Every live task is asleep: only time can move.
-                            self._advance_clock_to(min(self._sleepers[t] for t in alive))
+                            next_deadline = self._deadlines.next_deadline()
+                            if next_deadline is not None:
+                                self._advance_clock_to(next_deadline)
                             self._condition.notify_all()
                             continue
                         snapshot = (self._progress, self._index, len(self._tasks_done))
                         quiescence_slice = min(_QUIESCENCE_SLICE, max(0.001, self.deadlock_timeout / 2.0))
                         try:
-                            await asyncio.wait_for(self._condition.wait(), timeout=quiescence_slice)
+                            await frontrun_wait_for(self._condition.wait(), timeout=quiescence_slice)
                         except asyncio.TimeoutError:
                             if (self._progress, self._index, len(self._tasks_done)) == snapshot:
                                 # Quiescent: the remaining tasks are parked on
@@ -174,7 +197,9 @@ class AwaitScheduler(InterleavedLoop):
                                 # sleeper).  Advancing time is the only way
                                 # forward; without it the run dies by wall
                                 # timeout — a false deadlock.
-                                self._advance_clock_to(min(self._sleepers.values()))
+                                next_deadline = self._deadlines.next_deadline()
+                                if next_deadline is not None:
+                                    self._advance_clock_to(next_deadline)
                                 self._condition.notify_all()
                                 continue
                             if _real_monotonic() - wait_started > self.deadlock_timeout:
@@ -185,6 +210,7 @@ class AwaitScheduler(InterleavedLoop):
                                 return
                 finally:
                     self._sleepers.pop(task_id, None)
+                    self._deadlines.cancel_sleep(task_id)
         finally:
             _in_scheduler_pause.set(depth)
 
@@ -368,9 +394,15 @@ def _patch_async_runtime(
     with PatchScope() as patch_scope:
         patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
         if patch_sleep:
-            from frontrun.async_dpor import _patch_asyncio_sleep, _unpatch_asyncio_sleep
+            from frontrun.async_dpor import (
+                _patch_asyncio_sleep,
+                _patch_asyncio_timeouts,
+                _unpatch_asyncio_sleep,
+                _unpatch_asyncio_timeouts,
+            )
 
             patch_scope.add(_patch_asyncio_sleep, _unpatch_asyncio_sleep)
+            patch_scope.add(_patch_asyncio_timeouts, _unpatch_asyncio_timeouts, enabled=virtual_time)
         patch_scope.add(patch_time, unpatch_time, enabled=virtual_time)
         # Pin the loop's own clock to real monotonic time while time.monotonic
         # is patched (see the matching comment in async_dpor._explore_async_dpor).
@@ -483,6 +515,7 @@ async def explore_async_random(
     error_on_any_race: bool = False,
     total_timeout: float | None = None,
     clock: ClockMode = "real",
+    clock_diagnostics: bool = False,
 ) -> InterleavingResult:
     """Search for async interleavings that violate an invariant.
 
@@ -526,9 +559,9 @@ async def explore_async_random(
             advance the clock, exploring early timer firings).  Tasks that
             block on primitives the scheduler cannot see (e.g. a raw
             ``asyncio.Lock``) are handled by a quiescence heuristic; prefer
-            the DPOR strategy for lock-heavy async code.  ``asyncio.wait_for``
-            / ``asyncio.timeout`` stay on the wall clock.  See
-            :doc:`/virtual_clock`.
+            the DPOR strategy for lock-heavy async code.  ``asyncio.wait_for``,
+            ``asyncio.timeout``, and ``asyncio.timeout_at`` inside explored
+            tasks use virtual deadlines. See :doc:`/virtual_clock`.
 
     Returns:
         InterleavingResult with the outcome.  The ``unique_interleavings``
@@ -536,6 +569,7 @@ async def explore_async_random(
     """
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
+    _ = clock_diagnostics
     clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
 
     from frontrun._dpor_core import compute_serializable_baseline_async

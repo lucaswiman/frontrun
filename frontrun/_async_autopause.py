@@ -48,6 +48,9 @@ class _AutoPauseIterator:
     def __next__(self) -> Any:
         return self.send(None)
 
+    def __iter__(self) -> _AutoPauseIterator:
+        return self
+
     def send(self, value: Any) -> Any:
         if self._pause_iter is not None:
             try:

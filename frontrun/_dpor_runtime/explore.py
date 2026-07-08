@@ -53,6 +53,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
     serializable_invariant: Callable[[T], Any] | bool = False,
     error_on_any_race: bool = False,
     clock: ClockMode = "real",
+    clock_diagnostics: bool = False,
 ) -> InterleavingResult:
     """Systematically explore interleavings using DPOR.
 
@@ -337,6 +338,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                 virtual_clock=virtual_clock,
                 clock_mode=clock,
                 clock_actor_id=clock_actor_id,
+                clock_diagnostics=clock_diagnostics,
             )
             runner = DporBytecodeRunner(scheduler, detect_io=detect_io, preload_bridge=preload_bridge)
 

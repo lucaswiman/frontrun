@@ -10,9 +10,11 @@ Covers the design in ``ideas/virtual_clock.md``:
 
 from __future__ import annotations
 
+import datetime as dt
 import queue
 import threading
 import time
+import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -82,7 +84,16 @@ def test_process_execution_rejects_virtual_clock() -> None:
 
 
 def test_time_functions_restored_after_exploration() -> None:
-    saved = (time.time, time.monotonic, time.perf_counter, time.time_ns, time.monotonic_ns, time.perf_counter_ns)
+    saved = (
+        time.time,
+        time.monotonic,
+        time.perf_counter,
+        time.time_ns,
+        time.monotonic_ns,
+        time.perf_counter_ns,
+        dt.datetime,
+        dt.date,
+    )
 
     class State:
         pass
@@ -102,11 +113,13 @@ def test_time_functions_restored_after_exploration() -> None:
         time.time_ns,
         time.monotonic_ns,
         time.perf_counter_ns,
+        dt.datetime,
+        dt.date,
     ) == saved
 
 
 def test_time_functions_restored_after_worker_exception() -> None:
-    saved_monotonic = time.monotonic
+    saved = (time.monotonic, dt.datetime, dt.date)
 
     class State:
         pass
@@ -123,7 +136,7 @@ def test_time_functions_restored_after_worker_exception() -> None:
             clock="virtual",
             reproduce_on_failure=0,
         )
-    assert time.monotonic is saved_monotonic
+    assert (time.monotonic, dt.datetime, dt.date) == saved
 
 
 def test_invariant_sees_virtual_time() -> None:
@@ -186,7 +199,7 @@ def test_sleep_advances_virtual_clock_with_zero_wall_time() -> None:
     )
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
-    assert wall_elapsed < 60.0  # the 500 s sleep must not be a real sleep
+    assert wall_elapsed < 4.0  # the 500 s sleep must not be a real sleep
 
 
 class _TTLCache:
@@ -227,6 +240,149 @@ def test_ttl_cache_expiry_is_reachable() -> None:
         reproduce_on_failure=0,
     )
     assert result.property_holds, result.explanation
+
+
+class _DatetimeObserver:
+    def __init__(self) -> None:
+        self.start = dt.datetime.min
+        self.end = dt.datetime.min
+        self.utc = dt.datetime.min
+        self.aware = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        self.today = dt.date.min
+        self.now_is_datetime = False
+        self.utc_is_datetime = False
+        self.today_is_date = False
+
+
+def test_datetime_patch_preserves_isinstance_for_existing_objects() -> None:
+    existing_datetime = dt.datetime(2026, 1, 2, 3, 4, 5)
+    existing_date = dt.date(2026, 1, 2)
+
+    class State:
+        def __init__(self) -> None:
+            self.datetime_ok = False
+            self.date_ok = False
+
+    def worker(s: State) -> None:
+        s.datetime_ok = isinstance(existing_datetime, dt.datetime)
+        s.date_ok = isinstance(existing_date, dt.date)
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=lambda s: s.datetime_ok and s.date_ok,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_datetime_now_advances_with_virtual_sleep() -> None:
+    def worker(s: _DatetimeObserver) -> None:
+        s.start = dt.datetime.now()
+        time.sleep(2.5)
+        s.end = dt.datetime.now()
+        s.now_is_datetime = isinstance(s.end, dt.datetime)
+
+    result = frontrun.explore(
+        setup=_DatetimeObserver,
+        workers=[worker],
+        invariant=lambda s: s.now_is_datetime and (s.end - s.start).total_seconds() >= 2.5,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_datetime_utcnow_reads_virtual_time() -> None:
+    def worker(s: _DatetimeObserver) -> None:
+        s.utc = dt.datetime.utcnow()
+        s.utc_is_datetime = isinstance(s.utc, dt.datetime)
+
+    result = frontrun.explore(
+        setup=_DatetimeObserver,
+        workers=[worker],
+        invariant=lambda s: (
+            s.utc_is_datetime and s.utc.replace(tzinfo=dt.timezone.utc).timestamp() == pytest.approx(VIRTUAL_EPOCH)
+        ),
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_datetime_now_timezone_reads_virtual_time() -> None:
+    def worker(s: _DatetimeObserver) -> None:
+        s.aware = dt.datetime.now(dt.timezone.utc)
+
+    result = frontrun.explore(
+        setup=_DatetimeObserver,
+        workers=[worker],
+        invariant=lambda s: s.aware.tzinfo is dt.timezone.utc and s.aware.timestamp() == pytest.approx(VIRTUAL_EPOCH),
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_date_today_reads_virtual_time() -> None:
+    expected = dt.date.fromtimestamp(VIRTUAL_EPOCH)
+
+    def worker(s: _DatetimeObserver) -> None:
+        s.today = dt.date.today()
+        s.today_is_date = isinstance(s.today, dt.date)
+
+    result = frontrun.explore(
+        setup=_DatetimeObserver,
+        workers=[worker],
+        invariant=lambda s: s.today_is_date and s.today == expected,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_clock_diagnostics_warn_for_captured_time_reference() -> None:
+    captured_monotonic = time.monotonic
+
+    class State:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+    def worker(s: State, monotonic: Callable[[], float] = captured_monotonic) -> None:
+        s.value = monotonic()
+
+    with pytest.warns(RuntimeWarning, match="captured.*time\\.monotonic"):
+        result = frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.value > 0,
+            clock="virtual",
+            clock_diagnostics=True,
+            reproduce_on_failure=0,
+        )
+    assert result.property_holds, result.explanation
+
+
+def test_clock_diagnostics_ignore_module_qualified_time_calls() -> None:
+    class State:
+        pass
+
+    def worker(s: State) -> None:
+        time.monotonic()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: True,
+            clock="virtual",
+            clock_diagnostics=True,
+            reproduce_on_failure=0,
+        )
+    assert result.property_holds, result.explanation
+    assert not [warning for warning in caught if "captured" in str(warning.message)]
 
 
 class _WakeOrder:
@@ -311,7 +467,7 @@ def test_explored_clock_finds_timer_between_read_and_write() -> None:
     # the same advances without stalling on the deadlock timeout.
     assert result.reproduction_attempts == 10
     assert result.reproduction_successes == 10
-    assert wall_elapsed < 30.0, f"exploration + 10 replays took {wall_elapsed:.1f}s (replay clock stall?)"
+    assert wall_elapsed < 10.0, f"exploration + 10 replays took {wall_elapsed:.1f}s (replay clock stall?)"
 
 
 class _TimerCascadeRace:

@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 import frontrun
 from frontrun.common import InterleavingResult
 
@@ -48,7 +50,7 @@ def test_async_sleep_advances_virtual_clock_zero_wall_time() -> None:
     )
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
-    assert wall_elapsed < 60.0
+    assert wall_elapsed < 4.0
 
 
 class _TTLCache:
@@ -231,7 +233,7 @@ def test_async_random_virtual_sleep_zero_wall_time() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert invariant_checks > 0
-    assert wall_elapsed < 60.0
+    assert wall_elapsed < 4.0
 
 
 def test_async_random_explored_clock_can_fire_timer_early() -> None:
@@ -254,17 +256,177 @@ def test_async_random_explored_clock_can_fire_timer_early() -> None:
     _assert_invariant_failure(result, "expected delayed writer")
 
 
-def test_async_wait_for_stays_on_wall_clock() -> None:
-    """Documented limitation: loop timers (asyncio.wait_for) remain real, so
-    a short real timeout fires even while virtual sleeps are active."""
+def test_async_wait_for_uses_virtual_deadline() -> None:
+    """``asyncio.wait_for`` uses a virtual deadline inside explored tasks."""
 
     class State:
         def __init__(self) -> None:
             self.timed_out = False
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(asyncio.sleep(10.0), timeout=1.0)
+        except (TimeoutError, asyncio.TimeoutError):
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker, lambda s: asyncio.sleep(0)],
+            invariant=lambda s: s.timed_out and s.elapsed >= 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"virtual wait_for took {wall_elapsed:.1f}s wall time"
+
+
+def test_async_wait_for_event_timeout_is_explored_before_delayed_setter() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.timed_out = False
+            self.completed = False
+
+    async def waiter(s: State) -> None:
+        try:
+            await asyncio.wait_for(s.event.wait(), timeout=1.0)
+            s.completed = True
+        except (TimeoutError, asyncio.TimeoutError):
+            s.timed_out = True
+
+    async def setter(s: State) -> None:
+        await asyncio.sleep(1.0)
+        s.event.set()
+
+    def invariant(s: State) -> bool:
+        assert not s.timed_out, "virtual wait_for timeout fired before the event setter"
+        return True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, setter],
+            invariant=invariant,
+            clock="explored",
+        )
+    )
+    _assert_invariant_failure(result, "virtual wait_for timeout")
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
+@pytest.mark.parametrize("timeout", [0, -1])
+def test_async_wait_for_non_positive_timeout_does_not_start_inner_coroutine(timeout: float) -> None:
+    class State:
+        def __init__(self) -> None:
+            self.inner_ran = False
+            self.timed_out = False
+
+    async def inner(s: State) -> None:
+        s.inner_ran = True
 
     async def worker(s: State) -> None:
         try:
-            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.2)
+            await asyncio.wait_for(inner(s), timeout=timeout)
+        except TimeoutError:
+            s.timed_out = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and not s.inner_ran,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_wait_for_removes_timeout_deadline_after_success() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.completed = False
+            self.elapsed = 0.0
+
+    async def waiter(s: State) -> None:
+        start = time.monotonic()
+        await asyncio.wait_for(s.event.wait(), timeout=5.0)
+        await asyncio.sleep(10.0)
+        s.completed = True
+        s.elapsed = time.monotonic() - start
+
+    async def setter(s: State) -> None:
+        await asyncio.sleep(1.0)
+        s.event.set()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, setter],
+            invariant=lambda s: s.completed and s.elapsed >= 11.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_wait_for_bare_future_uses_virtual_deadline() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(fut, timeout=1.0)
+        except (TimeoutError, asyncio.TimeoutError):
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.elapsed >= 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+            timeout_per_run=1.0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 1.0, f"bare-future wait_for burned wall time ({wall_elapsed:.1f}s)"
+
+
+def test_async_wait_for_cancels_inner_task_once() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.cancelled = 0
+
+    async def never_finishes(s: State) -> None:
+        try:
+            await asyncio.sleep(10.0)
+        except asyncio.CancelledError:
+            s.cancelled += 1
+            raise
+
+    async def worker(s: State) -> None:
+        try:
+            await asyncio.wait_for(never_finishes(s), timeout=1.0)
         except (TimeoutError, asyncio.TimeoutError):
             s.timed_out = True
 
@@ -272,7 +434,308 @@ def test_async_wait_for_stays_on_wall_clock() -> None:
         frontrun.explore(
             setup=State,
             workers=[worker],
-            invariant=lambda s: s.timed_out,
+            invariant=lambda s: s.timed_out and s.cancelled == 1,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_wait_for_returns_inner_value_when_cancel_is_suppressed() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.cancelled = False
+            self.result = ""
+
+    async def suppresses_cancel(s: State) -> str:
+        try:
+            await asyncio.sleep(10.0)
+        except asyncio.CancelledError:
+            s.cancelled = True
+            return "cleaned"
+        return "unexpected"
+
+    async def worker(s: State) -> None:
+        s.result = await asyncio.wait_for(suppresses_cancel(s), timeout=1.0)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.cancelled and s.result == "cleaned",
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_zero_expires_and_clears_cancellation_state() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.cancelling_after_timeout = -1
+
+    async def worker(s: State) -> None:
+        try:
+            async with asyncio.timeout(0):
+                await asyncio.sleep(0)
+        except TimeoutError:
+            s.timed_out = True
+            s.cancelling_after_timeout = asyncio.current_task().cancelling()  # type: ignore[union-attr]
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.cancelling_after_timeout == 0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_zero_without_await_does_not_cancel_later() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.completed = False
+            self.cancelling_after_context = -1
+
+    async def worker(s: State) -> None:
+        async with asyncio.timeout(0):
+            s.completed = True
+        s.cancelling_after_context = asyncio.current_task().cancelling()  # type: ignore[union-attr]
+        await asyncio.sleep(0)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.completed and s.cancelling_after_context == 0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_positive_expiry_clears_cancellation_state() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.cancelling_after_timeout = -1
+
+    async def worker(s: State) -> None:
+        try:
+            async with asyncio.timeout(1.0):
+                await asyncio.sleep(10.0)
+        except TimeoutError:
+            s.timed_out = True
+            s.cancelling_after_timeout = asyncio.current_task().cancelling()  # type: ignore[union-attr]
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.cancelling_after_timeout == 0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout_at"), reason="asyncio.timeout_at requires Python 3.11+")
+def test_async_timeout_at_uses_loop_time_deadline() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        loop = asyncio.get_running_loop()
+        start = time.monotonic()
+        try:
+            async with asyncio.timeout_at(loop.time() + 1.0):
+                await asyncio.sleep(10.0)
+        except TimeoutError:
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.elapsed == pytest.approx(1.0, abs=0.01),
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_suppressed_cancel_clears_cancellation_state() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.cancelled = False
+            self.completed = False
+            self.cancelling_after_context = -1
+
+    async def worker(s: State) -> None:
+        async with asyncio.timeout(1.0):
+            try:
+                await asyncio.sleep(10.0)
+            except asyncio.CancelledError:
+                s.cancelled = True
+        s.completed = True
+        s.cancelling_after_context = asyncio.current_task().cancelling()  # type: ignore[union-attr]
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.cancelled and s.completed and s.cancelling_after_context == 0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_uses_virtual_deadline_and_reports_expiry() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.expired = False
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        timeout_cm: object | None = None
+        try:
+            async with asyncio.timeout(1.0) as active_timeout:
+                timeout_cm = active_timeout
+                await asyncio.sleep(10.0)
+        except TimeoutError:
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+            s.expired = bool(timeout_cm is not None and getattr(timeout_cm, "expired")())
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.expired and s.elapsed == pytest.approx(1.0, abs=0.01),
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_random_wait_for_bare_future_uses_virtual_deadline() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(fut, timeout=1.0)
+        except TimeoutError:
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.elapsed >= 1.0,
+            strategy="random",
+            clock="virtual",
+            max_attempts=1,
+            reproduce_on_failure=0,
+            timeout_per_run=1.0,
+            deadlock_timeout=0.05,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_removes_deadline_after_success() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.completed = False
+            self.expired_inside = True
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        async with asyncio.timeout(5.0) as timeout_cm:
+            await asyncio.sleep(1.0)
+            s.expired_inside = timeout_cm.expired()
+        await asyncio.sleep(10.0)
+        s.completed = True
+        s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.completed and not s.expired_inside and s.elapsed >= 11.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_reschedule_from_none_uses_virtual_deadline() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.expired = False
+            self.deadline_delta = 0.0
+            self.elapsed = 0.0
+
+    async def worker(s: State) -> None:
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        virtual_start = time.monotonic()
+        timeout_cm: object | None = None
+        try:
+            async with asyncio.timeout(None) as active_timeout:
+                timeout_cm = active_timeout
+                active_timeout.reschedule(start + 1.0)
+                deadline = active_timeout.when()
+                s.deadline_delta = -1.0 if deadline is None else deadline - start
+                await asyncio.sleep(10.0)
+        except TimeoutError:
+            s.timed_out = True
+            s.elapsed = time.monotonic() - virtual_start
+            s.expired = bool(timeout_cm is not None and getattr(timeout_cm, "expired")())
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: (
+                s.timed_out
+                and s.expired
+                and s.deadline_delta == pytest.approx(1.0)
+                and s.elapsed == pytest.approx(1.0, abs=0.01)
+            ),
             clock="virtual",
             reproduce_on_failure=0,
         )
@@ -340,6 +803,36 @@ def test_async_wait_for_lock_timeout_is_not_scored_as_deadlock() -> None:
         )
     )
     assert result.property_holds, result.explanation
+
+
+def test_async_dpor_plain_wall_timeout_is_not_reported_as_deadlock() -> None:
+    from frontrun.async_dpor import _real_asyncio_sleep
+
+    class State:
+        def __init__(self) -> None:
+            self.completed = False
+
+    async def worker(s: State) -> None:
+        await _real_asyncio_sleep(0.2)
+        s.completed = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: not s.completed,
+            clock="virtual",
+            max_executions=1,
+            reproduce_on_failure=0,
+            timeout_per_run=0.05,
+            deadlock_timeout=0.01,
+        )
+    )
+    assert not result.property_holds
+    assert result.counterexample is None
+    assert result.explanation is not None
+    assert "inconclusive" in result.explanation
+    assert "Deadlock detected" not in result.explanation
 
 
 def test_timer_tagging_restores_loop_call_at_instance_override() -> None:
@@ -568,6 +1061,226 @@ def test_async_event_wait_with_virtual_sleeper_autojumps() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert wall_elapsed < 4.0, f"event+sleeper took {wall_elapsed:.1f}s (autojump stall?)"
+
+
+def test_async_queue_get_deadlock_detected_exactly() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def consumer(s: State) -> None:
+        await s.queue.get()
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[consumer, consumer],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+            deadlock_timeout=0.2,
+            timeout_per_run=1.0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "no virtual-clock deadline is pending" in result.explanation
+    assert wall_elapsed < 0.8, f"queue deadlock took {wall_elapsed:.1f}s to report (wall fallback?)"
+
+
+def test_async_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue()
+            self.item = ""
+
+    async def consumer(s: State) -> None:
+        s.item = await s.queue.get()
+
+    async def producer(s: State) -> None:
+        await asyncio.sleep(1.0)
+        await s.queue.put("ready")
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[consumer, producer],
+            invariant=lambda s: s.item == "ready",
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"queue+sleeper took {wall_elapsed:.1f}s (autojump stall?)"
+
+
+def test_async_bounded_queue_put_wake_is_schedulable() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+            self.queue.put_nowait("initial")
+            self.consumer_ran = asyncio.Event()
+            self.producer_done = False
+            self.observed_before_producer = False
+
+    async def producer(s: State) -> None:
+        await s.queue.put("replacement")
+        s.producer_done = True
+
+    async def consumer(s: State) -> None:
+        await asyncio.sleep(1.0)
+        await s.queue.get()
+        s.consumer_ran.set()
+
+    async def observer(s: State) -> None:
+        await s.consumer_ran.wait()
+        if not s.producer_done:
+            s.observed_before_producer = True
+
+    def invariant(s: State) -> bool:
+        assert not s.observed_before_producer, "observer ran after queue space opened but before putter resumed"
+        return True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[producer, consumer, observer],
+            invariant=invariant,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    _assert_invariant_failure(result, "before putter resumed")
+
+
+def test_async_queue_put_nowait_wakes_blocked_getter() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue()
+            self.item = ""
+
+    async def consumer(s: State) -> None:
+        s.item = await s.queue.get()
+
+    async def producer(s: State) -> None:
+        await asyncio.sleep(1.0)
+        s.queue.put_nowait("ready")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[consumer, producer],
+            invariant=lambda s: s.item == "ready",
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_queue_get_nowait_wakes_blocked_putter() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+            self.queue.put_nowait("initial")
+            self.put_done = False
+            self.observed = ""
+
+    async def producer(s: State) -> None:
+        await s.queue.put("replacement")
+        s.put_done = True
+
+    async def consumer(s: State) -> None:
+        await asyncio.sleep(1.0)
+        s.observed = s.queue.get_nowait()
+        await asyncio.sleep(0)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[producer, consumer],
+            invariant=lambda s: s.observed == "initial" and s.put_done,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_condition_patch_preserves_unmanaged_wait_notify() -> None:
+    from frontrun.async_dpor import _patch_asyncio_queue_condition, _unpatch_asyncio_queue_condition
+
+    async def scenario(*, notify_all: bool) -> bool:
+        condition = asyncio.Condition()
+        ready = asyncio.Event()
+        woke = False
+
+        async def waiter() -> None:
+            nonlocal woke
+            async with condition:
+                ready.set()
+                await condition.wait()
+                woke = True
+
+        task = asyncio.create_task(waiter())
+        await ready.wait()
+        async with condition:
+            if notify_all:
+                condition.notify_all()
+            else:
+                condition.notify()
+        await asyncio.wait_for(task, timeout=1.0)
+        return woke
+
+    _patch_asyncio_queue_condition()
+    try:
+        assert asyncio.run(scenario(notify_all=False))
+        assert asyncio.run(scenario(notify_all=True))
+    finally:
+        _unpatch_asyncio_queue_condition()
+
+
+def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.condition = asyncio.Condition()
+            self.ready_event = asyncio.Event()
+            self.ready = 0
+            self.woken: list[str] = []
+            self.timed_out: list[str] = []
+            self.remaining_after_first_notify = -1
+
+    async def waiter(name: str, s: State) -> None:
+        async with s.condition:
+            s.ready += 1
+            if s.ready == 2:
+                s.ready_event.set()
+            try:
+                await asyncio.wait_for(s.condition.wait(), timeout=2.0)
+                s.woken.append(name)
+            except TimeoutError:
+                s.timed_out.append(name)
+
+    async def notifier(s: State) -> None:
+        await s.ready_event.wait()
+        async with s.condition:
+            s.condition.notify(1)
+            s.remaining_after_first_notify = len(getattr(s.condition, "_waiters"))
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[lambda s: waiter("a", s), lambda s: waiter("b", s), notifier],
+            invariant=lambda s: s.remaining_after_first_notify == 1 and len(s.woken) == 1 and len(s.timed_out) == 1,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
 
 
 class _AsyncHoldAndSleep:
