@@ -960,13 +960,12 @@ def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
     the clock to that deadline force-expires a wait that never timed out,
     flipping the acquire to the timeout branch and dragging every earlier
     deadline due.  So the safety net must only fire for sleepers."""
-    from frontrun._dpor_runtime.scheduler import _TIMED_WAIT_TOKEN
+    from frontrun._virtual_clock import _TIMED_WAIT_TOKEN
 
     scheduler = _make_virtual_clock_scheduler()
     clock = scheduler.virtual_clock
     tid = 0
     deadline = clock.now() + 5.0
-    scheduler._timed_waits[tid] = deadline
     scheduler._deadlines.add_timeout(tid, deadline, _TIMED_WAIT_TOKEN)
     scheduler._current_thread = tid
 
@@ -976,7 +975,7 @@ def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
 
     assert advanced is False, "timed waits must not drive the replay clock advance"
     assert clock.now() == before, "the virtual clock must not jump to a timed-wait deadline"
-    assert scheduler._timed_waits.get(tid) == deadline, "the timed wait must be left intact"
+    assert scheduler._deadlines.timed_wait_deadline(tid) == deadline, "the timed wait must be left intact"
 
 
 def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
@@ -993,7 +992,8 @@ def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
     ever see the blocked-with-no-deadline state.  A deterministic test of the
     OS-descheduling race itself is infeasible; this asserts the ordering and
     atomicity contract instead."""
-    from frontrun._dpor_runtime.scheduler import _TIMED_WAIT_TOKEN, DporScheduler
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+    from frontrun._virtual_clock import _TIMED_WAIT_TOKEN
 
     unblock_observations: list[bool] = []
 
@@ -1001,7 +1001,7 @@ def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
         def unblock_thread(self, thread_id: int) -> None:
             # Record whether the deadline is still registered at unblock time.
             if thread_id == 0:
-                unblock_observations.append(thread_id in scheduler._timed_waits)
+                unblock_observations.append(scheduler._deadlines.in_timed_wait(thread_id))
             super().unblock_thread(thread_id)
 
     clock = VirtualClock()
@@ -1016,14 +1016,13 @@ def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
     )
     tid = 0
     deadline = clock.now() + 5.0
-    scheduler._timed_waits[tid] = deadline
     scheduler._deadlines.add_timeout(tid, deadline, _TIMED_WAIT_TOKEN)
     execution.block_thread(tid)
 
     scheduler.give_up_timed_wait(tid)
 
     assert tid not in execution.blocked, "give_up_timed_wait must unblock the waiter"
-    assert tid not in scheduler._timed_waits, "give_up_timed_wait must drop the deadline"
+    assert not scheduler._deadlines.in_timed_wait(tid), "give_up_timed_wait must drop the deadline"
     assert not scheduler._deadlines.has_pending(), "the deadline must be cancelled"
     assert unblock_observations == [True], (
         "the waiter must be unblocked while its deadline is still registered "

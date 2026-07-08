@@ -82,6 +82,7 @@ from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun._virtual_clock import (
+    _TIMED_WAIT_TOKEN,
     ClockMode,
     DeadlineCoordinator,
     VirtualClock,
@@ -100,7 +101,6 @@ from frontrun.common import (
 
 # Type variable for the shared state passed between setup and thread functions
 T = TypeVar("T")
-_TIMED_WAIT_TOKEN = "timed_wait"
 
 
 class OpcodeScheduler:
@@ -147,9 +147,9 @@ class OpcodeScheduler:
         self.virtual_clock = virtual_clock
         self.clock_mode = clock_mode
         self._clock_diagnostics = clock_diagnostics
+        # Single source of truth for virtual deadline membership + ordering
+        # (sleepers: kind "sleep", timed lock acquires: kind "timeout").
         self._deadlines = DeadlineCoordinator()
-        self._sleepers: dict[int, float] = {}
-        self._timed_waits: dict[int, float] = {}
         # thread_id → resource id for threads spinning on an *untimed*
         # cooperative acquire/wait (lock, event, semaphore).  Without this,
         # a spinner blocks the "every live thread is deadline-blocked"
@@ -194,7 +194,11 @@ class OpcodeScheduler:
         return True
 
     def _blocks_clock_progress(self, thread_id: int) -> bool:
-        return thread_id in self._sleepers or thread_id in self._timed_waits or thread_id in self._spin_waiters
+        return (
+            self._deadlines.is_sleeping(thread_id)
+            or self._deadlines.in_timed_wait(thread_id)
+            or thread_id in self._spin_waiters
+        )
 
     def wait_for_turn(self, thread_id: int) -> bool:
         """Block until it's this thread's turn. Returns False when done."""
@@ -216,12 +220,14 @@ class OpcodeScheduler:
                     self._condition.notify_all()
                     continue
 
-                if self.virtual_clock is not None and scheduled_tid in self._sleepers:
+                if self.virtual_clock is not None and self._deadlines.is_sleeping(scheduled_tid):
                     if self.clock_mode == "explored":
                         # "Maybe advance": the random schedule picked a
                         # sleeping thread, so let time pass to its deadline;
                         # the woken thread then consumes this entry.
-                        self._advance_clock_to(self._sleepers[scheduled_tid])
+                        sleep_deadline = self._deadlines.sleep_deadline(scheduled_tid)
+                        assert sleep_deadline is not None
+                        self._advance_clock_to(sleep_deadline)
                     else:
                         # Autojump semantics: a sleeping thread cannot run
                         # before the clock advances; skip its slot.
@@ -232,7 +238,7 @@ class OpcodeScheduler:
                 if (
                     self.virtual_clock is not None
                     and scheduled_tid == thread_id
-                    and thread_id in self._timed_waits
+                    and self._deadlines.in_timed_wait(thread_id)
                     and all(
                         self._blocks_clock_progress(t)
                         for t in range(self.num_threads)
@@ -273,8 +279,6 @@ class OpcodeScheduler:
         """Mark a thread as finished."""
         with self._condition:
             self._threads_done.add(thread_id)
-            self._sleepers.pop(thread_id, None)
-            self._timed_waits.pop(thread_id, None)
             self._deadlines.cancel(thread_id)
             self._spin_waiters.pop(thread_id, None)
             self._condition.notify_all()
@@ -290,12 +294,9 @@ class OpcodeScheduler:
         if clock is None:
             return
         for event in self._deadlines.advance_to(clock, target):
-            if event.kind == "sleep":
-                self._sleepers.pop(event.actor_id, None)
-            elif event.kind == "timeout":
-                self._timed_waits.pop(event.actor_id, None)
-            # A virtual timed wait registers in BOTH _timed_waits and
-            # _spin_waiters (see _cooperative._spin_hook_for_wait).  Its
+            # advance_to already dropped every due deadline from the coordinator.
+            # A virtual timed wait registers a "timeout" deadline AND a
+            # _spin_waiters flag (see _cooperative._spin_hook_for_wait).  Its
             # deadline firing means "re-probe before being counted as blocked
             # again", so clear the spin flag too; otherwise the autojump loop
             # in sleep_until still sees it as blocked and advances straight to
@@ -312,11 +313,10 @@ class OpcodeScheduler:
         autojumping to the earliest pending deadline directly.
         """
         with self._condition:
-            self._sleepers[thread_id] = deadline
             self._deadlines.add_sleep(thread_id, deadline, wake_id=None)
             self._condition.notify_all()
             try:
-                while thread_id in self._sleepers:
+                while self._deadlines.is_sleeping(thread_id):
                     if self._finished or self._error:
                         return
                     alive = [t for t in range(self.num_threads) if t not in self._threads_done]
@@ -339,7 +339,6 @@ class OpcodeScheduler:
                         self._condition.notify_all()
                         return
             finally:
-                self._sleepers.pop(thread_id, None)
                 self._deadlines.cancel_sleep(thread_id)
 
     def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool) -> None:
@@ -368,14 +367,12 @@ class OpcodeScheduler:
     def add_timed_wait(self, thread_id: int, deadline: float) -> None:
         """Register a virtual deadline for a timed lock acquire."""
         with self._condition:
-            self._timed_waits[thread_id] = deadline
             self._deadlines.add_timeout(thread_id, deadline, _TIMED_WAIT_TOKEN)
             self._condition.notify_all()
 
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""
         with self._condition:
-            self._timed_waits.pop(thread_id, None)
             self._deadlines.cancel(thread_id, _TIMED_WAIT_TOKEN)
             self._condition.notify_all()
 

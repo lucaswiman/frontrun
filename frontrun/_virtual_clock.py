@@ -227,6 +227,13 @@ class _Deadline:
 
 _SLEEP_TOKEN = object()
 
+#: Token identifying an actor's single timed-lock-acquire deadline (kind
+#: ``"timeout"``).  Shared by the sync DPOR and random schedulers so their
+#: ``add_timed_wait`` / ``remove_timed_wait`` / ``give_up_timed_wait`` all key
+#: the same coordinator entry.  (The async side keeps its own constant until
+#: the later sync/async unification wave dedups it.)
+_TIMED_WAIT_TOKEN = "timed_wait"
+
 
 class DeadlineCoordinator:
     """Own virtual deadline ordering for a scheduler.
@@ -282,6 +289,33 @@ class DeadlineCoordinator:
     def has_pending(self) -> bool:
         with self._lock:
             return bool(self._deadlines)
+
+    def is_sleeping(self, actor_id: int) -> bool:
+        """Whether *actor_id* has a pending ``sleep``-kind deadline."""
+        with self._lock:
+            return any(e.actor_id == actor_id and e.kind == "sleep" for e in self._deadlines.values())
+
+    def in_timed_wait(self, actor_id: int) -> bool:
+        """Whether *actor_id* has a pending ``timeout``-kind deadline."""
+        with self._lock:
+            return any(e.actor_id == actor_id and e.kind == "timeout" for e in self._deadlines.values())
+
+    def sleep_deadline(self, actor_id: int) -> float | None:
+        """The earliest ``sleep``-kind deadline for *actor_id* (``None`` if none)."""
+        with self._lock:
+            deadlines = [e.deadline for e in self._deadlines.values() if e.actor_id == actor_id and e.kind == "sleep"]
+            return min(deadlines) if deadlines else None
+
+    def timed_wait_deadline(self, actor_id: int) -> float | None:
+        """The earliest ``timeout``-kind deadline for *actor_id* (``None`` if none)."""
+        with self._lock:
+            deadlines = [e.deadline for e in self._deadlines.values() if e.actor_id == actor_id and e.kind == "timeout"]
+            return min(deadlines) if deadlines else None
+
+    def sleeping_actors(self) -> list[int]:
+        """Sorted actor ids with a pending ``sleep``-kind deadline (diagnostics)."""
+        with self._lock:
+            return sorted({e.actor_id for e in self._deadlines.values() if e.kind == "sleep"})
 
     def next_deadline(self) -> float | None:
         with self._lock:
