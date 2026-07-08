@@ -226,6 +226,8 @@ def _reset_async_lock_state() -> None:
     _async_lock_owners.clear()
     _async_task_held_locks.clear()
     _async_parked_events.clear()
+    _async_parked_queues.clear()
+    _async_parked_conditions.clear()
 
 
 class _CooperativeAsyncLock:
@@ -2389,6 +2391,8 @@ class _ReplayAsyncScheduler(InterleavedLoop):
         asyncio.get_running_loop().create_task(_notify())
 
     def on_task_yielded(self, task_id: int) -> None:
+        if self._finished or self._error:
+            return
         if self._current_task == task_id and self._current_task_consumed:
             self._advance()
             self._notify_waiters_soon()
