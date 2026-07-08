@@ -274,6 +274,19 @@ class DporScheduler:
         due = self._deadlines.advance_to_next(clock)
         if not due:
             # Spurious actor step (e.g. a stale wakeup-tree branch): re-block.
+            #
+            # DEFERRED (Item 4 — replay accounting divergence): engine.schedule()
+            # has ALREADY committed this actor step to the recorded trace, but no
+            # deadline was due, so the clock did not advance.  Replay
+            # (_ReplayDporScheduler._schedule_next, below) treats every recorded
+            # actor entry as a real or owed advance and cannot tell this no-op
+            # apart from genuine positional drift, so it can perform an advance
+            # exploration never performed (the owed advance instantly expires the
+            # next registered deadline).  A clean fix needs the trace to record
+            # whether the actor step was effective (or exploration to avoid
+            # committing the step at all) — both invasive and owned by the later
+            # trace/refactor wave.  Reachability is defensive today (no test hits
+            # this branch); the risk is a corrupted reproduction, not a crash.
             self._sync_clock_actor_locked()
             return
         for event in due:
@@ -1508,6 +1521,19 @@ class _ReplayDporScheduler(DporScheduler):
             if next_actor is not None and self._clock_actor_id is not None and next_actor == self._clock_actor_id:
                 # Recorded clock-actor step: advance to the earliest pending
                 # deadline (waking its sleepers) and keep walking the schedule.
+                #
+                # DEFERRED (Item 4 — replay accounting divergence): this treats
+                # EVERY recorded actor entry as a real advance (when a deadline is
+                # registered) or an owed advance (when none is yet — positional
+                # drift).  It cannot distinguish a *spurious* actor step that
+                # exploration recorded but did not act on (see the "Spurious actor
+                # step" no-op in _advance_virtual_clock_locked above): for such a
+                # step exploration advanced nothing, but here the owed advance
+                # fires at the next deadline registration and instantly expires
+                # it, diverging the reproduction.  Distinguishing the two needs
+                # effective-advance info in the trace (or exploration to not
+                # record the no-op) — invasive, owned by the later trace/refactor
+                # wave; defensive today (no test reaches the no-op branch).
                 if self._sleepers or self._timed_waits:
                     self._replay_advance_clock_to()
                 else:
