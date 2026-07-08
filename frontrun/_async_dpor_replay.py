@@ -25,11 +25,12 @@ from frontrun._async_cooperative import (
 from frontrun._dpor_core import (
     ReplayEngine,
     ReplayExecution,
+    advance_and_dispatch,
     advance_replay_index,
     extend_replay_schedule,
     wake_sync_id,
 )
-from frontrun._virtual_clock import DeadlineCoordinator, VirtualClock
+from frontrun._virtual_clock import DeadlineCoordinator, VirtualClock, WakeEvent
 from frontrun.async_scheduler import SchedulerTimeoutError, _AsyncSchedulerBase, frontrun_wait_for
 
 __all__ = ["_ReplayAsyncScheduler"]
@@ -98,23 +99,26 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
             self._tasks_done | self._event_blocked,
         )
 
+    def _on_clock_sleep(self, event: WakeEvent) -> None:
+        """Sleep-arm of a replay clock advance: drop the sleeper (no engine)."""
+        self._sleepers.pop(event.actor_id, None)
+
+    def _on_clock_timeout(self, event: WakeEvent) -> None:
+        """Timeout-arm of a replay clock advance: fire the token, scrub blocked sets."""
+        fire = getattr(event.token, "fire", None)
+        if fire is not None:
+            fire()
+        self._lock_blocked.pop(event.actor_id, None)
+        self._event_blocked.discard(event.actor_id)
+
     def _replay_advance_clock(self, target: float | None = None) -> None:
         """Advance the virtual clock during replay and wake due deadlines."""
         clock = self.virtual_clock
         if clock is None:
             return
-        due = self._deadlines.advance_to_next(clock) if target is None else self._deadlines.advance_to(clock, target)
-        if not due:
-            return
-        for event in due:
-            if event.kind == "sleep":
-                self._sleepers.pop(event.actor_id, None)
-            elif event.kind == "timeout":
-                fire = getattr(event.token, "fire", None)
-                if fire is not None:
-                    fire()
-                self._lock_blocked.pop(event.actor_id, None)
-                self._event_blocked.discard(event.actor_id)
+        advance_and_dispatch(
+            self._deadlines, clock, target, on_sleep=self._on_clock_sleep, on_timeout=self._on_clock_timeout
+        )
 
     def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
         self._deadlines.add_timeout(task_id, deadline, token)
