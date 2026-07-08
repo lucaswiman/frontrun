@@ -373,6 +373,16 @@ class OpcodeScheduler:
     def clear_engine_block(self, thread_id: int) -> None:
         """No-op: the random scheduler has no engine-level blocked state."""
 
+    def give_up_timed_wait(self, thread_id: int) -> None:
+        """Deregister a timed-acquire deadline on give-up.
+
+        Mirror of :meth:`DporScheduler.give_up_timed_wait`.  The random
+        scheduler has no engine-level blocked state (``clear_engine_block`` is a
+        no-op), so this only drops the deadline; there is no false-positive
+        window to close here.
+        """
+        self.remove_timed_wait(thread_id)
+
     def report_error(self, error: Exception):
         """Report an error and unblock all threads."""
         with self._condition:

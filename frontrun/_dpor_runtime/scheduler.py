@@ -22,6 +22,12 @@ from .preload_bridge import _PreloadBridge
 _SENTINEL = object()
 _TIMED_WAIT_TOKEN = "timed_wait"
 
+# How long every live thread must remain blocked with no pending virtual-clock
+# deadline before an exact deadlock is confirmed.  A short confirm window
+# tolerates the transient "all blocked" states that occur while threads hand off
+# the scheduler turn, without waiting out the full wall-clock deadlock_timeout.
+_EXACT_DEADLOCK_CONFIRM_SECONDS = 0.1
+
 
 class DporScheduler:
     """Controls thread execution at opcode granularity, driven by the DPOR engine.
@@ -201,7 +207,7 @@ class DporScheduler:
     def _condition_wait_timeout(self) -> float:
         if self.virtual_clock is None or self._exact_deadlock_candidate_at is None:
             return self.deadlock_timeout
-        remaining = 0.1 - (real_monotonic() - self._exact_deadlock_candidate_at)
+        remaining = _EXACT_DEADLOCK_CONFIRM_SECONDS - (real_monotonic() - self._exact_deadlock_candidate_at)
         return max(0.001, min(self.deadlock_timeout, remaining))
 
     def _reschedule_done_current_unlocked(self) -> bool:
@@ -313,6 +319,31 @@ class DporScheduler:
         with self._condition:
             with self._engine_lock:
                 self.execution.unblock_thread(thread_id)
+            # A thread waits on at most one resource at a time, so scrubbing
+            # it from every waiter set is equivalent to knowing the lock id.
+            for waiters in self._lock_waiters.values():
+                waiters.discard(thread_id)
+            self._condition.notify_all()
+
+    def give_up_timed_wait(self, thread_id: int) -> None:
+        """Atomically unblock a timed-acquire waiter and drop its deadline.
+
+        Combines ``clear_engine_block`` and ``remove_timed_wait`` under a single
+        ``_condition``/``_engine_lock`` acquisition, unblocking *before* the
+        deadline is removed.  Doing the two separately (deadline first, then
+        unblock) opened a window in which the waiter was engine-blocked with no
+        pending deadline; if every other thread was also blocked,
+        ``_schedule_next`` could observe "no runnable thread and no deadline"
+        and raise a spurious exact-deadlock ``DeadlockError``.  A transiently
+        stale deadline is harmless (the next clock advance no-ops on it); a
+        transiently missing one arms the false positive — so unblock first.
+        """
+        with self._condition:
+            with self._engine_lock:
+                self.execution.unblock_thread(thread_id)
+                self._timed_waits.pop(thread_id, None)
+                self._deadlines.cancel(thread_id, _TIMED_WAIT_TOKEN)
+                self._sync_clock_actor_locked()
             # A thread waits on at most one resource at a time, so scrubbing
             # it from every waiter set is equivalent to knowing the lock id.
             for waiters in self._lock_waiters.values():
@@ -479,7 +510,7 @@ class DporScheduler:
                         if self._exact_deadlock_candidate_at is None:
                             self._exact_deadlock_candidate_at = real_monotonic()
                             return None
-                        if real_monotonic() - self._exact_deadlock_candidate_at < 0.1:
+                        if real_monotonic() - self._exact_deadlock_candidate_at < _EXACT_DEADLOCK_CONFIRM_SECONDS:
                             return None
                         # Exact deadlock: every live thread is blocked and no
                         # deadline is pending, so no transition can ever

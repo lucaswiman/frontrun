@@ -210,13 +210,24 @@ def _timed_acquire_cleanup(scheduler: Any, thread_id: int, clock: Any, *, gave_u
     """
     if clock is None:
         return
-    remove_timed_wait = getattr(scheduler, "remove_timed_wait", None)
-    if remove_timed_wait is not None:
-        remove_timed_wait(thread_id)
     if gave_up:
+        # Prefer the atomic unblock+deregister so the waiter is never left
+        # engine-blocked with no pending deadline (a spurious exact-deadlock
+        # window).  Fall back to the two-call path for schedulers that lack it.
+        give_up_timed_wait = getattr(scheduler, "give_up_timed_wait", None)
+        if give_up_timed_wait is not None:
+            give_up_timed_wait(thread_id)
+            return
+        remove_timed_wait = getattr(scheduler, "remove_timed_wait", None)
+        if remove_timed_wait is not None:
+            remove_timed_wait(thread_id)
         clear_engine_block = getattr(scheduler, "clear_engine_block", None)
         if clear_engine_block is not None:
             clear_engine_block(thread_id)
+        return
+    remove_timed_wait = getattr(scheduler, "remove_timed_wait", None)
+    if remove_timed_wait is not None:
+        remove_timed_wait(thread_id)
 
 
 def _timed_wait_deadline(timeout: float | None, scheduler: Any, thread_id: int) -> tuple[float, Any]:
