@@ -624,15 +624,24 @@ def _wait_10(s: _SleepAndTimedWait) -> None:
     s.t1_elapsed = time.monotonic() - start
 
 
-@pytest.mark.parametrize("clock", ["virtual", "explored"])
-def test_random_timed_wait_not_double_advanced_past_deadline(clock: str) -> None:
-    """Random strategy: a virtual timed wait (event.wait(timeout=10)) must
-    observe exactly its own deadline elapsing, even when another thread sleeps
-    to a *later* deadline.  Regression: ``_advance_clock_to`` popped the woken
-    timed-waiter from ``_timed_waits`` but not ``_spin_waiters``, so the
-    autojump loop still counted it as blocked and advanced straight to the
-    later sleeper's deadline (t=20), making the wait observe 20 virtual
-    seconds — an interleaving impossible in real time."""
+def test_random_timed_wait_not_double_advanced_past_deadline() -> None:
+    """Random strategy, autojump clock: a virtual timed wait
+    (event.wait(timeout=10)) must observe exactly its own deadline elapsing,
+    even when another thread sleeps to a *later* deadline.
+
+    Regression: ``_advance_clock_to`` popped the woken timed-waiter from
+    ``_timed_waits`` but not ``_spin_waiters``, so the sleep_until autojump
+    loop still counted it as blocked and advanced straight to the later
+    sleeper's deadline (t=20), making the wait observe 20 virtual seconds — an
+    interleaving impossible in real time.
+
+    Only ``clock="virtual"`` (autojump, time advances as late as possible) is
+    asserted here: under ``clock="explored"`` the clock advance is itself a
+    schedulable step, so after the wait correctly times out at t=10 the
+    explorer may *legitimately* let the 20s sleeper's timer fire before the
+    waiter reads ``monotonic()`` again — observing 20s there is a valid
+    interleaving, not the double-advance defect.
+    """
 
     def invariant(s: _SleepAndTimedWait) -> bool:
         # If T1 finished its timed wait, it must have observed exactly its own
@@ -644,7 +653,7 @@ def test_random_timed_wait_not_double_advanced_past_deadline(clock: str) -> None
         workers=[_sleep_20, _wait_10],
         invariant=invariant,
         strategy="random",
-        clock=clock,  # type: ignore[arg-type]
+        clock="virtual",
         max_attempts=8,
         seed=2,
         reproduce_on_failure=0,

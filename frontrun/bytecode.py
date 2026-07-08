@@ -294,6 +294,15 @@ class OpcodeScheduler:
                 self._sleepers.pop(event.actor_id, None)
             elif event.kind == "timeout":
                 self._timed_waits.pop(event.actor_id, None)
+            # A virtual timed wait registers in BOTH _timed_waits and
+            # _spin_waiters (see _cooperative._spin_hook_for_wait).  Its
+            # deadline firing means "re-probe before being counted as blocked
+            # again", so clear the spin flag too; otherwise the autojump loop
+            # in sleep_until still sees it as blocked and advances straight to
+            # the next deadline, making the wait observe more elapsed virtual
+            # time than its own timeout.  (A pure "sleep" wake has no spin flag;
+            # popping defensively is harmless.)
+            self._spin_waiters.pop(event.actor_id, None)
 
     def sleep_until(self, thread_id: int, deadline: float) -> None:
         """Block *thread_id* until the virtual clock reaches *deadline*.
