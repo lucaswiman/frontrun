@@ -21,8 +21,8 @@ from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_pa
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
 from frontrun.async_dpor import (
-    _async_parked_conditions,
     _async_parked_events,
+    _async_parked_conditions,
     _async_parked_queues,
     _CooperativeAsyncCondition,
     _CooperativeAsyncEvent,
@@ -31,6 +31,7 @@ from frontrun.async_dpor import (
     _ReplayAsyncScheduler,
     _reset_async_lock_state,
     _unpatch_asyncio_event,
+    AsyncDporScheduler,
 )
 from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active
@@ -173,6 +174,30 @@ def test_event_blocked_replay_skips_drifted_waiter_slots() -> None:
             _reset_async_lock_state()
 
     assert asyncio.run(scenario()) == ["setter", "waiter"]
+
+
+def test_handle_timeout_wakes_parked_primitive_waiters() -> None:
+    """A watchdog abort (``_handle_timeout``) must wake tasks parked on
+    cooperative primitives so they free-run to completion, rather than
+    leaving them parked until the outer ``timeout_per_run`` elapses.
+    """
+
+    async def scenario() -> bool:
+        scheduler = object.__new__(AsyncDporScheduler)
+        scheduler._error = None
+        scheduler._current_task = 0
+        scheduler._condition = asyncio.Condition()
+        event = _CooperativeAsyncEvent()
+        _async_parked_events.add(event)
+        try:
+            assert not event._event.is_set()
+            async with scheduler._condition:
+                scheduler._handle_timeout(1, marker="x")
+            return event._event.is_set()
+        finally:
+            _async_parked_events.clear()
+
+    assert asyncio.run(scenario()) is True
 
 
 def test_condition_notify_no_context_wakes_at_most_n_across_both_waiter_sets() -> None:
