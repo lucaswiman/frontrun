@@ -37,7 +37,7 @@ from frontrun._deadlock import DeadlockError, SchedulerAbort, format_cycle
 
 # The saved C-level time.monotonic itself (not the real_monotonic() wrapper):
 # these deadline checks run in every spin-loop iteration.
-from frontrun._virtual_clock import _real_monotonic
+from frontrun._virtual_clock import _active_virtual_clock, _real_monotonic
 
 # ---------------------------------------------------------------------------
 # Real (non-cooperative) factories, saved before any patching happens.
@@ -1620,6 +1620,14 @@ def _cooperative_sleep(seconds: float) -> None:
     """
     ctx = get_context()
     if ctx is None:
+        # No scheduler turn (e.g. setup()/invariant under clock_scope): if a
+        # virtual clock is active for this thread/context, age it by the sleep
+        # so TTL-aging setup code isn't frozen.  The driver thread is the only
+        # clock user at that moment, so advancing here stays deterministic.
+        # With no active clock this remains the historical pure no-op.
+        clock = _active_virtual_clock()
+        if clock is not None and seconds > 0:
+            clock.advance_to(clock.now() + seconds)
         return
     scheduler, thread_id = ctx
     clock = getattr(scheduler, "virtual_clock", None)
