@@ -827,6 +827,36 @@ def test_uncaught_async_wait_for_timeout_is_task_crash_not_deadlock() -> None:
     assert "Deadlock detected" not in result.explanation
 
 
+def test_async_task_crash_wakes_parked_event_waiter() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def waiter(s: State) -> None:
+        await s.event.wait()
+
+    async def crasher(s: State) -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("boom")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, crasher],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+            timeout_per_run=0.5,
+            deadlock_timeout=0.05,
+        )
+    )
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Task crash" in result.explanation
+    assert "RuntimeError: boom" in result.explanation
+    assert "inconclusive" not in result.explanation
+
+
 def test_async_wait_for_lock_timeout_is_not_scored_as_deadlock() -> None:
     class State:
         def __init__(self) -> None:

@@ -154,6 +154,20 @@ def test_virtual_datetime_fromtimestamp_is_input_deterministic_and_real_type() -
     assert today == real_datetime.fromtimestamp(timestamp).date()
 
 
+def test_virtual_datetime_direct_constructors_return_real_concrete_types() -> None:
+    real_datetime = dt.datetime
+    real_date = dt.date
+
+    with clock_scope(VirtualClock()):
+        timestamp = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc)
+        day = dt.date(2026, 1, 2)
+
+    assert type(timestamp) is real_datetime
+    assert type(day) is real_date
+    assert timestamp == real_datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc)
+    assert day == real_date(2026, 1, 2)
+
+
 # ---------------------------------------------------------------------------
 # Fix 3: an active scheduler context is authoritative for clock resolution.
 # ---------------------------------------------------------------------------
