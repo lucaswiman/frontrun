@@ -1403,3 +1403,50 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
     assert result.property_holds, result.explanation
     assert invariant_checks > 0
     assert wall_elapsed < 2.0, f"async random lock+sleep took {wall_elapsed:.1f}s"
+
+
+def test_async_exact_deadlock_declines_with_live_external_thread() -> None:
+    """A live external OS thread can still wake a parked task via
+    ``loop.call_soon_threadsafe``, so exact-deadlock detection must decline
+    to declare a deadlock while such a thread is alive (mirroring the sync
+    scheduler's ``_has_live_external_threads`` guard).  Without the guard the
+    single parked waiter is scored as a false DeadlockError.
+    """
+    import contextlib
+    import threading
+
+    threads: list[threading.Thread] = []
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.woke = False
+
+    async def waiter(s: State) -> None:
+        loop = asyncio.get_running_loop()
+
+        def _external() -> None:
+            time.sleep(0.2)
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(s.event.set)
+
+        thread = threading.Thread(target=_external, daemon=True)
+        threads.append(thread)
+        thread.start()
+        await s.event.wait()
+        s.woke = True
+
+    try:
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[waiter],
+                invariant=lambda s: s.woke,
+                clock="virtual",
+                reproduce_on_failure=0,
+            )
+        )
+    finally:
+        for thread in threads:
+            thread.join(timeout=2.0)
+    assert result.property_holds, result.explanation
