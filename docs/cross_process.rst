@@ -202,7 +202,10 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
      - Human-readable description of the first violation, or ``None``.
    * - ``failure_kind``
      - One of ``"invariant"``, ``"worker_error"``, ``"deadlock"``,
-       ``"nondeterministic"``, or ``None``.
+       ``"timeout"`` (the scheduler's ``deadlock_timeout`` expired — a worker
+       blocked outside frontrun's model or a statement outran the budget, so
+       the schedule was never driven to completion), ``"nondeterministic"``,
+       or ``None``.
    * - ``failing_schedule``
      - The interleaving (a list of worker ids) that triggered the failure.
    * - ``iterations``

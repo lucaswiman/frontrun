@@ -454,7 +454,7 @@ class DporCrossProcessCoordinator:
                     # with exhausted=False; an invariant failure completes fully so
                     # it does NOT demote). Only max_executions/total_timeout were
                     # previously handled, in the for..else below.
-                    if result.failure_kind in ("deadlock", "worker_error"):
+                    if result.failure_kind in ("deadlock", "worker_error", "timeout"):
                         exhausted = False
 
                 # In reuse mode a worker aborted mid-iteration leaves stray
@@ -642,10 +642,27 @@ class DporCrossProcessCoordinator:
                 failure_kind="worker_error",
                 accesses=accesses,
             )
-        # A scheduler fallback TimeoutError means the run free-ran unscheduled;
-        # its final state describes no DPOR schedule, so skip the invariant.
+        # A scheduler fallback TimeoutError means the run free-ran unscheduled
+        # (unmodeled DB-level blocking, or a statement slower than
+        # deadlock_timeout). Its final state describes no DPOR schedule, so the
+        # invariant is skipped — but the execution must count as a failure, not
+        # a clean pass: the schedule was never driven to completion and nothing
+        # was verified.
         if isinstance(err, TimeoutError):
-            return None
+            return CrossProcessResult(
+                ok=False,
+                iterations=num_explored,
+                exhausted=False,
+                failing_schedule=schedule_trace,
+                failure=(
+                    f"scheduler timed out (deadlock_timeout={self.deadlock_timeout}s expired): {err}. "
+                    "A worker blocked outside frontrun's model (e.g. database-level locking) or a "
+                    "statement ran longer than deadlock_timeout; raise deadlock_timeout if the "
+                    "workload is just slow."
+                ),
+                failure_kind="timeout",
+                accesses=accesses,
+            )
         if not invariant():
             return CrossProcessResult(
                 ok=False,

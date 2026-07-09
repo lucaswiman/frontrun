@@ -113,7 +113,8 @@ class CrossProcessResult:
     exhausted: bool
     failing_schedule: list[int] | None = None
     failure: str | None = None
-    # One of: "invariant", "worker_error", "deadlock", "nondeterministic", None.
+    # One of: "invariant", "worker_error", "deadlock", "timeout",
+    # "nondeterministic", None.
     failure_kind: str | None = None
     accesses: list[tuple[int, str, str]] | None = None
 
