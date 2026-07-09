@@ -1278,6 +1278,34 @@ def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
     assert scheduler._deadlines.timed_wait_deadline(tid) == deadline, "the timed wait must be left intact"
 
 
+def test_before_io_reschedules_when_idle_under_virtual_clock() -> None:
+    """``before_io`` gets the same idle-reschedule rescue as its siblings.
+
+    Under a virtual clock the scheduler can be idle (``_current_thread is
+    None``) when a worker reaches a scheduling point — e.g. right after a
+    timed-wait give-up.  ``_report_and_wait`` and ``before_sync_retry`` rescue
+    that state by asking the engine for the next thread instead of stalling;
+    a worker issuing a Redis command through ``before_io`` must not instead
+    wait out ``deadlock_timeout`` and abort the run with a TimeoutError."""
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    scheduler = DporScheduler(
+        _FakeEngine(),
+        _FakeExecution([0]),
+        num_threads=1,
+        deadlock_timeout=0.2,
+        virtual_clock=VirtualClock(),
+        clock_mode="virtual",
+        clock_actor_id=99,
+    )
+    scheduler._current_thread = None  # idle: nobody holds the turn
+
+    scheduler.before_io(0, "redis:key")
+
+    assert scheduler._error is None, f"idle before_io must reschedule, not time out: {scheduler._error!r}"
+    assert scheduler._active_io_thread == 0, "the caller must hold the IO turn after the rescue"
+
+
 def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
     """``give_up_timed_wait`` unblocks before dropping the deadline.
 

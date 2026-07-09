@@ -476,3 +476,22 @@ def test_thread_spawned_inside_clock_scope_sees_real_time() -> None:
     # The helper saw real monotonic time (close to our pre-scope sample), not
     # the virtual epoch.
     assert abs(seen["monotonic"] - real_before) < 60.0
+
+
+def test_timed_acquire_state_refuses_wall_clock_fallback_under_virtual_clock() -> None:
+    """A scheduler with a virtual clock but no ``add_timed_wait`` must fail loudly.
+
+    ``_timed_acquire_state`` used to degrade to a *wall-clock* deadline when the
+    active scheduler exposed ``virtual_clock`` but not ``add_timed_wait`` —
+    silently making the timeout host-speed-dependent under a clock that
+    promises determinism.  No shipped scheduler hits this (both implement
+    ``add_timed_wait``), so the mismatch is an internal contract violation and
+    must raise rather than quietly hand back real time.
+    """
+
+    class _ClockOnlyScheduler:
+        virtual_clock = VirtualClock()
+        # Deliberately no add_timed_wait.
+
+    with pytest.raises(RuntimeError, match="add_timed_wait"):
+        _cooperative._timed_acquire_state(1.0, _ClockOnlyScheduler(), thread_id=0)
