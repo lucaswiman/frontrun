@@ -284,6 +284,53 @@ def test_dpor_lock_first_workers_explore_deterministically() -> None:
         )
 
 
+def test_dpor_single_statement_conflict_found_deterministically() -> None:
+    # Regression: workers report their accesses BEFORE executing the statement
+    # (ACCESS frames precede REPORT_AND_WAIT), so when worker B's ACCESS frame
+    # wins the OS race against worker A's grant, the scheduler's cross-thread
+    # pending-io flush attributes B's not-yet-executed access at A's step. The
+    # engine trace desyncs, the write-write reversal is never seeded into the
+    # wakeup tree, and the search ends after 1 iteration with ok=True and
+    # exhausted=True — a false negative. Pre-fix this misses on most runs, so
+    # loop enough fresh searches that at least one reliably misses.
+    class _Counter:
+        def __init__(self) -> None:
+            self.value = 1
+            self.lock = threading.Lock()
+
+        def reset(self) -> None:
+            self.value = 1
+
+    def make_worker(db: _Counter, fn):
+        def worker(proxy) -> None:
+            proxy.io_report("sql:counter:id=1", "write")
+            proxy.report_and_wait(None, 0)
+            with db.lock:
+                db.value = fn(db.value)
+
+        return worker
+
+    # value starts at 1; mul2-then-add3 gives 5, add3-then-mul2 gives 8.
+    # Only the second order violates the invariant, so DPOR must explore both
+    # write-write orders every search: found at iteration 2, deterministically.
+    for attempt in range(15):
+        db = _Counter()
+        coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
+        result = coord.explore(
+            worker_set=ThreadLauncher([make_worker(db, lambda v: v * 2), make_worker(db, lambda v: v + 3)]),
+            setup=db.reset,
+            invariant=lambda db=db: db.value != 8,
+        )
+        assert not result.ok, (
+            f"attempt {attempt}: DPOR missed the order-dependent conflict "
+            f"(iterations={result.iterations}, exhausted={result.exhausted})"
+        )
+        assert result.failure_kind == "invariant"
+        assert result.iterations == 2, (
+            f"attempt {attempt}: expected the reversal on the second execution, got {result.iterations}"
+        )
+
+
 def test_dpor_no_race_when_safe() -> None:
     # Each worker does a single atomic increment under a scheduling point.
     db = _DB()
