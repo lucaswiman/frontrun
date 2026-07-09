@@ -621,30 +621,25 @@ class DporCrossProcessCoordinator:
             schedule_trace = list(execution.schedule_trace)
         err = scheduler._error
 
+        def _fail(failure: str, kind: str) -> CrossProcessResult:
+            return CrossProcessResult(
+                ok=False,
+                iterations=num_explored,
+                exhausted=False,
+                failing_schedule=schedule_trace,
+                failure=failure,
+                failure_kind=kind,
+                accesses=accesses,
+            )
+
         # Deadlock first: a row-lock cycle aborts the holder, whose worker then
         # often raises too, so checking worker_errors first would mask the
         # deadlock behind that induced crash (mirrors the in-process priority).
         if isinstance(err, DeadlockError):
-            return CrossProcessResult(
-                ok=False,
-                iterations=num_explored,
-                exhausted=False,
-                failing_schedule=schedule_trace,
-                failure=getattr(err, "cycle_description", None) or str(err),
-                failure_kind="deadlock",
-                accesses=accesses,
-            )
+            return _fail(getattr(err, "cycle_description", None) or str(err), "deadlock")
         if worker_errors:
             wid = min(worker_errors)
-            return CrossProcessResult(
-                ok=False,
-                iterations=num_explored,
-                exhausted=False,
-                failing_schedule=schedule_trace,
-                failure=f"worker {wid} failed: {worker_errors[wid]}",
-                failure_kind="worker_error",
-                accesses=accesses,
-            )
+            return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")
         # A scheduler fallback TimeoutError means the run free-ran unscheduled
         # (unmodeled DB-level blocking, or a statement slower than
         # deadlock_timeout). Its final state describes no DPOR schedule, so the
@@ -652,30 +647,15 @@ class DporCrossProcessCoordinator:
         # a clean pass: the schedule was never driven to completion and nothing
         # was verified.
         if isinstance(err, TimeoutError):
-            return CrossProcessResult(
-                ok=False,
-                iterations=num_explored,
-                exhausted=False,
-                failing_schedule=schedule_trace,
-                failure=(
-                    f"scheduler timed out (deadlock_timeout={self.deadlock_timeout}s expired): {err}. "
-                    "A worker blocked outside frontrun's model (e.g. database-level locking) or a "
-                    "statement ran longer than deadlock_timeout; raise deadlock_timeout if the "
-                    "workload is just slow."
-                ),
-                failure_kind="timeout",
-                accesses=accesses,
+            return _fail(
+                f"scheduler timed out (deadlock_timeout={self.deadlock_timeout}s expired): {err}. "
+                "A worker blocked outside frontrun's model (e.g. database-level locking) or a "
+                "statement ran longer than deadlock_timeout; raise deadlock_timeout if the "
+                "workload is just slow.",
+                "timeout",
             )
         if not invariant():
-            return CrossProcessResult(
-                ok=False,
-                iterations=num_explored,
-                exhausted=False,
-                failing_schedule=schedule_trace,
-                failure="invariant violated",
-                failure_kind="invariant",
-                accesses=accesses,
-            )
+            return _fail("invariant violated", "invariant")
         return None
 
     def _cleanup_socket(self) -> None:

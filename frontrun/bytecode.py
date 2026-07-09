@@ -232,12 +232,12 @@ class OpcodeScheduler:
                         assert sleep_deadline is not None
                         next_deadline = self._deadlines.next_deadline()
                         assert next_deadline is not None  # sleep_deadline is pending
+                        self._advance_clock_to(min(next_deadline, sleep_deadline))
                         if next_deadline < sleep_deadline:
-                            self._advance_clock_to(next_deadline)
+                            # A clamped hop can't wake the scheduled sleeper, so
+                            # consume its contiguous run of entries (see above).
                             while self._index < len(self.schedule) and self.schedule[self._index] == scheduled_tid:
                                 self._index += 1
-                        else:
-                            self._advance_clock_to(sleep_deadline)
                     else:
                         # Autojump semantics: a sleeping thread cannot run
                         # before the clock advances; skip its slot.

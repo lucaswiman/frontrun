@@ -39,6 +39,39 @@ Execution = Literal["thread", "process"]
 #: Alias of :data:`frontrun._virtual_clock.ClockMode` (single source of truth).
 Clock = ClockMode
 
+#: Options that change *which* bugs are found but are not honored under
+#: ``execution="process"`` (state is external; there is no in-process opcode
+#: trace, replay, or virtual clock).  An explicitly-passed value here is rejected
+#: rather than silently ignored — a silent no-op is a correctness footgun when
+#: porting a thread test.  Membership is matched against ``explicit_options``
+#: (options whose value differs from the signature default).
+_PROCESS_UNSUPPORTED_OPTIONS = frozenset(
+    {
+        # In-process trace / analysis knobs with no process-mode analog
+        # (timeout_per_run's analog is deadlock_timeout).
+        "serializable_invariant",
+        "error_on_any_race",
+        "lock_timeout",
+        "trace_packages",
+        "track_dunder_dict_accesses",
+        "detect_sql",
+        "detect_io",
+        "patch_sleep",
+        "timeout_per_run",
+        "reproduce_on_failure",
+        "warn_nondeterministic_sql",
+        # Random-strategy-only knobs: process mode forces strategy='dpor'.
+        "max_attempts",
+        "max_ops",
+        "seed",
+        "debug",
+        # The virtual clock lives in the in-process scheduler; worker processes
+        # read real time, so a non-default value is a correctness footgun.
+        "clock",
+        "clock_diagnostics",
+    }
+)
+
 
 def explore(
     setup: Callable[[], Any],
@@ -255,41 +288,7 @@ def explore(
             raise ValueError("explore(): execution='process' does not support async workers")
         if strategy != "dpor":
             raise ValueError("explore(): execution='process' supports strategy='dpor' only")
-        # These options change *which* bugs are found and are not honored in
-        # process mode (state is external; there is no in-process opcode trace).
-        # Reject them explicitly rather than silently ignoring — a silent no-op
-        # here is a correctness footgun when porting a thread test.
-        unsupported = [
-            name
-            for name, is_set in (
-                ("serializable_invariant", serializable_invariant is not False),
-                ("error_on_any_race", error_on_any_race),
-                ("lock_timeout", lock_timeout is not None),
-                ("trace_packages", trace_packages is not None),
-                ("track_dunder_dict_accesses", track_dunder_dict_accesses),
-                ("detect_sql", detect_sql),
-                # Not plumbed into worker processes (only worker_fn + state cross
-                # the spawn boundary); a non-default value here is a silent no-op.
-                # timeout_per_run's analog in process mode is deadlock_timeout.
-                ("detect_io", not detect_io),
-                ("patch_sleep", not patch_sleep),
-                ("timeout_per_run", timeout_per_run != 5.0),
-                ("reproduce_on_failure", reproduce_on_failure != 10),
-                ("warn_nondeterministic_sql", not warn_nondeterministic_sql),
-                # Random-strategy-only knobs: process mode forces strategy='dpor',
-                # so a non-default value here is a silent no-op.
-                ("max_attempts", max_attempts != 200),
-                ("max_ops", max_ops is not None),
-                ("seed", seed is not None),
-                ("debug", debug),
-                # The virtual clock lives in the in-process scheduler; worker
-                # processes read real time, so a non-default value is a
-                # correctness footgun rather than a silent no-op.
-                ("clock", clock != "real"),
-                ("clock_diagnostics", clock_diagnostics),
-            )
-            if is_set
-        ]
+        unsupported = sorted(explicit_options & _PROCESS_UNSUPPORTED_OPTIONS)
         if unsupported:
             raise ValueError(
                 f"explore(): execution='process' does not support {', '.join(unsupported)} "

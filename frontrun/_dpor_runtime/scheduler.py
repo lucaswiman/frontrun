@@ -867,16 +867,9 @@ class DporScheduler:
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         if self._reschedule_done_current_unlocked():
                             continue
-                        if self.virtual_clock is not None and self._current_thread is None:
-                            # Idle under a virtual clock (e.g. after a
-                            # timed-wait give-up): reschedule instead of
-                            # stalling, mirroring _report_and_wait and
-                            # before_sync_retry.
-                            next_thread = self._schedule_next()
-                            self._current_thread = next_thread
-                            if next_thread is None and len(self._threads_done) >= self.num_threads:
-                                self._finished = True
-                            self._condition.notify_all()
+                        if self.virtual_clock is not None and self._schedule_idle_current_unlocked():
+                            # Idle under a virtual clock (e.g. after a timed-wait
+                            # give-up): reschedule instead of stalling.
                             continue
                         self._error = TimeoutError(
                             f"DPOR I/O deadlock before {resource_id}: waiting for thread {thread_id}, "
