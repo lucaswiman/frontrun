@@ -226,7 +226,6 @@ def test_async_random_virtual_sleep_zero_wall_time() -> None:
             strategy="random",
             clock="virtual",
             max_attempts=5,
-            reproduce_on_failure=0,
             timeout_per_run=1.0,
         )
     )
@@ -259,7 +258,6 @@ def test_async_random_schedule_exhaustion_still_advances_virtual_sleep(clock: st
             seed=0,
             max_attempts=1,
             max_ops=10,
-            reproduce_on_failure=0,
             timeout_per_run=2.0,
         )
     )
@@ -280,7 +278,6 @@ def test_async_random_explored_clock_can_fire_timer_early() -> None:
             clock="explored",
             max_attempts=200,
             seed=1234,
-            reproduce_on_failure=0,
         )
     )
     _assert_invariant_failure(result, "expected delayed writer")
@@ -693,7 +690,6 @@ def test_async_random_wait_for_bare_future_uses_virtual_deadline() -> None:
             strategy="random",
             clock="virtual",
             max_attempts=1,
-            reproduce_on_failure=0,
             timeout_per_run=1.0,
             deadlock_timeout=0.05,
         )
@@ -1569,7 +1565,6 @@ def test_async_random_lock_sleep_quiescence_rescue() -> None:
             clock="virtual",
             max_attempts=3,
             seed=7,
-            reproduce_on_failure=0,
             timeout_per_run=1.0,
         )
     )
@@ -1610,7 +1605,6 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
             seed=7,
             deadlock_timeout=0.05,
             timeout_per_run=1.0,
-            reproduce_on_failure=0,
         )
     )
     wall_elapsed = time.monotonic() - wall_start

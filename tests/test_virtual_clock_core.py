@@ -443,7 +443,6 @@ def test_async_random_warns_clock_diagnostics_unsupported() -> None:
                 clock="virtual",
                 clock_diagnostics=True,
                 max_attempts=2,
-                reproduce_on_failure=0,
             )
         )
 
