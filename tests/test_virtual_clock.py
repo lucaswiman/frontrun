@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import queue
+import sys
 import threading
 import time
 import warnings
@@ -650,6 +651,105 @@ def test_random_timed_wait_not_double_advanced_past_deadline() -> None:
         timeout_per_run=1.0,
     )
     assert result.property_holds, result.explanation
+
+
+def test_explored_maybe_advance_clamps_to_earliest_pending_deadline() -> None:
+    """Explored clock, random scheduler: a schedule entry landing on a
+    sleeping thread speculatively advances the clock ("maybe advance"), but
+    each hop must stop at the *earliest* pending deadline — an earlier timed
+    wait must fire at its own clock value, never at the later sleeper's
+    target (virtual-clock hardening deferred item 2)."""
+    clock = VirtualClock()
+    epoch = clock.now()
+    scheduler = OpcodeScheduler(
+        [1, 0],
+        num_threads=2,
+        deadlock_timeout=0.2,
+        virtual_clock=clock,
+        clock_mode="explored",
+    )
+    # Thread 1 sleeps until t+5 (a time.sleep); thread 0 spins on a timed
+    # wait with the earlier deadline t+1 (an event.wait(timeout=1)).
+    scheduler._deadlines.add_sleep(1, epoch + 5.0, wake_id=None)
+    scheduler.add_timed_wait(0, epoch + 1.0)
+
+    # Thread 0 asks for a turn; the schedule's head entry belongs to the
+    # sleeping thread 1, so the explored branch "maybe advances" the clock.
+    granted = scheduler.wait_for_turn(0)
+
+    assert clock.now() == pytest.approx(epoch + 1.0)  # clamped: not the sleeper's t+5
+    assert not scheduler._deadlines.in_timed_wait(0)  # the timed wait fired, at its own value
+    assert scheduler._deadlines.is_sleeping(1)  # the sleeper's own deadline is still pending
+    # The clamped hop consumed the sleeper's entries, so the woken thread 0
+    # got its turn (at t+1) instead of deadlocking behind the sleeper's slot.
+    assert granted
+
+
+class _ExploredTimedWaitAndSleep:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.elapsed: float | None = None
+
+
+def _explored_wait_1(s: _ExploredTimedWaitAndSleep) -> None:
+    start = time.monotonic()
+    s.event.wait(timeout=1.0)  # nobody sets the event; must time out at t=1
+    s.elapsed = time.monotonic() - start
+
+
+def _explored_sleep_5(s: _ExploredTimedWaitAndSleep) -> None:
+    time.sleep(5.0)
+
+
+def _explored_busy(s: _ExploredTimedWaitAndSleep) -> None:
+    # A runnable third thread keeps the all-blocked autojump (which already
+    # fires deadlines in order) out of the way, so the speculative explored
+    # "maybe advance" on the sleeper's schedule entries is the clock mover.
+    x = 0
+    for _ in range(1500):
+        x += 1
+
+
+@pytest.mark.skipif(
+    sys.version_info[:2] > (3, 13),
+    reason="seed-pinned interleaving verified on 3.10-3.13; the opcode stream differs on newer "
+    "interpreters, where the post-timeout read may be legitimately preempted by a later advance "
+    "(the scheduler-level clamp test above is the version-independent regression)",
+)
+@pytest.mark.parametrize("seed", [21, 88])
+def test_random_explored_timed_wait_observes_own_deadline(seed: int) -> None:
+    """Random strategy, explored clock: the speculative "maybe advance" on the
+    sleeper's entry must stop at the timed wait's earlier t=1 deadline, so the
+    wait times out (and is observed) at t=1 — never at the sleeper's t=5
+    target (virtual-clock hardening deferred item 2).
+
+    Seeds are pinned so the maybe-advance hits while the t=1 deadline is
+    pending and the waiter's post-timeout read runs before any further
+    advance; without the clamp both seeds observe elapsed == 5.0.
+    """
+    observed: list[float] = []
+
+    def invariant(s: _ExploredTimedWaitAndSleep) -> bool:
+        if s.elapsed is not None:
+            observed.append(s.elapsed)
+        return True
+
+    result = frontrun.explore(
+        setup=_ExploredTimedWaitAndSleep,
+        workers=[_explored_wait_1, _explored_sleep_5, _explored_busy],
+        invariant=invariant,
+        strategy="random",
+        clock="explored",
+        seed=seed,
+        max_attempts=1,
+        detect_io=False,
+        reproduce_on_failure=0,
+        timeout_per_run=10.0,
+    )
+    assert result.property_holds, result.explanation
+    assert observed, "the waiter never finished its timed wait"
+    for elapsed in observed:
+        assert elapsed == pytest.approx(1.0), f"timed wait observed a later deadline's clock value: {elapsed}"
 
 
 class _ExhaustedSleeper:
