@@ -652,6 +652,80 @@ def test_random_timed_wait_not_double_advanced_past_deadline() -> None:
     assert result.property_holds, result.explanation
 
 
+class _ExhaustedSleeper:
+    def __init__(self) -> None:
+        self.expires_at = time.monotonic() + 60.0
+        self.saw_expired: bool | None = None
+
+
+def _burn_budget_then_sleep(s: _ExhaustedSleeper) -> None:
+    # Burn well past the scheduler's max_ops cap (len(schedule) * 10 + 10000)
+    # so the schedule budget is exhausted before the sleep is reached.
+    x = 0
+    for _ in range(20000):
+        x += 1
+    time.sleep(120.0)  # must advance the virtual clock past expires_at
+    s.saw_expired = time.monotonic() >= s.expires_at
+
+
+@pytest.mark.parametrize("clock", ["virtual", "explored"])
+def test_random_max_ops_exhaustion_still_advances_virtual_sleep(clock: str) -> None:
+    """Random strategy: a virtual sleep reached after the schedule/op budget
+    is exhausted must still advance the clock to its deadline.  Returning
+    instantly with the clock frozen silently truncates the sleep and reports
+    a phantom TTL counterexample."""
+    result = frontrun.explore(
+        setup=_ExhaustedSleeper,
+        workers=[_burn_budget_then_sleep],
+        invariant=lambda s: s.saw_expired is True,
+        strategy="random",
+        clock=clock,  # type: ignore[arg-type]
+        seed=0,
+        max_attempts=1,
+        max_ops=10,
+        detect_io=False,
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+class _ExhaustedTimedWait:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.elapsed: float | None = None
+
+
+def _burn_budget_then_timed_wait(s: _ExhaustedTimedWait) -> None:
+    x = 0
+    for _ in range(20000):
+        x += 1
+    start = time.monotonic()
+    s.event.wait(timeout=10.0)  # nobody sets the event; must time out at t=10
+    s.elapsed = time.monotonic() - start
+
+
+def test_random_max_ops_exhaustion_event_wait_times_out_virtually() -> None:
+    """Random strategy: a timed Event.wait reached after budget exhaustion
+    must resolve on the virtual clock (observe its own 10s deadline), not
+    degrade to a real 1-second wait with the clock frozen."""
+    wall_start = time.monotonic()
+    result = frontrun.explore(
+        setup=_ExhaustedTimedWait,
+        workers=[_burn_budget_then_timed_wait],
+        invariant=lambda s: s.elapsed is not None and s.elapsed >= 10.0,
+        strategy="random",
+        clock="virtual",
+        seed=0,
+        max_attempts=1,
+        max_ops=10,
+        detect_io=False,
+        reproduce_on_failure=0,
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"exhausted timed wait burned wall time ({wall_elapsed:.1f}s)"
+
+
 def test_event_deadlock_detected_exactly() -> None:
     """Two workers each waiting on the other's event is a genuine deadlock:
     with a virtual clock and no pending deadline it must be reported via

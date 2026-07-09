@@ -236,6 +236,36 @@ def test_async_random_virtual_sleep_zero_wall_time() -> None:
     assert wall_elapsed < 4.0
 
 
+@pytest.mark.parametrize("clock", ["virtual", "explored"])
+def test_async_random_schedule_exhaustion_still_advances_virtual_sleep(clock: str) -> None:
+    """Async random: a virtual sleep reached after the fixed-length schedule
+    is exhausted must still advance the clock to its deadline (mirrors the
+    sync max_ops regression) instead of returning with the clock frozen."""
+
+    async def worker(s: _SleepObserver) -> None:
+        for _ in range(300):
+            await asyncio.sleep(0)  # burn the schedule (max_ops=10)
+        s.start = time.monotonic()
+        await asyncio.sleep(120.0)
+        s.end = time.monotonic()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_SleepObserver,
+            workers=[worker],
+            invariant=lambda s: s.end - s.start >= 120.0,
+            strategy="random",
+            clock=clock,  # type: ignore[arg-type]
+            seed=0,
+            max_attempts=1,
+            max_ops=10,
+            reproduce_on_failure=0,
+            timeout_per_run=2.0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_async_random_explored_clock_can_fire_timer_early() -> None:
     def invariant(s: _RetryRace) -> bool:
         assert s.x == 100, f"expected delayed writer to remain final, got x={s.x}"
