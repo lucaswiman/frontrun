@@ -44,6 +44,28 @@ from . import protocol as proto
 from .coordinator import CrossProcessResult, accept_hello_live, worker_targets
 
 
+class _RelayDporScheduler(DporScheduler):
+    """DporScheduler variant for socket relays: no cross-thread pending-io flush.
+
+    In-process, a thread's buffered ``pending_io`` describes accesses that
+    already physically happened (deferred I/O), so another thread reaching a
+    real I/O boundary must make them visible to the engine — that is what
+    ``_flush_other_pending_io_for_current_io_unlocked`` does. An xproc relay's
+    buffer instead holds ACCESS frames the worker sends BEFORE executing the
+    statement (pre-declarations). Cross-flushing those from another relay's
+    turn attributes the not-yet-executed access at that relay's step whenever
+    the ACCESS frame wins the OS race against the other worker's grant; the
+    engine trace desyncs, the write-write reversal is never seeded into the
+    wakeup tree, and the search ends early with a false ok=True. Relay buffers
+    are flushed only at their own worker's grant (the own-pending flush inside
+    ``before_sync_retry`` / ``report_and_wait`` / ``before_io``), so the
+    cross-thread flush must be a no-op here.
+    """
+
+    def _flush_other_pending_io_for_current_io_unlocked(self, thread_id: int) -> None:
+        return
+
+
 def _setup_relay_tls(scheduler: DporScheduler, worker_id: int) -> list[tuple[int, str, bool]]:
     """Install the minimal per-thread state ``DporScheduler`` reads for this relay.
 
@@ -72,19 +94,16 @@ def _flush_relay_pending_io(
 ) -> None:
     """Report this relay's buffered accesses to the engine, then clear the buffer.
 
-    A worker's access (e.g. the write of a read-modify-write) is buffered with no
-    subsequent ``report_and_wait`` to flush it, so it would either be dropped or
-    attributed at the wrong point. Report each buffered access to the engine now,
-    under ``scheduler._engine_lock`` (mirroring ``DporBytecodeRunner``).
-
-    Called at two flush points where the buffered accesses must reach the engine
-    before something else advances the thread's happens-before state:
-
-    * on relay teardown, so the DPOR search sees every access; and
-    * before ``acquire_row_locks`` reports ``lock_acquire`` to the engine, so an
-      unlocked access is recorded OUTSIDE the critical section it precedes rather
-      than being folded into the lock's happens-before (which would make two
-      workers' unlocked writes look lock-synchronized and prune the real race).
+    Relay-teardown flush only: a worker's trailing access (e.g. one reported
+    after its last statement, with no subsequent scheduling point to flush it)
+    would otherwise be dropped and the DPOR search would never see it. Every
+    in-run flush happens inside the scheduler's own-pending flush at the
+    worker's grant (``before_sync_retry`` / ``before_io``), which both
+    attributes the access at the worker's own scheduling step and — on the
+    ACQUIRE_LOCKS path — records it before ``acquire_row_locks`` reports
+    ``lock_acquire``, i.e. OUTSIDE the critical section it precedes (otherwise
+    two workers' unlocked writes would look lock-synchronized and DPOR would
+    prune the real race).
 
     Unlike ``DporScheduler._flush_pending_io_for_unlocked`` (whose ``_unlocked``
     contract requires the caller to already hold ``self._condition``), this runs
@@ -130,12 +149,25 @@ def _relay_loop(
     pending_io = _setup_relay_tls(scheduler, worker_id)
     registered_groups: set[int] = set()
     clean = False
+    # True while this worker owns the scheduler turn granted by
+    # before_sync_retry: the worker is executing its real driver call, and the
+    # arrival of its next frame (or its disconnect) marks that call complete.
+    holding_sync_turn = False
     try:
         while True:
             try:
                 msg = proto.recv_msg(sock)
             except (TimeoutError, OSError):
                 msg = None
+            if holding_sync_turn:
+                # The statement the last grant covered has finished executing
+                # (the worker sent its next frame); release the held turn so
+                # the precomputed next worker can run. Holding it through the
+                # driver call mirrors the in-process SQL path
+                # (_sql_cursor._dpor_schedule_and_suppress_sync) and keeps two
+                # workers' real DB calls from overlapping nondeterministically.
+                scheduler.after_sync_retry(worker_id)
+                holding_sync_turn = False
             if msg is None:
                 with accesses_lock:
                     worker_errors[worker_id] = "worker disconnected or timed out"
@@ -159,35 +191,40 @@ def _relay_loop(
                         scheduler.engine.register_resource_group(obj_key, group_key)
                     registered_groups.add(obj_key)
             elif kind == proto.REPORT_AND_WAIT:
-                granted = scheduler.report_and_wait(None, worker_id)
+                # Take the turn (flushing this worker's buffered pre-declared
+                # accesses at its own step, inside before_sync_retry) and HOLD
+                # it: the worker executes its real statement after the grant,
+                # and the turn is released only when its next frame arrives.
+                granted = scheduler.before_sync_retry(worker_id)
                 _reply(sock, granted)
                 if not granted:
                     break
+                holding_sync_turn = True
             elif kind == proto.ACQUIRE_LOCKS:
-                # Flush any access buffered before this acquire so it is recorded
-                # with the thread's PRE-lock happens-before. acquire_row_locks
-                # reports 'lock_acquire' to the engine; a still-buffered access
-                # flushed only at the next report_and_wait would otherwise be
-                # attributed inside the critical section, making two workers'
-                # unlocked writes look lock-synchronized and pruning the race.
-                _flush_relay_pending_io(scheduler, worker_id, pending_io)
                 # Take and hold the scheduling turn through the modeled row-lock
                 # acquire. A plain report_and_wait() schedules the next worker
                 # before acquire_row_locks() records lock_acquire, letting two
                 # relays race around the acquire and desynchronizing the engine
-                # trace from the executor.
+                # trace from the executor. before_sync_retry also flushes any
+                # access buffered before this acquire at the worker's own step,
+                # BEFORE acquire_row_locks reports 'lock_acquire' — so it is
+                # recorded with the thread's PRE-lock happens-before rather
+                # than inside the critical section (which would make two
+                # workers' unlocked writes look lock-synchronized and prune
+                # the race).
                 if not scheduler.before_sync_retry(worker_id):
                     _reply(sock, False)
                     break
                 try:
                     scheduler.acquire_row_locks(worker_id, list(msg["res"]))
                 except SchedulerAbort:
+                    scheduler.after_sync_retry(worker_id)
                     _reply(sock, False)
                     break
-                else:
-                    _reply(sock, True)
-                finally:
-                    scheduler.after_sync_retry(worker_id)
+                # Keep the turn: the worker performs the real (locked) driver
+                # call after this grant; released when its next frame arrives.
+                _reply(sock, True)
+                holding_sync_turn = True
             elif kind == proto.RELEASE_LOCKS:
                 scheduler.release_row_locks(worker_id)
             elif kind == proto.BEFORE_IO:
@@ -213,6 +250,8 @@ def _relay_loop(
                 clean = True
                 break
     finally:
+        if holding_sync_turn:
+            scheduler.after_sync_retry(worker_id)
         if not clean:
             with accesses_lock:
                 unclean.add(worker_id)
@@ -371,7 +410,7 @@ class DporCrossProcessCoordinator:
                 total_deadline=deadline,
             ):
                 execution = step.execution
-                scheduler = DporScheduler(
+                scheduler = _RelayDporScheduler(
                     engine,
                     execution,
                     self.num_workers,
