@@ -9,7 +9,14 @@ exercised without a Redis server (that is the integration e2e).
 
 from __future__ import annotations
 
+import socket
+
+import pytest
+
+from frontrun._deadlock import SchedulerAbort
+from frontrun._dpor_runtime.xproc import protocol as proto
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
+from frontrun._dpor_runtime.xproc.proxy import SchedulerProxy
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
 
 KEY = "redis:counter"
@@ -52,6 +59,57 @@ def test_dpor_finds_redis_lost_update() -> None:
     assert not result.ok
     assert result.failure_kind == "invariant"
     assert result.failing_schedule is not None
+
+
+def test_proxy_before_io_returns_grant_outcome() -> None:
+    # Regression: before_io discarded _await_grant()'s result, so an aborted
+    # worker proceeded to run its Redis command unscheduled. The proxy must
+    # surface the outcome (True on GRANT, False on ABORT, latched thereafter).
+    coord_sock, worker_sock = socket.socketpair()
+    try:
+        proxy = SchedulerProxy(worker_sock, 0)
+        proto.send_msg(coord_sock, {"t": proto.GRANT})
+        assert proxy.before_io(0, "redis:GET:k") is True
+        proto.send_msg(coord_sock, {"t": proto.ABORT})
+        assert proxy.before_io(0, "redis:GET:k") is False
+        # The abort latch short-circuits every later boundary without I/O.
+        assert proxy.before_io(0, "redis:GET:k") is False
+    finally:
+        coord_sock.close()
+        worker_sock.close()
+
+
+def test_aborted_before_io_does_not_execute_redis_command() -> None:
+    # Regression: _run_sync_dpor_envelope executed the Redis command even when
+    # before_io was denied — an aborted cross-process worker kept mutating the
+    # real Redis outside any schedule. A denied grant must raise SchedulerAbort
+    # (matching the SQL path) without running the command.
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._redis_client import _run_sync_dpor_envelope
+
+    class _AbortingScheduler:
+        def __init__(self) -> None:
+            self.after_io_resources: list[str] = []
+
+        def before_io(self, thread_id: int, resource_id: str) -> bool:
+            return False
+
+        def after_io(self, thread_id: int, resource_id: str) -> None:
+            self.after_io_resources.append(resource_id)
+
+    executed: list[int] = []
+    scheduler = _AbortingScheduler()
+    set_dpor_scheduler(scheduler)
+    set_dpor_thread_id(0)
+    try:
+        with pytest.raises(SchedulerAbort):
+            _run_sync_dpor_envelope(lambda: executed.append(1), "redis\x1fSET\x1fk\x1f", False, True)
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+    assert not executed
+    # The boundary was never entered, so it must not be exited either.
+    assert scheduler.after_io_resources == []
 
 
 def test_dpor_redis_atomic_incr_has_no_race() -> None:

@@ -867,6 +867,10 @@ class DporScheduler:
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         if self._reschedule_done_current_unlocked():
                             continue
+                        if self.virtual_clock is not None and self._schedule_idle_current_unlocked():
+                            # Idle under a virtual clock (e.g. after a timed-wait
+                            # give-up): reschedule instead of stalling.
+                            continue
                         self._error = TimeoutError(
                             f"DPOR I/O deadlock before {resource_id}: waiting for thread {thread_id}, "
                             f"current is {self._current_thread}"

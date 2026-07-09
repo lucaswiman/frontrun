@@ -566,6 +566,144 @@ def test_explore_validates_strategy_against_async_registry():
         del ASYNC_STRATEGIES["async_only"]
 
 
+# (l) explore() rejects explicitly-passed options the strategy does not support
+# ---------------------------------------------------------------------------
+
+# (strategy, kwargs) combos that must raise for sync workers: each option is
+# silently dropped by the adapter's allowlist today, which is the same
+# correctness footgun the process branch already rejects.
+_SYNC_REJECTED_COMBOS = [
+    ("dpor", {"seed": 42}),
+    ("dpor", {"max_attempts": 50}),
+    ("dpor", {"max_ops": 10}),
+    ("dpor", {"debug": True}),
+    ("dpor", {"detect_sql": True}),
+    ("random", {"preemption_bound": 5}),
+    ("random", {"preemption_bound": None}),
+    ("random", {"max_executions": 3}),
+    ("random", {"max_branches": 10}),
+    ("random", {"stop_on_first": False}),
+    ("random", {"lock_timeout": 100}),
+    ("random", {"track_dunder_dict_accesses": True}),
+    ("random", {"search": "random"}),
+    ("random", {"detect_sql": True}),
+]
+
+
+@pytest.mark.parametrize(("strategy", "kwargs"), _SYNC_REJECTED_COMBOS, ids=lambda p: str(p))
+def test_explore_sync_rejects_unsupported_option(strategy, kwargs):
+    """Sync explore() must raise for options the selected strategy ignores."""
+    with pytest.raises(ValueError, match="not supported"):
+        frontrun.explore(
+            setup=Counter,
+            workers=[Counter.increment, Counter.increment],
+            invariant=counter_invariant,
+            strategy=strategy,
+            **kwargs,
+        )
+
+
+_ASYNC_REJECTED_COMBOS = [
+    ("dpor", {"seed": 42}),
+    ("dpor", {"max_attempts": 50}),
+    ("dpor", {"debug": True}),
+    ("dpor", {"search": "random"}),
+    ("dpor", {"track_dunder_dict_accesses": True}),
+    ("random", {"reproduce_on_failure": 3}),
+    ("random", {"warn_nondeterministic_sql": False}),
+    ("random", {"debug": True}),
+    ("random", {"stop_on_first": False}),
+    ("random", {"preemption_bound": 5}),
+    ("random", {"lock_timeout": 100}),
+]
+
+
+@pytest.mark.parametrize(("strategy", "kwargs"), _ASYNC_REJECTED_COMBOS, ids=lambda p: str(p))
+def test_explore_async_rejects_unsupported_option(strategy, kwargs):
+    """Async explore() must raise synchronously for unsupported options."""
+    with pytest.raises(ValueError, match="not supported"):
+        coro = frontrun.explore(
+            setup=AsyncCounter,
+            workers=AsyncCounter.increment,
+            count=2,
+            invariant=lambda c: c.value == 2,
+            strategy=strategy,
+            **kwargs,
+        )
+        coro.close()  # only reached when validation failed to raise
+
+
+def test_explore_rejection_error_names_option_and_strategy():
+    """The error must name the offending option, the strategy, and point at
+    the strategy that does support the option."""
+    with pytest.raises(ValueError) as exc_info:
+        frontrun.explore(
+            setup=Counter,
+            workers=[Counter.increment, Counter.increment],
+            invariant=counter_invariant,
+            strategy="dpor",
+            seed=42,
+        )
+    msg = str(exc_info.value)
+    assert "seed" in msg
+    assert "dpor" in msg
+    assert "random" in msg, f"error should point at the strategy that supports seed=: {msg!r}"
+
+
+def test_explore_rejection_error_for_sync_only_option_with_async_workers():
+    """debug= is supported by no async strategy; the error should say so."""
+    with pytest.raises(ValueError) as exc_info:
+        coro = frontrun.explore(
+            setup=AsyncCounter,
+            workers=AsyncCounter.increment,
+            count=2,
+            invariant=lambda c: c.value == 2,
+            strategy="random",
+            debug=True,
+        )
+        coro.close()
+    msg = str(exc_info.value)
+    assert "debug" in msg
+    assert "sync" in msg, f"error should say debug= needs sync workers: {msg!r}"
+
+
+def test_explore_accepts_explicitly_passed_defaults():
+    """Passing an unsupported option at its default value is indistinguishable
+    from not passing it, and must not raise (it is a no-op either way)."""
+    result = frontrun.explore(
+        setup=Counter,
+        workers=[Counter.increment, Counter.increment],
+        invariant=counter_invariant,
+        strategy="dpor",
+        seed=None,
+        max_attempts=200,
+        max_ops=None,
+        debug=False,
+        detect_sql=False,
+    )
+    assert isinstance(result, InterleavingResult)
+    assert not result.property_holds
+
+
+def test_explore_async_accepts_detect_sql():
+    """detect_sql= is consumed by both async adapters (folded into detect_sql
+    of the underlying implementation) and must not be rejected."""
+    import inspect
+
+    for strategy in ("dpor", "random"):
+        coro = frontrun.explore(
+            setup=AsyncCounter,
+            workers=AsyncCounter.increment,
+            count=2,
+            invariant=lambda c: c.value == 2,
+            strategy=strategy,
+            detect_sql=True,
+        )
+        assert inspect.iscoroutine(coro)
+        coro.close()
+
+
+# ---------------------------------------------------------------------------
 # explore_async_random: total_timeout support
 # ---------------------------------------------------------------------------
 

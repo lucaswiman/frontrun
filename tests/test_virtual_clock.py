@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import queue
+import sys
 import threading
 import time
 import warnings
@@ -652,6 +653,179 @@ def test_random_timed_wait_not_double_advanced_past_deadline() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_explored_maybe_advance_clamps_to_earliest_pending_deadline() -> None:
+    """Explored clock, random scheduler: a schedule entry landing on a
+    sleeping thread speculatively advances the clock ("maybe advance"), but
+    each hop must stop at the *earliest* pending deadline — an earlier timed
+    wait must fire at its own clock value, never at the later sleeper's
+    target (virtual-clock hardening deferred item 2)."""
+    clock = VirtualClock()
+    epoch = clock.now()
+    scheduler = OpcodeScheduler(
+        [1, 0],
+        num_threads=2,
+        deadlock_timeout=0.2,
+        virtual_clock=clock,
+        clock_mode="explored",
+    )
+    # Thread 1 sleeps until t+5 (a time.sleep); thread 0 spins on a timed
+    # wait with the earlier deadline t+1 (an event.wait(timeout=1)).
+    scheduler._deadlines.add_sleep(1, epoch + 5.0, wake_id=None)
+    scheduler.add_timed_wait(0, epoch + 1.0)
+
+    # Thread 0 asks for a turn; the schedule's head entry belongs to the
+    # sleeping thread 1, so the explored branch "maybe advances" the clock.
+    granted = scheduler.wait_for_turn(0)
+
+    assert clock.now() == pytest.approx(epoch + 1.0)  # clamped: not the sleeper's t+5
+    assert not scheduler._deadlines.in_timed_wait(0)  # the timed wait fired, at its own value
+    assert scheduler._deadlines.is_sleeping(1)  # the sleeper's own deadline is still pending
+    # The clamped hop consumed the sleeper's entries, so the woken thread 0
+    # got its turn (at t+1) instead of deadlocking behind the sleeper's slot.
+    assert granted
+
+
+class _ExploredTimedWaitAndSleep:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.elapsed: float | None = None
+
+
+def _explored_wait_1(s: _ExploredTimedWaitAndSleep) -> None:
+    start = time.monotonic()
+    s.event.wait(timeout=1.0)  # nobody sets the event; must time out at t=1
+    s.elapsed = time.monotonic() - start
+
+
+def _explored_sleep_5(s: _ExploredTimedWaitAndSleep) -> None:
+    time.sleep(5.0)
+
+
+def _explored_busy(s: _ExploredTimedWaitAndSleep) -> None:
+    # A runnable third thread keeps the all-blocked autojump (which already
+    # fires deadlines in order) out of the way, so the speculative explored
+    # "maybe advance" on the sleeper's schedule entries is the clock mover.
+    x = 0
+    for _ in range(1500):
+        x += 1
+
+
+@pytest.mark.skipif(
+    sys.version_info[:2] > (3, 13),
+    reason="seed-pinned interleaving verified on 3.10-3.13; the opcode stream differs on newer "
+    "interpreters, where the post-timeout read may be legitimately preempted by a later advance "
+    "(the scheduler-level clamp test above is the version-independent regression)",
+)
+@pytest.mark.parametrize("seed", [21, 88])
+def test_random_explored_timed_wait_observes_own_deadline(seed: int) -> None:
+    """Random strategy, explored clock: the speculative "maybe advance" on the
+    sleeper's entry must stop at the timed wait's earlier t=1 deadline, so the
+    wait times out (and is observed) at t=1 — never at the sleeper's t=5
+    target (virtual-clock hardening deferred item 2).
+
+    Seeds are pinned so the maybe-advance hits while the t=1 deadline is
+    pending and the waiter's post-timeout read runs before any further
+    advance; without the clamp both seeds observe elapsed == 5.0.
+    """
+    observed: list[float] = []
+
+    def invariant(s: _ExploredTimedWaitAndSleep) -> bool:
+        if s.elapsed is not None:
+            observed.append(s.elapsed)
+        return True
+
+    result = frontrun.explore(
+        setup=_ExploredTimedWaitAndSleep,
+        workers=[_explored_wait_1, _explored_sleep_5, _explored_busy],
+        invariant=invariant,
+        strategy="random",
+        clock="explored",
+        seed=seed,
+        max_attempts=1,
+        detect_io=False,
+        reproduce_on_failure=0,
+        timeout_per_run=10.0,
+    )
+    assert result.property_holds, result.explanation
+    assert observed, "the waiter never finished its timed wait"
+    for elapsed in observed:
+        assert elapsed == pytest.approx(1.0), f"timed wait observed a later deadline's clock value: {elapsed}"
+
+
+class _ExhaustedSleeper:
+    def __init__(self) -> None:
+        self.expires_at = time.monotonic() + 60.0
+        self.saw_expired: bool | None = None
+
+
+def _burn_budget_then_sleep(s: _ExhaustedSleeper) -> None:
+    # Burn well past the scheduler's max_ops cap (len(schedule) * 10 + 10000)
+    # so the schedule budget is exhausted before the sleep is reached.
+    x = 0
+    for _ in range(20000):
+        x += 1
+    time.sleep(120.0)  # must advance the virtual clock past expires_at
+    s.saw_expired = time.monotonic() >= s.expires_at
+
+
+@pytest.mark.parametrize("clock", ["virtual", "explored"])
+def test_random_max_ops_exhaustion_still_advances_virtual_sleep(clock: str) -> None:
+    """Random strategy: a virtual sleep reached after the schedule/op budget
+    is exhausted must still advance the clock to its deadline.  Returning
+    instantly with the clock frozen silently truncates the sleep and reports
+    a phantom TTL counterexample."""
+    result = frontrun.explore(
+        setup=_ExhaustedSleeper,
+        workers=[_burn_budget_then_sleep],
+        invariant=lambda s: s.saw_expired is True,
+        strategy="random",
+        clock=clock,  # type: ignore[arg-type]
+        seed=0,
+        max_attempts=1,
+        max_ops=10,
+        detect_io=False,
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+class _ExhaustedTimedWait:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.elapsed: float | None = None
+
+
+def _burn_budget_then_timed_wait(s: _ExhaustedTimedWait) -> None:
+    x = 0
+    for _ in range(20000):
+        x += 1
+    start = time.monotonic()
+    s.event.wait(timeout=10.0)  # nobody sets the event; must time out at t=10
+    s.elapsed = time.monotonic() - start
+
+
+def test_random_max_ops_exhaustion_event_wait_times_out_virtually() -> None:
+    """Random strategy: a timed Event.wait reached after budget exhaustion
+    must resolve on the virtual clock (observe its own 10s deadline), not
+    degrade to a real 1-second wait with the clock frozen."""
+    wall_start = time.monotonic()
+    result = frontrun.explore(
+        setup=_ExhaustedTimedWait,
+        workers=[_burn_budget_then_timed_wait],
+        invariant=lambda s: s.elapsed is not None and s.elapsed >= 10.0,
+        strategy="random",
+        clock="virtual",
+        seed=0,
+        max_attempts=1,
+        max_ops=10,
+        detect_io=False,
+        reproduce_on_failure=0,
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"exhausted timed wait burned wall time ({wall_elapsed:.1f}s)"
+
+
 def test_event_deadlock_detected_exactly() -> None:
     """Two workers each waiting on the other's event is a genuine deadlock:
     with a virtual clock and no pending deadline it must be reported via
@@ -1102,6 +1276,34 @@ def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
     assert advanced is False, "timed waits must not drive the replay clock advance"
     assert clock.now() == before, "the virtual clock must not jump to a timed-wait deadline"
     assert scheduler._deadlines.timed_wait_deadline(tid) == deadline, "the timed wait must be left intact"
+
+
+def test_before_io_reschedules_when_idle_under_virtual_clock() -> None:
+    """``before_io`` gets the same idle-reschedule rescue as its siblings.
+
+    Under a virtual clock the scheduler can be idle (``_current_thread is
+    None``) when a worker reaches a scheduling point — e.g. right after a
+    timed-wait give-up.  ``_report_and_wait`` and ``before_sync_retry`` rescue
+    that state by asking the engine for the next thread instead of stalling;
+    a worker issuing a Redis command through ``before_io`` must not instead
+    wait out ``deadlock_timeout`` and abort the run with a TimeoutError."""
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    scheduler = DporScheduler(
+        _FakeEngine(),
+        _FakeExecution([0]),
+        num_threads=1,
+        deadlock_timeout=0.2,
+        virtual_clock=VirtualClock(),
+        clock_mode="virtual",
+        clock_actor_id=99,
+    )
+    scheduler._current_thread = None  # idle: nobody holds the turn
+
+    scheduler.before_io(0, "redis:key")
+
+    assert scheduler._error is None, f"idle before_io must reschedule, not time out: {scheduler._error!r}"
+    assert scheduler._active_io_thread == 0, "the caller must hold the IO turn after the rescue"
 
 
 def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:

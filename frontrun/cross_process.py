@@ -203,6 +203,16 @@ def explore_processes(
             worker_set=SubprocessLauncher(specs, reuse=reuse_workers), setup=coord_setup, invariant=coord_invariant
         )
     if strategy == "exhaustive":
+        # DPOR-only knobs must not silently no-op (same principle as the
+        # rejected in-process-only explore() options): the exhaustive
+        # coordinator has no engine to bound.
+        if max_executions is not None:
+            raise ValueError(
+                "explore_processes(): max_executions only applies to strategy='dpor'; "
+                "bound strategy='exhaustive' with max_iterations instead."
+            )
+        if preemption_bound != 2:  # 2 is the signature default; anything else was explicit
+            raise ValueError("explore_processes(): preemption_bound only applies to strategy='dpor'.")
         return CrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,

@@ -32,6 +32,15 @@ def _expand_async_io_kwargs(kwargs: dict[str, Any]) -> tuple[bool, bool]:
 class Strategy(Protocol):
     """Synchronous exploration strategy."""
 
+    allowed_keys: frozenset[str]
+    """The ``explore()`` keyword options this strategy consumes.
+
+    :func:`frontrun.explore` rejects any explicitly-passed option outside this
+    set (a silently dropped option is a correctness footgun), so the set must
+    cover everything :meth:`run` honors — including keys consumed before the
+    allowlist filter, such as ``detect_io`` / ``detect_sql`` in async adapters.
+    """
+
     def run(
         self,
         *,
@@ -45,6 +54,9 @@ class Strategy(Protocol):
 @runtime_checkable
 class AsyncStrategy(Protocol):
     """Asynchronous exploration strategy.  :meth:`run` returns an awaitable."""
+
+    allowed_keys: frozenset[str]
+    """Same contract as :attr:`Strategy.allowed_keys`."""
 
     def run(
         self,
@@ -114,6 +126,8 @@ _RANDOM_SYNC_KEYS: frozenset[str] = frozenset(
 class _SyncDporStrategy:
     """Adapter routing sync DPOR through ``_dpor_runtime.explore._explore_dpor``."""
 
+    allowed_keys: frozenset[str] = _DPOR_SYNC_KEYS
+
     def run(
         self,
         *,
@@ -138,6 +152,8 @@ class _SyncDporStrategy:
 
 class _SyncRandomStrategy:
     """Adapter routing sync random exploration through ``bytecode.explore_random``."""
+
+    allowed_keys: frozenset[str] = _RANDOM_SYNC_KEYS
 
     def run(
         self,
@@ -165,6 +181,10 @@ class _SyncRandomStrategy:
 # Async adapters
 # ---------------------------------------------------------------------------
 
+
+# Consumed by ``_expand_async_io_kwargs`` before the allowlist filter runs, so
+# they are supported by both async adapters without appearing in their key sets.
+_ASYNC_IO_KEYS: frozenset[str] = frozenset({"detect_io", "detect_sql"})
 
 _DPOR_ASYNC_KEYS: frozenset[str] = frozenset(
     {
@@ -208,6 +228,8 @@ _RANDOM_ASYNC_KEYS: frozenset[str] = frozenset(
 class _AsyncDporStrategy:
     """Adapter routing async DPOR through ``async_dpor._explore_async_dpor``."""
 
+    allowed_keys: frozenset[str] = _DPOR_ASYNC_KEYS | _ASYNC_IO_KEYS
+
     async def run(
         self,
         *,
@@ -235,6 +257,8 @@ class _AsyncDporStrategy:
 
 class _AsyncRandomStrategy:
     """Adapter routing async random through ``async_shuffler.explore_async_random``."""
+
+    allowed_keys: frozenset[str] = _RANDOM_ASYNC_KEYS | _ASYNC_IO_KEYS
 
     async def run(
         self,

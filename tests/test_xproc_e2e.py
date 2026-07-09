@@ -6,8 +6,9 @@ API) that open their own connections to a shared SQLite file and run plain
 coordinator interleaves them at SQL-statement granularity and checks an
 invariant over the real database after each interleaving.
 
-Marked ``e2e`` (opt-in via ``make test-e2e-3.14`` / ``pytest -m e2e``) because
-each interleaving spawns processes.
+Marked ``e2e`` (selectable on their own via ``make test-e2e-3.14`` /
+``pytest -m e2e``; they also run in the default suite) because each
+interleaving spawns processes.
 """
 
 from __future__ import annotations

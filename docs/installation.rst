@@ -7,6 +7,17 @@ Frontrun requires Python 3.10 or later.
 
    pip install frontrun
 
+Optional extras
+---------------
+
+Cross-process exploration (``frontrun.explore(execution="process")`` /
+``frontrun.explore_processes()``) serialises workers with `dill
+<https://pypi.org/project/dill/>`_, shipped as the ``process`` extra:
+
+.. code-block:: bash
+
+   pip install "frontrun[process]"
+
 CLI Setup
 ----------
 

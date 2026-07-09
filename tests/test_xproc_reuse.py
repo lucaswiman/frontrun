@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
+from frontrun._dpor_runtime.xproc.launch import WorkerSerializationError
 from frontrun._dpor_runtime.xproc.worker import PersistentThreadLauncher, ThreadLauncher
 
 
@@ -141,7 +142,10 @@ class _RaisingLauncher:
 @pytest.mark.parametrize("reuse", [False, True])
 @pytest.mark.parametrize(
     "exc",
-    [TypeError("cannot pickle <thread.lock>"), ImportError("dill is required for subprocess workers")],
+    [
+        WorkerSerializationError("cannot pickle <thread.lock>"),
+        WorkerSerializationError("dill is required for subprocess workers"),
+    ],
 )
 def test_serialization_failure_returns_worker_error(reuse: bool, exc: Exception) -> None:
     coord = DporCrossProcessCoordinator(num_workers=2, reuse_workers=reuse)
@@ -155,6 +159,19 @@ def test_serialization_failure_returns_worker_error(reuse: bool, exc: Exception)
     assert result.exhausted is False
     # The clear message must still be surfaced, not swallowed.
     assert str(exc) in (result.failure or "")
+
+
+def test_unrelated_launch_type_error_is_not_mislabeled_as_serialization() -> None:
+    # Only the dedicated serialisation error may be converted to a structured
+    # "worker serialization failed" result. A generic TypeError from launch
+    # machinery is a bug and must propagate loudly, not be mislabeled.
+    coord = DporCrossProcessCoordinator(num_workers=2)
+    with pytest.raises(TypeError, match="unrelated launch bug"):
+        coord.explore(
+            worker_set=_RaisingLauncher(TypeError("unrelated launch bug")),
+            setup=lambda: None,
+            invariant=lambda: True,
+        )
 
 
 # --- Fix 1: a relay thread still alive after its join budget must raise a loud

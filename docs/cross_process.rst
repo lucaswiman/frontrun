@@ -202,7 +202,10 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
      - Human-readable description of the first violation, or ``None``.
    * - ``failure_kind``
      - One of ``"invariant"``, ``"worker_error"``, ``"deadlock"``,
-       ``"nondeterministic"``, or ``None``.
+       ``"timeout"`` (the scheduler's ``deadlock_timeout`` expired — a worker
+       blocked outside frontrun's model or a statement outran the budget, so
+       the schedule was never driven to completion), ``"nondeterministic"``,
+       or ``None``.
    * - ``failing_schedule``
      - The interleaving (a list of worker ids) that triggered the failure.
    * - ``iterations``
@@ -353,11 +356,12 @@ Running the tests
 -----------------
 
 Cross-process tests spawn real processes and are marked with the pytest ``e2e``
-marker, so they are opt-in:
+marker. They run as part of the default suite (``make test-3.14`` applies no
+marker filter); the marker exists so they can also be selected on their own:
 
 .. code-block:: bash
 
-   make test-e2e-3.14                 # cross-process e2e tests on the 3.14 venv
+   make test-e2e-3.14                 # only the cross-process e2e tests, 3.14 venv
    pytest -m e2e                      # or select the marker directly
 
 The SQLite tests need nothing beyond the standard library. The Redis tests are

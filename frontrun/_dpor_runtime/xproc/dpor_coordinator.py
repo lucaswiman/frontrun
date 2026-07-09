@@ -42,6 +42,29 @@ from frontrun._opcode_observer import StableObjectIds
 
 from . import protocol as proto
 from .coordinator import CrossProcessResult, accept_hello_live, worker_targets
+from .launch import WorkerSerializationError
+
+
+class _RelayDporScheduler(DporScheduler):
+    """DporScheduler variant for socket relays: no cross-thread pending-io flush.
+
+    In-process, a thread's buffered ``pending_io`` describes accesses that
+    already physically happened (deferred I/O), so another thread reaching a
+    real I/O boundary must make them visible to the engine — that is what
+    ``_flush_other_pending_io_for_current_io_unlocked`` does. An xproc relay's
+    buffer instead holds ACCESS frames the worker sends BEFORE executing the
+    statement (pre-declarations). Cross-flushing those from another relay's
+    turn attributes the not-yet-executed access at that relay's step whenever
+    the ACCESS frame wins the OS race against the other worker's grant; the
+    engine trace desyncs, the write-write reversal is never seeded into the
+    wakeup tree, and the search ends early with a false ok=True. Relay buffers
+    are flushed only at their own worker's grant (the own-pending flush inside
+    ``before_sync_retry`` / ``report_and_wait`` / ``before_io``), so the
+    cross-thread flush must be a no-op here.
+    """
+
+    def _flush_other_pending_io_for_current_io_unlocked(self, thread_id: int) -> None:
+        return
 
 
 def _setup_relay_tls(scheduler: DporScheduler, worker_id: int) -> list[tuple[int, str, bool]]:
@@ -72,19 +95,16 @@ def _flush_relay_pending_io(
 ) -> None:
     """Report this relay's buffered accesses to the engine, then clear the buffer.
 
-    A worker's access (e.g. the write of a read-modify-write) is buffered with no
-    subsequent ``report_and_wait`` to flush it, so it would either be dropped or
-    attributed at the wrong point. Report each buffered access to the engine now,
-    under ``scheduler._engine_lock`` (mirroring ``DporBytecodeRunner``).
-
-    Called at two flush points where the buffered accesses must reach the engine
-    before something else advances the thread's happens-before state:
-
-    * on relay teardown, so the DPOR search sees every access; and
-    * before ``acquire_row_locks`` reports ``lock_acquire`` to the engine, so an
-      unlocked access is recorded OUTSIDE the critical section it precedes rather
-      than being folded into the lock's happens-before (which would make two
-      workers' unlocked writes look lock-synchronized and prune the real race).
+    Relay-teardown flush only: a worker's trailing access (e.g. one reported
+    after its last statement, with no subsequent scheduling point to flush it)
+    would otherwise be dropped and the DPOR search would never see it. Every
+    in-run flush happens inside the scheduler's own-pending flush at the
+    worker's grant (``before_sync_retry`` / ``before_io``), which both
+    attributes the access at the worker's own scheduling step and — on the
+    ACQUIRE_LOCKS path — records it before ``acquire_row_locks`` reports
+    ``lock_acquire``, i.e. OUTSIDE the critical section it precedes (otherwise
+    two workers' unlocked writes would look lock-synchronized and DPOR would
+    prune the real race).
 
     Unlike ``DporScheduler._flush_pending_io_for_unlocked`` (whose ``_unlocked``
     contract requires the caller to already hold ``self._condition``), this runs
@@ -130,12 +150,25 @@ def _relay_loop(
     pending_io = _setup_relay_tls(scheduler, worker_id)
     registered_groups: set[int] = set()
     clean = False
+    # True while this worker owns the scheduler turn granted by
+    # before_sync_retry: the worker is executing its real driver call, and the
+    # arrival of its next frame (or its disconnect) marks that call complete.
+    holding_sync_turn = False
     try:
         while True:
             try:
                 msg = proto.recv_msg(sock)
             except (TimeoutError, OSError):
                 msg = None
+            if holding_sync_turn:
+                # The statement the last grant covered has finished executing
+                # (the worker sent its next frame); release the held turn so
+                # the precomputed next worker can run. Holding it through the
+                # driver call mirrors the in-process SQL path
+                # (_sql_cursor._dpor_schedule_and_suppress_sync) and keeps two
+                # workers' real DB calls from overlapping nondeterministically.
+                scheduler.after_sync_retry(worker_id)
+                holding_sync_turn = False
             if msg is None:
                 with accesses_lock:
                     worker_errors[worker_id] = "worker disconnected or timed out"
@@ -159,35 +192,40 @@ def _relay_loop(
                         scheduler.engine.register_resource_group(obj_key, group_key)
                     registered_groups.add(obj_key)
             elif kind == proto.REPORT_AND_WAIT:
-                granted = scheduler.report_and_wait(None, worker_id)
+                # Take the turn (flushing this worker's buffered pre-declared
+                # accesses at its own step, inside before_sync_retry) and HOLD
+                # it: the worker executes its real statement after the grant,
+                # and the turn is released only when its next frame arrives.
+                granted = scheduler.before_sync_retry(worker_id)
                 _reply(sock, granted)
                 if not granted:
                     break
+                holding_sync_turn = True
             elif kind == proto.ACQUIRE_LOCKS:
-                # Flush any access buffered before this acquire so it is recorded
-                # with the thread's PRE-lock happens-before. acquire_row_locks
-                # reports 'lock_acquire' to the engine; a still-buffered access
-                # flushed only at the next report_and_wait would otherwise be
-                # attributed inside the critical section, making two workers'
-                # unlocked writes look lock-synchronized and pruning the race.
-                _flush_relay_pending_io(scheduler, worker_id, pending_io)
                 # Take and hold the scheduling turn through the modeled row-lock
                 # acquire. A plain report_and_wait() schedules the next worker
                 # before acquire_row_locks() records lock_acquire, letting two
                 # relays race around the acquire and desynchronizing the engine
-                # trace from the executor.
+                # trace from the executor. before_sync_retry also flushes any
+                # access buffered before this acquire at the worker's own step,
+                # BEFORE acquire_row_locks reports 'lock_acquire' — so it is
+                # recorded with the thread's PRE-lock happens-before rather
+                # than inside the critical section (which would make two
+                # workers' unlocked writes look lock-synchronized and prune
+                # the race).
                 if not scheduler.before_sync_retry(worker_id):
                     _reply(sock, False)
                     break
                 try:
                     scheduler.acquire_row_locks(worker_id, list(msg["res"]))
                 except SchedulerAbort:
+                    scheduler.after_sync_retry(worker_id)
                     _reply(sock, False)
                     break
-                else:
-                    _reply(sock, True)
-                finally:
-                    scheduler.after_sync_retry(worker_id)
+                # Keep the turn: the worker performs the real (locked) driver
+                # call after this grant; released when its next frame arrives.
+                _reply(sock, True)
+                holding_sync_turn = True
             elif kind == proto.RELEASE_LOCKS:
                 scheduler.release_row_locks(worker_id)
             elif kind == proto.BEFORE_IO:
@@ -213,6 +251,8 @@ def _relay_loop(
                 clean = True
                 break
     finally:
+        if holding_sync_turn:
+            scheduler.after_sync_retry(worker_id)
         if not clean:
             with accesses_lock:
                 unclean.add(worker_id)
@@ -260,8 +300,8 @@ def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
 def _serialization_failure(exc: Exception, iterations: int) -> CrossProcessResult:
     """A worker/state couldn't be serialised for a subprocess: report cleanly.
 
-    ``_dumps_worker`` raises ``TypeError`` for an unpicklable/undillable payload
-    and ``ImportError`` when dill is missing; these surface from
+    ``_dumps_worker`` raises :class:`WorkerSerializationError` (payload even
+    dill cannot serialise, or dill missing); it surfaces from
     ``worker_set.launch(...)`` / ``iter_start_message(...)`` inside the
     exploration loop. Return the same structured ``worker_error`` result the
     connection-failure path uses instead of letting a bare exception escape,
@@ -355,7 +395,7 @@ class DporCrossProcessCoordinator:
                     persistent_handles = worker_set.launch(
                         worker_targets(self.socket_path, list(range(self.num_workers)))
                     )
-                except (TypeError, ImportError) as exc:
+                except WorkerSerializationError as exc:
                     return _serialization_failure(exc, 0)
                 try:
                     for _ in range(self.num_workers):
@@ -371,7 +411,7 @@ class DporCrossProcessCoordinator:
                 total_deadline=deadline,
             ):
                 execution = step.execution
-                scheduler = DporScheduler(
+                scheduler = _RelayDporScheduler(
                     engine,
                     execution,
                     self.num_workers,
@@ -391,10 +431,12 @@ class DporCrossProcessCoordinator:
                         self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean)
                 except (TimeoutError, OSError) as exc:
                     return _connection_failure(exc, num_explored + 1)
-                except (TypeError, ImportError) as exc:
+                except WorkerSerializationError as exc:
                     # A dill serialisation failure in worker_set.launch(...) /
                     # iter_start_message(...) — surface it as a structured
-                    # worker_error rather than a bare exception.
+                    # worker_error rather than a bare exception. Anything
+                    # broader (a generic TypeError from launch machinery) is a
+                    # bug and must propagate rather than be mislabeled.
                     return _serialization_failure(exc, num_explored + 1)
                 num_explored += 1
 
@@ -415,7 +457,7 @@ class DporCrossProcessCoordinator:
                     # with exhausted=False; an invariant failure completes fully so
                     # it does NOT demote). Only max_executions/total_timeout were
                     # previously handled, in the for..else below.
-                    if result.failure_kind in ("deadlock", "worker_error"):
+                    if result.failure_kind in ("deadlock", "worker_error", "timeout"):
                         exhausted = False
 
                 # In reuse mode a worker aborted mid-iteration leaves stray
@@ -579,44 +621,41 @@ class DporCrossProcessCoordinator:
             schedule_trace = list(execution.schedule_trace)
         err = scheduler._error
 
+        def _fail(failure: str, kind: str) -> CrossProcessResult:
+            return CrossProcessResult(
+                ok=False,
+                iterations=num_explored,
+                exhausted=False,
+                failing_schedule=schedule_trace,
+                failure=failure,
+                failure_kind=kind,
+                accesses=accesses,
+            )
+
         # Deadlock first: a row-lock cycle aborts the holder, whose worker then
         # often raises too, so checking worker_errors first would mask the
         # deadlock behind that induced crash (mirrors the in-process priority).
         if isinstance(err, DeadlockError):
-            return CrossProcessResult(
-                ok=False,
-                iterations=num_explored,
-                exhausted=False,
-                failing_schedule=schedule_trace,
-                failure=getattr(err, "cycle_description", None) or str(err),
-                failure_kind="deadlock",
-                accesses=accesses,
-            )
+            return _fail(getattr(err, "cycle_description", None) or str(err), "deadlock")
         if worker_errors:
             wid = min(worker_errors)
-            return CrossProcessResult(
-                ok=False,
-                iterations=num_explored,
-                exhausted=False,
-                failing_schedule=schedule_trace,
-                failure=f"worker {wid} failed: {worker_errors[wid]}",
-                failure_kind="worker_error",
-                accesses=accesses,
-            )
-        # A scheduler fallback TimeoutError means the run free-ran unscheduled;
-        # its final state describes no DPOR schedule, so skip the invariant.
+            return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")
+        # A scheduler fallback TimeoutError means the run free-ran unscheduled
+        # (unmodeled DB-level blocking, or a statement slower than
+        # deadlock_timeout). Its final state describes no DPOR schedule, so the
+        # invariant is skipped — but the execution must count as a failure, not
+        # a clean pass: the schedule was never driven to completion and nothing
+        # was verified.
         if isinstance(err, TimeoutError):
-            return None
-        if not invariant():
-            return CrossProcessResult(
-                ok=False,
-                iterations=num_explored,
-                exhausted=False,
-                failing_schedule=schedule_trace,
-                failure="invariant violated",
-                failure_kind="invariant",
-                accesses=accesses,
+            return _fail(
+                f"scheduler timed out (deadlock_timeout={self.deadlock_timeout}s expired): {err}. "
+                "A worker blocked outside frontrun's model (e.g. database-level locking) or a "
+                "statement ran longer than deadlock_timeout; raise deadlock_timeout if the "
+                "workload is just slow.",
+                "timeout",
             )
+        if not invariant():
+            return _fail("invariant violated", "invariant")
         return None
 
     def _cleanup_socket(self) -> None:

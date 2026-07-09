@@ -217,11 +217,27 @@ class OpcodeScheduler:
                 if self.virtual_clock is not None and self._deadlines.is_sleeping(scheduled_tid):
                     if self.clock_mode == "explored":
                         # "Maybe advance": the random schedule picked a
-                        # sleeping thread, so let time pass to its deadline;
-                        # the woken thread then consumes this entry.
+                        # sleeping thread, so let time pass toward its
+                        # deadline; the woken thread then consumes this entry.
+                        # Each speculative hop is clamped to the *earliest*
+                        # pending deadline so an earlier timed wait fires at
+                        # its own clock value, never at a later sleeper's
+                        # target.  A clamped hop cannot wake the scheduled
+                        # sleeper, so it also consumes the sleeper's contiguous
+                        # run of entries: leaving them would re-advance to the
+                        # next deadline under this same lock hold, before the
+                        # just-woken waiter could be granted a single turn to
+                        # observe its own timeout.
                         sleep_deadline = self._deadlines.sleep_deadline(scheduled_tid)
                         assert sleep_deadline is not None
-                        self._advance_clock_to(sleep_deadline)
+                        next_deadline = self._deadlines.next_deadline()
+                        assert next_deadline is not None  # sleep_deadline is pending
+                        self._advance_clock_to(min(next_deadline, sleep_deadline))
+                        if next_deadline < sleep_deadline:
+                            # A clamped hop can't wake the scheduled sleeper, so
+                            # consume its contiguous run of entries (see above).
+                            while self._index < len(self.schedule) and self.schedule[self._index] == scheduled_tid:
+                                self._index += 1
                     else:
                         # Autojump semantics: a sleeping thread cannot run
                         # before the clock advances; skip its slot.
@@ -309,7 +325,18 @@ class OpcodeScheduler:
             self._condition.notify_all()
             try:
                 while self._deadlines.is_sleeping(thread_id):
-                    if self._finished or self._error:
+                    if self._error:
+                        return
+                    if self._finished:
+                        # Schedule/op budget exhausted (wait_for_turn hit the
+                        # max_ops cap): no more turns are granted, but the
+                        # sleep must still resolve virtually.  Advance to this
+                        # sleeper's deadline — firing earlier due deadlines in
+                        # order — instead of returning with the clock frozen,
+                        # which would silently truncate the sleep and report a
+                        # phantom TTL/timeout counterexample.
+                        self._advance_clock_to(deadline)
+                        self._condition.notify_all()
                         return
                     alive = [t for t in range(self.num_threads) if t not in self._threads_done]
                     blocked = [t for t in alive if self._blocks_clock_progress(t)]
@@ -324,7 +351,7 @@ class OpcodeScheduler:
                         continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         if self._finished or self._error:
-                            return
+                            continue  # dispatch via the loop-top checks
                         self._error = TimeoutError(
                             f"Deadlock: thread {thread_id} sleeping until t={deadline} was never woken"
                         )
@@ -332,6 +359,20 @@ class OpcodeScheduler:
                         return
             finally:
                 self._deadlines.cancel_sleep(thread_id)
+
+    def advance_clock_after_finish(self, deadline: float) -> None:
+        """Advance the clock to a timed wait's deadline after schedule exhaustion.
+
+        Called by cooperative timed waits (via
+        ``_cooperative._finish_virtual_timed_wait``) once ``_finished`` is set:
+        no more turns are granted, but a registered virtual timeout must still
+        elapse on the virtual clock rather than degrading to a real wait with
+        the clock frozen.  Fires earlier due deadlines in order (see
+        :meth:`_advance_clock_to`).
+        """
+        with self._condition:
+            self._advance_clock_to(deadline)
+            self._condition.notify_all()
 
     def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool, *, timed_wait: bool = False) -> None:
         """Flag *thread_id* as spinning on an untimed cooperative wait.

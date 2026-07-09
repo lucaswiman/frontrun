@@ -14,9 +14,11 @@ import base64
 import json
 import multiprocessing
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -26,6 +28,16 @@ from frontrun._dpor_core.worker import WorkerTarget
 from . import protocol as proto
 
 _WORKER_MODULE = "frontrun._dpor_runtime.xproc.worker_main"
+
+
+class WorkerSerializationError(RuntimeError):
+    """``(worker_fn, state)`` could not be serialised for a subprocess worker.
+
+    Raised only by :func:`_dumps_worker` (dill missing, or a payload even dill
+    cannot serialise), so coordinators can convert exactly this failure into a
+    structured ``worker_error`` result without also swallowing unrelated
+    ``TypeError`` / ``ImportError`` bugs from the launch machinery.
+    """
 
 
 def _terminate_procs(procs: Sequence[Any]) -> None:
@@ -66,8 +78,21 @@ def _make_stderr_file(worker_id: int) -> str:
     return path
 
 
+# Serialises MpLauncher.launch's temporary os.environ scrub (see launch()).
+_env_scrub_lock = threading.Lock()
+
+# Matches a traceback's final "SomeError: message" line (possibly dotted, e.g.
+# "pkg.mod.SomeError: ..."), so trailing post-crash output does not hide it.
+_TRACEBACK_ERROR_RE = re.compile(r"^[\w.]*\w(Error|Exception)\b")
+
+
 def _stderr_last_line(path: str | None) -> str | None:
-    """Return the last non-blank captured stderr line, or ``None`` if unreadable/empty."""
+    """Return the most diagnostic captured stderr line, or ``None`` if unreadable/empty.
+
+    Prefers the last line that looks like a traceback's error line — a crashing
+    child can print more after its traceback (atexit handlers, multiprocessing
+    teardown chatter) — falling back to the last non-blank line.
+    """
     if not path:
         return None
     try:
@@ -75,7 +100,13 @@ def _stderr_last_line(path: str | None) -> str | None:
             text = fh.read().strip()
     except OSError:
         return None
-    return text.splitlines()[-1] if text else None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    for line in reversed(lines):
+        if _TRACEBACK_ERROR_RE.match(line):
+            return line
+    return lines[-1]
 
 
 def _unlink_all(paths: Sequence[str]) -> None:
@@ -97,14 +128,14 @@ def _dumps_worker(worker_fn: Callable[[Any], Any], state: Any) -> bytes:
     try:
         import dill
     except ImportError as exc:
-        raise ImportError(
+        raise WorkerSerializationError(
             "explore(execution='process') needs the 'dill' package to serialise worker "
             "callables; install it with `pip install frontrun[process]`."
         ) from exc
     try:
         return dill.dumps((worker_fn, state))
     except Exception as exc:  # noqa: BLE001 - surface any serialisation failure clearly
-        raise TypeError(
+        raise WorkerSerializationError(
             "explore(execution='process') could not serialise a worker or the setup() state "
             f"(even with dill): {exc}. Avoid capturing unpicklable objects such as open "
             "connections, sockets, or locks in the worker or the setup() return value."
@@ -244,23 +275,33 @@ class MpLauncher:
             )
             for idx, target in enumerate(targets)
         ]
-        scrubbed = {k: os.environ.pop(k) for k in ("LD_PRELOAD", "FRONTRUN_IO_FD") if k in os.environ}
-        try:
-            started: list[Any] = []
+        # Scrub the C-level preload from the children's environment. This must
+        # happen parent-side: multiprocessing has no per-child env parameter,
+        # and a child-side scrub would come too late — LD_PRELOAD is consumed
+        # by the dynamic loader at exec, and the preload library reads
+        # FRONTRUN_IO_FD lazily at the first intercepted call (crates/io
+        # get_pipe_fd), which fires during the child interpreter's own startup
+        # file reads, long before any Python-level code runs. The module lock
+        # serialises concurrent launches so one launch's restore cannot clobber
+        # another's scrub (os.environ is process-global).
+        with _env_scrub_lock:
+            scrubbed = {k: os.environ.pop(k) for k in ("LD_PRELOAD", "FRONTRUN_IO_FD") if k in os.environ}
             try:
-                for p in procs:
-                    p.start()
-                    started.append(p)
-            except BaseException:
-                # A spawn failed mid-loop (e.g. resource exhaustion): the
-                # already-started children would otherwise leak — their worker
-                # socket blocks forever awaiting a GRANT — because the exception
-                # escapes launch() before returning handles for the caller's
-                # try/finally to join. Reap them here before re-raising.
-                _terminate_procs(started)
-                raise
-        finally:
-            os.environ.update(scrubbed)
+                started: list[Any] = []
+                try:
+                    for p in procs:
+                        p.start()
+                        started.append(p)
+                except BaseException:
+                    # A spawn failed mid-loop (e.g. resource exhaustion): the
+                    # already-started children would otherwise leak — their worker
+                    # socket blocks forever awaiting a GRANT — because the exception
+                    # escapes launch() before returning handles for the caller's
+                    # try/finally to join. Reap them here before re-raising.
+                    _terminate_procs(started)
+                    raise
+            finally:
+                os.environ.update(scrubbed)
         if self._reuse:
             self._procs = procs
         return procs

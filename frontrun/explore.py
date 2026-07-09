@@ -39,6 +39,39 @@ Execution = Literal["thread", "process"]
 #: Alias of :data:`frontrun._virtual_clock.ClockMode` (single source of truth).
 Clock = ClockMode
 
+#: Options that change *which* bugs are found but are not honored under
+#: ``execution="process"`` (state is external; there is no in-process opcode
+#: trace, replay, or virtual clock).  An explicitly-passed value here is rejected
+#: rather than silently ignored — a silent no-op is a correctness footgun when
+#: porting a thread test.  Membership is matched against ``explicit_options``
+#: (options whose value differs from the signature default).
+_PROCESS_UNSUPPORTED_OPTIONS = frozenset(
+    {
+        # In-process trace / analysis knobs with no process-mode analog
+        # (timeout_per_run's analog is deadlock_timeout).
+        "serializable_invariant",
+        "error_on_any_race",
+        "lock_timeout",
+        "trace_packages",
+        "track_dunder_dict_accesses",
+        "detect_sql",
+        "detect_io",
+        "patch_sleep",
+        "timeout_per_run",
+        "reproduce_on_failure",
+        "warn_nondeterministic_sql",
+        # Random-strategy-only knobs: process mode forces strategy='dpor'.
+        "max_attempts",
+        "max_ops",
+        "seed",
+        "debug",
+        # The virtual clock lives in the in-process scheduler; worker processes
+        # read real time, so a non-default value is a correctness footgun.
+        "clock",
+        "clock_diagnostics",
+    }
+)
+
 
 def explore(
     setup: Callable[[], Any],
@@ -75,7 +108,7 @@ def explore(
     max_ops: int | None = None,
     seed: int | None = None,
     debug: bool = False,
-    # Async DPOR specific kwargs (kept for passthrough)
+    # Async-specific kwargs (kept for passthrough)
     detect_sql: bool = False,
 ) -> Any:
     """Explore thread/task interleavings for concurrency bugs.
@@ -118,20 +151,27 @@ def explore(
         deadlock_timeout: Seconds to wait before declaring a deadlock. Defaults
             to 5.0 for thread execution and 15.0 for process execution (spawning
             processes is slower), unless set explicitly.
-        reproduce_on_failure: Replay counterexample this many times.
+        reproduce_on_failure: Replay counterexample this many times (not
+            supported for async random).
         total_timeout: Maximum total exploration time in seconds.
-        warn_nondeterministic_sql: Raise on nondeterministic SQL INSERT.
-        lock_timeout: Auto-set PostgreSQL lock_timeout (milliseconds).
+        warn_nondeterministic_sql: Raise on nondeterministic SQL INSERT (not
+            supported for async random).
+        lock_timeout: Auto-set PostgreSQL lock_timeout (milliseconds; DPOR
+            only).
         trace_packages: Package patterns to trace in addition to user code.
-        track_dunder_dict_accesses: Report ``obj.__dict__`` accesses (DPOR).
-        search: Wakeup-tree traversal strategy (DPOR only).
+        track_dunder_dict_accesses: Report ``obj.__dict__`` accesses (sync
+            DPOR only).
+        search: Wakeup-tree traversal strategy (sync DPOR and process
+            execution only).
         patch_sleep: For ``clock="real"``, make ``time.sleep`` /
             ``asyncio.sleep`` cooperative zero-wall-time yields. For
             ``clock="virtual"`` or ``"explored"``, required: positive sleeps
             become scheduler-owned virtual deadlines and ``sleep(0)`` remains a
             yield.
         serializable_invariant: Check serializability against sequential runs.
-        error_on_any_race: Treat unsynchronized races as failures (DPOR only).
+        error_on_any_race: Treat unsynchronized races as failures (DPOR
+            only; the random strategies reject ``True`` with their own
+            ValueError rather than silently ignoring it).
         clock: ``"real"`` (default) leaves time untouched. ``"virtual"`` gives
             each execution a scheduler-owned virtual clock: explored code reads
             virtual time from ``time.time()`` / ``time.monotonic()`` /
@@ -158,8 +198,9 @@ def explore(
         max_attempts: Random schedule samples to try (random strategy only).
         max_ops: Maximum schedule length per attempt (random strategy only).
         seed: RNG seed for reproducibility (random strategy only).
-        debug: Enable debug output (random strategy only).
-        detect_sql: Patch async SQL drivers (async DPOR only).
+        debug: Enable debug output (sync random only).
+        detect_sql: Patch async SQL drivers (async workers only;
+            ``detect_io=True`` already implies it).
 
     Returns:
         :class:`~frontrun.common.InterleavingResult` (sync) or a coroutine
@@ -167,9 +208,24 @@ def explore(
 
     Raises:
         ValueError: If ``count`` and a list of workers are both provided,
-            ``count <= 0``, ``strategy`` or ``clock`` is unrecognised, or
-            a non-real ``clock`` is combined with ``patch_sleep=False``,
-            ``serializable_invariant``, or ``execution="process"``.
+            ``count <= 0``, ``strategy``, ``execution`` or ``clock`` is
+            unrecognised, or a non-real ``clock`` is combined with
+            ``patch_sleep=False``, ``serializable_invariant``, or
+            ``execution="process"``. Also raised for any explicitly-passed
+            option the selected strategy/mode does not support, rather than
+            silently ignoring it: e.g. ``seed=`` with ``strategy="dpor"``,
+            ``preemption_bound=`` with ``strategy="random"``,
+            ``reproduce_on_failure=`` with async ``strategy="random"``, or
+            ``detect_sql=`` with sync workers. ``execution="process"``
+            additionally rejects async workers, ``strategy="random"``, and
+            every option that requires the in-process scheduler
+            (``serializable_invariant``, ``error_on_any_race``,
+            ``lock_timeout``, ``trace_packages``,
+            ``track_dunder_dict_accesses``, ``detect_sql``, non-real
+            ``clock`` / ``clock_diagnostics``, and non-default ``detect_io``,
+            ``patch_sleep``, ``timeout_per_run``, ``reproduce_on_failure``,
+            ``warn_nondeterministic_sql``, ``max_attempts``, ``max_ops``,
+            ``seed``, ``debug``).
     """
     worker_list = _resolve_workers(workers, count)
 
@@ -180,84 +236,9 @@ def explore(
         clock_diagnostics=clock_diagnostics,
     )
 
-    # A deadlock_timeout left unset resolves per execution mode: process spawn is
-    # slow, so it gets a longer default than in-process threads.
-    if deadlock_timeout is None:
-        deadlock_timeout = 15.0 if execution == "process" else 5.0
-
-    # Cross-process execution: each worker runs in its own Python process,
-    # coordinating over a socket. Same call shape as threads/async; workers and
-    # the setup() state must be picklable, and state is external (SQL/Redis).
-    if execution == "process":
-        if any_async(worker_list):
-            raise ValueError("explore(): execution='process' does not support async workers")
-        if strategy != "dpor":
-            raise ValueError("explore(): execution='process' supports strategy='dpor' only")
-        # These options change *which* bugs are found and are not honored in
-        # process mode (state is external; there is no in-process opcode trace).
-        # Reject them explicitly rather than silently ignoring — a silent no-op
-        # here is a correctness footgun when porting a thread test.
-        unsupported = [
-            name
-            for name, is_set in (
-                ("serializable_invariant", serializable_invariant is not False),
-                ("error_on_any_race", error_on_any_race),
-                ("lock_timeout", lock_timeout is not None),
-                ("trace_packages", trace_packages is not None),
-                ("track_dunder_dict_accesses", track_dunder_dict_accesses),
-                ("detect_sql", detect_sql),
-                # Not plumbed into worker processes (only worker_fn + state cross
-                # the spawn boundary); a non-default value here is a silent no-op.
-                # timeout_per_run's analog in process mode is deadlock_timeout.
-                ("detect_io", not detect_io),
-                ("patch_sleep", not patch_sleep),
-                ("timeout_per_run", timeout_per_run != 5.0),
-                ("reproduce_on_failure", reproduce_on_failure != 10),
-                ("warn_nondeterministic_sql", not warn_nondeterministic_sql),
-                # Random-strategy-only knobs: process mode forces strategy='dpor',
-                # so a non-default value here is a silent no-op.
-                ("max_attempts", max_attempts != 200),
-                ("max_ops", max_ops is not None),
-                ("seed", seed is not None),
-                ("debug", debug),
-                # The virtual clock lives in the in-process scheduler; worker
-                # processes read real time, so a non-default value is a
-                # correctness footgun rather than a silent no-op.
-                ("clock", clock != "real"),
-                ("clock_diagnostics", clock_diagnostics),
-            )
-            if is_set
-        ]
-        if unsupported:
-            raise ValueError(
-                f"explore(): execution='process' does not support {', '.join(unsupported)} "
-                "(these require the in-process scheduler; drop them or use execution='thread')"
-            )
-        from frontrun.cross_process import _explore_process
-
-        return _explore_process(
-            setup,
-            worker_list,
-            invariant,
-            deadlock_timeout=deadlock_timeout,
-            max_executions=max_executions,
-            preemption_bound=preemption_bound,
-            max_branches=max_branches,
-            total_timeout=total_timeout,
-            stop_on_first=stop_on_first,
-            search=search,
-            reuse_workers=reuse_workers,
-        )
-    if execution != "thread":
-        raise ValueError(f"explore(): unknown execution={execution!r}; must be 'thread' or 'process'")
-
-    registry = ASYNC_STRATEGIES if any_async(worker_list) else STRATEGIES
-    if strategy not in registry:
-        valid = ", ".join(repr(k) for k in sorted(registry))
-        raise ValueError(f"explore(): unknown strategy={strategy!r}; must be one of {valid}")
-
-    # Collect every keyword argument the user could have passed.  The chosen
-    # adapter filters this dict against its own ``allowed_keys`` set.
+    # Every strategy-tunable keyword argument the user could have passed.  The
+    # chosen adapter filters this dict against its own ``allowed_keys`` set;
+    # anything *explicitly* passed outside that set is rejected below.
     all_kwargs: dict[str, Any] = {
         "max_executions": max_executions,
         "preemption_bound": preemption_bound,
@@ -284,12 +265,103 @@ def explore(
         "debug": debug,
         "detect_sql": detect_sql,
     }
+    # Snapshot which options were explicitly passed (differ from the signature
+    # default) *before* any local resolution mutates them.  An option passed at
+    # its default value is indistinguishable from an omitted one, which is
+    # acceptable: passing the default explicitly is a no-op either way.
+    defaults = explore.__kwdefaults__ or {}
+    explicit_options = frozenset(
+        name for name, value in all_kwargs.items() if not (value is defaults[name] or value == defaults[name])
+    )
 
-    if any_async(worker_list):
+    # A deadlock_timeout left unset resolves per execution mode: process spawn is
+    # slow, so it gets a longer default than in-process threads.
+    if deadlock_timeout is None:
+        deadlock_timeout = 15.0 if execution == "process" else 5.0
+    all_kwargs["deadlock_timeout"] = deadlock_timeout
+
+    # Cross-process execution: each worker runs in its own Python process,
+    # coordinating over a socket. Same call shape as threads/async; workers and
+    # the setup() state must be picklable, and state is external (SQL/Redis).
+    if execution == "process":
+        if any_async(worker_list):
+            raise ValueError("explore(): execution='process' does not support async workers")
+        if strategy != "dpor":
+            raise ValueError("explore(): execution='process' supports strategy='dpor' only")
+        unsupported = sorted(explicit_options & _PROCESS_UNSUPPORTED_OPTIONS)
+        if unsupported:
+            raise ValueError(
+                f"explore(): execution='process' does not support {', '.join(unsupported)} "
+                "(these require the in-process scheduler; drop them or use execution='thread')"
+            )
+        from frontrun.cross_process import _explore_process
+
+        return _explore_process(
+            setup,
+            worker_list,
+            invariant,
+            deadlock_timeout=deadlock_timeout,
+            max_executions=max_executions,
+            preemption_bound=preemption_bound,
+            max_branches=max_branches,
+            total_timeout=total_timeout,
+            stop_on_first=stop_on_first,
+            search=search,
+            reuse_workers=reuse_workers,
+        )
+    if execution != "thread":
+        raise ValueError(f"explore(): unknown execution={execution!r}; must be 'thread' or 'process'")
+
+    is_async = any_async(worker_list)
+    registry = ASYNC_STRATEGIES if is_async else STRATEGIES
+    if strategy not in registry:
+        valid = ", ".join(repr(k) for k in sorted(registry))
+        raise ValueError(f"explore(): unknown strategy={strategy!r}; must be one of {valid}")
+
+    # Mirror the process branch's principle for thread execution: an option the
+    # selected strategy would silently drop is a correctness footgun, so reject
+    # any explicitly-passed option outside the adapter's ``allowed_keys``.
+    allowed_keys = getattr(registry[strategy], "allowed_keys", None)
+    if allowed_keys is not None:
+        _reject_unsupported_strategy_options(strategy, explicit_options - allowed_keys, is_async=is_async)
+
+    if is_async:
         async_adapter = ASYNC_STRATEGIES[strategy]
         return async_adapter.run(setup=setup, workers=worker_list, invariant=invariant, **all_kwargs)
     sync_adapter = STRATEGIES[strategy]
     return sync_adapter.run(setup=setup, workers=worker_list, invariant=invariant, **all_kwargs)
+
+
+def _reject_unsupported_strategy_options(strategy: str, unsupported: frozenset[str], *, is_async: bool) -> None:
+    """Raise ValueError for explicitly-passed options the strategy ignores.
+
+    ``unsupported`` holds the explicitly-passed option names outside the
+    selected adapter's ``allowed_keys``.  Each is annotated with what *does*
+    support it — another strategy in the same (sync/async) registry, or the
+    other worker kind — derived from the adapters' ``allowed_keys`` so the
+    error stays in sync with the actual plumbing.
+    """
+    if not unsupported:
+        return
+    same_registry = ASYNC_STRATEGIES if is_async else STRATEGIES
+    other_registry = STRATEGIES if is_async else ASYNC_STRATEGIES
+    parts: list[str] = []
+    for name in sorted(unsupported):
+        supporters = sorted(
+            key for key, adapter in same_registry.items() if name in getattr(adapter, "allowed_keys", frozenset())
+        )
+        if supporters:
+            parts.append(f"{name}= ({', '.join(supporters)} only)")
+        elif any(name in getattr(adapter, "allowed_keys", frozenset()) for adapter in other_registry.values()):
+            parts.append(f"{name}= ({'sync' if is_async else 'async'} workers only)")
+        else:
+            parts.append(f"{name}=")
+    kind = "async" if is_async else "sync"
+    verb = "is" if len(parts) == 1 else "are"
+    raise ValueError(
+        f"explore(): {', '.join(parts)} {verb} not supported with strategy={strategy!r} and {kind} workers "
+        "(a silently ignored option is a correctness footgun; drop it or switch strategy)"
+    )
 
 
 def _resolve_workers(

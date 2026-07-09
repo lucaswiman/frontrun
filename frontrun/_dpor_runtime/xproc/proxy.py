@@ -86,12 +86,17 @@ class SchedulerProxy:
             return
         proto.send_msg(self._sock, {"t": proto.RELEASE_LOCKS, "w": self._worker_id})
 
-    def before_io(self, thread_id: int, resource_id: str) -> None:
-        """Enter a two-phase IO boundary (Redis); block until granted the turn."""
+    def before_io(self, thread_id: int, resource_id: str) -> bool:
+        """Enter a two-phase IO boundary (Redis); block until granted the turn.
+
+        Returns ``True`` on GRANT. ``False`` means the coordinator aborted the
+        run: the caller must not perform the real command (the Redis envelope
+        raises ``SchedulerAbort``, matching the SQL path).
+        """
         if self._aborted:
-            return
+            return False
         proto.send_msg(self._sock, {"t": proto.BEFORE_IO, "w": self._worker_id, "rid": resource_id})
-        self._await_grant()
+        return self._await_grant()
 
     def after_io(self, thread_id: int, resource_id: str) -> None:
         """Exit the IO boundary and release the turn. Fire-and-forget."""

@@ -9,6 +9,7 @@ choice for the async DPOR engine.
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 
 import pytest
@@ -226,7 +227,6 @@ def test_async_random_virtual_sleep_zero_wall_time() -> None:
             strategy="random",
             clock="virtual",
             max_attempts=5,
-            reproduce_on_failure=0,
             timeout_per_run=1.0,
         )
     )
@@ -234,6 +234,35 @@ def test_async_random_virtual_sleep_zero_wall_time() -> None:
     assert result.property_holds, result.explanation
     assert invariant_checks > 0
     assert wall_elapsed < 4.0
+
+
+@pytest.mark.parametrize("clock", ["virtual", "explored"])
+def test_async_random_schedule_exhaustion_still_advances_virtual_sleep(clock: str) -> None:
+    """Async random: a virtual sleep reached after the fixed-length schedule
+    is exhausted must still advance the clock to its deadline (mirrors the
+    sync max_ops regression) instead of returning with the clock frozen."""
+
+    async def worker(s: _SleepObserver) -> None:
+        for _ in range(300):
+            await asyncio.sleep(0)  # burn the schedule (max_ops=10)
+        s.start = time.monotonic()
+        await asyncio.sleep(120.0)
+        s.end = time.monotonic()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_SleepObserver,
+            workers=[worker],
+            invariant=lambda s: s.end - s.start >= 120.0,
+            strategy="random",
+            clock=clock,  # type: ignore[arg-type]
+            seed=0,
+            max_attempts=1,
+            max_ops=10,
+            timeout_per_run=2.0,
+        )
+    )
+    assert result.property_holds, result.explanation
 
 
 def test_async_random_explored_clock_can_fire_timer_early() -> None:
@@ -250,7 +279,6 @@ def test_async_random_explored_clock_can_fire_timer_early() -> None:
             clock="explored",
             max_attempts=200,
             seed=1234,
-            reproduce_on_failure=0,
         )
     )
     _assert_invariant_failure(result, "expected delayed writer")
@@ -663,12 +691,109 @@ def test_async_random_wait_for_bare_future_uses_virtual_deadline() -> None:
             strategy="random",
             clock="virtual",
             max_attempts=1,
-            reproduce_on_failure=0,
             timeout_per_run=1.0,
             deadlock_timeout=0.05,
         )
     )
     assert result.property_holds, result.explanation
+
+
+def test_async_explored_maybe_advance_clamps_to_earliest_pending_deadline() -> None:
+    """Explored clock, random shuffler: a schedule entry landing on a sleeping
+    task speculatively advances the clock ("maybe advance"), but each hop must
+    stop at the *earliest* pending deadline — an earlier ``wait_for``-style
+    timeout must fire at its own clock value, never at the later sleeper's
+    target (virtual-clock hardening deferred item 2)."""
+    from frontrun._virtual_clock import VirtualClock
+    from frontrun.async_shuffler import AwaitScheduler
+
+    clock = VirtualClock()
+    epoch = clock.now()
+    fired_at: list[float] = []
+
+    class _TimeoutToken:
+        def fire(self) -> None:
+            fired_at.append(clock.now())
+
+    async def drive() -> None:
+        scheduler = AwaitScheduler([1, 0], num_tasks=2, virtual_clock=clock, clock_mode="explored")
+        # Task 1 sleeps until t+5 (an asyncio.sleep); task 0 has an earlier
+        # wait_for-style timeout deadline at t+1.
+        scheduler._sleepers[1] = epoch + 5.0
+        scheduler._deadlines.add_sleep(1, epoch + 5.0, wake_id=None)
+        scheduler.add_timeout_deadline(0, epoch + 1.0, _TimeoutToken())
+        async with scheduler._condition:
+            # The schedule's head entry belongs to the sleeping task 1, so the
+            # explored branch "maybe advances" the clock.
+            scheduler.should_proceed(0)
+
+    asyncio.run(drive())
+    assert clock.now() == pytest.approx(epoch + 1.0)  # clamped: not the sleeper's t+5
+    assert fired_at == [pytest.approx(epoch + 1.0)]  # the timeout fired at its own value
+
+
+class _WaitForAndSleep:
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.elapsed: float | None = None
+
+
+async def _explored_wait_for_1(s: _WaitForAndSleep) -> None:
+    start = time.monotonic()
+    try:
+        await asyncio.wait_for(s.event.wait(), timeout=1.0)  # nobody sets it
+    except TimeoutError:
+        pass
+    s.elapsed = time.monotonic() - start
+
+
+async def _explored_sleep_5(s: _WaitForAndSleep) -> None:
+    await asyncio.sleep(5.0)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="pre-existing on 3.10/3.11, unrelated to the clamp: cancelling asyncio.Condition.wait "
+    "(the scheduler's quiescence-slice timeout under this small deadlock_timeout) crashes with "
+    "'Lock is not acquired'; CPython hardened Condition.wait cancellation in 3.12",
+)
+def test_async_random_explored_timed_wait_observes_own_deadline() -> None:
+    """Random strategy, explored clock: the speculative "maybe advance" on the
+    sleeper's entry must stop at ``wait_for``'s earlier t=1 deadline, so the
+    wait times out (and is observed) at t=1 — never at the sleeper's t=5
+    target (virtual-clock hardening deferred item 2).
+
+    The seed is pinned so the maybe-advance hits while the t=1 deadline is
+    pending; without the clamp the wait observes elapsed == 5.0.
+    """
+    observed: list[float] = []
+
+    def invariant(s: _WaitForAndSleep) -> bool:
+        if s.elapsed is not None:
+            observed.append(s.elapsed)
+        return True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_WaitForAndSleep,
+            workers=[_explored_wait_for_1, _explored_sleep_5],
+            invariant=invariant,
+            strategy="random",
+            clock="explored",
+            seed=5,
+            max_attempts=3,
+            timeout_per_run=5.0,
+            deadlock_timeout=0.2,
+        )
+    )
+    assert result.property_holds, result.explanation
+    if not observed:
+        # An interpreter's interleaving may abort every attempt on the wall
+        # watchdog before the timed wait resolves; the scheduler-level clamp
+        # test above is the version-independent regression.
+        pytest.skip("no attempt completed the timed wait under this interpreter's interleaving")
+    for elapsed in observed:
+        assert elapsed == pytest.approx(1.0), f"timed wait observed a later deadline's clock value: {elapsed}"
 
 
 @pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
@@ -1539,7 +1664,6 @@ def test_async_random_lock_sleep_quiescence_rescue() -> None:
             clock="virtual",
             max_attempts=3,
             seed=7,
-            reproduce_on_failure=0,
             timeout_per_run=1.0,
         )
     )
@@ -1580,7 +1704,6 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
             seed=7,
             deadlock_timeout=0.05,
             timeout_per_run=1.0,
-            reproduce_on_failure=0,
         )
     )
     wall_elapsed = time.monotonic() - wall_start

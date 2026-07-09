@@ -214,7 +214,7 @@ Semantics and limitations
   arithmetic within a single execution's clock.
 * **Async random + virtual clock is best-effort deterministic.** The async
   random strategy advances the clock with a *wall-clock* quiescence heuristic
-  (``_QUIESCENCE_SLICE`` = 0.25 s of no progress in ``async_shuffler.py`` ->
+  (``_QUIESCENCE_SLICE`` = 0.01 s of no progress in ``async_shuffler.py`` ->
   autojump), so under load (slow I/O, CI GC pauses) the *same* seed can explore
   different interleavings.  Async DPOR's autojump is engine-state-driven and
   stays deterministic; prefer ``strategy="dpor"`` when you need a reproducible
@@ -230,6 +230,14 @@ Semantics and limitations
   edges.  The sync limitation costs extra branches and possible false race
   reports, not missed bugs; a fix is tracked in
   ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
+* **Under ``clock="explored"``, a woken timed wait may read a later clock
+  value than its own deadline.** Every deadline *fires* at its own clock
+  value, but "timer fires" and "waiter reads the clock" are separate steps
+  under an explored clock: another advance can be scheduled between them,
+  so the woken waiter's ``time.monotonic()`` may already see a later
+  deadline's value.  This mirrors real time passing between statements;
+  whether post-wake advances should be suppressed is an open question
+  tracked in ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
 * C-level clock reads and sleeps (including inside extension modules) are
   outside the virtual clock unless a frontrun integration explicitly models
   them.
@@ -300,3 +308,13 @@ Because the actor's steps are ordinary engine steps, recorded schedules
 contain them, vector clocks order them (via the wake edges), and the
 replay schedulers perform the same advances at the same positions — the
 counterexample stays a deterministic, replayable proof.
+
+One known corner case can weaken the *reproduction* (never the proof
+itself): exploration may commit a clock-actor step to the trace when no
+deadline is actually due (the advance is a no-op and the actor
+re-blocks).  Replay cannot tell such a no-op entry apart from a real or
+positionally-drifted advance, so it may fire an owed advance at the next
+deadline registration and diverge from the explored run.  This is a
+replay-accounting limitation, not a false counterexample; the fix
+(recording the effective advance per actor step) is tracked in
+``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.

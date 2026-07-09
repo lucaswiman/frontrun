@@ -1,6 +1,6 @@
 # Virtual Clock Hardening Follow-Ups
 
-Last reviewed: 2026-07-08.
+Last reviewed: 2026-07-09.
 
 Status: open. These are scoped, non-blocking virtual-clock limitations and
 cleanup items. None is a missed-bug hazard; the costs are extra branches,
@@ -30,25 +30,34 @@ exploration from committing no-op actor steps at all (needs engine support to
 un-schedule a step already offered). The trace-format change is invasive and
 belongs with a later trace/refactor pass.
 
-## 2. Explored-clock advance past intermediate deadlines (random strategy)
+## 2. Post-wake reads can observe a later deadline's clock value (explored clock)
 
-**Symptom.** With `strategy="random"`, `clock="explored"`, a timed wait can
-observe a *later* deadline's clock value. A deadline event can therefore fire at
-the wrong clock value.
+**Fixed half (2026-07-09).** The speculative "maybe advance" no longer jumps the
+clock *past* an earlier pending deadline: every explored-mode hop is clamped to
+`min(target, next_deadline())`, so each deadline fires at its own clock value on
+both the sync and async random strategies (`OpcodeScheduler.wait_for_turn` in
+`bytecode.py` — where a clamped hop also consumes the sleeper's contiguous
+schedule entries so the woken waiter can be granted a turn — and
+`AwaitScheduler.should_proceed` in `async_shuffler.py`). Regressions:
+`test_virtual_clock.py::test_explored_maybe_advance_clamps_to_earliest_pending_deadline`
+(+ explore-level seed-pinned companion) and their async twins in
+`test_async_virtual_clock.py`.
 
-**Mechanism.** After a wait times out correctly at its own deadline, the next
-scheduling point's speculative "maybe advance" (`_advance_clock_to(target)` in
-`async_shuffler.py`) can jump to a *later* sleeper's deadline before the just-woken
-waiter reads `monotonic()`. `_advance_clock_to` firing an earlier pending
-deadline while the clock already reads the later target means the earlier
-deadline event fires at the later value. Whether post-wait "time may pass between
-statements" is legitimate explored semantics is itself the open question.
+**Remaining open half.** A *woken* waiter can still observe a later clock value:
+after its deadline fires correctly at its own value, another advance (a later
+sleeper's maybe-advance hop, or an autojump) may run before the waiter reads
+`monotonic()`, so the post-wake read sees the later value. The same effect
+exists under DPOR explored clocks via repeated clock-actor scheduling — the
+engine may legitimately schedule further clock-actor steps between the wake and
+the read, which is arguably exactly the "time passes between statements"
+semantics explored mode is for. Whether post-wake advance is intended explored
+behavior is the open design question.
 
-**Fix directions.** First decide whether post-wait advance is intended explored
-behavior. If deadlines must each fire at their own value, clamp the advance to
-`min(target, next_deadline())` (prototyped, drops in cleanly, needs an isolating
-test). Complementarily, make the explored maybe-advance yield to the woken waiter
-before any further advance.
+**Fix directions (if post-wake reads must be pinned).** Make the explored
+maybe-advance (and the DPOR clock actor) yield to woken-but-not-yet-run waiters
+before any further advance — e.g. defer speculative hops until every actor woken
+by a previous advance has taken a turn. Needs a decision on semantics first,
+since it removes real interleavings from the explored space.
 
 ## 3. Raw loop-timer diagnostics
 
