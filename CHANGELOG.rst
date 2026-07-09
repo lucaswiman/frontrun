@@ -25,7 +25,19 @@ Unreleased
   supports explicit ``Subprocess`` targets and exhaustive search. Process-mode
   errors now fail fast with clearer messages, report truncation honestly via
   ``CrossProcessResult.exhausted``, and reject in-process-only options instead
-  of silently ignoring them. See :doc:`cross_process`.
+  of silently ignoring them. A scheduler stall (``deadlock_timeout`` expiry —
+  e.g. unmodeled database-level blocking) is reported as
+  ``failure_kind="timeout"`` rather than counting as a clean pass. See
+  :doc:`cross_process`.
+
+* **explore() rejects options its strategy would ignore.** Thread-mode
+  ``frontrun.explore(...)`` now raises ``ValueError`` for any explicitly-passed
+  option the selected strategy does not support (e.g. ``seed=`` with
+  ``strategy="dpor"``, ``preemption_bound=`` with ``strategy="random"``,
+  ``reproduce_on_failure=`` with async random), extending the process branch's
+  no-silent-no-op principle to every entry path. Code that passed such options
+  before relied on them silently doing nothing — drop the option or switch
+  strategy.
 
 * **DPOR correctness.** Accesses after ``await`` are now attributed before
   scheduling successors, ``asyncio.Lock`` / event state races replay
