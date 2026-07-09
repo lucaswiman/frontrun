@@ -182,11 +182,16 @@ def _timed_acquire_state(
         if clock is not None and thread_id is not None:
             deadline = clock.now() + timeout
             add_timed_wait = getattr(scheduler, "add_timed_wait", None)
-            if add_timed_wait is not None:
-                add_timed_wait(thread_id, deadline)
-            else:
-                clock = None  # scheduler cannot advance to the deadline; stay wall-clock
-                deadline = _real_monotonic() + timeout
+            if add_timed_wait is None:
+                # Degrading to a wall-clock deadline here would silently make
+                # the timeout host-speed-dependent under a clock that promises
+                # determinism.  Every shipped scheduler with a virtual clock
+                # implements add_timed_wait, so this is a contract violation.
+                raise RuntimeError(
+                    f"scheduler {type(scheduler).__name__} exposes virtual_clock but not add_timed_wait; "
+                    "virtual timed waits need both"
+                )
+            add_timed_wait(thread_id, deadline)
             return deadline, None, clock
         return _real_monotonic() + timeout, None, None
     return None, get_wait_for_graph(), None
@@ -1341,8 +1346,7 @@ class CooperativeCondition:
                         raise SchedulerAbort("scheduler aborted")
                     if scheduler._finished:
                         if _finish_virtual_timed_wait(scheduler, thread_id, deadline, clock):
-                            served = my_ticket < self._served
-                            return served
+                            return my_ticket < self._served
                         # When the scheduler is done, give notifications a
                         # brief window to land (bounded by the remaining
                         # user timeout, if any).  Matches the previous
