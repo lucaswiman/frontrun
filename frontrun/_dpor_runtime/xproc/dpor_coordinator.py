@@ -42,6 +42,7 @@ from frontrun._opcode_observer import StableObjectIds
 
 from . import protocol as proto
 from .coordinator import CrossProcessResult, accept_hello_live, worker_targets
+from .launch import WorkerSerializationError
 
 
 class _RelayDporScheduler(DporScheduler):
@@ -299,8 +300,8 @@ def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
 def _serialization_failure(exc: Exception, iterations: int) -> CrossProcessResult:
     """A worker/state couldn't be serialised for a subprocess: report cleanly.
 
-    ``_dumps_worker`` raises ``TypeError`` for an unpicklable/undillable payload
-    and ``ImportError`` when dill is missing; these surface from
+    ``_dumps_worker`` raises :class:`WorkerSerializationError` (payload even
+    dill cannot serialise, or dill missing); it surfaces from
     ``worker_set.launch(...)`` / ``iter_start_message(...)`` inside the
     exploration loop. Return the same structured ``worker_error`` result the
     connection-failure path uses instead of letting a bare exception escape,
@@ -394,7 +395,7 @@ class DporCrossProcessCoordinator:
                     persistent_handles = worker_set.launch(
                         worker_targets(self.socket_path, list(range(self.num_workers)))
                     )
-                except (TypeError, ImportError) as exc:
+                except WorkerSerializationError as exc:
                     return _serialization_failure(exc, 0)
                 try:
                     for _ in range(self.num_workers):
@@ -430,10 +431,12 @@ class DporCrossProcessCoordinator:
                         self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean)
                 except (TimeoutError, OSError) as exc:
                     return _connection_failure(exc, num_explored + 1)
-                except (TypeError, ImportError) as exc:
+                except WorkerSerializationError as exc:
                     # A dill serialisation failure in worker_set.launch(...) /
                     # iter_start_message(...) — surface it as a structured
-                    # worker_error rather than a bare exception.
+                    # worker_error rather than a bare exception. Anything
+                    # broader (a generic TypeError from launch machinery) is a
+                    # bug and must propagate rather than be mislabeled.
                     return _serialization_failure(exc, num_explored + 1)
                 num_explored += 1
 

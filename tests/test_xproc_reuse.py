@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
+from frontrun._dpor_runtime.xproc.launch import WorkerSerializationError
 from frontrun._dpor_runtime.xproc.worker import PersistentThreadLauncher, ThreadLauncher
 
 
@@ -141,7 +142,10 @@ class _RaisingLauncher:
 @pytest.mark.parametrize("reuse", [False, True])
 @pytest.mark.parametrize(
     "exc",
-    [TypeError("cannot pickle <thread.lock>"), ImportError("dill is required for subprocess workers")],
+    [
+        WorkerSerializationError("cannot pickle <thread.lock>"),
+        WorkerSerializationError("dill is required for subprocess workers"),
+    ],
 )
 def test_serialization_failure_returns_worker_error(reuse: bool, exc: Exception) -> None:
     coord = DporCrossProcessCoordinator(num_workers=2, reuse_workers=reuse)

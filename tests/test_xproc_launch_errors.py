@@ -19,6 +19,7 @@ from frontrun._dpor_runtime.xproc.launch import (
     MpLauncher,
     Subprocess,
     SubprocessLauncher,
+    WorkerSerializationError,
     _dumps_worker,
     _stderr_last_line,
 )
@@ -55,8 +56,9 @@ def test_dumps_worker_handles_closures() -> None:
 
 def test_dumps_worker_rejects_truly_unserialisable() -> None:
     # An open socket in the setup() state can't be serialised even by dill; the
-    # error must be a clear frontrun message, not a raw pickling traceback.
-    with pytest.raises(TypeError, match="could not serialise"):
+    # error must be a clear frontrun message (as the dedicated type the
+    # coordinator converts to a structured result), not a raw pickling traceback.
+    with pytest.raises(WorkerSerializationError, match="could not serialise"):
         _dumps_worker(lambda state: state, socket.socket())
 
 
