@@ -157,6 +157,19 @@ def test_serialization_failure_returns_worker_error(reuse: bool, exc: Exception)
     assert str(exc) in (result.failure or "")
 
 
+def test_unrelated_launch_type_error_is_not_mislabeled_as_serialization() -> None:
+    # Only the dedicated serialisation error may be converted to a structured
+    # "worker serialization failed" result. A generic TypeError from launch
+    # machinery is a bug and must propagate loudly, not be mislabeled.
+    coord = DporCrossProcessCoordinator(num_workers=2)
+    with pytest.raises(TypeError, match="unrelated launch bug"):
+        coord.explore(
+            worker_set=_RaisingLauncher(TypeError("unrelated launch bug")),
+            setup=lambda: None,
+            invariant=lambda: True,
+        )
+
+
 # --- Fix 1: a relay thread still alive after its join budget must raise a loud
 # TimeoutError (converting a silent concurrent-engine data race into a catchable
 # failure) instead of letting the coordinator move on. ---

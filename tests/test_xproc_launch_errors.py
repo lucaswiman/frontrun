@@ -15,7 +15,13 @@ import pytest
 
 from frontrun._dpor_core.worker import IterationCustomizer, LivenessProbe, WorkerTarget
 from frontrun._dpor_runtime.xproc.dpor_coordinator import _connection_failure, _launch_error
-from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, SubprocessLauncher, _dumps_worker
+from frontrun._dpor_runtime.xproc.launch import (
+    MpLauncher,
+    Subprocess,
+    SubprocessLauncher,
+    _dumps_worker,
+    _stderr_last_line,
+)
 
 
 class _FakeWorkerSet:
@@ -52,6 +58,26 @@ def test_dumps_worker_rejects_truly_unserialisable() -> None:
     # error must be a clear frontrun message, not a raw pickling traceback.
     with pytest.raises(TypeError, match="could not serialise"):
         _dumps_worker(lambda state: state, socket.socket())
+
+
+def test_stderr_last_line_prefers_traceback_error_over_trailing_noise(tmp_path) -> None:
+    # A crashing child can print output after its traceback (atexit handlers,
+    # multiprocessing teardown chatter). diagnose() must surface the actual
+    # error line, not whatever happened to be written last.
+    path = tmp_path / "stderr.w0"
+    path.write_text(
+        "Traceback (most recent call last):\n"
+        '  File "worker.py", line 1, in <module>\n'
+        "ModuleNotFoundError: No module named 'nope'\n"
+        "worker teardown: closing connections\n"
+    )
+    assert _stderr_last_line(str(path)) == "ModuleNotFoundError: No module named 'nope'"
+
+
+def test_stderr_last_line_falls_back_to_last_nonblank_line(tmp_path) -> None:
+    path = tmp_path / "stderr.w1"
+    path.write_text("some diagnostic output\nfinal words before dying\n\n")
+    assert _stderr_last_line(str(path)) == "final words before dying"
 
 
 def test_subprocess_launcher_diagnoses_bad_target(tmp_path) -> None:

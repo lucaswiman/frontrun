@@ -119,6 +119,29 @@ def test_process_rejects_more_silent_noop_kwargs(kwarg: str, value: object) -> N
         )
 
 
+@pytest.mark.parametrize(
+    ("kwarg", "value"),
+    [
+        ("max_executions", 5),
+        ("preemption_bound", 1),
+        ("preemption_bound", None),
+    ],
+)
+def test_explore_processes_exhaustive_rejects_dpor_only_options(kwarg: str, value: object) -> None:
+    # max_executions / preemption_bound tune the DPOR engine; the exhaustive
+    # coordinator never sees them, so a non-default value must raise instead of
+    # silently no-op'ing (the same principle as the rejected thread-mode knobs).
+    with pytest.raises(ValueError, match=kwarg):
+        frontrun.explore_processes(
+            Subprocess("pkg.mod:go"),
+            count=2,
+            setup=lambda: None,
+            invariant=lambda _state: True,
+            strategy="exhaustive",
+            **{kwarg: value},
+        )
+
+
 def test_explore_processes_reuse_rejects_exhaustive() -> None:
     with pytest.raises(ValueError, match="reuse_workers"):
         frontrun.explore_processes(
