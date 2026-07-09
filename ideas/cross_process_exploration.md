@@ -1,6 +1,9 @@
 # Cross-Process Exploration: Deterministic Interleaving of Workers Contending on Shared External State
 
-**Status:** Proposal (2026-06-12). Not implemented.
+**Status:** Implemented (2026-07-04) — `frontrun.explore(execution="process")` and
+`frontrun.explore_processes()`; see `docs/cross_process.rst`. Original proposal
+(2026-06-12) follows; phase status is tracked in
+`possible-future-roadmap/index.md`.
 
 ## Problem statement
 

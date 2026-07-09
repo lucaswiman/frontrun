@@ -366,8 +366,9 @@ pruning equivalent interleavings and detecting cross-worker
 ``SELECT FOR UPDATE`` deadlocks.
 
 :func:`frontrun.explore` mirrors the thread/async interface with
-``execution="process"``. Workers are picklable module-level callables and
-``setup()`` returns a picklable handle to the external state (e.g. a DB URL),
+``execution="process"``. Workers are serialised with dill (install the
+``process`` extra), so closures and lambdas work too; ``setup()`` returns a
+picklable handle to the external state (e.g. a DB URL),
 passed to each ``worker(state)`` and to ``invariant(state)``:
 
 .. code-block:: python

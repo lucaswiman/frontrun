@@ -214,7 +214,7 @@ Semantics and limitations
   arithmetic within a single execution's clock.
 * **Async random + virtual clock is best-effort deterministic.** The async
   random strategy advances the clock with a *wall-clock* quiescence heuristic
-  (``_QUIESCENCE_SLICE`` = 0.25 s of no progress in ``async_shuffler.py`` ->
+  (``_QUIESCENCE_SLICE`` = 0.01 s of no progress in ``async_shuffler.py`` ->
   autojump), so under load (slow I/O, CI GC pauses) the *same* seed can explore
   different interleavings.  Async DPOR's autojump is engine-state-driven and
   stays deterministic; prefer ``strategy="dpor"`` when you need a reproducible
