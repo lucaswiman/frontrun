@@ -1,30 +1,41 @@
 # Skill: Finding Concurrency Bugs with Frontrun
 
 You are an expert at using the **frontrun** library to find, reproduce, and
-document threading race conditions in Python code.  When asked to investigate
-thread safety or find concurrency bugs, follow the workflow below.
+document race conditions in Python code.  When asked to investigate thread
+safety or find concurrency bugs, follow the workflow below.
 
 ---
 
 ## What is frontrun?
 
 Frontrun provides **deterministic concurrency testing** for Python.  Instead
-of relying on timing (which is unreliable), it controls thread interleaving at
-the bytecode instruction level via `sys.settrace` + `f_trace_opcodes`.
+of relying on timing (which is unreliable), it controls the interleaving of
+threads, asyncio tasks, or worker processes from the inside, and hands back a
+deterministic, replayable counterexample schedule when an invariant breaks.
 
-Two approaches are available:
+The front door is `frontrun.explore()`: hand it a way to build shared state,
+some workers, and an invariant.  By default it runs **DPOR** (Dynamic Partial
+Order Reduction), which *systematically* explores every meaningfully different
+interleaving — every distinct schedule is tried exactly once, redundant
+orderings are never re-run, and a clean pass is a proof over the whole space.
 
-| Approach | Use when | Stability |
-|----------|----------|-----------|
-| **Bytecode exploration** (`frontrun.explore_random`) | Testing unmodified third-party code; property-based search | Experimental but effective |
-| **Trace markers** (`frontrun.trace_markers`) | You can add `# frontrun: name` comments to source | Stable |
+| Selector | Values | Use when |
+|----------|--------|----------|
+| `strategy=` | `"dpor"` (default), `"random"` | `"random"` samples schedules Hypothesis-style; use it when DPOR can't see the conflict (state mutated inside a C extension with no Python-visible accesses) |
+| `execution=` | `"thread"` (default), `"process"` | `"process"` runs each worker in its own spawned Python process contending on external SQL/Redis state |
+| `clock=` | `"real"` (default), `"virtual"`, `"explored"` | `"virtual"` makes sleeps/timeouts/TTLs zero-wall-time and deterministic; `"explored"` additionally makes *when the timer fires* a schedulable choice |
 
-For finding bugs in external libraries, **bytecode exploration** is the right
-choice.
+Sync workers run as threads; async workers (coroutine functions) are detected
+automatically and run as asyncio tasks — `await` the result in that case.
+
+Two lower-level helpers remain for special cases (covered at the end):
+**trace markers** (`# frontrun: name` comments) to pin a *known* interleaving
+as a regression test, and `frontrun.explore_random` / marker schedule
+exploration as direct entry points to the non-DPOR engines.
 
 ---
 
-## Workflow: Finding a Bug with `explore_random`
+## Workflow: Finding a Bug with `explore()`
 
 ### Step 1 — Identify a Target
 
@@ -38,7 +49,7 @@ Look for code that:
 
 ```python
 # Lost update — the classic
-self.counter += 1          # LOAD_ATTR / BINARY_OP / STORE_ATTR: not atomic
+self.counter += 1          # read / add / write: not atomic
 
 # TOCTOU — check and act are separate
 if key not in mapping:     # CHECK
@@ -52,9 +63,15 @@ self.inbox.put(msg)        # ACT  ← actor can die between check and put
 
 ### Step 2 — Check Whether frontrun Can Trace the Code
 
-Frontrun.s opcode tracer **skips** files in `site-packages` and `lib/python`.
-To trace third-party code, import from a **local source checkout**, not from
-the installed package:
+Frontrun's tracer **skips** files in `site-packages` and `lib/python` by
+default.  To explore an installed third-party package, either opt it in with
+`trace_packages` (fnmatch patterns on module names):
+
+```python
+result = frontrun.explore(..., trace_packages=["cachetools", "cachetools.*"])
+```
+
+or import it from a local source checkout instead of the installed package:
 
 ```python
 import sys
@@ -64,7 +81,7 @@ from mylib import TheClassUnderTest
 
 ### Step 3 — Write a State Class
 
-Encapsulate setup, thread actions, and any extra tracking in a single class:
+Encapsulate setup, worker actions, and any extra tracking in a single class:
 
 ```python
 class MyState:
@@ -73,33 +90,23 @@ class MyState:
         # add tracking fields if needed
         self.action_count = 0
 
-    def thread1(self):
+    def worker1(self):
         self.obj.some_method()
 
-    def thread2(self):
+    def worker2(self):
         self.obj.some_method()
 ```
 
-For bugs where the violation is only visible through side effects (e.g. a
-ghost message that is sent but never received), add tracking in `__init__`:
-
-```python
-class ActorState:
-    def __init__(self):
-        self.received = []                  # filled by the actor's on_receive
-        received = self.received
-        class Tracker(SomeActor):
-            use_daemon_thread = True        # always use daemon threads!
-            def on_receive(self, msg):
-                received.append(msg)
-        self.ref = Tracker.start()
-        self.successes = 0
-```
+For bugs only visible through side effects (e.g. a ghost message that is sent
+but never received), add tracking fields in `__init__` and record outcomes in
+the workers.
 
 ### Step 4 — Define a Clear Invariant
 
 The invariant must be a **callable that takes the state object** and returns
-`True` when everything is correct, `False` when a bug occurred.
+`True` when everything is correct, `False` when a bug occurred.  Raising
+`AssertionError` inside the invariant also counts as a failure and its
+message is included in the explanation.
 
 | Bug type | Invariant example |
 |----------|-------------------|
@@ -109,105 +116,221 @@ The invariant must be a **callable that takes the state object** and returns
 | Ghost message | `lambda s: s.successes == len(s.received)` |
 | TOCTOU key insert | `lambda s: len(d.get(k, [])) == 2` |
 
-### Step 5 — Run `explore_random`
+### Step 5 — Run `explore()`
 
 ```python
-import signal
-from contextlib import contextmanager
 import frontrun
-from frontrun.bytecode import run_with_schedule
 
-@contextmanager
-def timeout_minutes(n=10):
-    """Hard timeout using SIGALRM (Unix only, main thread only)."""
-    def _h(sig, frame): raise TimeoutError(f"Timed out after {n}m")
-    old = signal.signal(signal.SIGALRM, _h)
-    signal.alarm(n * 60)
-    try: yield
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old)
+class Counter:
+    def __init__(self):
+        self.value = 0
 
-with timeout_minutes(10):
-    result = frontrun.explore_random(
-        setup=lambda: MyState(),
-        threads=[
-            lambda s: s.thread1(),
-            lambda s: s.thread2(),
-        ],
-        invariant=lambda s: s.obj.counter == 2,
-        max_attempts=500,   # upper bound on schedules tried
-        max_ops=300,        # max opcodes per thread before free-running
-        seed=42,            # reproducible starting point
-    )
+    def increment(self):
+        temp = self.value
+        self.value = temp + 1
 
+result = frontrun.explore(
+    setup=Counter,                       # fresh state per execution
+    workers=Counter.increment,           # or a list: [w1, w2, ...]
+    count=2,                             # replicate a single worker N times
+    invariant=lambda c: c.value == 2,
+)
 print(f"Property holds: {result.property_holds}")
 print(f"Explored {result.num_explored} interleavings")
-if result.counterexample:
-    print(f"Bug found! Schedule length: {len(result.counterexample)}")
+if not result.property_holds:
+    print(result.explanation)            # interleaved source-line trace
 ```
 
-### Step 6 — Sweep Seeds
-
-Run 20 seeds to measure how reliably the bug is found:
+In a test, prefer `result.assert_holds()` over manual asserts — it raises
+`AssertionError` with the full race explanation on failure:
 
 ```python
-found_seeds = []
-for seed in range(20):
-    with timeout_minutes(10):
-        result = frontrun.explore_random(
-            setup=lambda: MyState(),
-            threads=[lambda s: s.thread1(), lambda s: s.thread2()],
-            invariant=lambda s: s.obj.counter == 2,
-            max_attempts=200,
-            max_ops=300,
-            seed=seed,
-        )
-    if not result.property_holds:
-        found_seeds.append((seed, result.num_explored))
-
-print(f"Seeds found: {len(found_seeds)}/20")
+def test_increment_is_atomic():
+    result = frontrun.explore(
+        setup=Counter,
+        workers=Counter.increment,
+        count=2,
+        invariant=lambda c: c.value == 2,
+    )
+    result.assert_holds()
 ```
 
-### Step 7 — Reproduce Deterministically
+**Run through the `frontrun` CLI wrapper** — it sets up lock patching and
+C-level I/O interception; plain `pytest` *skips* `frontrun.explore()` tests:
 
-Once you have a counterexample schedule, it can be replayed exactly:
+```bash
+frontrun pytest test_counter.py
+frontrun python find_bug.py
+```
+
+Async workers use the same call shape; `explore()` returns a coroutine:
 
 ```python
-state = run_with_schedule(
-    result.counterexample,
-    setup=lambda: MyState(),
-    threads=[lambda s: s.thread1(), lambda s: s.thread2()],
+class AsyncCounter:
+    def __init__(self):
+        self.value = 0
+
+    async def increment(self):
+        temp = self.value
+        await asyncio.sleep(0)
+        self.value = temp + 1
+
+result = asyncio.run(frontrun.explore(
+    setup=AsyncCounter,
+    workers=AsyncCounter.increment,
+    count=2,
+    invariant=lambda c: c.value == 2,
+))
+```
+
+### Step 6 — Read the Failure
+
+When a race is found, `result.explanation` names the conflicting accesses and
+shows the interleaved source-line trace; DPOR *knows why* the interleaving
+matters because it detected the specific conflicting accesses.  The
+counterexample is replayed automatically (`reproduce_on_failure`, default 10)
+to confirm it reproduces deterministically before being reported.
+
+A DPOR pass is a completeness result: every distinct interleaving (up to
+`preemption_bound`, default 2 preemptions) was proven safe.
+
+### Step 7 — Escalate When the Default Doesn't Fit
+
+**Timeout / retry / TTL races** — real sleeps make these unreachable.
+`clock="virtual"` gives each execution a scheduler-owned virtual clock:
+`time.time()` / `time.monotonic()` read virtual time, sleeps cost zero wall
+time, and timed lock acquires time out deterministically.  Use
+`clock="explored"` when the *timing* of a timer firing is itself the race:
+
+```python
+class Timeout:
+    def __init__(self):
+        self.elapsed = 0.0
+
+    def worker(self):
+        start = time.monotonic()     # reads virtual time
+        time.sleep(60)               # zero wall time under clock="virtual"
+        self.elapsed = time.monotonic() - start
+
+result = frontrun.explore(
+    setup=Timeout,
+    workers=Timeout.worker,
+    count=1,
+    invariant=lambda s: s.elapsed >= 60,   # the timeout path was really taken
+    clock="virtual",
 )
-assert state.obj.counter != 2, "Bug reproduced!"
 ```
 
-Replay is **100% deterministic** — the same schedule always produces the
-same outcome, making it ideal as a regression test.
+**Cross-process contention on SQL/Redis** — `execution="process"` spawns each
+worker as its own Python process, coordinating over a socket.  `setup()` must
+return a picklable *handle* to external state (a DB path/URL, not a live
+connection); workers are serialised with dill, so closures work.  Requires
+the `process` extra (`pip install frontrun[process]`) and
+`strategy="dpor"` with sync workers.
+
+**DPOR can't see the state** — shared state mutated entirely inside a C
+extension (no Python-visible attribute/subscript access, no I/O) is invisible
+to DPOR's conflict detection.  `strategy="random"` samples random opcode-level
+schedules and can stumble into the bad interleaving anyway:
+
+```python
+result = frontrun.explore(
+    setup=Counter,
+    workers=Counter.increment,
+    count=2,
+    invariant=lambda c: c.value == 2,
+    strategy="random",
+    max_attempts=500,   # schedules to sample
+    seed=42,            # reproducible starting point
+)
+```
+
+Options are strategy-specific and `explore()` **raises `ValueError`** if you
+pass one the selected strategy does not support (e.g. `seed=` with DPOR, or
+`preemption_bound=` with `strategy="random"`) — fix the call rather than
+working around the error:
+
+| Options | Apply to |
+|---------|----------|
+| `max_executions`, `preemption_bound`, `max_branches`, `stop_on_first`, `lock_timeout` | DPOR only |
+| `search`, `track_dunder_dict_accesses` | sync DPOR only |
+| `max_attempts`, `max_ops`, `seed` | random only |
+| `debug` | sync random only |
+| `detect_sql` | async workers only |
+| `clock`, `clock_diagnostics`, `timeout_per_run`, `total_timeout`, `detect_io`, `patch_sleep`, `trace_packages`, `serializable_invariant` | both strategies |
+
+### Step 8 — Pin a Regression Test
+
+The simplest regression test is the `explore()` call itself with
+`result.assert_holds()` — after the fix, DPOR proves the whole space clean.
+
+To pin one *specific* interleaving (e.g. to document the exact bug window),
+use **trace markers**: `# frontrun: name` comments that gate the line that
+follows them, plus an explicit schedule:
+
+```python
+from frontrun.common import Schedule, Step
+from frontrun.trace_markers import TraceExecutor
+
+class Counter:
+    def __init__(self):
+        self.value = 0
+
+    def increment(self):
+        temp = self.value  # frontrun: read_value
+        self.value = temp + 1  # frontrun: write_value
+
+counter = Counter()
+schedule = Schedule([
+    Step("thread1", "read_value"),   # T1 reads 0
+    Step("thread2", "read_value"),   # T2 reads 0 (both see the same value!)
+    Step("thread1", "write_value"),  # T1 writes 1
+    Step("thread2", "write_value"),  # T2 writes 1 (overwrites T1's update!)
+])
+TraceExecutor(schedule).run(
+    {"thread1": counter.increment, "thread2": counter.increment},
+    timeout=5.0,
+)
+assert counter.value == 1  # one increment lost — deterministically
+```
+
+To verify a fix eliminates **all** marker-level interleavings, not just the
+one counterexample, use `explore_marker_interleavings()` from
+`frontrun.trace_markers` — it exhaustively runs every valid ordering of the
+markers.
 
 ---
 
 ## Common Pitfalls
 
-### Pitfall 1 — Importing from site-packages
+### Pitfall 1 — Running without the `frontrun` CLI wrapper
+
+Under plain `pytest`, tests that call `frontrun.explore()` are skipped (lock
+patching and C-level I/O interception are not set up).  Always run
+`frontrun pytest ...` / `frontrun python ...`.
+
+### Pitfall 2 — Tracing installed packages
 
 ```python
-# WRONG — frontrun cannot trace site-packages
-import requests
+# WRONG — frontrun skips site-packages by default
 from cachetools import Cache
 
-# RIGHT — use a local source checkout
+# RIGHT — opt the package in
+frontrun.explore(..., trace_packages=["cachetools", "cachetools.*"])
+
+# ALSO RIGHT — import from a local source checkout
 sys.path.insert(0, "/path/to/cachetools/src")
 from cachetools import Cache
 ```
 
-### Pitfall 2 — Letting thread exceptions crash the run
+### Pitfall 3 — Letting worker exceptions crash the run
 
 If the code under test can raise (e.g. `ActorDeadError`, `KeyError`), catch
-it in the thread function so it does not abort the entire exploration:
+it in the worker so it becomes an observable outcome instead of aborting the
+exploration:
 
 ```python
-def thread1(self):
+def worker1(self):
     try:
         self.ref.tell("ping")
         self.successes += 1
@@ -215,76 +338,50 @@ def thread1(self):
         self.errors += 1
 ```
 
-### Pitfall 3 — Non-daemon threads blocking program exit
+### Pitfall 4 — Non-daemon threads blocking program exit
 
-If your state class starts background threads (actor frameworks, thread pools),
-always use daemon threads so the process can exit cleanly:
-
-```python
-class MyActor(pykka.ThreadingActor):
-    use_daemon_thread = True   # ← critical
-```
-
-Or patch before starting threads:
+If your state class starts background threads (actor frameworks, thread
+pools), always use daemon threads so the process can exit cleanly:
 
 ```python
-import threading
 t = threading.Thread(target=worker, daemon=True)
 ```
 
-### Pitfall 4 — Invariant not observable from final state
+### Pitfall 5 — Invariant not observable from final state
 
-Some TOCTOU bugs are invisible in the final state alone (e.g. "actor checked
-alive, actor died, message was put — both happen before invariant is checked,
-so state looks the same either way").
-
-Fix: introduce **tracking fields** that record the outcome of each action:
+Some TOCTOU bugs are invisible in the final state alone.  Introduce
+**tracking fields** that record the outcome of each action (a `successes`
+counter incremented only on success, a `received` list filled by the
+consumer), then write the invariant over the tracking fields:
 
 ```python
-# Instead of just calling tell(), track the result:
-self.successes = 0
-def thread1(self):
-    try:
-        self.ref.tell("ping")
-        self.successes += 1   # only incremented on success
-    except ActorDeadError:
-        pass
-
-# Use a shared list filled by the actor itself:
-self.received = []
-def on_receive(self, msg):
-    self.received.append(msg)   # actor-side confirmation
-
-# Now the invariant is observable:
 invariant = lambda s: s.successes == len(s.received)
 ```
 
-### Pitfall 5 — Confusing "true race / no impact" with a bug
+### Pitfall 6 — Confusing "true race / no impact" with a bug
 
-Frontrun finds races at the bytecode level.  Whether the race *matters*
-requires reading the call sites.  Key questions to ask:
+Whether a detected race *matters* requires reading the call sites.  Ask:
 
 * **Is the racy value used for correctness decisions** (admission control,
   protocol IDs, state transitions) or only for diagnostics (logging,
   monitoring counters)?
-* **Can the value be changed at runtime?**  If a "mode flag" is fixed at
-  construction time, a race on it may be unexploitable.
-* **Is there an explicit comment** in the code acknowledging the intentional
-  omission of a lock (e.g. "fast path, no lock needed")?
+* **Can the value be changed at runtime?**  A race on a flag fixed at
+  construction time may be unexploitable.
+* **Is there an explicit comment** acknowledging the intentional omission of
+  a lock ("fast path, no lock needed")?
 
-A counter that is only ever read by `logging.debug(...)` and cannot affect
-any control-flow decision is a *true race / no-impact* finding — frontrun is
-correct that the memory model is unsound, but the library authors may have
-deliberately accepted the imprecision for performance.  File such findings as
-informational notes rather than bugs.
+File true-race/no-impact findings as informational notes rather than bugs.
+(`error_on_any_race=True` makes DPOR treat every unsynchronized race as a
+failure — useful for auditing, noisy for triage.)
 
-### Pitfall 6 — Deadlocking under the cooperative scheduler
+### Pitfall 7 — Blocking C-level primitives
 
-Frontrun replaces `threading.Lock`, `threading.Event`, `queue.Queue` etc. with
-cooperative versions that yield turns instead of blocking.  Code that uses
-**unpatched** C-level locks (e.g. `multiprocessing` primitives, some C
-extensions) can deadlock.  Workaround: add explicit `time.sleep(0)` checkpoints
-in the code under test so the scheduler can interleave around the C-level lock.
+Frontrun replaces `threading.Lock`, `threading.Event`, `queue.Queue` etc.
+with cooperative versions that yield turns instead of blocking.  Code that
+blocks in **unpatched** C-level primitives (e.g. `multiprocessing`
+primitives, some C extensions) can deadlock the scheduler.  Workaround: add
+explicit `time.sleep(0)` checkpoints in the code under test so the scheduler
+can interleave around the C-level block.
 
 ---
 
@@ -305,6 +402,8 @@ in the code under test so the scheduler can interleave around the C-level lock.
 
 ## Template: Complete Test File
 
+Run with `frontrun pytest test_mylib_races.py`.
+
 ```python
 """
 Real-code exploration: <Library> <ClassName>.<method>() <bug type>.
@@ -314,100 +413,49 @@ Real-code exploration: <Library> <ClassName>.<method>() <bug type>.
 Repository: <GitHub URL>
 """
 
-import os, sys, signal
-from contextlib import contextmanager
-
-_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_dir, "external_repos", "<library>", "src"))
-
-from <library> import <TheClass>
 import frontrun
-from frontrun.bytecode import run_with_schedule
 
-
-@contextmanager
-def timeout_minutes(n=10):
-    def _h(sig, frame): raise TimeoutError(f"Timed out after {n}m")
-    old = signal.signal(signal.SIGALRM, _h)
-    signal.alarm(n * 60)
-    try: yield
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old)
+from mylib import TheClass  # opt in below via trace_packages if installed
 
 
 class State:
     def __init__(self):
-        self.obj = <TheClass>(...)
+        self.obj = TheClass()
 
-    def thread1(self): self.obj.<method>()
-    def thread2(self): self.obj.<method>()
+    def worker1(self):
+        self.obj.some_method()
 
-
-def _invariant(s): return <condition that should always hold>
-
-
-def test_single():
-    with timeout_minutes(10):
-        result = frontrun.explore_random(
-            setup=lambda: State(),
-            threads=[lambda s: s.thread1(), lambda s: s.thread2()],
-            invariant=_invariant,
-            max_attempts=500, max_ops=300, seed=42,
-        )
-    print(f"Property holds: {result.property_holds}")
-    print(f"Explored: {result.num_explored}")
-    if result.counterexample:
-        print(f"Schedule length: {len(result.counterexample)}")
-    return result
+    def worker2(self):
+        self.obj.some_method()
 
 
-def test_sweep():
-    found = []
-    for seed in range(20):
-        with timeout_minutes(10):
-            r = frontrun.explore_random(
-                setup=lambda: State(),
-                threads=[lambda s: s.thread1(), lambda s: s.thread2()],
-                invariant=_invariant,
-                max_attempts=200, max_ops=300, seed=seed,
-            )
-        if not r.property_holds:
-            found.append((seed, r.num_explored))
-    print(f"Seeds found: {len(found)}/20")
-    return found
+def _invariant(s):
+    return s.obj.counter == 2  # condition that should always hold
 
 
-def test_reproduce():
-    with timeout_minutes(10):
-        result = frontrun.explore_random(
-            setup=lambda: State(),
-            threads=[lambda s: s.thread1(), lambda s: s.thread2()],
-            invariant=_invariant,
-            max_attempts=500, max_ops=300, seed=42,
-        )
-    if not result.counterexample:
-        print("No counterexample found")
-        return 0
-    bugs = 0
-    for i in range(10):
-        s = run_with_schedule(
-            result.counterexample,
-            setup=lambda: State(),
-            threads=[lambda s: s.thread1(), lambda s: s.thread2()],
-        )
-        ok = _invariant(s)
-        bugs += not ok
-        print(f"  Run {i+1}: [{'BUG' if not ok else 'ok'}]")
-    print(f"Reproduced: {bugs}/10")
-    return bugs
+def test_method_is_atomic():
+    """DPOR proves the property over all interleavings, or hands back a
+    deterministic counterexample in the AssertionError message."""
+    result = frontrun.explore(
+        setup=State,
+        workers=[State.worker1, State.worker2],
+        invariant=_invariant,
+        trace_packages=["mylib", "mylib.*"],
+    )
+    result.assert_holds()
 
 
-if __name__ == "__main__":
-    print("=== Single run ===")
-    test_single()
-    print("\n=== Seed sweep ===")
-    test_sweep()
-    print("\n=== Reproduction ===")
-    test_reproduce()
+def test_method_is_atomic_random_fallback():
+    """Random sampling — reaches interleavings DPOR cannot see when the
+    conflict lives inside a C extension."""
+    result = frontrun.explore(
+        setup=State,
+        workers=[State.worker1, State.worker2],
+        invariant=_invariant,
+        strategy="random",
+        max_attempts=500,
+        seed=42,
+        trace_packages=["mylib", "mylib.*"],
+    )
+    result.assert_holds()
 ```
