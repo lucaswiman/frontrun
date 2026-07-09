@@ -243,9 +243,20 @@ class AwaitScheduler(InterleavedLoop):
             if self.virtual_clock is not None and entry in self._sleepers:
                 if self.clock_mode == "explored":
                     # "Maybe advance": the random schedule picked a sleeping
-                    # task — let time pass to its deadline; the woken task
-                    # then consumes this entry.
-                    self._advance_clock_to(self._sleepers[entry])
+                    # task — let time pass toward its deadline; the woken task
+                    # then consumes this entry.  Each speculative hop is
+                    # clamped to the *earliest* pending deadline so an earlier
+                    # timed wait fires (and wakes its waiter) at its own clock
+                    # value, never at a later sleeper's target.  Convergence
+                    # is automatic: control returns to the event loop after
+                    # each hop — letting the woken waiter run first — and the
+                    # next should_proceed call re-advances until the scheduled
+                    # sleeper's own deadline is reached.
+                    target = self._sleepers[entry]
+                    next_deadline = self._deadlines.next_deadline()
+                    if next_deadline is not None:
+                        target = min(target, next_deadline)
+                    self._advance_clock_to(target)
                     self._condition.notify_all()
                     break
                 # Autojump semantics: a sleeping task cannot run before the

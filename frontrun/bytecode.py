@@ -217,11 +217,27 @@ class OpcodeScheduler:
                 if self.virtual_clock is not None and self._deadlines.is_sleeping(scheduled_tid):
                     if self.clock_mode == "explored":
                         # "Maybe advance": the random schedule picked a
-                        # sleeping thread, so let time pass to its deadline;
-                        # the woken thread then consumes this entry.
+                        # sleeping thread, so let time pass toward its
+                        # deadline; the woken thread then consumes this entry.
+                        # Each speculative hop is clamped to the *earliest*
+                        # pending deadline so an earlier timed wait fires at
+                        # its own clock value, never at a later sleeper's
+                        # target.  A clamped hop cannot wake the scheduled
+                        # sleeper, so it also consumes the sleeper's contiguous
+                        # run of entries: leaving them would re-advance to the
+                        # next deadline under this same lock hold, before the
+                        # just-woken waiter could be granted a single turn to
+                        # observe its own timeout.
                         sleep_deadline = self._deadlines.sleep_deadline(scheduled_tid)
                         assert sleep_deadline is not None
-                        self._advance_clock_to(sleep_deadline)
+                        next_deadline = self._deadlines.next_deadline()
+                        assert next_deadline is not None  # sleep_deadline is pending
+                        if next_deadline < sleep_deadline:
+                            self._advance_clock_to(next_deadline)
+                            while self._index < len(self.schedule) and self.schedule[self._index] == scheduled_tid:
+                                self._index += 1
+                        else:
+                            self._advance_clock_to(sleep_deadline)
                     else:
                         # Autojump semantics: a sleeping thread cannot run
                         # before the clock advances; skip its slot.
