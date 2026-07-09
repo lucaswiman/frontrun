@@ -6,6 +6,9 @@ Status: phases 1-5 implemented. The remaining open item is Python
 cross-process virtual clocks, which stays exploratory until a real workload
 needs it.
 
+Known remaining virtual-clock follow-ups are tracked in
+[virtual-clock-hardening-deferred.md](virtual-clock-hardening-deferred.md).
+
 ## Summary
 
 The transparency follow-ups that fit frontrun's in-process white-box model are

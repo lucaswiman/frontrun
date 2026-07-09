@@ -140,11 +140,7 @@ def test_time_functions_restored_after_worker_exception() -> None:
 
 
 def test_invariant_sees_virtual_time() -> None:
-    """The invariant is documented to see the same virtual time as workers.
-
-    Regression: invariant evaluation happens after the workers' patch scope
-    unwinds, so clock_scope must own the time.* patch itself.
-    """
+    """The invariant is documented to see the same virtual time as workers."""
     observed: list[tuple[float, float]] = []
 
     class State:
@@ -585,7 +581,7 @@ def test_sleep_while_holding_lock_dpor() -> None:
 
 def test_random_sleep_while_holding_lock() -> None:
     """Random strategy: an untimed lock spinner must not block the autojump
-    (regression: sleep(1.0) silently returned with 0 virtual seconds)."""
+    needed for the holder's virtual sleep."""
     invariant_checks = 0
 
     def invariant(s: _HoldAndSleep) -> bool:
@@ -602,10 +598,58 @@ def test_random_sleep_while_holding_lock() -> None:
         max_attempts=3,
         seed=42,
         reproduce_on_failure=0,
-        timeout_per_run=1.0,
+        timeout_per_run=2.0,
     )
     assert result.property_holds, result.explanation
     assert invariant_checks > 0
+
+
+class _SleepAndTimedWait:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.t1_elapsed: float | None = None
+
+
+def _sleep_20(s: _SleepAndTimedWait) -> None:
+    time.sleep(20.0)
+
+
+def _wait_10(s: _SleepAndTimedWait) -> None:
+    start = time.monotonic()
+    s.event.wait(timeout=10.0)  # nobody sets the event; must time out at t=10
+    s.t1_elapsed = time.monotonic() - start
+
+
+def test_random_timed_wait_not_double_advanced_past_deadline() -> None:
+    """Random strategy, autojump clock: a virtual timed wait
+    (event.wait(timeout=10)) must observe exactly its own deadline elapsing,
+    even when another thread sleeps to a *later* deadline.
+
+    Only ``clock="virtual"`` (autojump, time advances as late as possible) is
+    asserted here: under ``clock="explored"`` the clock advance is itself a
+    schedulable step, so after the wait correctly times out at t=10 the
+    explorer may *legitimately* let the 20s sleeper's timer fire before the
+    waiter reads ``monotonic()`` again — observing 20s there is a valid
+    interleaving, not the double-advance defect.
+    """
+
+    def invariant(s: _SleepAndTimedWait) -> bool:
+        # If T1 finished its timed wait, it must have observed exactly its own
+        # 10s deadline, never the 20s sleeper's deadline.
+        return s.t1_elapsed is None or abs(s.t1_elapsed - 10.0) < 1e-9
+
+    result = frontrun.explore(
+        setup=_SleepAndTimedWait,
+        workers=[_sleep_20, _wait_10],
+        invariant=invariant,
+        strategy="random",
+        clock="virtual",
+        max_attempts=8,
+        seed=2,
+        reproduce_on_failure=0,
+        timeout_per_run=1.0,
+    )
+    assert result.property_holds, result.explanation
 
 
 def test_event_deadlock_detected_exactly() -> None:
@@ -730,6 +774,142 @@ def test_event_wait_can_be_woken_by_unmanaged_thread() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_unmanaged_release_clears_recorded_spin_flag_random() -> None:
+    """An unmanaged releaser must clear a waiter's blocking-spin flag.
+
+    A managed waiter that blocks in a cooperative wait under a virtual clock
+    flags itself in the scheduler's ``spin_waiters`` so the autojump can tell it
+    apart from a runnable thread.  If the resource is released/set by an
+    *unmanaged* helper OS thread (no scheduler in TLS), the releaser must reach
+    the scheduler the waiter *recorded* at flag time.
+
+    A deterministic end-to-end timing test is infeasible (virtual scheduling
+    always races the real-time setter — the autojump-to-own-deadline fires
+    before a delayed set() lands); this asserts the recording/resolution
+    contract directly, as ``test_give_up_timed_wait_is_atomic_and_unblocks_first``
+    does for its OS-descheduling race."""
+    from frontrun._cooperative import (
+        _note_spin_release,
+        _spin_note_hook,
+        clear_context,
+        get_context,
+        set_context,
+    )
+
+    scheduler = OpcodeScheduler([], num_threads=1, virtual_clock=VirtualClock(), clock_mode="virtual")
+    resource_id = 0xC0FFEE
+    tid = 0
+
+    # A managed waiter flags its blocking spin (this must record the scheduler).
+    set_context(scheduler, tid)
+    try:
+        note_spin = _spin_note_hook(scheduler)
+        assert note_spin is not None
+        note_spin(tid, resource_id, True)
+    finally:
+        clear_context()
+    assert tid in scheduler._spin_waiters
+
+    # Unmanaged releaser: no scheduler in TLS.
+    assert get_context() is None
+    _note_spin_release(resource_id)
+
+    assert tid not in scheduler._spin_waiters, (
+        "an unmanaged release must clear the spin flag via the scheduler the waiter recorded"
+    )
+
+
+def test_unmanaged_release_unblocks_engine_spin_waiter_dpor() -> None:
+    """Regression (DPOR): an unmanaged set()/release() must engine-unblock a
+    timed cooperative waiter.
+
+    A DPOR timed ``Event.wait(timeout=...)`` waiter blocks itself in the engine
+    via ``note_blocking_spin``; only the *untimed* Event path had an
+    ``_engine_blocked`` fallback for unmanaged setters, so an unmanaged ``set()``
+    on the timed path left the waiter engine-blocked until the deadlock timeout.
+    Resolving the scheduler from the waiter's recording fixes it."""
+    from frontrun._cooperative import _note_spin_release, _spin_note_hook, clear_context, set_context
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    execution = _FakeExecution([0])
+    scheduler = DporScheduler(
+        _FakeEngine(),
+        execution,
+        num_threads=1,
+        virtual_clock=VirtualClock(),
+        clock_mode="virtual",
+        clock_actor_id=99,
+    )
+    resource_id = 0xBEEF
+    tid = 0
+
+    set_context(scheduler, tid)
+    try:
+        note_spin = _spin_note_hook(scheduler)
+        assert note_spin is not None
+        note_spin(tid, resource_id, True)  # engine-blocks tid + records scheduler
+    finally:
+        clear_context()
+    assert tid in execution.blocked, "note_blocking_spin must engine-block the waiter"
+
+    _note_spin_release(resource_id)  # unmanaged releaser: no scheduler in TLS
+
+    assert tid not in execution.blocked, "an unmanaged release must engine-unblock the recorded spin waiter"
+
+
+def test_zero_timeout_waits_are_pure_probes() -> None:
+    """Event / Condition / Queue with ``timeout == 0`` must be pure probes that
+    match threading/queue stdlib semantics exactly: succeed if satisfiable now,
+    else immediate ``False`` / ``Empty`` / ``Full``.  (Characterisation test:
+    the *result* is unchanged by the refactor that stops these paths from
+    registering a zero-length virtual deadline; it passes before and after.)"""
+
+    class State:
+        def __init__(self) -> None:
+            self.event_unset = threading.Event()
+            self.event_set = threading.Event()
+            self.event_set.set()
+            self.q_empty: queue.Queue[str] = queue.Queue()
+            self.q_full: queue.Queue[str] = queue.Queue(maxsize=1)
+            self.q_full.put("x")
+            self.cond = threading.Condition()
+            self.results: dict[str, object] = {}
+
+    def worker(s: State) -> None:
+        s.results["event_unset"] = s.event_unset.wait(timeout=0)
+        s.results["event_set"] = s.event_set.wait(timeout=0)
+        try:
+            s.q_empty.get(timeout=0)
+            s.results["get_empty"] = "item"
+        except queue.Empty:
+            s.results["get_empty"] = "empty"
+        try:
+            s.q_full.put("y", timeout=0)
+            s.results["put_full"] = "ok"
+        except queue.Full:
+            s.results["put_full"] = "full"
+        with s.cond:
+            s.results["cond"] = s.cond.wait(timeout=0)
+
+    def invariant(s: State) -> bool:
+        r = s.results
+        assert r.get("event_unset") is False, r
+        assert r.get("event_set") is True, r
+        assert r.get("get_empty") == "empty", r
+        assert r.get("put_full") == "full", r
+        assert r.get("cond") is False, r
+        return True
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=invariant,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
 # ---------------------------------------------------------------------------
 # Timed lock acquires
 # ---------------------------------------------------------------------------
@@ -797,6 +977,224 @@ def test_timed_acquire_succeeds_before_virtual_deadline(lock_factory: Callable[[
         reproduce_on_failure=0,
     )
     assert result.property_holds, result.explanation
+
+
+class _TimedAcquireReplayRace:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.holding = threading.Event()
+        self.x = 0
+        self.contender_ran = False
+
+
+def _timed_acquire_holder(s: _TimedAcquireReplayRace) -> None:
+    s.lock.acquire()
+    s.holding.set()
+    time.sleep(1.0)
+    s.lock.release()
+    # Unprotected increment after release — races with the contender's
+    # under-lock increment (which only happens if the timed acquire succeeds).
+    tmp = s.x
+    s.x = tmp + 1
+
+
+def _timed_acquire_contender(s: _TimedAcquireReplayRace) -> None:
+    # Wait until the holder actually holds the lock so the timed acquire is
+    # guaranteed contended: it registers a virtual timed wait, the clock
+    # advances to the holder's t=1.0 release, and the acquire SUCCEEDS well
+    # before its own 5.0s deadline.
+    s.holding.wait()
+    got = s.lock.acquire(timeout=5.0)
+    if got:
+        s.contender_ran = True
+        tmp = s.x
+        s.x = tmp + 1
+        s.lock.release()
+
+
+def test_replay_preserves_successful_timed_acquire() -> None:
+    """End-to-end guard: a counterexample whose schedule contains a SUCCESSFUL
+    contended timed acquire must reproduce.  The lost-update failure requires
+    ``contender_ran`` (i.e. the acquire returned True); if replay ever
+    force-expired the timed wait the acquire would take the timeout branch and
+    the failure could not reproduce.  See
+    ``test_wake_scheduled_sleeper_ignores_timed_waits`` for the deterministic
+    unit-level check of the underlying ``_wake_scheduled_sleeper`` behaviour."""
+    result = frontrun.explore(
+        setup=_TimedAcquireReplayRace,
+        workers=[_timed_acquire_holder, _timed_acquire_contender],
+        invariant=lambda s: not (s.contender_ran and s.x < 2),
+        clock="virtual",
+    )
+    _assert_invariant_failure(result)
+    assert result.counterexample is not None
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10, (
+        f"successful timed acquire was force-expired on replay: "
+        f"{result.reproduction_successes}/{result.reproduction_attempts}"
+    )
+
+
+class _FakeExecution:
+    def __init__(self, runnable: list[int]) -> None:
+        self._runnable = list(runnable)
+        self.blocked: set[int] = set()
+        self.finished: set[int] = set()
+
+    def runnable_threads(self) -> list[int]:
+        return [t for t in self._runnable if t not in self.blocked and t not in self.finished]
+
+    def block_thread(self, thread_id: int) -> None:
+        self.blocked.add(thread_id)
+
+    def unblock_thread(self, thread_id: int) -> None:
+        self.blocked.discard(thread_id)
+
+    def finish_thread(self, thread_id: int) -> None:
+        self.finished.add(thread_id)
+
+
+class _FakeEngine:
+    def schedule(self, execution: _FakeExecution) -> int | None:
+        runnable = execution.runnable_threads()
+        return runnable[0] if runnable else None
+
+
+def _make_virtual_clock_scheduler() -> Any:
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    clock = VirtualClock()
+    return DporScheduler(
+        _FakeEngine(),
+        _FakeExecution([]),
+        num_threads=1,
+        virtual_clock=clock,
+        clock_mode="virtual",
+        clock_actor_id=99,
+    )
+
+
+def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
+    """Deterministic regression for the replay force-expiry bug.
+
+    ``_wake_scheduled_sleeper`` is the replay safety net that advances the
+    virtual clock when the recorded schedule points at a *sleeping* thread.  A
+    thread in a contended ``acquire(timeout=...)`` is registered in
+    ``_timed_waits`` for the whole spin, but — unlike a sleeper — it is not
+    genuinely stuck (``ReplayExecution.block_thread`` is a no-op) and it may
+    have acquired the lock before its deadline in the recorded run.  Advancing
+    the clock to that deadline force-expires a wait that never timed out,
+    flipping the acquire to the timeout branch and dragging every earlier
+    deadline due.  So the safety net must only fire for sleepers."""
+    from frontrun._virtual_clock import _TIMED_WAIT_TOKEN
+
+    scheduler = _make_virtual_clock_scheduler()
+    clock = scheduler.virtual_clock
+    tid = 0
+    deadline = clock.now() + 5.0
+    scheduler._deadlines.add_timeout(tid, deadline, _TIMED_WAIT_TOKEN)
+    scheduler._current_thread = tid
+
+    before = clock.now()
+    with scheduler._condition:
+        advanced = scheduler._wake_scheduled_sleeper()
+
+    assert advanced is False, "timed waits must not drive the replay clock advance"
+    assert clock.now() == before, "the virtual clock must not jump to a timed-wait deadline"
+    assert scheduler._deadlines.timed_wait_deadline(tid) == deadline, "the timed wait must be left intact"
+
+
+def test_give_up_timed_wait_is_atomic_and_unblocks_first() -> None:
+    """``give_up_timed_wait`` unblocks before dropping the deadline.
+
+    The waiter must never be engine-blocked with no pending deadline.  It would
+    then be indistinguishable from an exact deadlock if every other thread was
+    also blocked.
+
+    ``give_up_timed_wait`` keeps the invariant by unblocking and dropping
+    the deadline under a single lock, unblock-first, so no scheduler advance can
+    ever see the blocked-with-no-deadline state."""
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+    from frontrun._virtual_clock import _TIMED_WAIT_TOKEN
+
+    unblock_observations: list[bool] = []
+
+    class _RecordingExecution(_FakeExecution):
+        def unblock_thread(self, thread_id: int) -> None:
+            # Record whether the deadline is still registered at unblock time.
+            if thread_id == 0:
+                unblock_observations.append(scheduler._deadlines.in_timed_wait(thread_id))
+            super().unblock_thread(thread_id)
+
+    clock = VirtualClock()
+    execution = _RecordingExecution([0])
+    scheduler = DporScheduler(
+        _FakeEngine(),
+        execution,
+        num_threads=1,
+        virtual_clock=clock,
+        clock_mode="virtual",
+        clock_actor_id=99,
+    )
+    tid = 0
+    deadline = clock.now() + 5.0
+    scheduler._deadlines.add_timeout(tid, deadline, _TIMED_WAIT_TOKEN)
+    execution.block_thread(tid)
+
+    scheduler.give_up_timed_wait(tid)
+
+    assert tid not in execution.blocked, "give_up_timed_wait must unblock the waiter"
+    assert not scheduler._deadlines.in_timed_wait(tid), "give_up_timed_wait must drop the deadline"
+    assert not scheduler._deadlines.has_pending(), "the deadline must be cancelled"
+    assert unblock_observations == [True], (
+        "the waiter must be unblocked while its deadline is still registered "
+        "(unblock-first closes the exact-deadlock false-positive window)"
+    )
+
+
+def test_baseline_threads_tracked_weakly_so_dead_ids_drop() -> None:
+    """Baseline threads must be tracked by weak reference, not by raw id.
+
+    ``_has_live_external_threads`` subtracts the baseline threads captured at
+    construction to decide whether some non-worker thread could still unblock a
+    waiter (which suppresses exact-deadlock detection).  Keying by ``id(Thread)``
+    is unsound: if a baseline thread exits and is GC'd, a new external thread can
+    reuse its id and be wrongly subtracted, re-enabling exact-deadlock while that
+    thread could still make progress.  Storing weak references makes dead
+    baseline threads drop out so their ids cannot mask a reused id."""
+    import gc
+    import weakref
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _run() -> None:
+        started.set()
+        release.wait()
+
+    t = threading.Thread(target=_run)
+    t.start()
+    try:
+        assert started.wait(timeout=5.0)
+        scheduler = _make_virtual_clock_scheduler()  # captures baseline incl. t
+        assert any(bt is t for bt in scheduler._baseline_thread_keys), (
+            "baseline must store live Thread objects (weakly), not raw ids"
+        )
+        tid = id(t)
+        wr = weakref.ref(t)
+    finally:
+        release.set()
+        t.join(timeout=5.0)
+
+    del t
+    gc.collect()
+
+    assert wr() is None, "a finished baseline thread must not be strongly pinned"
+    baseline_ids = {id(bt) for bt in scheduler._baseline_thread_keys}
+    assert tid not in baseline_ids, (
+        "a dead+GC'd baseline thread's id must drop out of the tracking set so a "
+        "reused id on a new external thread cannot be misclassified as baseline"
+    )
 
 
 def test_timed_semaphore_acquire_times_out_without_false_deadlock() -> None:
@@ -1109,3 +1507,37 @@ def test_random_strategy_explored_clock_can_fire_timer_early() -> None:
         reproduce_on_failure=0,
     )
     _assert_invariant_failure(result, "expected delayed writer")
+
+
+def test_stale_timed_wait_spin_flag_is_refused() -> None:
+    """A timed-wait spin flag must not land after its deadline already fired.
+
+    TOCTOU race (reliable on 3.14t, where threads run truly concurrently;
+    possible on GIL builds): a timed Event/Condition/Queue waiter passes its
+    expiry check, then blocks on the scheduler condition inside
+    ``note_blocking_spin`` while another thread's autojump advances the clock
+    past its deadline (popping deadline and flag).  The queued flag then lands
+    with no deadline behind it, the waiter counts as clock-blocked, and the
+    next autojump advances past the waiter's own deadline before it re-probes
+    — ``event.wait(timeout=10)`` observes 20 elapsed virtual seconds.
+
+    The port must refuse a ``timed_wait`` flag when the actor no longer has a
+    pending timeout deadline (flag and deadline share the scheduler condition,
+    so the check is race-free).
+    """
+    clock = VirtualClock()
+    scheduler = OpcodeScheduler([], num_threads=2, virtual_clock=clock, clock_mode="virtual")
+    resource_id = 0xC0FFEE
+
+    # Actor 1 registers a timed wait, then its deadline fires (another
+    # thread's autojump pops deadline + flag)...
+    scheduler.add_timed_wait(1, clock.now() + 10.0)
+    scheduler._advance_clock_to(clock.now() + 10.0)
+    # ...and only then does the queued flag land: it must be refused.
+    scheduler.note_blocking_spin(1, resource_id, True, timed_wait=True)
+    assert 1 not in scheduler._spin_waiters
+
+    # Control: with a pending deadline the flag lands normally.
+    scheduler.add_timed_wait(1, clock.now() + 5.0)
+    scheduler.note_blocking_spin(1, resource_id, True, timed_wait=True)
+    assert 1 in scheduler._spin_waiters

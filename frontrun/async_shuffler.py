@@ -41,6 +41,7 @@ an additional checkpoint.
 
 import asyncio
 import random
+import warnings
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -53,9 +54,11 @@ from frontrun._async_autopause import (
     await_point,  # noqa: F401
     wrap_auto_paused_tasks,
 )
+from frontrun._async_cooperative import _real_asyncio_sleep
 from frontrun._random_schedules import fair_schedule_strategy, random_round_robin_schedule
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
+    ClockConfig,
     ClockMode,
     DeadlineCoordinator,
     VirtualClock,
@@ -63,16 +66,18 @@ from frontrun._virtual_clock import (
     clock_context,
     patch_time,
     unpatch_time,
-    validate_clock_options,
 )
 from frontrun.async_dpor import (
-    _pin_loop_time,
-    _real_asyncio_sleep,
     _sql_async_available,
     patch_sql_async,
     unpatch_sql_async,
 )
-from frontrun.async_scheduler import InterleavedLoop, SchedulerTimeoutError, frontrun_wait_for
+from frontrun.async_scheduler import (
+    InterleavedLoop,
+    SchedulerTimeoutError,
+    _pin_loop_time,
+    frontrun_wait_for,
+)
 from frontrun.common import (
     InterleavingResult,
     check_invariant,
@@ -83,8 +88,7 @@ from frontrun.common import (
 #: no task completions) before a sleeper concludes that the remaining tasks
 #: are parked on something the scheduler cannot see (e.g. an unpatched
 #: asyncio.Lock) and autojumps the virtual clock.
-_QUIESCENCE_SLICE = 0.25
-_ASYNC_TIMEOUT_FIRE = "fire"
+_QUIESCENCE_SLICE = 0.01
 
 
 class AwaitScheduler(InterleavedLoop):
@@ -140,7 +144,7 @@ class AwaitScheduler(InterleavedLoop):
             if event.kind == "sleep":
                 self._sleepers.pop(event.actor_id, None)
             elif event.kind == "timeout":
-                fire = getattr(event.token, _ASYNC_TIMEOUT_FIRE, None)
+                fire = getattr(event.token, "fire", None)
                 if fire is not None:
                     fire()
 
@@ -259,11 +263,10 @@ class AwaitScheduler(InterleavedLoop):
         _task_id_var.set(task_id)
         if not self._detect_sql:
             return
-        # Install a task-aware DPOR context + IO reporter so the patched async
-        # SQL cursors actually report table/row accesses (finding F8).  The
-        # random shuffler has no DPOR engine, so report_and_wait / row-lock
-        # methods are no-ops — scheduling already happens at await points; the
-        # reporter exists so _report_sql_access records cross-task conflicts.
+        # Install a task-aware DPOR context + IO reporter so patched async SQL
+        # cursors report table/row accesses.  The random shuffler has no DPOR
+        # engine, so report_and_wait / row-lock methods are no-ops; scheduling
+        # already happens at await points.
         from frontrun._io_detection import (
             set_dpor_scheduler_task,
             set_dpor_thread_id_task,
@@ -338,7 +341,7 @@ class AsyncShuffler:
         self.errors: dict[int, Exception] = {}
         # Whether the most recent run was cut short by a timeout/deadlock.
         # When True the resulting state is partial/cancelled and must NOT be
-        # evaluated as a normal completion (finding F6).
+        # evaluated as a normal completion.
         self.timed_out = False
 
     async def run(
@@ -379,10 +382,8 @@ class AsyncShuffler:
                 detect_external_deadlock=True,
             )
         except SchedulerTimeoutError:
-            # A timeout (overall wall-clock or the scheduler's own
-            # deadlock-timeout, which run_all now re-raises — finding F1)
-            # means tasks were cancelled mid-flight, so the state is partial.
-            # Record it instead of silently swallowing it (finding F6).
+            # A timeout means tasks were cancelled mid-flight, so the state is
+            # partial. Record it instead of evaluating the invariant.
             self.timed_out = True
 
 
@@ -394,7 +395,7 @@ def _patch_async_runtime(
     with PatchScope() as patch_scope:
         patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
         if patch_sleep:
-            from frontrun.async_dpor import (
+            from frontrun._async_virtual_timeouts import (
                 _patch_asyncio_sleep,
                 _patch_asyncio_timeouts,
                 _unpatch_asyncio_sleep,
@@ -485,8 +486,8 @@ async def _run_with_schedule_status(
     The runner exposes ``timed_out`` / ``scheduler.had_error`` so callers can
     tell whether the run completed normally or was cut short by a
     timeout/deadlock (in which case ``state`` is partial and must not be
-    evaluated as a normal completion — finding F6).  Assumes the async runtime
-    is already patched by the caller.
+    evaluated as a normal completion).  Assumes the async runtime is already
+    patched by the caller.
     """
     scheduler = AwaitScheduler(schedule, len(tasks), deadlock_timeout=deadlock_timeout, detect_sql=detect_sql)
     runner = AsyncShuffler(scheduler)
@@ -562,6 +563,9 @@ async def explore_async_random(
             the DPOR strategy for lock-heavy async code.  ``asyncio.wait_for``,
             ``asyncio.timeout``, and ``asyncio.timeout_at`` inside explored
             tasks use virtual deadlines. See :doc:`/virtual_clock`.
+        clock_diagnostics: Accepted for API consistency. Async random does not
+            trace worker frames, so captured ``time.*`` references cannot be
+            diagnosed and a ``RuntimeWarning`` is emitted.
 
     Returns:
         InterleavingResult with the outcome.  The ``unique_interleavings``
@@ -569,8 +573,20 @@ async def explore_async_random(
     """
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    _ = clock_diagnostics
-    clock = validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
+    clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
+        patch_sleep=patch_sleep,
+        serializable_invariant=serializable_invariant,
+    )
+    clock = clock_config.mode
+    if clock_diagnostics:
+        # The async random strategy operates at await-point granularity and does
+        # not trace worker opcodes, so it cannot detect captured time references.
+        warnings.warn(
+            "clock_diagnostics is not supported for the async random strategy "
+            "(it does not trace worker opcodes); use strategy='dpor' for diagnostics",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     from frontrun._dpor_core import compute_serializable_baseline_async
 
@@ -601,7 +617,7 @@ async def explore_async_random(
             # test harness is an error that must propagate, not a
             # "counterexample".  Only exceptions from the task bodies are turned
             # into findings.  (Mirrors _run_with_schedule_status construction.)
-            attempt_clock = VirtualClock() if clock != "real" else None
+            attempt_clock = clock_config.new_clock()
             scheduler = AwaitScheduler(
                 schedule,
                 num_tasks,
@@ -611,77 +627,77 @@ async def explore_async_random(
                 clock_mode=clock,
             )
             runner = AsyncShuffler(scheduler)
+            # One clock_context owns the time.* patch for this attempt across
+            # setup + tasks + invariant; tasks created by runner.run inherit the
+            # contextvar, so they see the same virtual time as the driver.
             with clock_context(attempt_clock):
                 state = setup()
-            funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
-                lambda s=state, t=t: t(s)  # type: ignore[misc]
-                for t in tasks
-            ]
+                funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
+                    lambda s=state, t=t: t(s)  # type: ignore[misc]
+                    for t in tasks
+                ]
 
-            try:
-                with clock_context(attempt_clock):
+                try:
                     await runner.run(funcs, timeout=timeout_per_run)
-            except Exception as task_err:  # noqa: BLE001
-                # A task raised under this interleaving.  That is a legitimate
-                # counterexample (IndexError/KeyError/AssertionError in the task
-                # body is a common way a race manifests), not a fatal error that
-                # should abort exploration.  Surface it the same way the DPOR
-                # path does instead of letting it propagate.
-                result.num_explored += 1
-                seen_schedule_hashes.add(hash(tuple(schedule)))
-                result.property_holds = False
-                result.counterexample = schedule
-                result.unique_interleavings = len(seen_schedule_hashes)
-                result.explanation = (
-                    f"Task crash in execution {result.num_explored}: {type(task_err).__name__}: {task_err}"
-                )
-                return result
-            result.num_explored += 1
-            seen_schedule_hashes.add(hash(tuple(schedule)))
-
-            # A timeout/deadlock means tasks were cancelled mid-flight: the
-            # state is partial and does not describe any completed interleaving,
-            # so the invariant must NOT be evaluated against it (finding F6).
-            #
-            # Distinguish the two cases the way the sync bytecode explorer does
-            # (finding 9d): a genuinely-detected deadlock (the scheduler proved
-            # no task can proceed — e.g. a lock-order inversion) is a
-            # constructive counterexample and is surfaced; a plain wall-clock
-            # timeout with no scheduler-detected deadlock only means the worker
-            # was slow, which is inconclusive — skip it rather than reporting a
-            # false "Deadlock detected" violation for correct-but-slow code.
-            if runner.scheduler.had_error:
-                result.property_holds = False
-                result.counterexample = schedule
-                result.unique_interleavings = len(seen_schedule_hashes)
-                sched_err = runner.scheduler._error
-                detail = str(sched_err) if sched_err is not None else "tasks did not complete within the timeout"
-                result.explanation = f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
-                return result
-            if runner.timed_out:
-                continue
-
-            # --- serializable_invariant check ---
-            if serial_valid_states is not None:
-                explanation = check_serializability_violation(
-                    state, serial_valid_states, serial_hash_fn, result.num_explored
-                )
-                if explanation is not None:
+                except Exception as task_err:  # noqa: BLE001
+                    # A task raised under this interleaving.  That is a legitimate
+                    # counterexample (IndexError/KeyError/AssertionError in the task
+                    # body is a common way a race manifests), not a fatal error that
+                    # should abort exploration.  Surface it the same way the DPOR
+                    # path does instead of letting it propagate.
+                    result.num_explored += 1
+                    seen_schedule_hashes.add(hash(tuple(schedule)))
                     result.property_holds = False
                     result.counterexample = schedule
                     result.unique_interleavings = len(seen_schedule_hashes)
-                    result.explanation = explanation
+                    result.explanation = (
+                        f"Task crash in execution {result.num_explored}: {type(task_err).__name__}: {task_err}"
+                    )
                     return result
+                result.num_explored += 1
+                seen_schedule_hashes.add(hash(tuple(schedule)))
 
-            with clock_context(attempt_clock):
+                # A timeout/deadlock means tasks were cancelled mid-flight: the
+                # state is partial and does not describe any completed interleaving,
+                # so the invariant must NOT be evaluated against it.
+                #
+                # Distinguish the two cases the way the sync bytecode explorer does
+                # does: a genuinely-detected deadlock (the scheduler proved no
+                # task can proceed — e.g. a lock-order inversion) is a
+                # constructive counterexample and is surfaced; a plain wall-clock
+                # timeout with no scheduler-detected deadlock only means the
+                # worker was slow, which is inconclusive.
+                if runner.scheduler.had_error:
+                    result.property_holds = False
+                    result.counterexample = schedule
+                    result.unique_interleavings = len(seen_schedule_hashes)
+                    sched_err = runner.scheduler._error
+                    detail = str(sched_err) if sched_err is not None else "tasks did not complete within the timeout"
+                    result.explanation = f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
+                    return result
+                if runner.timed_out:
+                    continue
+
+                # --- serializable_invariant check ---
+                if serial_valid_states is not None:
+                    explanation = check_serializability_violation(
+                        state, serial_valid_states, serial_hash_fn, result.num_explored
+                    )
+                    if explanation is not None:
+                        result.property_holds = False
+                        result.counterexample = schedule
+                        result.unique_interleavings = len(seen_schedule_hashes)
+                        result.explanation = explanation
+                        return result
+
                 invariant_failed, assertion_msg = check_invariant(invariant, state)
-            if invariant_failed:
-                result.property_holds = False
-                result.counterexample = schedule
-                result.unique_interleavings = len(seen_schedule_hashes)
-                if assertion_msg:
-                    result.explanation = f"AssertionError: {assertion_msg}"
-                return result
+                if invariant_failed:
+                    result.property_holds = False
+                    result.counterexample = schedule
+                    result.unique_interleavings = len(seen_schedule_hashes)
+                    if assertion_msg:
+                        result.explanation = f"AssertionError: {assertion_msg}"
+                    return result
 
         result.unique_interleavings = len(seen_schedule_hashes)
         return result

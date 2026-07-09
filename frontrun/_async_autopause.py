@@ -51,15 +51,20 @@ class _AutoPauseIterator:
     def __iter__(self) -> _AutoPauseIterator:
         return self
 
+    def _resume_inner(self) -> Any:
+        """The pause coroutine finished: clear it, resume the inner coroutine
+        with the buffered value, and report the await-point yield."""
+        self._pause_iter = None
+        yielded = self._inner.send(self._buffered_value)
+        _notify_task_yielded(self._scheduler, self._task_id)
+        return yielded
+
     def send(self, value: Any) -> Any:
         if self._pause_iter is not None:
             try:
                 return self._pause_iter.send(value)
             except StopIteration:
-                self._pause_iter = None
-                yielded = self._inner.send(self._buffered_value)
-                _notify_task_yielded(self._scheduler, self._task_id)
-                return yielded
+                return self._resume_inner()
 
         if _in_scheduler_pause.get() > 0:
             return self._inner.send(value)
@@ -70,10 +75,7 @@ class _AutoPauseIterator:
         try:
             return next(cast(Generator[Any, Any, Any], self._pause_iter))
         except StopIteration:
-            self._pause_iter = None
-            yielded = self._inner.send(self._buffered_value)
-            _notify_task_yielded(self._scheduler, self._task_id)
-            return yielded
+            return self._resume_inner()
 
     def _close_pause_iter(self) -> None:
         """Close the suspended pause coroutine, tolerating cancellation noise.

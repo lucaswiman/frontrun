@@ -37,7 +37,7 @@ from frontrun._deadlock import DeadlockError, SchedulerAbort, format_cycle
 
 # The saved C-level time.monotonic itself (not the real_monotonic() wrapper):
 # these deadline checks run in every spin-loop iteration.
-from frontrun._virtual_clock import _real_monotonic
+from frontrun._virtual_clock import _active_virtual_clock, _real_monotonic
 
 # ---------------------------------------------------------------------------
 # Real (non-cooperative) factories, saved before any patching happens.
@@ -210,13 +210,24 @@ def _timed_acquire_cleanup(scheduler: Any, thread_id: int, clock: Any, *, gave_u
     """
     if clock is None:
         return
-    remove_timed_wait = getattr(scheduler, "remove_timed_wait", None)
-    if remove_timed_wait is not None:
-        remove_timed_wait(thread_id)
     if gave_up:
+        # Prefer the atomic unblock+deregister so the waiter is never left
+        # engine-blocked with no pending deadline (a spurious exact-deadlock
+        # window).  Fall back to the two-call path for schedulers that lack it.
+        give_up_timed_wait = getattr(scheduler, "give_up_timed_wait", None)
+        if give_up_timed_wait is not None:
+            give_up_timed_wait(thread_id)
+            return
+        remove_timed_wait = getattr(scheduler, "remove_timed_wait", None)
+        if remove_timed_wait is not None:
+            remove_timed_wait(thread_id)
         clear_engine_block = getattr(scheduler, "clear_engine_block", None)
         if clear_engine_block is not None:
             clear_engine_block(thread_id)
+        return
+    remove_timed_wait = getattr(scheduler, "remove_timed_wait", None)
+    if remove_timed_wait is not None:
+        remove_timed_wait(thread_id)
 
 
 def _timed_wait_deadline(timeout: float | None, scheduler: Any, thread_id: int) -> tuple[float, Any]:
@@ -231,32 +242,84 @@ def _timed_wait_deadline(timeout: float | None, scheduler: Any, thread_id: int) 
 
 
 def _spin_hook_for_wait(scheduler: Any, timeout: float | None, clock: Any) -> Any | None:
-    """Untimed waits and virtual timed waits must be visible as blocked spins."""
+    """Untimed waits and virtual timed waits must be visible as blocked spins.
+
+    Virtual timed waits pass ``timed=True`` so a flag queued behind an autojump
+    that already fired the wait's deadline is refused rather than landing stale
+    (see ``VirtualClockPort.note_blocking_spin``).
+    """
     if timeout is None or clock is not None:
-        return _spin_note_hook(scheduler)
+        return _spin_note_hook(scheduler, timed=timeout is not None)
     return None
 
 
-def _spin_note_hook(scheduler: Any) -> Any | None:
+# Records, per resource and thread, the scheduler a managed waiter flagged a
+# blocking spin with.  release()/set()/put() resolve from this recording rather
+# than from the releaser's TLS context, so unmanaged helper threads can still
+# clear random-strategy autojump flags and DPOR timed-wait engine blocks.
+_spin_flag_schedulers: dict[int, dict[int, Any]] = {}
+_spin_flag_lock = real_lock()
+
+
+def _record_spin_scheduler(resource_id: int, thread_id: int, scheduler: Any) -> None:
+    with _spin_flag_lock:
+        _spin_flag_schedulers.setdefault(resource_id, {})[thread_id] = scheduler
+
+
+def _forget_spin_scheduler(resource_id: int, thread_id: int) -> None:
+    with _spin_flag_lock:
+        schedulers = _spin_flag_schedulers.get(resource_id)
+        if schedulers is None:
+            return
+        schedulers.pop(thread_id, None)
+        if not schedulers:
+            _spin_flag_schedulers.pop(resource_id, None)
+
+
+def _spin_schedulers_for(resource_id: int) -> list[Any]:
+    """Distinct schedulers a waiter flagged a spin on *resource_id* with."""
+    with _spin_flag_lock:
+        found = list(_spin_flag_schedulers.get(resource_id, {}).values())
+    deduped: dict[int, Any] = {}
+    for scheduler in found:
+        deduped.setdefault(id(scheduler), scheduler)
+    return list(deduped.values())
+
+
+def _spin_note_hook(scheduler: Any, *, timed: bool = False) -> Any | None:
     """``note_blocking_spin`` hook, if the scheduler has one *and* runs a
     virtual clock (random-strategy autojump needs to know about untimed
-    spinners; see OpcodeScheduler._spin_waiters).  ``None`` otherwise."""
+    spinners; see OpcodeScheduler._spin_waiters).  ``None`` otherwise.
+
+    The returned hook records/forgets the scheduler on the shared spin-flag
+    registry alongside flagging the spin, so a later release from an unmanaged
+    thread can still resolve the scheduler that must clear it.  ``timed=True``
+    (virtual timed waits) lets the scheduler refuse a flag whose deadline has
+    already fired."""
     if getattr(scheduler, "virtual_clock", None) is None:
         return None
-    return getattr(scheduler, "note_blocking_spin", None)
+    note = getattr(scheduler, "note_blocking_spin", None)
+    if note is None:
+        return None
+
+    def _hook(thread_id: int, resource_id: int, waiting: bool) -> None:
+        if waiting:
+            _record_spin_scheduler(resource_id, thread_id, scheduler)
+        else:
+            _forget_spin_scheduler(resource_id, thread_id)
+        note(thread_id, resource_id, waiting, timed_wait=timed)
+
+    return _hook
 
 
 def _note_spin_release(resource_id: int) -> None:
-    """Tell a virtual-clock random scheduler that *resource_id* was
-    released/set, so its spinners re-probe before counting as blocked."""
-    ctx = get_context()
-    if ctx is None:
-        return
-    if getattr(ctx[0], "virtual_clock", None) is None:
-        return
-    note = getattr(ctx[0], "note_spin_release", None)
-    if note is not None:
-        note(resource_id)
+    """Clear blocking-spin flags for *resource_id* on every scheduler a waiter
+    recorded, so spinners re-probe before counting as blocked — and so an
+    *unmanaged* releaser (no scheduler in TLS) still reaches them."""
+    for scheduler in _spin_schedulers_for(resource_id):
+        note = getattr(scheduler, "note_spin_release", None)
+        if note is not None:
+            note(resource_id)
 
 
 def _record_holding(thread_id: int, object_id: int) -> None:
@@ -965,6 +1028,12 @@ class CooperativeEvent:
                 self._yield_after_state_access()
             return True
 
+        # timeout == 0 is a pure probe (matches threading.Event.wait(0)): the
+        # event is not set, so return False now rather than registering a
+        # zero-length virtual deadline (a pointless schedulable clock step).
+        if timeout == 0:
+            return False
+
         ctx = get_context()
         if ctx is None:
             return self._event.wait(timeout=timeout)
@@ -1218,6 +1287,15 @@ class CooperativeCondition:
                     return served
 
             scheduler, thread_id = ctx
+            if timeout == 0:
+                # Pure probe (matches threading.Condition.wait(0)): a freshly
+                # taken ticket can only be served if a notify already passed it,
+                # so return now without registering a zero-length virtual
+                # deadline.  The lock is already released (``_release_save``
+                # above); the outer ``finally`` re-acquires it and reconciles the
+                # ticket exactly as the spin path would on immediate expiry.
+                served = my_ticket < self._served
+                return served
             deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
             note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
 
@@ -1381,7 +1459,10 @@ class CooperativeQueue:
             _note_spin_release(self._object_id)
             return item
         except queue.Empty:
-            if not block:
+            # timeout == 0 is a pure probe (matches queue.Queue.get(timeout=0)):
+            # the queue is empty, so raise now rather than registering a
+            # zero-length virtual deadline (a pointless schedulable clock step).
+            if not block or timeout == 0:
                 raise
 
         ctx = get_context()
@@ -1430,7 +1511,10 @@ class CooperativeQueue:
             _note_spin_release(self._object_id)
             return
         except queue.Full:
-            if not block:
+            # timeout == 0 is a pure probe (matches queue.Queue.put(timeout=0)):
+            # the queue is full, so raise now rather than registering a
+            # zero-length virtual deadline (a pointless schedulable clock step).
+            if not block or timeout == 0:
                 raise
 
         ctx = get_context()
@@ -1609,6 +1693,14 @@ def _cooperative_sleep(seconds: float) -> None:
     """
     ctx = get_context()
     if ctx is None:
+        # No scheduler turn (e.g. setup()/invariant under clock_scope): if a
+        # virtual clock is active for this thread/context, age it by the sleep
+        # so TTL-aging setup code isn't frozen.  The driver thread is the only
+        # clock user at that moment, so advancing here stays deterministic.
+        # With no active clock this remains the historical pure no-op.
+        clock = _active_virtual_clock()
+        if clock is not None and seconds > 0:
+            clock.advance_to(clock.now() + seconds)
         return
     scheduler, thread_id = ctx
     clock = getattr(scheduler, "virtual_clock", None)

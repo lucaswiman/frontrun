@@ -1672,16 +1672,10 @@ def process_opcode_with_coarsening(
     """
     instrs = _get_instructions(code)
     instr = instrs.get(offset)
-    if instr is not None and instr.opname == "GET_ITER":
+    if instr is not None and instr.opname in ("GET_ITER", "FOR_ITER"):
         shadow = scheduler.get_shadow_stack(id(frame))
-        if _get_iter_might_report_access(shadow):
-            scheduler.report_and_wait(frame, thread_id)
-            return True
-        _process_opcode(frame, scheduler, thread_id)
-        return False
-    if instr is not None and instr.opname == "FOR_ITER":
-        shadow = scheduler.get_shadow_stack(id(frame))
-        if _for_iter_might_report_access(shadow):
+        might_report = _get_iter_might_report_access if instr.opname == "GET_ITER" else _for_iter_might_report_access
+        if might_report(shadow):
             scheduler.report_and_wait(frame, thread_id)
             return True
         _process_opcode(frame, scheduler, thread_id)

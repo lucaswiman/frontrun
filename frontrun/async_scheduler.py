@@ -40,11 +40,36 @@ Example — a simple round-robin scheduler:
 """
 
 import asyncio
+import contextlib
 import contextvars
+import weakref
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
+from frontrun._async_autopause import _in_scheduler_pause
+from frontrun._virtual_clock import real_monotonic
+
+# Real asyncio.sleep captured before any patching, for the shared pause() yield.
+# async_scheduler loads before explore() patches asyncio.sleep, so this is the
+# genuine original (same object _async_cooperative captures independently).
+_real_asyncio_sleep = asyncio.sleep
+
+__all__ = [
+    "InterleavedLoop",
+    "SchedulerTimeoutError",
+    "_AsyncSchedulerBase",
+    "_in_frontrun_timer",
+    "_install_frontrun_timer_tagging",
+    "_patch_loop_instance_attr",
+    "_pin_loop_time",
+    "frontrun_wait_for",
+]
+
 _T = TypeVar("_T")
+
+# Sentinel for "attribute was absent" when temporarily overriding a loop's
+# instance attributes (call_at / call_later / time) and restoring them.
+_MISSING = object()
 
 # True while a frontrun-internal timed wait is creating its loop timer.
 # Exact async deadlock detection must tell the scheduler's own watchdog
@@ -67,6 +92,78 @@ async def frontrun_wait_for(awaitable: Coroutine[Any, Any, _T] | Awaitable[_T], 
         _in_frontrun_timer.reset(token)
 
 
+def _patch_loop_instance_attr(loop: Any, name: str, value: Any) -> Callable[[], None]:
+    """Temporarily override ``loop.<name>``; returns a restore callback."""
+    previous = getattr(loop, "__dict__", {}).get(name, _MISSING)
+    setattr(loop, name, value)
+
+    def restore() -> None:
+        if previous is _MISSING:
+            with contextlib.suppress(AttributeError):
+                delattr(loop, name)
+        else:
+            setattr(loop, name, previous)
+
+    return restore
+
+
+def _pin_loop_time(loop: Any) -> Callable[[], None]:
+    """Pin the loop's own clock to real monotonic time; returns a restore callback."""
+    return _patch_loop_instance_attr(loop, "time", real_monotonic)
+
+
+def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Callable[[], None]]:
+    """Wrap ``loop.call_at`` so frontrun's own watchdog timers are tagged.
+
+    Exact deadlock detection may only fire when every pending loop timer is
+    one of frontrun's own (a pending *user* timer — e.g. a wall-clock
+    ``asyncio.wait_for`` — may still wake a parked task, so the state is not
+    a proven deadlock).  Timers created while ``_in_frontrun_timer`` is set
+    (see ``frontrun_wait_for``) are collected in a WeakSet; everything else
+    counts as a user timer.
+
+    Returns ``(user_timers_pending, uninstall)``.  ``user_timers_pending``
+    is conservative: if the loop's timer heap cannot be inspected (a
+    non-standard loop without ``_scheduled``), it reports True so exact
+    detection stays off and the wall-clock fallback applies.
+    """
+    tagged: weakref.WeakSet[Any] = weakref.WeakSet()
+    orig_call_at = loop.call_at
+    orig_call_later = loop.call_later
+
+    def _tagging_call_at(when: float, callback: Any, *args: Any, context: Any = None) -> Any:
+        handle = orig_call_at(when, callback, *args, context=context)
+        if _in_frontrun_timer.get():
+            tagged.add(handle)
+        return handle
+
+    def _tagging_call_later(delay: float, callback: Any, *args: Any, context: Any = None) -> Any:
+        handle = orig_call_later(delay, callback, *args, context=context)
+        if _in_frontrun_timer.get():
+            tagged.add(handle)
+        return handle
+
+    restore_call_at = _patch_loop_instance_attr(loop, "call_at", _tagging_call_at)
+    restore_call_later = _patch_loop_instance_attr(loop, "call_later", _tagging_call_later)
+
+    def _user_timers_pending() -> bool:
+        scheduled = getattr(loop, "_scheduled", None)
+        ready = getattr(loop, "_ready", None)
+        if scheduled is None:
+            return True
+        if any(not handle.cancelled() and handle not in tagged for handle in scheduled):
+            return True
+        if ready is None:
+            return True
+        return any(not handle.cancelled() for handle in ready)
+
+    def _uninstall() -> None:
+        restore_call_later()
+        restore_call_at()
+
+    return _user_timers_pending, _uninstall
+
+
 class InterleavedLoop:
     """Wrapped event loop for deterministic async task interleaving.
 
@@ -84,6 +181,47 @@ class InterleavedLoop:
         run_all(): Run tasks with controlled interleaving
         Error propagation, timeout handling, and done-task tracking
     """
+
+    # ------------------------------------------------------------------
+    # Async scheduler protocol defaults
+    #
+    # The cooperative primitives (_async_cooperative) and virtual-timeout
+    # wrappers (_async_virtual_timeouts) drive whichever scheduler is active
+    # (DPOR exploration, replay, or the random shuffler) through the hooks
+    # below.  Defining no-op / None defaults here lets those call sites invoke
+    # them unconditionally instead of probing with getattr; each concrete
+    # scheduler overrides the subset it actually implements.
+    # ------------------------------------------------------------------
+
+    #: Active virtual clock, or None in real-time mode.
+    virtual_clock: Any = None
+    #: Tasks parked inside a cooperative primitive; None when unused.
+    _event_blocked: "set[int] | None" = None
+    #: Stable object-id registry, or None (fall back to id()).
+    _stable_ids: Any = None
+
+    async def kick_stalled_schedule(self, task_id: int) -> None:
+        """Hand the turn onward after a task engine-blocked itself (no-op default)."""
+
+    async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
+        """Wait for a physically-woken task to be scheduled again (no-op default)."""
+
+    def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
+        """Report a happens-before sync edge to the engine (no-op default)."""
+
+    def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
+        """Report a memory / resource access to the engine (no-op default)."""
+
+    def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
+        """Register a virtual timeout deadline (no-op default)."""
+
+    def remove_timeout_deadline(self, task_id: int, token: object) -> None:
+        """Cancel a virtual timeout deadline (no-op default)."""
+
+    def _advance_virtual_deadline_for_idle(self) -> bool:
+        """Advance the virtual clock to the next pending deadline when the run is
+        idle; returns True if it made progress (default: no virtual clock)."""
+        return False
 
     def __init__(self, *, deadlock_timeout: float = 5.0):
         self._condition = asyncio.Condition()
@@ -199,6 +337,14 @@ class InterleavedLoop:
             finally:
                 self._waiting_count -= 1
 
+    def _on_error_set(self) -> None:
+        """Hook run right after any abort path sets ``self._error`` (no-op default).
+
+        The single point where a scheduler reacts to an abort.  The async DPOR
+        scheduler overrides it to wake tasks parked in cooperative primitives so
+        they free-run to completion instead of hanging until ``timeout_per_run``.
+        """
+
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         """Handle a timeout in pause(). Sets the error and wakes everyone.
 
@@ -207,6 +353,7 @@ class InterleavedLoop:
         self._error = SchedulerTimeoutError(
             f"Deadlock: task {task_id!r} timed out waiting at marker {marker!r} (fallback timeout)"
         )
+        self._on_error_set()
         self._condition.notify_all()
 
     def _handle_all_waiting_deadlock(self, task_id: Any, marker: Any = None) -> None:
@@ -219,6 +366,7 @@ class InterleavedLoop:
             f"Deadlock: all {alive} alive tasks are waiting but none can proceed "
             f"(task {task_id!r} at marker {marker!r})"
         )
+        self._on_error_set()
         self._condition.notify_all()
 
     # ------------------------------------------------------------------
@@ -237,6 +385,7 @@ class InterleavedLoop:
         async with self._condition:
             if self._error is None:
                 self._error = error
+                self._on_error_set()
             self._condition.notify_all()
 
     async def run_all(
@@ -300,7 +449,7 @@ class InterleavedLoop:
         # every subsequent ``pause()`` short-circuit, so the tasks free-run to
         # completion and the gather above returns normally.  Surface that error
         # here instead of silently scoring the free-run as a valid exploration
-        # (finding F1).  The exploration loop classifies it (deadlock vs
+        # run.  The exploration loop classifies it (deadlock vs.
         # scheduler-timeout) just like the sync driver does.
         if self._error is not None:
             raise self._error
@@ -343,18 +492,18 @@ class InterleavedLoop:
                 return
             if self._progress == before:
                 async with self._condition:
-                    advance_virtual_deadline = getattr(self, "_advance_virtual_deadline_for_idle", None)
-                    if advance_virtual_deadline is not None and advance_virtual_deadline():
+                    # A virtual clock can still move time forward to the next
+                    # pending deadline (default: no clock, returns False).
+                    if self._advance_virtual_deadline_for_idle():
                         self._condition.notify_all()
                         continue
-            if self._progress == before:
-                async with self._condition:
                     if self._error is None:
                         self._error = SchedulerTimeoutError(
                             f"Deadlock: no task progressed for {self.deadlock_timeout}s and no task is "
                             "inside the scheduler; unfinished tasks are blocked on unmanaged awaitables "
                             "(e.g. stock asyncio locks)"
                         )
+                        self._on_error_set()
                     self._condition.notify_all()
                 break
         # Mirror asyncio.wait_for's contract on timeout: cancel the awaited
@@ -370,3 +519,106 @@ class InterleavedLoop:
     def had_error(self) -> bool:
         """True if an error was reported during execution."""
         return self._error is not None
+
+
+class _AsyncSchedulerBase(InterleavedLoop):
+    """Shared machinery for the async DPOR exploration and replay schedulers.
+
+    Both drive tasks through the same condition-gated park/wake protocol and
+    differ only in how they pick the next task: the exploration scheduler asks
+    the DPOR engine (``_schedule_next`` / ``_set_current_task``), while the
+    replay scheduler walks a recorded schedule (``_advance``).  The common
+    kick / wait / notify skeleton lives here; subclasses fill in the
+    scheduling-specific hooks.
+
+    Subclasses set ``_current_task`` / ``_current_task_consumed`` in their own
+    ``__init__`` and may override ``_deadlock_prefix`` for error messages.
+    """
+
+    _current_task: int | None
+    _current_task_consumed: bool
+    #: Prefix for the "never scheduled" watchdog error (replay overrides it).
+    _deadlock_prefix: str = "Deadlock"
+
+    def _notify_waiters_soon(self) -> None:
+        async def _notify() -> None:
+            async with self._condition:
+                self._condition.notify_all()
+
+        asyncio.get_running_loop().create_task(_notify())
+
+    # -- scheduling hooks (subclass-provided) ---------------------------
+
+    def _should_kick(self, task_id: int) -> bool:
+        """Whether ``kick_stalled_schedule`` should hand the turn onward now."""
+        raise NotImplementedError
+
+    def _perform_kick(self, task_id: int) -> None:
+        """Reschedule after ``_should_kick`` returned True (holding the condition)."""
+        raise NotImplementedError
+
+    def _recover_stalled_schedule(self) -> bool:
+        """While waiting to be scheduled, try to unstick a stalled current task.
+
+        Returns True if it made progress (the caller re-checks and continues),
+        False to fall through to the condition wait.
+        """
+        return False
+
+    def _on_scheduled_after_block(self, task_id: int) -> None:
+        """Run once the task is scheduled again after a physical wake."""
+        self._current_task_consumed = True
+
+    # -- shared park/wake control ---------------------------------------
+
+    async def kick_stalled_schedule(self, task_id: int) -> None:
+        """Hand the turn onward after *task_id* engine-blocked itself.
+
+        Called by the cooperative primitives right after they block the task:
+        the blocked task parks with no further scheduling points, so if it held
+        the turn (or nothing else is runnable) no other path would drive the
+        next scheduling decision and the run would die by deadlock timeout.
+        """
+        async with self._condition:
+            if self._finished or self._error:
+                return
+            if self._should_kick(task_id):
+                self._perform_kick(task_id)
+                self._condition.notify_all()
+
+    async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
+        """Wait for a physically-woken blocked task to be scheduled again."""
+        async with self._condition:
+            while not (self._finished or self._error) and self._current_task != task_id:
+                if self._recover_stalled_schedule():
+                    continue
+                try:
+                    await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                except asyncio.TimeoutError:
+                    self._error = SchedulerTimeoutError(
+                        f"{self._deadlock_prefix}: task {task_id} woke from {reason} but was never scheduled"
+                    )
+                    self._condition.notify_all()
+                    return
+            if not (self._finished or self._error):
+                self._on_scheduled_after_block(task_id)
+
+    async def pause(self, task_id: Any, marker: Any = None) -> None:
+        """DPOR/replay-aware pause that ensures fair task wakeup.
+
+        After proceeding from a pause, yields to the event loop so other tasks
+        that were notified can process their condition waits.  Without this, a
+        single task can reacquire the condition lock before other notified tasks,
+        causing false deadlock detection.
+
+        Sets ``_in_scheduler_pause`` so the coroutine wrapper knows not to insert
+        a redundant scheduling point for this pause's own yields.
+        """
+        depth = _in_scheduler_pause.get()
+        _in_scheduler_pause.set(depth + 1)
+        try:
+            # Yield to let any previously-notified tasks process their wakeups.
+            await _real_asyncio_sleep(0)
+            await super().pause(task_id, marker)
+        finally:
+            _in_scheduler_pause.set(depth)

@@ -28,13 +28,14 @@ machinery, unrelated code) always see real time:
 from __future__ import annotations
 
 import datetime as _datetime
-import threading
 import time
 import warnings
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from threading import get_ident
+from types import CodeType
 from typing import Any, Literal
 
 from frontrun import _real_threading as _rt
@@ -63,7 +64,25 @@ _REAL_TIME_FUNCTIONS = {
     _real_monotonic_ns: "time.monotonic_ns",
     _real_perf_counter_ns: "time.perf_counter_ns",
 }
-_warned_captured_refs: set[tuple[str, int, str, str]] = set()
+_warned_captured_refs: set[tuple[str, str, str, str]] = set()
+
+# Objects that were *installed* on the ``time`` / ``datetime`` modules when
+# ``patch_time`` last transitioned 0->1, keyed by attribute name.  Unlike the
+# ``_real_*`` C functions above (captured once at import), these track whatever
+# third-party patcher (freezegun, time-machine, ...) was already active when we
+# patched.  The gated fallback (no active virtual clock) and the datetime shims
+# call *these*, and ``unpatch_time`` restores *these*, so an outer freeze
+# survives a nested ``clock_scope``.  See ``_PATCHES`` for the driving table.
+_saved_originals: dict[str, Any] = {
+    "time": _real_time,
+    "monotonic": _real_monotonic,
+    "perf_counter": _real_perf_counter,
+    "time_ns": _real_time_ns,
+    "monotonic_ns": _real_monotonic_ns,
+    "perf_counter_ns": _real_perf_counter_ns,
+    "datetime": _real_datetime,
+    "date": _real_date,
+}
 
 
 def real_monotonic() -> float:
@@ -83,6 +102,7 @@ def validate_clock_options(
     *,
     patch_sleep: bool = True,
     serializable_invariant: object = False,
+    clock_diagnostics: bool = False,
 ) -> ClockMode:
     """Validate ``clock=`` against the options it constrains.
 
@@ -99,7 +119,19 @@ def validate_clock_options(
                 "the sequential baseline runs execute outside the scheduler, so their sleeps "
                 "and clock reads would use real wall-clock time"
             )
+    elif clock_diagnostics:
+        raise ValueError(
+            "clock_diagnostics=True requires clock='virtual' or clock='explored' "
+            "(there is no virtual clock to diagnose captured time references against under clock='real')"
+        )
     return mode
+
+
+#: Code objects already scanned by :func:`warn_if_captured_time_reference`.
+#: Scanning is O(globals+locals), so we do it at most once per code object per
+#: process.  ``id``-reuse across freed code objects is possible but harmless
+#: here (code objects for explored workers stay alive for the run's duration).
+_scanned_code_objects: set[CodeType] = set()
 
 
 def warn_if_captured_time_reference(frame: Any) -> None:
@@ -108,13 +140,34 @@ def warn_if_captured_time_reference(frame: Any) -> None:
     This is an opt-in diagnostic called by tracers.  It intentionally does
     not rewrite the reference: function objects captured before frontrun's
     patch scope cannot be safely swapped out in general.
+
+    Cost control: each code object is scanned at most once per process (the
+    tracer fires per opcode, so re-scanning would be O(globals) per
+    instruction).  The cache hit early-returns *before* touching the frame's
+    locals/globals.  The dedup key omits the line number so a capture warns
+    once, not once per executed line.
     """
+    code = frame.f_code
+    if code in _scanned_code_objects:
+        return
+    _scanned_code_objects.add(code)
+    qualname = getattr(code, "co_qualname", code.co_name)
     for scope_name, mapping in (("local", frame.f_locals), ("global", frame.f_globals)):
-        for name, value in mapping.items():
+        # Iterating a live f_globals can race concurrent module-global stores on
+        # free-threaded builds; snapshot into a list, retrying once on the
+        # transient "dictionary changed size during iteration".
+        try:
+            items = list(mapping.items())
+        except RuntimeError:
+            try:
+                items = list(mapping.items())
+            except RuntimeError:
+                continue
+        for name, value in items:
             label = next((candidate for func, candidate in _REAL_TIME_FUNCTIONS.items() if value is func), None)
             if label is None:
                 continue
-            key = (frame.f_code.co_filename, frame.f_lineno, name, label)
+            key = (code.co_filename, qualname, name, label)
             if key in _warned_captured_refs:
                 continue
             _warned_captured_refs.add(key)
@@ -155,27 +208,76 @@ class VirtualClock:
 
 
 @dataclass(frozen=True)
-class WakeEvent:
-    """A deadline that became due after a virtual-clock advance."""
+class ClockConfig:
+    """The static clock options plus the per-execution derivations built on them.
 
-    actor_id: int
-    deadline: float
-    token: object
-    kind: str
-    wake_id: int | None
+    Every exploration entry point stamped the same trio: derive a fresh
+    per-execution :class:`VirtualClock` when the mode is not ``"real"``, derive
+    the synthetic clock-actor id (``== num_actors``), and validate the clock
+    against the options it constrains.  ``ClockConfig`` centralizes those so the
+    entry points construct one and read the derivations off it.  It intentionally
+    holds only the *static* options (``mode`` / ``diagnostics``); the mutable,
+    per-execution clock comes from :meth:`new_clock`.
+    """
+
+    mode: ClockMode = "real"
+    diagnostics: bool = False
+
+    def validate(self, *, patch_sleep: bool = True, serializable_invariant: object = False) -> ClockConfig:
+        """Validate ``mode`` against the options it constrains; return self.
+
+        Wraps :func:`validate_clock_options` so the error text is identical
+        everywhere.  Raises ``ValueError`` on an invalid or conflicting mode.
+        """
+        validate_clock_options(
+            self.mode,
+            patch_sleep=patch_sleep,
+            serializable_invariant=serializable_invariant,
+            clock_diagnostics=self.diagnostics,
+        )
+        return self
+
+    @property
+    def active(self) -> bool:
+        """Whether a virtual clock is in effect (``mode != "real"``)."""
+        return self.mode != "real"
+
+    def new_clock(self) -> VirtualClock | None:
+        """A fresh per-execution :class:`VirtualClock`, or ``None`` under ``"real"``."""
+        return VirtualClock() if self.active else None
+
+    def actor_id(self, num_actors: int) -> int | None:
+        """The synthetic clock-actor id (``== num_actors``), or ``None`` if inactive."""
+        return num_actors if self.active else None
 
 
 @dataclass(frozen=True)
-class _Deadline:
+class WakeEvent:
+    """A registered virtual deadline; also the record returned once it is due.
+
+    :class:`DeadlineCoordinator` stores these and, on advance, returns the ones
+    that became due directly (no field-by-field copy).  ``order`` is a
+    per-coordinator monotonic tiebreaker that makes the due ordering
+    deterministic when several deadlines share a virtual time; it is internal
+    bookkeeping that consumers of the wake event ignore.
+    """
+
     actor_id: int
     deadline: float
-    order: int
     token: object
     kind: str
     wake_id: int | None
+    order: int = 0
 
 
 _SLEEP_TOKEN = object()
+
+#: Token identifying an actor's single timed-lock-acquire deadline (kind
+#: ``"timeout"``).  Shared by the sync DPOR and random schedulers so their
+#: ``add_timed_wait`` / ``remove_timed_wait`` / ``give_up_timed_wait`` all key
+#: the same coordinator entry.  (The async side keeps its own constant until
+#: the later sync/async unification wave dedups it.)
+_TIMED_WAIT_TOKEN = "timed_wait"
 
 
 class DeadlineCoordinator:
@@ -186,63 +288,107 @@ class DeadlineCoordinator:
     time, and returns the events that became due.  It supports more than one
     deadline per actor, which is required for ``asyncio.wait_for`` wrapping an
     awaitable that also has its own virtual sleep deadline.
+
+    Thread-safety: every method that mutates or iterates ``_deadlines`` (and
+    the ``_next_order`` counter) is serialised on an internal *real* lock.
+    Callers already hold a scheduler lock (``_engine_lock`` for exploration
+    mutators, ``_condition`` for replay advance paths), but those are two
+    different locks — so an insert on one and an ``advance_to`` iteration on the
+    other could race the dict without this internal guard.  The lock is a real,
+    never-cooperative lock (like :class:`VirtualClock._lock`) because these
+    methods run inside scheduler machinery; a patched ``threading.Lock`` would
+    report sync events back into the scheduler.  Nesting order is always
+    scheduler-lock -> coordinator-lock -> ``clock._lock``; no method calls back
+    into scheduler code while holding ``self._lock``, so there is no inversion.
     """
 
     def __init__(self) -> None:
-        self._deadlines: dict[tuple[int, object], _Deadline] = {}
+        self._deadlines: dict[tuple[int, object], WakeEvent] = {}
         self._next_order = 0
+        self._lock = _rt.lock()
 
-    def _new_deadline(self, actor_id: int, deadline: float, token: object, kind: str, wake_id: int | None) -> _Deadline:
+    def _new_deadline(self, actor_id: int, deadline: float, token: object, kind: str, wake_id: int | None) -> WakeEvent:
+        """Allocate a deadline with the next order token.  Caller holds ``_lock``."""
         self._next_order += 1
-        return _Deadline(actor_id, deadline, self._next_order, token, kind, wake_id)
+        return WakeEvent(
+            actor_id=actor_id, deadline=deadline, token=token, kind=kind, wake_id=wake_id, order=self._next_order
+        )
 
     def add_sleep(self, actor_id: int, deadline: float, wake_id: int | None, token: object = _SLEEP_TOKEN) -> None:
-        self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "sleep", wake_id)
+        with self._lock:
+            self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "sleep", wake_id)
 
     def add_timeout(self, actor_id: int, deadline: float, token: object, wake_id: int | None = None) -> None:
-        self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "timeout", wake_id)
+        with self._lock:
+            self._deadlines[(actor_id, token)] = self._new_deadline(actor_id, deadline, token, "timeout", wake_id)
 
     def cancel(self, actor_id: int, token: object | None = None) -> None:
-        if token is not None:
-            self._deadlines.pop((actor_id, token), None)
-            return
-        for key in [key for key in self._deadlines if key[0] == actor_id]:
-            del self._deadlines[key]
+        with self._lock:
+            if token is not None:
+                self._deadlines.pop((actor_id, token), None)
+                return
+            for key in [key for key in self._deadlines if key[0] == actor_id]:
+                del self._deadlines[key]
 
     def cancel_sleep(self, actor_id: int) -> None:
         self.cancel(actor_id, _SLEEP_TOKEN)
 
     def has_pending(self) -> bool:
-        return bool(self._deadlines)
+        with self._lock:
+            return bool(self._deadlines)
+
+    def is_sleeping(self, actor_id: int) -> bool:
+        """Whether *actor_id* has a pending ``sleep``-kind deadline."""
+        with self._lock:
+            return any(e.actor_id == actor_id and e.kind == "sleep" for e in self._deadlines.values())
+
+    def in_timed_wait(self, actor_id: int) -> bool:
+        """Whether *actor_id* has a pending ``timeout``-kind deadline."""
+        with self._lock:
+            return any(e.actor_id == actor_id and e.kind == "timeout" for e in self._deadlines.values())
+
+    def sleep_deadline(self, actor_id: int) -> float | None:
+        """The earliest ``sleep``-kind deadline for *actor_id* (``None`` if none)."""
+        with self._lock:
+            deadlines = [e.deadline for e in self._deadlines.values() if e.actor_id == actor_id and e.kind == "sleep"]
+            return min(deadlines) if deadlines else None
+
+    def timed_wait_deadline(self, actor_id: int) -> float | None:
+        """The earliest ``timeout``-kind deadline for *actor_id* (``None`` if none)."""
+        with self._lock:
+            deadlines = [e.deadline for e in self._deadlines.values() if e.actor_id == actor_id and e.kind == "timeout"]
+            return min(deadlines) if deadlines else None
+
+    def sleeping_actors(self) -> list[int]:
+        """Sorted actor ids with a pending ``sleep``-kind deadline (diagnostics)."""
+        with self._lock:
+            return sorted({e.actor_id for e in self._deadlines.values() if e.kind == "sleep"})
 
     def next_deadline(self) -> float | None:
-        if not self._deadlines:
-            return None
-        return min(entry.deadline for entry in self._deadlines.values())
+        with self._lock:
+            if not self._deadlines:
+                return None
+            return min(entry.deadline for entry in self._deadlines.values())
 
     def advance_to_next(self, clock: VirtualClock) -> list[WakeEvent]:
-        deadline = self.next_deadline()
-        if deadline is None:
-            return []
-        return self.advance_to(clock, deadline)
+        with self._lock:
+            if not self._deadlines:
+                return []
+            deadline = min(entry.deadline for entry in self._deadlines.values())
+            return self._advance_to_locked(clock, deadline)
 
     def advance_to(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
+        with self._lock:
+            return self._advance_to_locked(clock, deadline)
+
+    def _advance_to_locked(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
         clock.advance_to(deadline)
         now = clock.now()
         due = [entry for entry in self._deadlines.values() if entry.deadline <= now]
         due.sort(key=lambda entry: (entry.deadline, entry.actor_id, entry.order))
         for entry in due:
             self._deadlines.pop((entry.actor_id, entry.token), None)
-        return [
-            WakeEvent(
-                actor_id=entry.actor_id,
-                deadline=entry.deadline,
-                token=entry.token,
-                kind=entry.kind,
-                wake_id=entry.wake_id,
-            )
-            for entry in due
-        ]
+        return due
 
 
 class _VirtualDateTimeMeta(type):
@@ -262,60 +408,65 @@ class _VirtualDateMeta(type):
 
 
 class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
-    @classmethod
-    def now(cls, tz: _datetime.tzinfo | None = None) -> _VirtualDateTime:
-        clock = _active_virtual_clock()
-        value = _real_datetime.now(tz) if clock is None else _real_datetime.fromtimestamp(clock.now(), tz)
-        return cls(
-            value.year,
-            value.month,
-            value.day,
-            value.hour,
-            value.minute,
-            value.second,
-            value.microsecond,
-            tzinfo=value.tzinfo,
-            fold=value.fold,
-        )
+    def __new__(cls, *args: Any, **kwargs: Any) -> _datetime.datetime:
+        return _saved_originals["datetime"](*args, **kwargs)
 
     @classmethod
-    def utcnow(cls) -> _VirtualDateTime:
+    def now(cls, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
         clock = _active_virtual_clock()
-        value = (
-            _real_datetime.now(_datetime.timezone.utc).replace(tzinfo=None)
-            if clock is None
-            else _real_datetime.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
-        )
-        return cls(
-            value.year,
-            value.month,
-            value.day,
-            value.hour,
-            value.minute,
-            value.second,
-            value.microsecond,
-            fold=value.fold,
-        )
+        real = _saved_originals["datetime"]
+        if clock is None:
+            return real.now(tz)
+        return real.fromtimestamp(clock.now(), tz)
+
+    @classmethod
+    def utcnow(cls) -> _datetime.datetime:
+        clock = _active_virtual_clock()
+        real = _saved_originals["datetime"]
+        if clock is None:
+            return real.now(_datetime.timezone.utc).replace(tzinfo=None)
+        return real.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
+
+    @classmethod
+    def fromtimestamp(cls, timestamp: float, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
+        return _saved_originals["datetime"].fromtimestamp(timestamp, tz)
+
+    @classmethod
+    def utcfromtimestamp(cls, timestamp: float) -> _datetime.datetime:
+        return _saved_originals["datetime"].fromtimestamp(timestamp, _datetime.timezone.utc).replace(tzinfo=None)
 
 
 class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):
+    def __new__(cls, *args: Any, **kwargs: Any) -> _datetime.date:
+        return _saved_originals["date"](*args, **kwargs)
+
     @classmethod
-    def today(cls) -> _VirtualDate:
+    def today(cls) -> _datetime.date:
         clock = _active_virtual_clock()
-        value = _real_date.today() if clock is None else _real_datetime.fromtimestamp(clock.now()).date()
-        return cls(value.year, value.month, value.day)
+        if clock is None:
+            return _saved_originals["date"].today()
+        return _saved_originals["datetime"].fromtimestamp(clock.now()).date()
+
+    @classmethod
+    def fromtimestamp(cls, timestamp: float) -> _datetime.date:
+        return _saved_originals["date"].fromtimestamp(timestamp)
 
 
 # ---------------------------------------------------------------------------
 # Active-clock resolution
 # ---------------------------------------------------------------------------
 
-# Threads registered explicitly (exploration driver during setup()/invariant()).
-_thread_clocks: dict[int, VirtualClock] = {}
-
-#: Async exploration sets this contextvar around setup/tasks/invariant; task
-#: contexts inherit it, the event loop's base context does not.
-_clock_var: ContextVar[VirtualClock | None] = ContextVar("frontrun_virtual_clock", default=None)
+#: The exploration driver sets this contextvar around setup/tasks/invariant.
+#: The entry is ``(registering thread ident, clock)`` and only resolves from
+#: the registering thread: the sync driver reads it on the thread it set it
+#: on, and async task contexts inherit it (task contexts copy the creating
+#: context) while running on the same loop thread.  The ident gate matters on
+#: the free-threaded build (3.14t), where ``threading.Thread`` starts with a
+#: *copy* of the caller's context (GIL builds start threads with an empty
+#: context) — without it, threads spawned inside a clock scope would inherit
+#: the registration and wrongly see virtual time.  The event loop's base
+#: context never carries the entry, so loop timers stay on the wall clock.
+_clock_var: ContextVar[tuple[int, VirtualClock] | None] = ContextVar("frontrun_virtual_clock", default=None)
 
 
 # One-time lazy bind of _cooperative.get_context (function-level import would
@@ -333,65 +484,55 @@ def _active_virtual_clock() -> VirtualClock | None:
 
     ctx = _get_context()
     if ctx is not None:
-        clock = getattr(ctx[0], "virtual_clock", None)
-        if clock is not None:
-            return clock  # type: ignore[no-any-return]
-    clock = _thread_clocks.get(threading.get_ident())
-    if clock is not None:
-        return clock
-    return _clock_var.get()
-
-
-@contextmanager
-def clock_scope(clock: VirtualClock | None) -> Generator[None, None, None]:
-    """Register *clock* for the current thread for the duration of the block.
-
-    Used by exploration drivers around ``setup()`` and invariant evaluation so
-    that state created / inspected on the driver thread sees the same virtual
-    time as the workers.  A ``None`` clock makes this a no-op.
-
-    Owns the ``time.*`` patch for its duration (reference-counted), so it works
-    even outside a runner's patch scope — invariant evaluation happens after
-    the workers' patch scope has already been unwound.
-    """
-    if clock is None:
-        yield
-        return
-    ident = threading.get_ident()
-    prev = _thread_clocks.get(ident)
-    _thread_clocks[ident] = clock
-    patch_time()
-    try:
-        yield
-    finally:
-        unpatch_time()
-        if prev is None:
-            _thread_clocks.pop(ident, None)
-        else:
-            _thread_clocks[ident] = prev
+        # An active scheduler context is authoritative: return its clock even
+        # when None (a clock="real" exploration).  Falling through would let an
+        # outer clock_scope / contextvar leak its virtual clock into a nested
+        # real-clock exploration.
+        return getattr(ctx[0], "virtual_clock", None)  # type: ignore[no-any-return]
+    entry = _clock_var.get()
+    if entry is not None and entry[0] == get_ident():
+        return entry[1]
+    return None
 
 
 @contextmanager
 def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
-    """Set :data:`_clock_var` for the current *context* (async exploration).
+    """Register *clock* on :data:`_clock_var` for the duration of the block.
 
-    asyncio tasks created inside the block inherit the contextvar (task
-    contexts copy the creating context), while the event loop's own
-    ``_run_once`` machinery — which runs in the loop's base context — keeps
-    seeing real time, so loop timers stay on the wall clock.
+    Sets the contextvar and owns the ``time.*`` patch (reference-counted) so it
+    works even outside a runner's patch scope — invariant evaluation happens
+    after the workers' patch scope has already been unwound.  A ``None`` clock
+    makes this a no-op.
 
-    Like :func:`clock_scope`, owns the ``time.*`` patch for its duration.
+    The registration is gated to the registering thread (see
+    :data:`_clock_var` — on the free-threaded build spawned threads inherit
+    the caller's context, so a bare contextvar would leak).  It serves both
+    callers:
+
+    - sync exploration drivers wrap ``setup()`` / invariant evaluation, so state
+      created / inspected on the driver thread sees the same virtual time as the
+      workers (which resolve via their scheduler context instead);
+    - async exploration wraps setup/tasks/invariant — asyncio tasks created
+      inside the block inherit the contextvar and run on the same loop thread,
+      while the event loop's own ``_run_once`` machinery runs in the loop's
+      base context and keeps seeing real time, so loop timers stay on the wall
+      clock.
     """
     if clock is None:
         yield
         return
-    token = _clock_var.set(clock)
+    token = _clock_var.set((get_ident(), clock))
     patch_time()
     try:
         yield
     finally:
         unpatch_time()
         _clock_var.reset(token)
+
+
+#: Public sync-driver spelling for :func:`clock_context`; contextvars are
+#: per-thread, so the driver reads back what it set.
+clock_scope = clock_context
 
 
 # ---------------------------------------------------------------------------
@@ -401,33 +542,46 @@ def clock_context(clock: VirtualClock | None) -> Generator[None, None, None]:
 
 def _virtual_time() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _real_time()
+    return clock.now() if clock is not None else _saved_originals["time"]()
 
 
 def _virtual_monotonic() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _real_monotonic()
+    return clock.now() if clock is not None else _saved_originals["monotonic"]()
 
 
 def _virtual_perf_counter() -> float:
     clock = _active_virtual_clock()
-    return clock.now() if clock is not None else _real_perf_counter()
+    return clock.now() if clock is not None else _saved_originals["perf_counter"]()
 
 
 def _virtual_time_ns() -> int:
     clock = _active_virtual_clock()
-    return int(clock.now() * 1e9) if clock is not None else _real_time_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_originals["time_ns"]()
 
 
 def _virtual_monotonic_ns() -> int:
     clock = _active_virtual_clock()
-    return int(clock.now() * 1e9) if clock is not None else _real_monotonic_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_originals["monotonic_ns"]()
 
 
 def _virtual_perf_counter_ns() -> int:
     clock = _active_virtual_clock()
-    return int(clock.now() * 1e9) if clock is not None else _real_perf_counter_ns()
+    return round(clock.now() * 1e9) if clock is not None else _saved_originals["perf_counter_ns"]()
 
+
+#: The single table driving :func:`patch_time` / :func:`unpatch_time` and the
+#: 0->1 save of currently-installed values: ``(module, attr, virtual_obj)``.
+_PATCHES: tuple[tuple[Any, str, Any], ...] = (
+    (time, "time", _virtual_time),
+    (time, "monotonic", _virtual_monotonic),
+    (time, "perf_counter", _virtual_perf_counter),
+    (time, "time_ns", _virtual_time_ns),
+    (time, "monotonic_ns", _virtual_monotonic_ns),
+    (time, "perf_counter_ns", _virtual_perf_counter_ns),
+    (_datetime, "datetime", _VirtualDateTime),
+    (_datetime, "date", _VirtualDate),
+)
 
 _time_patch_count = 0
 _time_patch_lock = _rt.lock()
@@ -442,14 +596,12 @@ def patch_time() -> None:
         _time_patch_count += 1
         if _time_patch_count > 1:
             return
-        time.time = _virtual_time
-        time.monotonic = _virtual_monotonic
-        time.perf_counter = _virtual_perf_counter
-        time.time_ns = _virtual_time_ns
-        time.monotonic_ns = _virtual_monotonic_ns
-        time.perf_counter_ns = _virtual_perf_counter_ns
-        _datetime.datetime = _VirtualDateTime
-        _datetime.date = _VirtualDate
+        # Snapshot whatever is currently installed (possibly a third-party
+        # fake) *before* overwriting, so the gated fallback and unpatch_time
+        # honor it rather than the pristine import-time C functions.
+        for module, attr, virtual_obj in _PATCHES:
+            _saved_originals[attr] = getattr(module, attr)
+            setattr(module, attr, virtual_obj)
 
 
 def unpatch_time() -> None:
@@ -461,18 +613,15 @@ def unpatch_time() -> None:
         _time_patch_count -= 1
         if _time_patch_count > 0:
             return
-        time.time = _real_time
-        time.monotonic = _real_monotonic
-        time.perf_counter = _real_perf_counter
-        time.time_ns = _real_time_ns
-        time.monotonic_ns = _real_monotonic_ns
-        time.perf_counter_ns = _real_perf_counter_ns
-        _datetime.datetime = _real_datetime
-        _datetime.date = _real_date
+        # Restore whatever was installed when we patched; an outer
+        # freezegun/time-machine patch must survive our scope.
+        for module, attr, _ in _PATCHES:
+            setattr(module, attr, _saved_originals[attr])
 
 
 __all__ = [
     "VIRTUAL_EPOCH",
+    "ClockConfig",
     "ClockMode",
     "DeadlineCoordinator",
     "VirtualClock",

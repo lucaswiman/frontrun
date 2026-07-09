@@ -15,17 +15,24 @@ DeadlockError or phantom ownership in later replays.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
 from frontrun.async_dpor import (
+    AsyncDporScheduler,
+    _async_parked_conditions,
+    _async_parked_events,
+    _async_parked_queues,
+    _CooperativeAsyncCondition,
+    _CooperativeAsyncEvent,
+    _CooperativeAsyncQueue,
     _patch_asyncio_event,
     _ReplayAsyncScheduler,
     _reset_async_lock_state,
     _unpatch_asyncio_event,
 )
+from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active
 
 
@@ -168,15 +175,142 @@ def test_event_blocked_replay_skips_drifted_waiter_slots() -> None:
     assert asyncio.run(scenario()) == ["setter", "waiter"]
 
 
+def test_handle_timeout_wakes_parked_primitive_waiters() -> None:
+    """A watchdog abort (``_handle_timeout``) must wake tasks parked on
+    cooperative primitives so they free-run to completion, rather than
+    leaving them parked until the outer ``timeout_per_run`` elapses.
+    """
+
+    async def scenario() -> bool:
+        scheduler = object.__new__(AsyncDporScheduler)
+        scheduler._error = None
+        scheduler._current_task = 0
+        scheduler._condition = asyncio.Condition()
+        event = _CooperativeAsyncEvent()
+        _async_parked_events.add(event)
+        try:
+            assert not event._event.is_set()
+            async with scheduler._condition:
+                scheduler._handle_timeout(1, marker="x")
+            return event._event.is_set()
+        finally:
+            _async_parked_events.clear()
+
+    assert asyncio.run(scenario()) is True
+
+
+def test_handle_all_waiting_deadlock_wakes_parked_primitive_waiters() -> None:
+    """The all-waiting-deadlock abort path in the base InterleavedLoop must also
+    wake tasks parked on cooperative primitives.
+
+    Wave-1 Fix E wired the ``_handle_timeout`` watchdog to wake parked waiters,
+    but ``_handle_all_waiting_deadlock`` is a sibling abort path that sets
+    ``self._error`` too; without waking, a task parked in a cooperative wrapper
+    stays parked until ``timeout_per_run`` instead of free-running to completion.
+    """
+
+    async def scenario() -> bool:
+        scheduler = object.__new__(AsyncDporScheduler)
+        scheduler._error = None
+        scheduler._current_task = 0
+        scheduler._condition = asyncio.Condition()
+        scheduler._num_tasks = 2
+        scheduler._tasks_done = set()
+        event = _CooperativeAsyncEvent()
+        _async_parked_events.add(event)
+        try:
+            assert not event._event.is_set()
+            async with scheduler._condition:
+                scheduler._handle_all_waiting_deadlock(1, marker="x")
+            return event._event.is_set()
+        finally:
+            _async_parked_events.clear()
+
+    assert asyncio.run(scenario()) is True
+
+
+def test_condition_notify_no_context_wakes_at_most_n_across_both_waiter_sets() -> None:
+    """Without scheduler context, ``notify(n)`` must wake at most ``n`` waiters
+    total across the real-condition and cooperative waiter populations.
+
+    The no-context path delegates to the wrapped real condition AND then also
+    resolves cooperative-waiter futures; with a mix of both, ``notify(1)``
+    used to wake two.
+    """
+
+    async def scenario() -> int:
+        condition = _CooperativeAsyncCondition()
+        loop = asyncio.get_running_loop()
+        real_fut: asyncio.Future[bool] = loop.create_future()
+        coop_fut: asyncio.Future[None] = loop.create_future()
+        # One real-condition waiter (what the no-context wait() path registers).
+        condition._real_condition._waiters.append(real_fut)  # type: ignore[attr-defined]
+        # One cooperative waiter (what the with-context wait() path registers).
+        condition._waiters.append((123, coop_fut))
+        await condition.acquire()
+        try:
+            condition.notify(1)
+        finally:
+            condition.release()
+        woke = sum(1 for fut in (real_fut, coop_fut) if fut.done())
+        for fut in (real_fut, coop_fut):
+            if not fut.done():
+                fut.cancel()
+        return woke
+
+    assert asyncio.run(scenario()) == 1
+
+
+def test_reset_async_lock_state_clears_all_parked_primitive_sets() -> None:
+    """``_reset_async_lock_state`` must clear the parked-queue and
+    parked-condition sets too, not only parked events.  Otherwise a stale
+    cooperative queue/condition from a prior execution or replay attempt
+    leaks into the next one (only cleared at unpatch).
+    """
+
+    async def _make() -> tuple[_CooperativeAsyncQueue[str], _CooperativeAsyncCondition, _CooperativeAsyncEvent]:
+        return _CooperativeAsyncQueue(), _CooperativeAsyncCondition(), _CooperativeAsyncEvent()
+
+    queue_obj, condition_obj, event_obj = asyncio.run(_make())
+    _async_parked_queues.add(queue_obj)
+    _async_parked_conditions.add(condition_obj)
+    _async_parked_events.add(event_obj)
+    try:
+        _reset_async_lock_state()
+        assert not _async_parked_events
+        assert not _async_parked_queues
+        assert not _async_parked_conditions
+    finally:
+        _async_parked_queues.clear()
+        _async_parked_conditions.clear()
+        _async_parked_events.clear()
+
+
+def test_replay_on_task_yielded_respects_error_guard() -> None:
+    """``_ReplayAsyncScheduler.on_task_yielded`` must short-circuit once the
+    run has an error (mirroring the exploration scheduler), rather than
+    advancing the replay cursor after an abort.
+    """
+
+    async def scenario() -> tuple[int, int | None]:
+        scheduler = _ReplayAsyncScheduler([0, 1], 2)
+        scheduler._current_task_consumed = True
+        scheduler._error = SchedulerTimeoutError("aborted")
+        scheduler.on_task_yielded(0)
+        await asyncio.sleep(0)  # let any wrongly-created notify task run
+        return scheduler._replay_index, scheduler._current_task
+
+    replay_index, current_task = asyncio.run(scenario())
+    # With the guard the cursor stays put (index 1, current task 0).
+    assert replay_index == 1
+    assert current_task == 0
+
+
 def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
     """Event wake edges must be keyed by stable event id, not raw id(event)."""
 
     class Engine:
-        def __init__(self) -> None:
-            self.syncs: list[tuple[int, str, int]] = []
-
-        def report_sync(self, execution: Any, task_id: int, event: str, object_id: int) -> None:
-            self.syncs.append((task_id, event, object_id))
+        pass
 
     class Execution:
         def __init__(self) -> None:
@@ -191,6 +325,13 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
             self.execution = Execution()
             self._stable_ids = StableObjectIds()
             self._error = None
+            self.syncs: list[tuple[int, str, int]] = []
+
+        def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
+            self.syncs.append((task_id, event_type, sync_id))
+
+        def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
+            pass
 
     _patch_asyncio_event()
     try:
@@ -207,7 +348,7 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
             _task_id_var.reset(task_token)
             _scheduler_var.reset(scheduler_token)
 
-        assert scheduler.engine.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
+        assert scheduler.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
         assert scheduler.execution.unblocked == [1]
     finally:
         _unpatch_asyncio_event()

@@ -188,9 +188,98 @@ Semantics and limitations
   heuristic advances the clock when nothing has progressed for a short
   interval.  Prefer ``strategy="dpor"`` for lock-heavy async code — it
   patches ``asyncio.Lock`` and needs no heuristic.
+* **Broken-down and formatted wall-clock time is not patched.**
+  ``time.localtime`` / ``time.gmtime`` / ``time.strftime`` (no-arg) /
+  ``time.ctime`` / ``time.asctime`` / ``time.clock_gettime`` /
+  ``time.clock_gettime_ns`` read the *real* clock even under a virtual clock —
+  only ``time.time`` / ``monotonic`` / ``perf_counter`` (and their ``_ns``
+  variants) plus module-qualified ``datetime`` current-time reads are
+  virtualized (see the ``_PATCHES`` table in ``_virtual_clock.py``). TTL code
+  that takes its deadline from ``time.time()`` but formats "now" via
+  ``time.localtime()`` / ``strftime`` silently mixes a virtual epoch with a real
+  one.
+* **The virtual epoch is a fixed, low value.** Each execution starts a fresh
+  clock at ``VIRTUAL_EPOCH`` (1,000,000.0 s ≈ 11.6 days), which is below typical
+  server uptimes.  A ``time.monotonic()`` delta that straddles the patch
+  boundary is therefore meaningless — for example a baseline captured with the
+  real clock before exploration and re-read as virtual time inside it, or state
+  that persists across executions (every execution gets a *new* clock at the
+  same epoch)::
+
+      t0 = time.monotonic()             # real (e.g. 53_000.0), captured pre-explore
+      # ... later, inside an explored worker ...
+      elapsed = time.monotonic() - t0   # virtual 1_000_000 - real 53_000 -> garbage
+
+  This is inherent to the deterministic fixed-epoch design; keep all timing
+  arithmetic within a single execution's clock.
+* **Async random + virtual clock is best-effort deterministic.** The async
+  random strategy advances the clock with a *wall-clock* quiescence heuristic
+  (``_QUIESCENCE_SLICE`` = 0.25 s of no progress in ``async_shuffler.py`` ->
+  autojump), so under load (slow I/O, CI GC pauses) the *same* seed can explore
+  different interleavings.  Async DPOR's autojump is engine-state-driven and
+  stays deterministic; prefer ``strategy="dpor"`` when you need a reproducible
+  schedule.
+* **Sync cooperative ``Condition`` / ``Queue`` wakes report no happens-before edge.**
+  A sync ``notify`` / ``put`` wake goes through the spin-release path
+  (``_note_spin_release`` in ``_cooperative.py``), which only clears the
+  waiter's blocking-spin flag so it re-probes.  Unlike ``Event`` (whose
+  ``set()`` -> ``wait()``-return carries an ``event_set`` / ``event_wait`` edge)
+  and sleeper / timed-wait wakes (release / acquire edges), vector clocks
+  under-order notify->wake, so DPOR may explore, or flag as racy, some orderings
+  that are actually ordered.  Async DPOR Queue/Condition wakeups do report wake
+  edges.  The sync limitation costs extra branches and possible false race
+  reports, not missed bugs; a fix is tracked in
+  ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
 * C-level clock reads and sleeps (including inside extension modules) are
   outside the virtual clock unless a frontrun integration explicitly models
   them.
+
+Hazard: virtual-derived deadlines in raw loop-timer APIs
+--------------------------------------------------------
+
+frontrun virtualizes ``asyncio.wait_for`` / ``asyncio.timeout`` /
+``asyncio.timeout_at`` inside explored tasks, but it does **not** virtualize the
+event loop's own timer heap.  Under a virtual clock the runners pin
+``loop.time`` to the real monotonic clock (``_pin_loop_time`` in
+``async_scheduler.py``) so that frontrun's own watchdog timers — and any raw
+``loop.call_later`` / ``loop.call_at`` callbacks — compare against the same
+wall-clock reference the loop uses to fire them.  That pin has two consequences.
+
+**Relative loop timers still fire, but on the wall clock.**
+``loop.call_later(delay, cb)`` computes ``when = loop.time() + delay``; with
+``loop.time`` pinned to real monotonic, ``when`` is a real timestamp and the
+callback fires after ``delay`` *real* seconds.  It is correct but not
+virtualized: it costs real wall time (defeating the zero-cost model), runs
+outside the schedule (so it is neither explored nor deterministically
+replayable), and is invisible to exact deadlock detection.  A third-party
+library that builds timeouts on ``loop.call_later`` (an aiohttp timeout handle,
+say) keeps working but reintroduces wall-clock timing.
+
+**Absolute loop timers derived from ``time.monotonic()`` use the wrong time
+domain.** Inside an explored task ``time.monotonic()`` returns virtual time
+(starting at ``VIRTUAL_EPOCH`` = 1,000,000 s), so:
+
+.. code-block:: python
+
+    loop.call_at(time.monotonic() + 1.0, callback)   # HAZARD
+
+schedules ``callback`` in the loop's real-time timer heap using a virtual-clock
+timestamp.  Depending on the host's real monotonic value, that can be far in the
+future, already due, or otherwise unrelated to the intended virtual deadline.  A
+task awaiting that timer — a future the callback was meant to resolve, a
+cancellation it was meant to deliver — can therefore hang until the wall-clock
+watchdog, complete at an unintended wall-clock time, or produce an inconclusive
+"all executions timed out before completion" result, with **no diagnostic
+pointing at the clock-domain mismatch**.
+
+**Workaround.** Inside explored tasks, express timeouts with
+``asyncio.wait_for`` / ``asyncio.timeout`` / ``asyncio.timeout_at`` — these are
+virtualized.  Keep code that schedules raw ``loop.call_later`` / ``loop.call_at``
+timers, or that derives absolute deadlines from ``time.monotonic()``, *outside*
+explored task contexts.  A ``clock_diagnostics``-gated warning for an untagged
+loop timer whose ``when`` is implausibly far from ``loop.time()`` is tracked in
+``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md`` (raw
+loop-timer diagnostics).
 
 How it works
 ------------

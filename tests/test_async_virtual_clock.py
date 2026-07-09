@@ -743,6 +743,65 @@ def test_async_timeout_context_reschedule_from_none_uses_virtual_deadline() -> N
     assert result.property_holds, result.explanation
 
 
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_cannot_reschedule_after_exit() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.reschedule_rejected = False
+
+    async def worker(s: State) -> None:
+        loop = asyncio.get_running_loop()
+        async with asyncio.timeout(None) as timeout_cm:
+            pass
+
+        with pytest.raises(RuntimeError):
+            timeout_cm.reschedule(loop.time())
+        s.reschedule_rejected = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.reschedule_rejected,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_context_cannot_reschedule_after_expiry() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.reschedule_rejected = False
+
+    async def worker(s: State) -> None:
+        try:
+            async with asyncio.timeout(0) as timeout_cm:
+                try:
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    with pytest.raises(RuntimeError):
+                        timeout_cm.reschedule(None)
+                    s.reschedule_rejected = True
+                    raise
+        except TimeoutError:
+            s.timed_out = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.timed_out and s.reschedule_rejected,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_uncaught_async_wait_for_timeout_is_task_crash_not_deadlock() -> None:
     class State:
         pass
@@ -766,6 +825,36 @@ def test_uncaught_async_wait_for_timeout_is_task_crash_not_deadlock() -> None:
     assert "Task crash" in result.explanation
     assert "TimeoutError" in result.explanation
     assert "Deadlock detected" not in result.explanation
+
+
+def test_async_task_crash_wakes_parked_event_waiter() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def waiter(s: State) -> None:
+        await s.event.wait()
+
+    async def crasher(s: State) -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("boom")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, crasher],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+            timeout_per_run=0.5,
+            deadlock_timeout=0.05,
+        )
+    )
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Task crash" in result.explanation
+    assert "RuntimeError: boom" in result.explanation
+    assert "inconclusive" not in result.explanation
 
 
 def test_async_wait_for_lock_timeout_is_not_scored_as_deadlock() -> None:
@@ -1244,6 +1333,94 @@ def test_async_condition_patch_preserves_unmanaged_wait_notify() -> None:
         _unpatch_asyncio_queue_condition()
 
 
+def test_async_condition_notify_all_wakes_mixed_waiters() -> None:
+    from frontrun._async_autopause import _scheduler_var, _task_id_var
+    from frontrun.async_dpor import _patch_asyncio_queue_condition, _unpatch_asyncio_queue_condition
+
+    class FakeExecution:
+        def block_thread(self, task_id: int) -> None:
+            pass
+
+        def unblock_thread(self, task_id: int) -> None:
+            pass
+
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.engine = object()
+            self.execution = FakeExecution()
+            self._event_blocked: set[int] = set()
+            self._stable_ids = None
+            self._error = None
+
+        async def kick_stalled_schedule(self, task_id: int) -> None:
+            pass
+
+        async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
+            pass
+
+        def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
+            pass
+
+        def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
+            pass
+
+    async def scenario() -> tuple[bool, bool]:
+        condition = asyncio.Condition()
+        ready = asyncio.Event()
+        ready_count = 0
+        unmanaged_woke = False
+        managed_woke = False
+        scheduler = FakeScheduler()
+
+        def mark_ready() -> None:
+            nonlocal ready_count
+            ready_count += 1
+            if ready_count == 2:
+                ready.set()
+
+        async def unmanaged_waiter() -> None:
+            nonlocal unmanaged_woke
+            async with condition:
+                mark_ready()
+                await condition.wait()
+                unmanaged_woke = True
+
+        async def managed_waiter() -> None:
+            nonlocal managed_woke
+            scheduler_token = _scheduler_var.set(scheduler)
+            task_token = _task_id_var.set(1)
+            try:
+                async with condition:
+                    mark_ready()
+                    await condition.wait()
+                    managed_woke = True
+            finally:
+                _task_id_var.reset(task_token)
+                _scheduler_var.reset(scheduler_token)
+
+        unmanaged = asyncio.create_task(unmanaged_waiter())
+        managed = asyncio.create_task(managed_waiter())
+        await ready.wait()
+
+        scheduler_token = _scheduler_var.set(scheduler)
+        task_token = _task_id_var.set(2)
+        try:
+            async with condition:
+                condition.notify_all()
+        finally:
+            _task_id_var.reset(task_token)
+            _scheduler_var.reset(scheduler_token)
+
+        await asyncio.wait_for(asyncio.gather(unmanaged, managed), timeout=1.0)
+        return unmanaged_woke, managed_woke
+
+    _patch_asyncio_queue_condition()
+    try:
+        assert asyncio.run(scenario()) == (True, True)
+    finally:
+        _unpatch_asyncio_queue_condition()
+
+
 def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
     class State:
         def __init__(self) -> None:
@@ -1274,8 +1451,18 @@ def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
     result = asyncio.run(
         frontrun.explore(
             setup=State,
+            # The notify-one guarantee is "at most one waiter is woken" and
+            # "notify(1) removes at most one waiter from the queue".  It is NOT
+            # "exactly one wakes and one times out": under the virtual clock the
+            # notifier may be starved past the 2.0s deadline (both time out), and
+            # even a notified waiter can lose the wake if it cannot re-acquire the
+            # lock before its own deadline — both are legitimate asyncio
+            # interleavings (verified against stock asyncio).  What must never
+            # happen is a double-wake.
             workers=[lambda s: waiter("a", s), lambda s: waiter("b", s), notifier],
-            invariant=lambda s: s.remaining_after_first_notify == 1 and len(s.woken) == 1 and len(s.timed_out) == 1,
+            invariant=lambda s: (
+                len(s.woken) <= 1 and s.remaining_after_first_notify <= 1 and len(s.woken) + len(s.timed_out) == 2
+            ),
             clock="virtual",
             reproduce_on_failure=0,
         )
@@ -1291,10 +1478,7 @@ class _AsyncHoldAndSleep:
 
 
 def test_async_sleep_while_holding_lock() -> None:
-    """A task sleeping while holding an asyncio.Lock must autojump, not die
-    by deadlock timeout (regression: the run was scored as a false deadlock
-    counterexample — the blocked contender has no scheduling points, so
-    nothing ever asked the engine to reschedule)."""
+    """A task sleeping while holding an asyncio.Lock must autojump quickly."""
 
     async def a(s: _AsyncHoldAndSleep) -> None:
         async with s.lock:
@@ -1403,3 +1587,129 @@ def test_async_random_lock_sleep_quiescence_respects_small_deadlock_timeout() ->
     assert result.property_holds, result.explanation
     assert invariant_checks > 0
     assert wall_elapsed < 2.0, f"async random lock+sleep took {wall_elapsed:.1f}s"
+
+
+def test_async_condition_wait_timeout_does_not_release_other_task_lock() -> None:
+    """A ``cond.wait_for`` that times out while another task holds the lock must
+    re-acquire the lock before propagating, not skip re-acquire and let the
+    caller's ``async with cond:`` __aexit__ release the *other* task's lock."""
+
+    class State:
+        def __init__(self) -> None:
+            self.cond = asyncio.Condition()
+            self.a_timed_out = False
+            self.b_in_critical = False
+            self.b_done = False
+
+    async def a(s: State) -> None:
+        async with s.cond:
+            try:
+                await asyncio.wait_for(s.cond.wait(), timeout=0.5)
+            except (TimeoutError, asyncio.TimeoutError):
+                s.a_timed_out = True
+
+    async def b(s: State) -> None:
+        await asyncio.sleep(0.1)  # let A park in wait() first
+        async with s.cond:  # hold the lock across A's timeout at t=0.5
+            s.b_in_critical = True
+            await asyncio.sleep(1.0)
+            s.b_done = True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[a, b],
+            invariant=lambda s: s.a_timed_out and s.b_in_critical and s.b_done,
+            clock="virtual",
+            deadlock_timeout=2.0,
+            timeout_per_run=3.0,
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+    assert "Task crash" not in (result.explanation or ""), result.explanation
+
+
+def test_async_default_condition_lock_is_engine_visible() -> None:
+    """A default-constructed ``asyncio.Condition()`` under patching must use an
+    engine-visible lock.  Otherwise a task contending on ``async with cond:``
+    parks in a raw (engine-invisible) acquire while the engine still considers
+    it runnable, and the contended interleavings die as inconclusive
+    SchedulerTimeoutError instead of being explored.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.cond = asyncio.Condition()
+            self.value = 0
+
+    async def worker(s: State) -> None:
+        async with s.cond:
+            tmp = s.value
+            await asyncio.sleep(0)
+            s.value = tmp + 1
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker, worker],
+            invariant=lambda s: s.value == 2,
+            clock="virtual",
+            deadlock_timeout=1.0,
+            timeout_per_run=2.0,
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    # The condition lock serializes the read-modify-write, so no lost update.
+    assert result.property_holds, result.explanation
+    assert "timed out" not in (result.explanation or ""), result.explanation
+    assert wall_elapsed < 6.0, f"default condition lock contention burned {wall_elapsed:.1f}s wall time"
+
+
+def test_async_exact_deadlock_declines_with_live_external_thread() -> None:
+    """A live external OS thread can still wake a parked task via
+    ``loop.call_soon_threadsafe``, so exact-deadlock detection must decline
+    to declare a deadlock while such a thread is alive (mirroring the sync
+    scheduler's ``_has_live_external_threads`` guard).  Without the guard the
+    single parked waiter is scored as a false DeadlockError.
+    """
+    import contextlib
+    import threading
+
+    threads: list[threading.Thread] = []
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.woke = False
+
+    async def waiter(s: State) -> None:
+        loop = asyncio.get_running_loop()
+
+        def _external() -> None:
+            time.sleep(0.2)
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(s.event.set)
+
+        thread = threading.Thread(target=_external, daemon=True)
+        threads.append(thread)
+        thread.start()
+        await s.event.wait()
+        s.woke = True
+
+    try:
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[waiter],
+                invariant=lambda s: s.woke,
+                clock="virtual",
+                reproduce_on_failure=0,
+            )
+        )
+    finally:
+        for thread in threads:
+            thread.join(timeout=2.0)
+    assert result.property_holds, result.explanation

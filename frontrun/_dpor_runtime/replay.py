@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from frontrun._dpor_core import is_reproduction_run
-from frontrun._virtual_clock import VirtualClock, clock_scope
+from frontrun._virtual_clock import ClockConfig, VirtualClock, clock_scope, validate_clock
 
 from ._shared import *
 from .runner import DporBytecodeRunner
@@ -40,9 +40,13 @@ def _run_dpor_schedule(
     clock-actor steps (id == ``len(threads)``); the replay schedulers
     perform the corresponding clock advances against *virtual_clock*.
     """
-    if clock != "real" and virtual_clock is None:
-        virtual_clock = VirtualClock()
-    clock_actor_id = len(threads) if clock != "real" else None
+    config = ClockConfig(mode=validate_clock(clock))
+    # Under clock="real" ignore any caller-supplied clock; otherwise reuse it or
+    # mint a fresh one.  Folding this here removes the per-scheduler re-guards.
+    virtual_clock = virtual_clock if config.active else None
+    if config.active and virtual_clock is None:
+        virtual_clock = config.new_clock()
+    clock_actor_id = config.actor_id(len(threads))
     if io_schedule is not None and detect_io:
         scheduler: DporScheduler = _IOAnchoredReplayScheduler(
             io_schedule,
@@ -50,7 +54,7 @@ def _run_dpor_schedule(
             deadlock_timeout=deadlock_timeout,
             trace_recorder=trace_recorder,
             detect_io=detect_io,
-            virtual_clock=virtual_clock if clock != "real" else None,
+            virtual_clock=virtual_clock,
             clock_mode=clock,
             clock_actor_id=clock_actor_id,
         )
@@ -62,15 +66,16 @@ def _run_dpor_schedule(
             trace_recorder=trace_recorder,
             detect_io=detect_io,
             access_schedule=access_schedule,
-            virtual_clock=virtual_clock if clock != "real" else None,
+            virtual_clock=virtual_clock,
             clock_mode=clock,
             clock_actor_id=clock_actor_id,
         )
     runner = DporBytecodeRunner(scheduler, detect_io=detect_io)
 
-    with runner.patch_scope(patch_sleep=patch_sleep, virtual_time=clock != "real"):
-        with clock_scope(virtual_clock if clock != "real" else None):
-            state = setup()
+    # One clock_scope owns the time.* patch across setup + the worker phase;
+    # the workers resolve their virtual clock via scheduler TLS.
+    with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
+        state = setup()
 
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:
@@ -129,11 +134,12 @@ def _reproduce_dpor_counterexample(
     patch_redis()
     set_redis_replay_mode(True)
     successes = 0
+    clock_config = ClockConfig(mode=validate_clock(clock))
     try:
         for _ in range(reproduce_on_failure):
             deadlocked = False
             inv_failed = False
-            replay_clock = VirtualClock() if clock != "real" else None
+            replay_clock = clock_config.new_clock()
             try:
                 replay_state = _run_dpor_schedule(
                     schedule_list,

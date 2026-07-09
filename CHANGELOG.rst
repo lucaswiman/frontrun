@@ -8,12 +8,13 @@ Unreleased
 
 * **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
   now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
-  workers with both DPOR and random strategies. Explored code reads scheduler
-  time (including module-qualified ``datetime`` current-time reads), sleeps
-  and async timeout wrappers become zero-wall-time virtual deadlines, and
-  ``clock="explored"`` makes timer firings schedulable. DPOR also models
-  cooperative timed waits, async queue/condition wakeups, and captured
-  ``time.*`` clock-read diagnostics. See :doc:`virtual_clock`.
+  workers with DPOR and random strategies. Explored code reads scheduler time,
+  sleeps and timeout wrappers use zero-wall-time virtual deadlines, and
+  ``clock="explored"`` makes timer firings schedulable. This includes
+  cooperative timed waits, async ``wait_for`` / ``timeout`` / ``timeout_at``,
+  async Event/Queue/Condition wakeups, concrete ``datetime`` / ``date`` values,
+  captured ``time.*`` diagnostics where tracing is available, and preservation
+  of pre-existing third-party time patches. See :doc:`virtual_clock`.
 
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,

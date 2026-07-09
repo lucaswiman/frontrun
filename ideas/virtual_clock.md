@@ -38,6 +38,15 @@ from this proposal:
   bare futures still look runnable to the engine, so the check safely declines
   and the wall fallback applies.
 
+### Current hardening status
+
+The release contract is documented in `docs/virtual_clock.rst`. Remaining
+virtual-clock limitations and cleanup ideas — replay accounting for no-op clock
+actor steps, raw loop-timer diagnostics, explored-clock deadline ordering,
+sync/async cleanup, row-lock capability modeling, and sync Condition/Queue wake
+happens-before edges — are tracked in
+`possible-future-roadmap/virtual-clock-hardening-deferred.md`.
+
 ## Problem statement
 
 Before virtual clocks, races involving timeouts, retries with backoff, TTL

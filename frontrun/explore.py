@@ -31,7 +31,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from frontrun._strategy import ASYNC_STRATEGIES, STRATEGIES
-from frontrun._virtual_clock import ClockMode
+from frontrun._virtual_clock import ClockMode, validate_clock_options
 from frontrun.common import any_async
 
 Strategy = Literal["dpor", "random"]
@@ -173,9 +173,12 @@ def explore(
     """
     worker_list = _resolve_workers(workers, count)
 
-    from frontrun._virtual_clock import validate_clock_options
-
-    validate_clock_options(clock, patch_sleep=patch_sleep, serializable_invariant=serializable_invariant)
+    validate_clock_options(
+        clock,
+        patch_sleep=patch_sleep,
+        serializable_invariant=serializable_invariant,
+        clock_diagnostics=clock_diagnostics,
+    )
 
     # A deadlock_timeout left unset resolves per execution mode: process spawn is
     # slow, so it gets a longer default than in-process threads.
