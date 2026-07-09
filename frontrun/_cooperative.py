@@ -230,6 +230,29 @@ def _timed_acquire_cleanup(scheduler: Any, thread_id: int, clock: Any, *, gave_u
         remove_timed_wait(thread_id)
 
 
+def _finish_virtual_timed_wait(scheduler: Any, thread_id: int, deadline: float | None, clock: Any) -> bool:
+    """Resolve a virtual timed wait once the scheduler has finished.
+
+    After the random scheduler exhausts its schedule/op budget it grants no
+    more turns, and the spin loops fall back to real waits.  Under a virtual
+    clock that would freeze the clock and run the timeout on wall time, so the
+    wait must instead observe its own virtual deadline: advance the clock to
+    it (firing earlier due deadlines in order) and deregister the wait.
+    Returns True when resolved virtually — the caller then takes its timeout
+    branch — and False when no virtual deadline is registered or the scheduler
+    lacks the advance hook (DPOR is engine-driven, with no positional budget
+    to exhaust, and keeps its existing finished-path behaviour).
+    """
+    if clock is None or deadline is None:
+        return False
+    advance = getattr(scheduler, "advance_clock_after_finish", None)
+    if advance is None:
+        return False
+    advance(deadline)
+    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=True)
+    return True
+
+
 def _timed_wait_deadline(timeout: float | None, scheduler: Any, thread_id: int) -> tuple[float, Any]:
     """Return ``(deadline, clock)`` for Event/Condition/Queue waits."""
     if timeout is None:
@@ -432,6 +455,8 @@ class CooperativeLock:
                     if scheduler._finished or scheduler._error:
                         if graph is not None:
                             graph.remove_waiting(thread_id, self._object_id)
+                        if not scheduler._error and _finish_virtual_timed_wait(scheduler, thread_id, deadline, clock):
+                            return False
                         _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         result = self._lock.acquire(blocking=blocking, timeout=1.0)
                         if result:
@@ -642,6 +667,8 @@ class CooperativeRLock:
                     if scheduler._finished or scheduler._error:
                         if graph is not None:
                             graph.remove_waiting(thread_id, self._object_id)
+                        if not scheduler._error and _finish_virtual_timed_wait(scheduler, thread_id, deadline, clock):
+                            return False
                         _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         result = self._lock.acquire(blocking=blocking, timeout=1.0)
                         if result:
@@ -899,6 +926,8 @@ class CooperativeSemaphore:
                     self._report("lock_acquire")
                     return True
                 if scheduler._finished:
+                    if _finish_virtual_timed_wait(scheduler, thread_id, deadline, clock):
+                        return False
                     _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     return self._drain_until(_real_monotonic() + 1.0)
                 if note_spin is not None:
@@ -1077,6 +1106,8 @@ class CooperativeEvent:
                 if scheduler._error:
                     raise SchedulerAbort("scheduler aborted")
                 if scheduler._finished:
+                    if _finish_virtual_timed_wait(scheduler, thread_id, deadline, clock):
+                        return self._event.is_set()
                     _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     return self._event.wait(timeout=1.0)
                 if _timed_acquire_expired(deadline, clock):
@@ -1309,6 +1340,9 @@ class CooperativeCondition:
                     if scheduler._error:
                         raise SchedulerAbort("scheduler aborted")
                     if scheduler._finished:
+                        if _finish_virtual_timed_wait(scheduler, thread_id, deadline, clock):
+                            served = my_ticket < self._served
+                            return served
                         # When the scheduler is done, give notifications a
                         # brief window to land (bounded by the remaining
                         # user timeout, if any).  Matches the previous
@@ -1484,6 +1518,8 @@ class CooperativeQueue:
                 except queue.Empty:
                     pass
                 if scheduler._finished:
+                    if _finish_virtual_timed_wait(scheduler, thread_id, deadline, clock):
+                        raise queue.Empty
                     _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     return self._queue.get(block=True, timeout=1.0)
                 if _timed_acquire_expired(deadline, clock):
@@ -1537,6 +1573,8 @@ class CooperativeQueue:
                 except queue.Full:
                     pass
                 if scheduler._finished:
+                    if _finish_virtual_timed_wait(scheduler, thread_id, deadline, clock):
+                        raise queue.Full
                     _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     self._queue.put(item, block=True, timeout=1.0)
                     _note_spin_release(self._object_id)

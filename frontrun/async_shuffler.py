@@ -171,7 +171,15 @@ class AwaitScheduler(InterleavedLoop):
             await _real_asyncio_sleep(0)
             self._progress += 1
             async with self._condition:
-                if self._finished or self._error:
+                if self._error:
+                    return
+                if self._finished:
+                    # Schedule exhausted: the free-running sleep must still
+                    # resolve virtually — advance to its deadline (firing
+                    # earlier due deadlines in order) instead of returning
+                    # with the clock frozen (a silently truncated sleep).
+                    self._advance_clock_to(deadline)
+                    self._condition.notify_all()
                     return
                 self._sleepers[task_id] = deadline
                 self._deadlines.add_sleep(task_id, deadline, wake_id=None)
@@ -179,7 +187,12 @@ class AwaitScheduler(InterleavedLoop):
                 try:
                     wait_started = _real_monotonic()
                     while task_id in self._sleepers:
-                        if self._finished or self._error:
+                        if self._error:
+                            return
+                        if self._finished:
+                            # See the pre-registration check above.
+                            self._advance_clock_to(deadline)
+                            self._condition.notify_all()
                             return
                         alive = [t for t in range(self.num_tasks) if t not in self._tasks_done]
                         if alive and all(t in self._sleepers for t in alive):

@@ -309,7 +309,18 @@ class OpcodeScheduler:
             self._condition.notify_all()
             try:
                 while self._deadlines.is_sleeping(thread_id):
-                    if self._finished or self._error:
+                    if self._error:
+                        return
+                    if self._finished:
+                        # Schedule/op budget exhausted (wait_for_turn hit the
+                        # max_ops cap): no more turns are granted, but the
+                        # sleep must still resolve virtually.  Advance to this
+                        # sleeper's deadline — firing earlier due deadlines in
+                        # order — instead of returning with the clock frozen,
+                        # which would silently truncate the sleep and report a
+                        # phantom TTL/timeout counterexample.
+                        self._advance_clock_to(deadline)
+                        self._condition.notify_all()
                         return
                     alive = [t for t in range(self.num_threads) if t not in self._threads_done]
                     blocked = [t for t in alive if self._blocks_clock_progress(t)]
@@ -324,7 +335,7 @@ class OpcodeScheduler:
                         continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         if self._finished or self._error:
-                            return
+                            continue  # dispatch via the loop-top checks
                         self._error = TimeoutError(
                             f"Deadlock: thread {thread_id} sleeping until t={deadline} was never woken"
                         )
@@ -332,6 +343,20 @@ class OpcodeScheduler:
                         return
             finally:
                 self._deadlines.cancel_sleep(thread_id)
+
+    def advance_clock_after_finish(self, deadline: float) -> None:
+        """Advance the clock to a timed wait's deadline after schedule exhaustion.
+
+        Called by cooperative timed waits (via
+        ``_cooperative._finish_virtual_timed_wait``) once ``_finished`` is set:
+        no more turns are granted, but a registered virtual timeout must still
+        elapse on the virtual clock rather than degrading to a real wait with
+        the clock frozen.  Fires earlier due deadlines in order (see
+        :meth:`_advance_clock_to`).
+        """
+        with self._condition:
+            self._advance_clock_to(deadline)
+            self._condition.notify_all()
 
     def note_blocking_spin(self, thread_id: int, resource_id: int, waiting: bool, *, timed_wait: bool = False) -> None:
         """Flag *thread_id* as spinning on an untimed cooperative wait.
