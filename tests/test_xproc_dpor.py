@@ -9,6 +9,7 @@ relay/engine integration deterministically without spawning subprocesses.
 from __future__ import annotations
 
 import threading
+import time
 
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
@@ -329,6 +330,29 @@ def test_dpor_single_statement_conflict_found_deterministically() -> None:
         assert result.iterations == 2, (
             f"attempt {attempt}: expected the reversal on the second execution, got {result.iterations}"
         )
+
+
+def test_dpor_scheduler_timeout_is_a_failure_not_a_pass() -> None:
+    # Regression: a deadlock_timeout expiry (unmodeled DB-level blocking, or a
+    # statement slower than deadlock_timeout) aborts all workers and skips the
+    # invariant — but used to count as a clean pass, so an exploration whose
+    # invariant is ALWAYS False could report ok=True with exhausted=True. A
+    # scheduler timeout must surface as a structured failing result instead.
+    def slow(proxy) -> None:
+        proxy.io_report("sql:t:id=1", "write")
+        proxy.report_and_wait(None, 0)
+        time.sleep(1.5)  # "statement" slower than deadlock_timeout
+
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=0.5)
+    result = coord.explore(
+        worker_set=ThreadLauncher([slow, slow]),
+        setup=lambda: None,
+        invariant=lambda: False,
+    )
+    assert not result.ok, "scheduler timeout was scored as a pass despite an always-False invariant"
+    assert result.failure_kind == "timeout"
+    assert "deadlock_timeout" in (result.failure or "")
+    assert not result.exhausted
 
 
 def test_dpor_no_race_when_safe() -> None:
