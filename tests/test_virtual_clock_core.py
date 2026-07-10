@@ -9,6 +9,7 @@ deadline coordinator's thread-safety) rather than going through a full
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime as dt
 import threading
 import time
@@ -165,6 +166,162 @@ def test_virtual_datetime_direct_constructors_return_real_concrete_types() -> No
     assert type(day) is real_date
     assert timestamp == real_datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc)
     assert day == real_date(2026, 1, 2)
+
+
+# ---------------------------------------------------------------------------
+# User subclasses of the patched datetime/date classes.
+# ---------------------------------------------------------------------------
+
+
+def test_datetime_subclass_defined_inside_scope_behaves_like_stdlib_subclass() -> None:
+    """A ``datetime.datetime`` subclass defined inside the patch scope must work.
+
+    Real libraries subclass datetime (e.g. ``pandas.Timestamp``); if such a
+    library is imported lazily inside a clock scope its subclass bases the
+    virtual class.  Construction must preserve the subclass (not silently
+    return a plain real datetime), and isinstance/issubclass against the
+    subclass must stay exact — only the virtual base class itself is
+    transparent to the real type.
+    """
+    with clock_scope(VirtualClock()):
+
+        class MyDT(dt.datetime):
+            def tag(self) -> str:
+                return f"tagged-{self.year}"
+
+        value = MyDT(2020, 1, 1)
+        assert type(value) is MyDT
+        assert value.tag() == "tagged-2020"
+        assert (value.year, value.month, value.day) == (2020, 1, 1)
+
+        # Keyword construction goes through the same __new__ path.
+        kw = MyDT(year=2021, month=2, day=3)
+        assert type(kw) is MyDT
+        assert kw.tag() == "tagged-2021"
+
+        # isinstance/issubclass against the *subclass* must be exact: a plain
+        # datetime is not a MyDT, and the patched base is not a MyDT subclass.
+        assert not isinstance(dt.datetime(1999, 1, 1), MyDT)
+        assert not issubclass(dt.datetime, MyDT)
+        # ...but subclass instances are instances of the (patched) base.
+        assert isinstance(value, dt.datetime)
+        assert issubclass(MyDT, dt.datetime)
+
+        # copy/deepcopy round-trip via __reduce_ex__ (the pickle path) must
+        # preserve the subclass, like stdlib datetime subclasses do.
+        assert type(copy.copy(value)) is MyDT
+        deep = copy.deepcopy(value)
+        assert type(deep) is MyDT
+        assert deep == value
+        # The pickle bytes-state constructor form directly.
+        reduce_cls, reduce_args = value.__reduce__()
+        rebuilt = reduce_cls(*reduce_args)
+        assert type(rebuilt) is MyDT
+        assert rebuilt == value
+
+    # After the scope unwinds: instances remain valid, comparable, and exact.
+    assert value.tag() == "tagged-2020"
+    assert isinstance(value, MyDT)
+    assert isinstance(value, dt.datetime)
+    assert not isinstance(dt.datetime(1999, 1, 1), MyDT)
+    assert value == dt.datetime(2020, 1, 1)
+
+
+def test_date_subclass_defined_inside_scope_behaves_like_stdlib_subclass() -> None:
+    with clock_scope(VirtualClock()):
+
+        class MyDate(dt.date):
+            def tag(self) -> str:
+                return f"tagged-{self.year}"
+
+        value = MyDate(2020, 1, 1)
+        assert type(value) is MyDate
+        assert value.tag() == "tagged-2020"
+        assert (value.year, value.month, value.day) == (2020, 1, 1)
+
+        kw = MyDate(year=2021, month=2, day=3)
+        assert type(kw) is MyDate
+
+        assert not isinstance(dt.date(1999, 1, 1), MyDate)
+        assert not issubclass(dt.date, MyDate)
+        assert isinstance(value, dt.date)
+        assert issubclass(MyDate, dt.date)
+
+        assert type(copy.copy(value)) is MyDate
+        assert type(copy.deepcopy(value)) is MyDate
+
+    assert value.tag() == "tagged-2020"
+    assert isinstance(value, MyDate)
+    assert value == dt.date(2020, 1, 1)
+
+
+def test_datetime_subclass_classmethods_return_subclass_and_virtual_time() -> None:
+    """``MyDT.now()`` etc. must return the subclass *and* virtual time.
+
+    Matches stdlib semantics: alternate constructors called on a subclass
+    return the subclass.  Under an active virtual clock they must still read
+    virtual (not wall) time.
+    """
+    clock = VirtualClock()
+    with clock_scope(clock):
+
+        class MyDT(dt.datetime):
+            pass
+
+        now = MyDT.now()
+        assert type(now) is MyDT
+        assert now.timestamp() == pytest.approx(VIRTUAL_EPOCH)
+
+        aware = MyDT.now(dt.timezone.utc)
+        assert type(aware) is MyDT
+        assert aware.timestamp() == pytest.approx(VIRTUAL_EPOCH)
+        assert aware.tzinfo is dt.timezone.utc
+
+        utc = MyDT.utcnow()
+        assert type(utc) is MyDT
+        assert utc.tzinfo is None
+
+        ts = MyDT.fromtimestamp(123_456.0, dt.timezone.utc)
+        assert type(ts) is MyDT
+        assert ts.timestamp() == pytest.approx(123_456.0)
+        assert type(MyDT.utcfromtimestamp(123_456.0)) is MyDT
+
+        class MyDate(dt.date):
+            pass
+
+        today = MyDate.today()
+        assert type(today) is MyDate
+        assert today == dt.datetime.fromtimestamp(clock.now()).date()
+        assert type(MyDate.fromtimestamp(123_456.0)) is MyDate
+
+
+def test_plain_datetime_behavior_unchanged_by_subclass_support() -> None:
+    """Regression guard: the base virtual classes keep their existing contract.
+
+    Plain construction inside the scope still yields exactly the real concrete
+    type (no virtual type leaking out of the scope), ``now()`` still reads
+    virtual time, and instances created inside the scope stay valid and
+    comparable after the scope exits.
+    """
+    real_datetime = dt.datetime
+    real_date = dt.date
+    clock = VirtualClock()
+    with clock_scope(clock):
+        made = dt.datetime(2020, 1, 1)
+        day = dt.date(2020, 1, 1)
+        now = dt.datetime.now()
+        assert type(made) is real_datetime
+        assert type(day) is real_date
+        assert type(now) is real_datetime
+        assert now.timestamp() == pytest.approx(VIRTUAL_EPOCH)
+        # The transparent-base isinstance behavior is preserved.
+        assert isinstance(made, dt.datetime)
+        assert isinstance(day, dt.date)
+
+    assert made == dt.datetime(2020, 1, 1)
+    assert day == dt.date(2020, 1, 1)
+    assert made < dt.datetime(2021, 1, 1)
+    assert isinstance(made, dt.datetime)
 
 
 # ---------------------------------------------------------------------------
