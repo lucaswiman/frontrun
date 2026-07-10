@@ -883,6 +883,140 @@ def test_queue_deadlock_detected_exactly() -> None:
     assert wall_elapsed < 1.0, f"queue deadlock took {wall_elapsed:.1f}s to report (wall-clock fallback?)"
 
 
+def test_event_deadlock_reproduces_under_virtual_clock() -> None:
+    """An exact virtual-clock deadlock must reproduce N/N under replay.
+
+    The replay schedulers historically had no exact-deadlock detection:
+    ``ReplayExecution.block_thread`` is a no-op, so Event waiters spun
+    through the positional schedule, exhausted the op budget, and died with
+    a plain ``TimeoutError`` after ``deadlock_timeout`` — every reproduction
+    attempt scored 0 and burned ~``deadlock_timeout`` of wall time.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.e1 = threading.Event()
+            self.e2 = threading.Event()
+
+    def w1(s: State) -> None:
+        s.e1.wait()
+        s.e2.set()
+
+    def w2(s: State) -> None:
+        s.e2.wait()
+        s.e1.set()
+
+    wall_start = time.monotonic()
+    result = frontrun.explore(
+        setup=State,
+        workers=[w1, w2],
+        invariant=lambda s: True,
+        clock="virtual",
+        deadlock_timeout=2.0,
+        timeout_per_run=3.0,
+        reproduce_on_failure=3,
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert not result.property_holds
+    assert "deadlock" in str(result.explanation).lower()
+    assert result.reproduction_attempts == 3
+    assert result.reproduction_successes == 3, (
+        f"Event-cycle deadlock reproduced {result.reproduction_successes}/{result.reproduction_attempts}; "
+        "replay must detect the exact deadlock and raise DeadlockError"
+    )
+    assert wall_elapsed < 5.0, f"deadlock reproduction took {wall_elapsed:.1f}s (deadlock_timeout burned per attempt?)"
+
+
+def test_queue_deadlock_reproduces_under_virtual_clock() -> None:
+    """queue.get() cycle variant of the reproduction test above."""
+
+    class State:
+        def __init__(self) -> None:
+            self.q: queue.Queue[str] = queue.Queue()
+
+    def worker(s: State) -> None:
+        s.q.get()
+
+    wall_start = time.monotonic()
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker, worker],
+        invariant=lambda s: True,
+        clock="virtual",
+        deadlock_timeout=2.0,
+        timeout_per_run=3.0,
+        reproduce_on_failure=3,
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert not result.property_holds
+    assert "deadlock" in str(result.explanation).lower()
+    assert result.reproduction_attempts == 3
+    assert result.reproduction_successes == 3, (
+        f"queue.get() deadlock reproduced {result.reproduction_successes}/{result.reproduction_attempts}; "
+        "replay must detect the exact deadlock and raise DeadlockError"
+    )
+    assert wall_elapsed < 5.0, f"deadlock reproduction took {wall_elapsed:.1f}s (deadlock_timeout burned per attempt?)"
+
+
+def test_spin_flag_registry_purge_helper() -> None:
+    """_purge_spin_schedulers drops exactly the entries recorded against one scheduler."""
+    from frontrun import _cooperative as coop
+
+    sched_a = object()
+    sched_b = object()
+    coop._record_spin_scheduler(101, 0, sched_a)
+    coop._record_spin_scheduler(101, 1, sched_b)
+    coop._record_spin_scheduler(202, 0, sched_a)
+    try:
+        coop._purge_spin_schedulers(sched_a)
+        assert coop._spin_schedulers_for(101) == [sched_b]
+        assert coop._spin_schedulers_for(202) == []
+        assert 202 not in coop._spin_flag_schedulers  # empty per-resource dicts are dropped
+        coop._purge_spin_schedulers(sched_b)
+        assert coop._spin_schedulers_for(101) == []
+    finally:
+        # Never leave test fixtures behind in the module-global registry.
+        coop._purge_spin_schedulers(sched_a)
+        coop._purge_spin_schedulers(sched_b)
+
+
+def test_spin_flag_registry_does_not_retain_dpor_schedulers() -> None:
+    """The module-global spin-flag registry must not keep DPOR schedulers alive.
+
+    Entries are keyed by ``id(primitive)``, so a stale entry can alias a new
+    primitive that reuses the id — and each entry strongly references its
+    scheduler.  Scheduler teardown must purge its entries.
+    """
+    from frontrun import _cooperative as coop
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    class State:
+        def __init__(self) -> None:
+            self.q: queue.Queue[str] = queue.Queue()
+            self.timed_out = False
+
+    def worker(s: State) -> None:
+        # Untimed spin flags come from the queue poll; the timeout exercises
+        # the timed-wait flag path as well.
+        try:
+            s.q.get(timeout=0.5)
+        except queue.Empty:
+            s.timed_out = True
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=lambda s: s.timed_out,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+    leftover = [sched for per_resource in coop._spin_flag_schedulers.values() for sched in per_resource.values()]
+    assert not [s for s in leftover if isinstance(s, DporScheduler)], (
+        "DPOR schedulers leaked in _spin_flag_schedulers after explore() finished"
+    )
+
+
 def test_event_set_clear_race_is_detected_without_waiters() -> None:
     class State:
         def __init__(self) -> None:
