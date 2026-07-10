@@ -74,6 +74,39 @@ class TestStringCommands:
         assert "mykey" in result.write_keys
 
 
+class TestBytesKeys:
+    """redis-py accepts ``bytes`` keys; they must map to the same resource ID as ``str``.
+
+    redis-py forwards the raw user args to ``execute_command`` before its
+    connection layer encodes them, so a key passed as ``bytes`` reaches the
+    parser as ``bytes``.  ``str(b"k")`` yields the repr ``"b'k'"`` — a *different*
+    resource ID than the same key passed as ``str`` — so two workers touching the
+    same logical key would look disjoint to DPOR and a real race would be missed.
+    """
+
+    def test_get_bytes_key(self) -> None:
+        result = parse_redis_access("GET", (b"mykey",))
+        assert result.read_keys == ["mykey"]
+
+    def test_set_bytes_key(self) -> None:
+        result = parse_redis_access("SET", (b"counter", b"1"))
+        assert "counter" in result.read_keys
+        assert "counter" in result.write_keys
+
+    def test_bytes_and_str_same_key_collapse(self) -> None:
+        bytes_keys = parse_redis_access("INCR", (b"counter",)).write_keys
+        str_keys = parse_redis_access("INCR", ("counter",)).write_keys
+        assert bytes_keys == str_keys == ["counter"]
+
+    def test_mset_bytes_keys(self) -> None:
+        result = parse_redis_access("MSET", (b"k1", b"v1", b"k2", b"v2"))
+        assert result.write_keys == ["k1", "k2"]
+
+    def test_publish_bytes_channel(self) -> None:
+        result = parse_redis_access("PUBLISH", (b"chan", b"msg"))
+        assert result.write_keys == ["channel:chan"]
+
+
 class TestHashCommands:
     """Test classification of Redis hash commands."""
 
