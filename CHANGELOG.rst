@@ -37,7 +37,61 @@ Unreleased
   ``reproduce_on_failure=`` with async random), extending the process branch's
   no-silent-no-op principle to every entry path. Code that passed such options
   before relied on them silently doing nothing — drop the option or switch
-  strategy.
+  strategy. Newly covered by the same principle: ``reuse_workers=True`` with
+  thread execution (previously a silent no-op) now raises, ``explore_processes``
+  rejects ``max_iterations`` under ``strategy="dpor"`` (it only bounds the
+  exhaustive coordinator — use ``max_executions``) and the DPOR knobs under
+  ``strategy="exhaustive"``, and every process-branch rejection message now
+  follows the same sentence shape as the thread-branch ones (what was passed,
+  why it is invalid, what to do instead).
+
+  *Caveat:* explicit-option detection is value-based — an option passed at its
+  signature default is indistinguishable from an omitted one, so e.g.
+  ``explore(..., seed=None, strategy="dpor")`` is accepted (a no-op either
+  way).
+
+* **Mixed sync/async worker lists are rejected eagerly.** Passing a mix of
+  ``async def`` and plain ``def`` workers to ``frontrun.explore(...)``
+  previously routed the whole list to the async engine, silently mishandling
+  the sync workers. It now raises ``ValueError`` up front: make every worker a
+  coroutine function (asyncio tasks) or every worker a plain callable
+  (threads).
+
+* **Structured process-mode results.** ``CrossProcessResult`` is now exported
+  at the top level (``frontrun.CrossProcessResult``) and carries a
+  ``failures`` list of every failing ``(execution_number, schedule)`` pair —
+  the DPOR strategy accumulates all of them with the new
+  ``stop_on_first=False``. ``explore_processes`` also gains the thread-mode
+  DPOR knobs ``stop_on_first``, ``total_timeout``, ``search``, and
+  ``max_branches``. The ``InterleavingResult`` returned by
+  ``explore(execution="process")`` no longer flattens everything into the
+  explanation string: it gains ``exhausted`` and ``failure_kind`` fields and
+  populates ``failures``, alongside the human-readable ``explanation``
+  (thread/async results leave ``exhausted`` as ``None`` — they do not report
+  it yet).
+
+* **Cross-process robustness.** Iteration liveness is now judged on relay
+  *progress* rather than wall time, so a long-but-healthy run is no longer
+  aborted mid-flight; a worker that stays connected but silent past
+  ``deadlock_timeout`` is diagnosed as ``failure_kind="timeout"`` (with
+  raise-``deadlock_timeout`` advice) instead of a misleading "worker
+  disconnected"; and the exhaustive coordinator bounds each run with
+  ``max_steps_per_run`` (``failure_kind="step_limit"``) so a nonterminating
+  worker cannot hang exploration forever.
+
+* **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
+  ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
+  dispatch on the subclass instead of always returning the patched base
+  class). Async ``asyncio.timeout`` deadlines fire at exact virtual times,
+  ``asyncio.wait_for`` on a bare future is a schedulable wait, and
+  ``Condition.wait_for`` timeouts behave consistently across supported Python
+  versions.
+
+* **Replay fixes.** Replaying a counterexample now reproduces exact deadlocks
+  (a replayed schedule that ends in the discovered deadlock no longer aborts
+  the replay machinery) and timed-wait expiries under IO-anchored replay, so
+  ``reproduce_on_failure`` statistics stay meaningful for deadlock- and
+  timeout-shaped counterexamples.
 
 * **DPOR correctness.** Accesses after ``await`` are now attributed before
   scheduling successors, ``asyncio.Lock`` / event state races replay

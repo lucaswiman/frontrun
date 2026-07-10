@@ -55,7 +55,10 @@ def _to_interleaving_result(result: CrossProcessResult) -> Any:
         counterexample=result.failing_schedule,
         num_explored=result.iterations,
         unique_interleavings=result.iterations,
+        failures=[(num, list(schedule)) for num, schedule in result.failures],
         explanation=explanation,
+        exhausted=result.exhausted,
+        failure_kind=result.failure_kind,
     )
 
 
@@ -159,6 +162,10 @@ def explore_processes(
     max_iterations: int = 4096,
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
+    max_branches: int = 100_000,
+    total_timeout: float | None = None,
+    stop_on_first: bool = True,
+    search: str | None = None,
     deadlock_timeout: float = 15.0,
     reuse_workers: bool = False,
 ) -> CrossProcessResult:
@@ -179,10 +186,19 @@ def explore_processes(
     * ``"dpor"`` (default) drives the Rust DPOR engine, pruning equivalent
       interleavings (partial-order reduction) and detecting cross-worker
       ``SELECT FOR UPDATE`` deadlocks. ``max_executions`` / ``preemption_bound``
-      tune the search.
+      / ``max_branches`` / ``total_timeout`` bound the search, ``search``
+      selects the wakeup-tree traversal order, and ``stop_on_first=False``
+      keeps exploring after a failure, accumulating every failing execution in
+      ``CrossProcessResult.failures``.
     * ``"exhaustive"`` brute-forces every interleaving at external-access
       granularity, bounded by ``max_iterations``. Useful as a reduction-free
       cross-check.
+
+    Each strategy rejects the other's bounds when passed explicitly (a
+    silently ignored option is a correctness footgun): ``max_iterations`` is
+    exhaustive-only; the DPOR knobs above are DPOR-only. Explicit-option
+    detection is value-based, so passing a knob at its default value is
+    indistinguishable from omitting it.
     """
     specs = _resolve_specs(processes, count)
     if not specs:
@@ -193,11 +209,23 @@ def explore_processes(
     # invariant(state) here to match explore(execution="process").
     coord_setup, coord_invariant, _ = _state_threaded_hooks(setup, invariant)
     if strategy == "dpor":
+        # Exhaustive-only knobs must not silently no-op: the DPOR branch never
+        # reads max_iterations (4096 is the signature default; anything else
+        # was explicit).
+        if max_iterations != 4096:
+            raise ValueError(
+                "explore_processes(): max_iterations only applies to strategy='exhaustive'; "
+                "bound strategy='dpor' with max_executions instead."
+            )
         return DporCrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,
             max_executions=max_executions,
             preemption_bound=preemption_bound,
+            max_branches=max_branches,
+            total_timeout=total_timeout,
+            stop_on_first=stop_on_first,
+            search=search,
             reuse_workers=reuse_workers,
         ).explore(
             worker_set=SubprocessLauncher(specs, reuse=reuse_workers), setup=coord_setup, invariant=coord_invariant
@@ -213,6 +241,20 @@ def explore_processes(
             )
         if preemption_bound != 2:  # 2 is the signature default; anything else was explicit
             raise ValueError("explore_processes(): preemption_bound only applies to strategy='dpor'.")
+        if max_branches != 100_000:  # 100_000 is the signature default; anything else was explicit
+            raise ValueError("explore_processes(): max_branches only applies to strategy='dpor'.")
+        if total_timeout is not None:
+            raise ValueError(
+                "explore_processes(): total_timeout only applies to strategy='dpor'; "
+                "bound strategy='exhaustive' with max_iterations instead."
+            )
+        if stop_on_first is not True:
+            raise ValueError(
+                "explore_processes(): stop_on_first only applies to strategy='dpor'; "
+                "the exhaustive coordinator always stops at the first failure."
+            )
+        if search is not None:
+            raise ValueError("explore_processes(): search only applies to strategy='dpor'.")
         return CrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,

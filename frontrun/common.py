@@ -34,6 +34,16 @@ def any_async(fns: Iterable[Any]) -> bool:
     return any(_is_async_callable(fn) for fn in fns if callable(fn))
 
 
+def all_async(fns: Iterable[Any]) -> bool:
+    """Return True if every callable element is a coroutine function.
+
+    Mirror of :func:`any_async`; the two together let dispatchers reject a
+    *mixed* sync/async worker list eagerly instead of misrouting the sync
+    workers into the async engine. Non-callables are ignored.
+    """
+    return all(_is_async_callable(fn) for fn in fns if callable(fn))
+
+
 def check_invariant(invariant: Callable[[Any], Any], state: Any) -> tuple[bool, str | None]:
     """Evaluate *invariant* on *state*, tolerating ``AssertionError``.
 
@@ -115,8 +125,10 @@ class InterleavingResult:
             Provides a lower bound on interleaving-space coverage.  Relevant
             for random bytecode exploration; DPOR always explores distinct
             interleavings so this equals ``num_explored``.
-        failures: All failing (execution_number, schedule) pairs.  Only
-            populated by DPOR when ``stop_on_first=False``.
+        failures: All failing (execution_number, schedule) pairs.  Populated
+            by DPOR (thread and process execution); holds every failing
+            execution when ``stop_on_first=False``, otherwise at most the
+            first.
         explanation: Human-readable explanation of the race condition, showing
             interleaved source lines and the conflict pattern. None if no
             race was found.
@@ -127,6 +139,17 @@ class InterleavingResult:
         sql_anomaly: Classified SQL isolation anomaly (if any SQL I/O events
             were recorded).  A :class:`~frontrun._sql_anomaly.SqlAnomaly`
             instance, or None if the failure did not involve SQL.
+        exhausted: Whether the search space was fully covered.  Populated by
+            ``execution="process"`` (from
+            :class:`~frontrun.CrossProcessResult` ``.exhausted``); ``None``
+            means the mode that produced this result does not report it
+            (thread/async execution currently leaves it unset).
+        failure_kind: Structured category of the failure for
+            ``execution="process"`` — one of ``"invariant"``,
+            ``"worker_error"``, ``"deadlock"``, ``"timeout"``,
+            ``"nondeterministic"``, ``"step_limit"``.  ``None`` when the
+            invariant held or for thread/async execution (which encodes the
+            failure in ``explanation`` only).
     """
 
     property_holds: bool
@@ -139,6 +162,8 @@ class InterleavingResult:
     reproduction_successes: int = 0
     sql_anomaly: SqlAnomaly | None = None
     races_detected: bool = False
+    exhausted: bool | None = None
+    failure_kind: str | None = None
 
     def assert_holds(self, msg_prefix: str = "") -> None:
         """Raise AssertionError with the race explanation if the invariant failed.

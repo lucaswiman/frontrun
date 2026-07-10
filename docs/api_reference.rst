@@ -40,6 +40,9 @@ are the lower-level entry point.
 .. autoclass:: frontrun.Subprocess
    :members:
 
+.. autoclass:: frontrun.CrossProcessResult
+   :members:
+
 
 Trace Markers
 --------------
