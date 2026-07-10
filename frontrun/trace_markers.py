@@ -515,9 +515,17 @@ def explore_marker_interleavings(
             # Schedule stall — treat as non-violation and skip
             num_explored += 1
             continue
-        except Exception:
-            # Thread raised an exception — treat as invariant violation
+        except Exception as exc:
+            # Thread raised an exception — treat as invariant violation.  Capture
+            # the exception detail so it surfaces in ``explanation`` (matching how
+            # invariant failures report ``assertion_msg``); otherwise the
+            # counterexample carries no reason, and with ``stop_on_first=False`` a
+            # later invariant failure's message would be mis-paired with this
+            # exception's schedule (``first_explanation`` was only set below).
             num_explored += 1
+            explanation = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            if first_explanation is None:
+                first_explanation = explanation
             failures.append((i, schedule))
             if stop_on_first:
                 return InterleavingResult(
@@ -525,6 +533,7 @@ def explore_marker_interleavings(
                     counterexample=schedule,
                     num_explored=num_explored,
                     unique_interleavings=num_explored,
+                    explanation=explanation,
                 )
             continue
 
