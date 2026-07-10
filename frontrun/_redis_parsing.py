@@ -65,6 +65,27 @@ class RedisAccessResult(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
+# Argument normalization
+# ---------------------------------------------------------------------------
+
+
+def _decode_arg(arg: object) -> object:
+    """Decode a ``bytes``/``bytearray`` command arg to ``str``.
+
+    redis-py forwards the raw user args to ``execute_command`` before its
+    connection layer encodes them, so a key passed as ``bytes`` reaches the
+    parser as ``bytes``.  ``str(b"k")`` yields the repr ``"b'k'"`` — a *different*
+    resource ID than the same key passed as ``str`` — so two workers touching the
+    same logical key would look disjoint to DPOR and a real race would be missed.
+    Decode to ``str`` (UTF-8, ``surrogateescape`` for non-UTF-8 binary keys) so
+    both forms collapse to a single resource ID.
+    """
+    if isinstance(arg, (bytes, bytearray)):
+        return bytes(arg).decode("utf-8", "surrogateescape")
+    return arg
+
+
+# ---------------------------------------------------------------------------
 # Generic key-spec interpreter
 # ---------------------------------------------------------------------------
 
@@ -251,6 +272,9 @@ def parse_redis_access(cmd_name: str, cmd_args: tuple[object, ...]) -> RedisAcce
         database-wide keyspace intent-lock kind (see ``_keyspace_kind``).
     """
     upper = cmd_name.upper()
+    # Normalize bytes args to str up front so bytes and str spellings of the
+    # same key collapse to one resource ID (see ``_decode_arg``).
+    cmd_args = tuple(_decode_arg(a) for a in cmd_args)
     result = _parse_redis_access_keys(upper, cmd_args)
     # Use the *normalized* command for keyspace classification (compound names
     # like "XGROUP CREATE" are split inside the helper, but our keyspace sets
