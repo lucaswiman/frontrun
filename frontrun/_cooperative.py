@@ -304,6 +304,24 @@ def _forget_spin_scheduler(resource_id: int, thread_id: int) -> None:
             _spin_flag_schedulers.pop(resource_id, None)
 
 
+def _purge_spin_schedulers(scheduler: Any) -> None:  # pyright: ignore[reportUnusedFunction]  # used by DPOR scheduler teardown
+    """Drop every registry entry recorded against *scheduler* (teardown hook).
+
+    The registry is module-global and strongly references schedulers, keyed by
+    ``(id(primitive), thread_id)``.  Without a purge, a scheduler whose waiters
+    never unflagged (aborted run, killed thread) stays alive forever, and a new
+    primitive that reuses a dead primitive's ``id()`` would route
+    ``_note_spin_release`` to the previous execution's scheduler.
+    """
+    with _spin_flag_lock:
+        for resource_id, schedulers in list(_spin_flag_schedulers.items()):
+            for thread_id, sched in list(schedulers.items()):
+                if sched is scheduler:
+                    del schedulers[thread_id]
+            if not schedulers:
+                del _spin_flag_schedulers[resource_id]
+
+
 def _spin_schedulers_for(resource_id: int) -> list[Any]:
     """Distinct schedulers a waiter flagged a spin on *resource_id* with."""
     with _spin_flag_lock:
@@ -880,9 +898,11 @@ class CooperativeSemaphore:
                     return False
                 time.sleep(0.001)
 
-        # Spin-yield loop for managed threads.  Timeout is intentionally
-        # ignored here: DPOR/bytecode schedulers drive progress themselves,
-        # and shutdown drains via ``_finished`` below.
+        # Spin-yield loop for managed threads.  A timeout is honoured through
+        # _timed_acquire_state below: under a virtual clock it registers a
+        # schedulable deadline with the scheduler; otherwise the deadline is
+        # checked against the wall clock on every probe.  Shutdown drains via
+        # ``_finished`` below.
         scheduler, thread_id = ctx
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)

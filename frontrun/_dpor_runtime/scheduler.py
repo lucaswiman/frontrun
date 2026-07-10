@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import weakref
 
+from frontrun._cooperative import _purge_spin_schedulers
 from frontrun._dpor_core import ReplayEngine as _ReplayEngine
 from frontrun._dpor_core import ReplayExecution as _ReplayExecution
 from frontrun._dpor_core import (
@@ -249,10 +250,22 @@ class DporScheduler:
             self._worker_thread_keys.discard(key)
 
     def _has_live_external_threads(self) -> bool:
-        # WeakSet auto-drops dead baseline threads, so resolving ids here never
-        # subtracts a stale id that a new external thread might have reused.
-        baseline_ids = {id(t) for t in self._baseline_thread_keys}
-        current = {id(t) for t in threading.enumerate() if t.is_alive()}
+        from frontrun._cooperative import _scheduler_tls
+
+        # threading.enumerate() / Thread.is_alive() touch patched cooperative
+        # primitives (Thread._started is a CooperativeEvent whose is_set()
+        # reports and yields).  Hold the reentrancy guard so those calls fall
+        # back to the real primitives — callers hold scheduler locks, and a
+        # yield here would re-enter the non-reentrant condition (defect #7).
+        prev_machinery = getattr(_scheduler_tls, "_in_dpor_machinery", False)
+        _scheduler_tls._in_dpor_machinery = True
+        try:
+            # WeakSet auto-drops dead baseline threads, so resolving ids here never
+            # subtracts a stale id that a new external thread might have reused.
+            baseline_ids = {id(t) for t in self._baseline_thread_keys}
+            current = {id(t) for t in threading.enumerate() if t.is_alive()}
+        finally:
+            _scheduler_tls._in_dpor_machinery = prev_machinery
         external = current - baseline_ids - self._worker_thread_keys
         return bool(external)
 
@@ -932,6 +945,12 @@ class DporScheduler:
                     self._current_thread = next_thread
                     if next_thread is None and len(self._threads_done) >= self.num_threads:
                         self._finished = True
+                # Once every worker finished, this execution's scheduler is
+                # done: drop its entries from the module-global spin-flag
+                # registry so it cannot be retained (or aliased by a new
+                # primitive reusing a dead primitive's id()).
+                if len(self._threads_done) >= self.num_threads:
+                    _purge_spin_schedulers(self)
                 self._condition.notify_all()
             finally:
                 _scheduler_tls._in_dpor_machinery = False
@@ -972,6 +991,10 @@ class DporScheduler:
             if self._error is None:
                 self._error = error
             self._condition.notify_all()
+        # An erroring execution may kill worker threads before they reach
+        # mark_done — purge here as well so a wedged run cannot leave this
+        # scheduler strongly referenced in the spin-flag registry.
+        _purge_spin_schedulers(self)
 
     def _capture_switch_point(self, frame: Any, from_thread: int, to_thread: int) -> None:
         """Capture a SwitchPoint when the scheduler switches threads."""
@@ -1157,7 +1180,10 @@ class DporScheduler:
         and dragging every earlier deadline due.  Recorded timeout expiries are
         already replayed via the clock-actor entry handling in
         ``_ReplayDporScheduler._schedule_next`` plus the owed-advance
-        bookkeeping.  (The async twin only checks sleepers as well; see
+        bookkeeping; the IO-anchored replay, whose schedule carries no
+        clock-actor entries, handles them in
+        ``_IOAnchoredReplayScheduler._replay_wake_current_timed_waiter``.
+        (The async twin only checks sleepers as well; see
         ``async_dpor.py::should_proceed``.)
         """
         cur = self._current_thread
@@ -1167,6 +1193,77 @@ class DporScheduler:
         if deadline is None:
             return False
         self._replay_advance_clock_to(deadline)
+        self._condition.notify_all()
+        return True
+
+    def _replay_blocked_threads_unlocked(self) -> set[int]:
+        """Thread ids blocked on a cooperative wait, as seen by replay.
+
+        Replay has no engine runnable-set (``ReplayExecution`` block/unblock are
+        no-ops), so blockedness is reconstructed from the Python-side
+        registries: pending virtual-clock deadlines and blocking-spin flags
+        (clock port) plus cooperative lock/event waiters (``_lock_waiters``,
+        maintained by the sync reporter in exploration and replay alike).
+        Caller must hold ``self._condition``.
+        """
+        with self._engine_lock:
+            blocked = {tid for waiters in self._lock_waiters.values() for tid in waiters}
+        blocked.update(t for t in range(self.num_threads) if self._clock_port.blocks_clock_progress(t))
+        return blocked
+
+    def _replay_all_live_blocked_unlocked(self) -> bool:
+        """Whether every live thread is blocked on a cooperative wait (replay view)."""
+        live = [t for t in range(self.num_threads) if t not in self._threads_done]
+        if not live:
+            return False
+        blocked = self._replay_blocked_threads_unlocked()
+        return all(t in blocked for t in live)
+
+    def _replay_check_exact_deadlock_unlocked(self) -> bool:
+        """Detect an exact deadlock during replay (caller holds ``self._condition``).
+
+        The base scheduler detects exact deadlocks in ``_schedule_next`` via the
+        engine's empty runnable set; the replay subclasses override
+        ``_schedule_next`` and never consult an engine, so a replayed deadlock
+        would otherwise spin through the positional/IO-anchored schedule and die
+        with a plain ``TimeoutError`` after ``deadlock_timeout`` — scoring the
+        reproduction attempt as a failure and burning wall time.  Mirrors
+        ``_check_exact_deadlock_locked``: every live thread is blocked, no
+        deadline is pending, and no external thread could unblock a waiter, so
+        no transition can ever become enabled.  Confirmed after the same short
+        window (``_EXACT_DEADLOCK_CONFIRM_SECONDS``) to tolerate transient
+        all-blocked states.  Returns True when a :class:`DeadlockError` was
+        recorded.
+        """
+        if (
+            self.virtual_clock is None
+            or self._error is not None
+            or self._finished
+            or len(self._threads_done) >= self.num_threads
+        ):
+            return False
+        if (
+            not self._replay_all_live_blocked_unlocked()
+            or self._deadlines.has_pending()
+            or self._has_live_external_threads()
+        ):
+            self._exact_deadlock_candidate_at = None
+            return False
+        now = real_monotonic()
+        if self._exact_deadlock_candidate_at is None:
+            self._exact_deadlock_candidate_at = now
+            return False
+        if now - self._exact_deadlock_candidate_at < _EXACT_DEADLOCK_CONFIRM_SECONDS:
+            return False
+        with self._engine_lock:
+            lock_blocked = {tid for waiters in self._lock_waiters.values() for tid in waiters}
+        desc = format_exact_deadlock_desc(
+            noun="threads",
+            sleepers=self._deadlines.sleeping_actors(),
+            spin_waiters=sorted(set(self._spin_waiters) | lock_blocked),
+            done=sorted(self._threads_done),
+        )
+        self._error = DeadlockError(f"Deadlock detected by virtual clock: {desc}", desc)
         self._condition.notify_all()
         return True
 
@@ -1471,6 +1568,14 @@ class _ReplayDporScheduler(DporScheduler):
         return False
 
     def _schedule_next(self) -> int | None:
+        # Exact-deadlock detection: the positional walk keeps granting turns to
+        # spinning waiters (ReplayExecution.block_thread is a no-op) even when
+        # no thread can ever make progress.  Detect that here — this is the
+        # replay chokepoint shared by _wait_for_turn, before_sync_retry and
+        # sleep_until — instead of exhausting _replay_max_ops and dying with a
+        # plain TimeoutError after deadlock_timeout.
+        if self._replay_check_exact_deadlock_unlocked():
+            return None
         while True:
             self._replay_index, next_actor = advance_replay_index(
                 self._replay_schedule,
@@ -1517,6 +1622,11 @@ class _ReplayDporScheduler(DporScheduler):
                 # is deadline-blocked, time must pass for it to move.
                 self._wake_scheduled_sleeper()
 
+                # Exact deadlock: all live threads are cooperatively blocked
+                # with no deadline pending — report now, not at deadlock_timeout.
+                if self._replay_check_exact_deadlock_unlocked():
+                    return False
+
                 # While any thread is blocked on an access anchor, suspend
                 # positional gating: the anchor-owning thread must be able to
                 # reach its recorded access regardless of the (drifted)
@@ -1541,12 +1651,19 @@ class _ReplayDporScheduler(DporScheduler):
                     self._condition.notify_all()
                     return True
 
-                if not self._condition.wait(timeout=self.deadlock_timeout):
+                # _condition_wait_timeout shortens the wait to the exact-deadlock
+                # confirm window while a candidate is armed (deadlock_timeout
+                # otherwise, as before).
+                if not self._condition.wait(timeout=self._condition_wait_timeout()):
                     if self._current_thread in self._threads_done:
                         self._current_thread = self._schedule_next()
                         if self._current_thread is None and len(self._threads_done) >= self.num_threads:
                             self._finished = True
                         self._condition.notify_all()
+                        continue
+                    if self._exact_deadlock_candidate_at is not None:
+                        # Confirm-window poll, not a real stall: re-evaluate the
+                        # exact-deadlock candidate at the top of the loop.
                         continue
                     self._error = TimeoutError(
                         f"DPOR replay deadlock: waiting for thread {thread_id}, current is {self._current_thread}"
@@ -1667,12 +1784,68 @@ class _IOAnchoredReplayScheduler(DporScheduler):
         anchor instead of busy-spinning on the done thread. Anchors of live
         threads are still enforced in order.
         """
+        # Exact-deadlock detection (see _replay_check_exact_deadlock_unlocked):
+        # this is the chokepoint every grant path funnels through
+        # (before_sync_retry, before_io/after_io, _wait_for_turn, mark_done).
+        if self._replay_check_exact_deadlock_unlocked():
+            return None
+        # A timed waiter that owns the next anchor can only move once its
+        # deadline fires; the io_schedule has no clock-actor entries to do it.
+        self._replay_wake_current_timed_waiter()
         while self._io_index < len(self._io_schedule) and self._io_schedule[self._io_index][0] in self._threads_done:
             self._io_index += 1
         if self._io_index >= len(self._io_schedule):
             active = [t for t in range(self.num_threads) if t not in self._threads_done]
-            return active[0] if active else None
-        return self._io_schedule[self._io_index][0]
+            preferred = active[0] if active else None
+        else:
+            preferred = self._io_schedule[self._io_index][0]
+        if preferred is None:
+            return None
+        # When the preferred thread is cooperatively blocked (event/lock wait,
+        # blocking spin, pending deadline), hand the turn to an unblocked live
+        # thread instead — the engine never schedules a blocked thread during
+        # exploration, so in the recorded run some other thread ran (and
+        # eventually unblocked it).  Pinning the turn on the blocked thread
+        # would gate every other thread at its next opcode: a lock/event
+        # handoff — or the formation of a genuine deadlock cycle — could then
+        # never happen, stalling replay until the fallback deadlock_timeout.
+        # The anchor itself is NOT consumed; anchor order stays enforced.
+        blocked = self._replay_blocked_threads_unlocked()
+        if preferred in blocked:
+            runnable = [t for t in range(self.num_threads) if t not in self._threads_done and t not in blocked]
+            if runnable:
+                return runnable[0]
+        return preferred
+
+    def _replay_wake_current_timed_waiter(self) -> bool:
+        """Advance the clock when the anchor-owning thread sits in a timed wait.
+
+        Unlike the positional replay, the io_schedule carries only
+        ``(tid, resource)`` anchors — recorded clock-actor steps have no
+        entry to replay them.  So when the thread the replay is waiting on is
+        blocked on a ``timeout``-kind deadline (``lock.acquire(timeout=...)``,
+        ``Event.wait(timeout=...)``), nothing in the schedule will ever
+        advance the clock and every reproduction attempt would burn a full
+        ``deadlock_timeout``.  Jump one autojump step (to the earliest pending
+        deadline), exactly like exploration does when nothing else is runnable.
+
+        Advancing early is safe for a waiter whose lock is in fact free: the
+        cooperative acquire loop probes *after* its expiry check, so the
+        acquire still succeeds within the same spin iteration — the timeout
+        branch is only taken when the resource genuinely stays unavailable,
+        which under IO-anchored replay (only the anchor-owning thread runs
+        between anchors) means the recorded run took it too.
+
+        Caller must hold ``self._condition``.
+        """
+        cur = self._current_thread
+        if cur is None or self.virtual_clock is None:
+            return False
+        if not self._deadlines.in_timed_wait(cur):
+            return False
+        self._replay_advance_clock_to()
+        self._condition.notify_all()
+        return True
 
     def _replay_sleep_self_wake(self, thread_id: int) -> bool:
         if self.virtual_clock is None:
@@ -1785,6 +1958,12 @@ class _IOAnchoredReplayScheduler(DporScheduler):
                 # If the IO schedule points at a deadline-blocked thread,
                 # time must pass for it to reach its next IO boundary.
                 self._wake_scheduled_sleeper()
+                self._replay_wake_current_timed_waiter()
+
+                # Exact deadlock: all live threads are cooperatively blocked
+                # with no deadline pending — report now, not at deadlock_timeout.
+                if self._replay_check_exact_deadlock_unlocked():
+                    return False
 
                 if self._current_thread in self._threads_done:
                     self._current_thread = self._schedule_next()
@@ -1801,12 +1980,19 @@ class _IOAnchoredReplayScheduler(DporScheduler):
                 if self._current_thread == thread_id:
                     return True
 
-                if not self._condition.wait(timeout=self.deadlock_timeout):
+                # _condition_wait_timeout shortens the wait to the exact-deadlock
+                # confirm window while a candidate is armed (deadlock_timeout
+                # otherwise, as before).
+                if not self._condition.wait(timeout=self._condition_wait_timeout()):
                     if self._current_thread in self._threads_done:
                         self._current_thread = self._schedule_next()
                         if self._current_thread is None and len(self._threads_done) >= self.num_threads:
                             self._finished = True
                         self._condition.notify_all()
+                        continue
+                    if self._exact_deadlock_candidate_at is not None:
+                        # Confirm-window poll, not a real stall: re-evaluate the
+                        # exact-deadlock candidate at the top of the loop.
                         continue
                     self._error = TimeoutError(
                         f"DPOR IO-anchored replay deadlock: waiting for thread {thread_id}, "
