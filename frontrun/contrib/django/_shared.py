@@ -30,11 +30,16 @@ def _fresh_connection(connections: Any, db_alias: str, lock_timeout: int | None)
     """Open a fresh Django connection for the duration of one task."""
     conn = connections[db_alias]
     conn.close()
-    conn.ensure_connection()
-    if lock_timeout is not None:
-        with conn.cursor() as cursor:
-            cursor.execute(f"SET lock_timeout = '{int(lock_timeout)}ms'")
+    # Open + configure inside the try so a failure in ensure_connection() or the
+    # SET lock_timeout (e.g. a backend that rejects it, or a transient connect
+    # error) still closes the freshly-opened connection.  Otherwise, since this
+    # wrapper runs once per thread per interleaving, a persistent setup error
+    # leaks a connection every time and exhausts the pool.
     try:
+        conn.ensure_connection()
+        if lock_timeout is not None:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SET lock_timeout = '{int(lock_timeout)}ms'")
         yield conn
     finally:
         conn.close()
