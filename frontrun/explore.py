@@ -32,7 +32,7 @@ from typing import Any, Literal
 
 from frontrun._strategy import ASYNC_STRATEGIES, STRATEGIES
 from frontrun._virtual_clock import ClockMode, validate_clock_options
-from frontrun.common import any_async
+from frontrun.common import all_async, any_async
 
 Strategy = Literal["dpor", "random"]
 Execution = Literal["thread", "process"]
@@ -71,6 +71,12 @@ _PROCESS_UNSUPPORTED_OPTIONS = frozenset(
         "clock_diagnostics",
     }
 )
+
+#: The inverse of :data:`_PROCESS_UNSUPPORTED_OPTIONS`: options that only make
+#: sense under ``execution="process"``.  Thread execution rejects an
+#: explicitly-passed value here rather than silently ignoring it, by the same
+#: no-silent-no-op principle.
+_PROCESS_ONLY_OPTIONS = frozenset({"reuse_workers"})
 
 
 def explore(
@@ -140,14 +146,23 @@ def explore(
             :doc:`/cross_process`.
         reuse_workers: Process execution only. Spawn each worker process once and
             re-run it per interleaving instead of respawning (amortises spawn
-            cost); ignored for thread execution.
+            cost). Thread execution rejects an explicit ``reuse_workers=True``
+            with ``ValueError`` (there are no worker processes to reuse).
         max_executions: Safety limit on total executions (DPOR only).
         preemption_bound: Limit on preemptions per execution (DPOR only).
         max_branches: Maximum scheduling points per execution (DPOR only).
         timeout_per_run: Timeout for each individual run.
         stop_on_first: Stop on first invariant violation (DPOR only).
         detect_io: Detect socket/file I/O operations as resource accesses.
-            For async DPOR, also activates Redis key-level patching.
+            For async DPOR, also activates Redis key-level patching. For the
+            async *random* strategy the flag is narrower: it only gates SQL
+            driver patching (``detect_io=True`` implies ``detect_sql=True``);
+            socket/file/Redis detection is not available on that path. Note
+            the difference from the standalone
+            :func:`frontrun.explore_async_random`, whose ``detect_sql``
+            defaults to ``False`` — going through ``explore(strategy="random")``
+            with async workers patches SQL drivers by default because
+            ``detect_io`` defaults to ``True`` here.
         deadlock_timeout: Seconds to wait before declaring a deadlock. Defaults
             to 5.0 for thread execution and 15.0 for process execution (spawning
             processes is slower), unless set explicitly.
@@ -208,15 +223,17 @@ def explore(
 
     Raises:
         ValueError: If ``count`` and a list of workers are both provided,
-            ``count <= 0``, ``strategy``, ``execution`` or ``clock`` is
+            ``count <= 0``, ``workers`` mixes async and sync callables,
+            ``strategy``, ``execution`` or ``clock`` is
             unrecognised, or a non-real ``clock`` is combined with
             ``patch_sleep=False``, ``serializable_invariant``, or
             ``execution="process"``. Also raised for any explicitly-passed
             option the selected strategy/mode does not support, rather than
             silently ignoring it: e.g. ``seed=`` with ``strategy="dpor"``,
             ``preemption_bound=`` with ``strategy="random"``,
-            ``reproduce_on_failure=`` with async ``strategy="random"``, or
-            ``detect_sql=`` with sync workers. ``execution="process"``
+            ``reproduce_on_failure=`` with async ``strategy="random"``,
+            ``detect_sql=`` with sync workers, or ``reuse_workers=`` with
+            ``execution="thread"``. ``execution="process"``
             additionally rejects async workers, ``strategy="random"``, and
             every option that requires the in-process scheduler
             (``serializable_invariant``, ``error_on_any_race``,
@@ -225,9 +242,20 @@ def explore(
             ``clock`` / ``clock_diagnostics``, and non-default ``detect_io``,
             ``patch_sleep``, ``timeout_per_run``, ``reproduce_on_failure``,
             ``warn_nondeterministic_sql``, ``max_attempts``, ``max_ops``,
-            ``seed``, ``debug``).
+            ``seed``, ``debug``). Explicit-option detection is value-based:
+            passing an option at its default value is indistinguishable from
+            omitting it, and is accepted (a no-op either way).
     """
     worker_list = _resolve_workers(workers, count)
+
+    # A mixed worker list has no single execution model: any_async() would
+    # route the whole list to the async engine and the sync workers would be
+    # silently mishandled instead of running as threads. Reject it eagerly.
+    if any_async(worker_list) and not all_async(worker_list):
+        raise ValueError(
+            "explore(): workers mix async and sync callables; frontrun explores one execution model at a time. "
+            "Make every worker `async def` (run as asyncio tasks) or every worker a plain `def` (run as threads)."
+        )
 
     validate_clock_options(
         clock,
@@ -264,6 +292,7 @@ def explore(
         "seed": seed,
         "debug": debug,
         "detect_sql": detect_sql,
+        "reuse_workers": reuse_workers,
     }
     # Snapshot which options were explicitly passed (differ from the signature
     # default) *before* any local resolution mutates them.  An option passed at
@@ -285,14 +314,23 @@ def explore(
     # the setup() state must be picklable, and state is external (SQL/Redis).
     if execution == "process":
         if any_async(worker_list):
-            raise ValueError("explore(): execution='process' does not support async workers")
+            raise ValueError(
+                "explore(): async workers are not supported with execution='process' "
+                "(worker processes run sync code only; use sync workers or execution='thread')"
+            )
         if strategy != "dpor":
-            raise ValueError("explore(): execution='process' supports strategy='dpor' only")
+            raise ValueError(
+                f"explore(): strategy={strategy!r} is not supported with execution='process' "
+                "(process mode always drives the DPOR engine; drop strategy= or use execution='thread')"
+            )
         unsupported = sorted(explicit_options & _PROCESS_UNSUPPORTED_OPTIONS)
         if unsupported:
+            names = ", ".join(f"{name}=" for name in unsupported)
+            verb = "is" if len(unsupported) == 1 else "are"
             raise ValueError(
-                f"explore(): execution='process' does not support {', '.join(unsupported)} "
-                "(these require the in-process scheduler; drop them or use execution='thread')"
+                f"explore(): {names} {verb} not supported with execution='process' "
+                "(a silently ignored option is a correctness footgun; these require the in-process scheduler, "
+                "so drop them or use execution='thread')"
             )
         from frontrun.cross_process import _explore_process
 
@@ -311,6 +349,18 @@ def explore(
         )
     if execution != "thread":
         raise ValueError(f"explore(): unknown execution={execution!r}; must be 'thread' or 'process'")
+
+    # Mirror of the process branch: an explicitly-passed process-only option
+    # would be a silent no-op under thread execution, so reject it.
+    process_only = sorted(explicit_options & _PROCESS_ONLY_OPTIONS)
+    if process_only:
+        names = ", ".join(f"{name}=" for name in process_only)
+        verb = "is" if len(process_only) == 1 else "are"
+        raise ValueError(
+            f"explore(): {names} {verb} not supported with execution='thread' "
+            "(a silently ignored option is a correctness footgun; these only apply to spawned worker processes, "
+            "so drop them or use execution='process')"
+        )
 
     is_async = any_async(worker_list)
     registry = ASYNC_STRATEGIES if is_async else STRATEGIES

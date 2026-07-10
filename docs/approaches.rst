@@ -422,6 +422,16 @@ Resource identity is derived from the socket's peer address
 same endpoint or file are treated as conflicting; different endpoints are
 independent.
 
+.. note::
+
+   The async *random* strategy is narrower: there ``detect_io`` only gates
+   SQL driver patching (``detect_io=True`` implies ``detect_sql=True``);
+   socket, file, and Redis detection are not available on that path. The
+   defaults also differ between entry points — ``frontrun.explore(...,
+   strategy="random")`` with async workers patches SQL drivers by default
+   (``detect_io`` defaults to ``True``), while the standalone
+   :func:`frontrun.explore_async_random` defaults to ``detect_sql=False``.
+
 .. _c-level-io-interception:
 
 C-Level I/O Interception

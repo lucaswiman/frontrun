@@ -165,7 +165,6 @@ callables, it spawns each worker as a real OS process running a
            },
            setup=lambda: reset_counter(db),   # your DB reset helper
            invariant=lambda _state: read_counter(db) == 2,
-           max_iterations=50,
        )
        assert not result.ok
        assert result.failure_kind == "invariant"
@@ -188,7 +187,8 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
 --- mirroring ``explore(execution="process")``. ``invariant`` may ignore
 ``state`` and reach the shared store directly.
 
-:func:`~frontrun.explore_processes` returns a ``CrossProcessResult``:
+:func:`~frontrun.explore_processes` returns a :class:`frontrun.CrossProcessResult`
+(importable from the top-level package):
 
 .. list-table::
    :header-rows: 1
@@ -205,9 +205,15 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
        ``"timeout"`` (the scheduler's ``deadlock_timeout`` expired — a worker
        blocked outside frontrun's model or a statement outran the budget, so
        the schedule was never driven to completion), ``"nondeterministic"``,
-       or ``None``.
+       ``"step_limit"`` (a run exceeded the exhaustive coordinator's
+       per-run scheduling-point bound), or ``None``.
    * - ``failing_schedule``
      - The interleaving (a list of worker ids) that triggered the failure.
+   * - ``failures``
+     - Every failing execution as ``(execution_number, schedule)`` pairs,
+       mirroring thread-mode ``InterleavingResult.failures``. With
+       ``stop_on_first=False`` the DPOR strategy accumulates all failing
+       executions here instead of stopping at the first.
    * - ``iterations``
      - Number of interleavings explored.
    * - ``exhausted``
@@ -215,6 +221,12 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
    * - ``accesses``
      - The external accesses observed on the failing run, as
        ``(worker_id, resource, "read"|"write")`` tuples, or ``None``.
+
+The :class:`~frontrun.common.InterleavingResult` returned by
+``explore(execution="process")`` carries the same structured information:
+``exhausted``, ``failure_kind``, and ``failures`` are copied from the
+underlying ``CrossProcessResult`` alongside the human-readable
+``explanation``.
 
 
 Strategies and worker reuse
@@ -224,10 +236,20 @@ Strategies and worker reuse
 
 * ``"dpor"`` (default) drives the Rust DPOR engine, pruning equivalent
   interleavings and detecting cross-worker ``SELECT FOR UPDATE`` deadlocks.
-  ``max_executions`` and ``preemption_bound`` tune the search.
+  ``max_executions``, ``preemption_bound``, ``max_branches``, and
+  ``total_timeout`` bound the search, ``search`` selects the wakeup-tree
+  traversal order, and ``stop_on_first=False`` keeps exploring after a
+  failure, accumulating every failing execution in ``result.failures``.
 * ``"exhaustive"`` brute-forces every interleaving at external-access
   granularity, bounded by ``max_iterations``. Useful as a reduction-free
   cross-check that DPOR reaches the same verdict.
+
+Each strategy rejects the other's bounds with ``ValueError`` when they are
+passed explicitly: ``max_iterations`` only applies to ``"exhaustive"`` (bound
+a DPOR search with ``max_executions`` instead), and the DPOR knobs above only
+apply to ``"dpor"``. A silently ignored option is a correctness footgun, so
+nothing is dropped quietly. Detection is value-based: passing a knob at its
+default value is indistinguishable from omitting it.
 
 ``reuse_workers=True`` keeps the worker processes alive across iterations,
 re-running the target in place instead of respawning for each interleaving. The
