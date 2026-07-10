@@ -4,6 +4,82 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
+
+class _FakeCursor:
+    def __init__(self, execute_raises: bool) -> None:
+        self._execute_raises = execute_raises
+
+    def __enter__(self) -> _FakeCursor:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str) -> None:
+        if self._execute_raises:
+            raise RuntimeError(f"backend rejected: {sql}")
+
+
+class _FakeConnection:
+    """Minimal stand-in for a Django connection, tracking close() calls."""
+
+    def __init__(self, *, ensure_raises: bool = False, execute_raises: bool = False) -> None:
+        self.close_calls = 0
+        self.ensure_calls = 0
+        self._ensure_raises = ensure_raises
+        self._execute_raises = execute_raises
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+    def ensure_connection(self) -> None:
+        self.ensure_calls += 1
+        if self._ensure_raises:
+            raise RuntimeError("could not connect")
+
+    def cursor(self) -> _FakeCursor:
+        return _FakeCursor(self._execute_raises)
+
+
+class TestDjangoFreshConnectionCleanup:
+    """_fresh_connection must not leak the freshly-opened connection on setup errors.
+
+    ``ensure_connection()`` and the ``SET lock_timeout`` cursor.execute() run the
+    connection's open + configure steps.  If either raises, the freshly-opened
+    connection must still be closed — otherwise, since the wrapper runs once per
+    thread per interleaving (thousands of times), a persistent setup error (e.g.
+    a backend that rejects ``SET lock_timeout``) leaks a connection every time and
+    exhausts the pool.  The sibling SQLAlchemy helpers already guard this.
+    """
+
+    def test_connection_closed_when_lock_timeout_setup_raises(self) -> None:
+        from frontrun.contrib.django._shared import _fresh_connection
+
+        conn = _FakeConnection(execute_raises=True)
+        connections = {"default": conn}
+
+        with pytest.raises(RuntimeError):  # noqa: PT012
+            with _fresh_connection(connections, "default", lock_timeout=5000):
+                pass
+
+        # Entry drops the stale connection (1st close); the freshly-opened one
+        # must be closed too when SET lock_timeout fails (2nd close).
+        assert conn.close_calls == 2, "fresh connection leaked when lock_timeout setup raised"
+
+    def test_connection_closed_when_ensure_connection_raises(self) -> None:
+        from frontrun.contrib.django._shared import _fresh_connection
+
+        conn = _FakeConnection(ensure_raises=True)
+        connections = {"default": conn}
+
+        with pytest.raises(RuntimeError):  # noqa: PT012
+            with _fresh_connection(connections, "default", lock_timeout=None):
+                pass
+
+        assert conn.close_calls == 2, "connection leaked when ensure_connection raised"
+
 
 class TestDjangoSharedConnectionWrapper:
     """Django sync/async wrappers should share one connection helper."""
