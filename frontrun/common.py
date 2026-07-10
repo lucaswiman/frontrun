@@ -34,16 +34,6 @@ def any_async(fns: Iterable[Any]) -> bool:
     return any(_is_async_callable(fn) for fn in fns if callable(fn))
 
 
-def all_async(fns: Iterable[Any]) -> bool:
-    """Return True if every callable element is a coroutine function.
-
-    Mirror of :func:`any_async`; the two together let dispatchers reject a
-    *mixed* sync/async worker list eagerly instead of misrouting the sync
-    workers into the async engine. Non-callables are ignored.
-    """
-    return all(_is_async_callable(fn) for fn in fns if callable(fn))
-
-
 def check_invariant(invariant: Callable[[Any], Any], state: Any) -> tuple[bool, str | None]:
     """Evaluate *invariant* on *state*, tolerating ``AssertionError``.
 

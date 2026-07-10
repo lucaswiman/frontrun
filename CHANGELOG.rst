@@ -50,12 +50,15 @@ Unreleased
   ``explore(..., seed=None, strategy="dpor")`` is accepted (a no-op either
   way).
 
-* **Mixed sync/async worker lists are rejected eagerly.** Passing a mix of
-  ``async def`` and plain ``def`` workers to ``frontrun.explore(...)``
-  previously routed the whole list to the async engine, silently mishandling
-  the sync workers. It now raises ``ValueError`` up front: make every worker a
-  coroutine function (asyncio tasks) or every worker a plain callable
-  (threads).
+* **Mixed sync/async worker lists get an actionable diagnosis.** Passing a mix
+  of ``async def`` and plain ``def`` workers to ``frontrun.explore(...)``
+  previously routed the whole list to the async engine, where the sync workers
+  failed with an opaque ``can't be used in 'await' expression``. A plain
+  callable that *returns* an awaitable is a valid async worker and statically
+  indistinguishable from a sync one, so the mix cannot be rejected up front;
+  instead the first execution now fails with a ``TypeError`` naming the sync
+  worker and stating the fix (make every worker ``async def`` or a callable
+  returning an awaitable, or every worker a plain ``def``).
 
 * **Structured process-mode results.** ``CrossProcessResult`` is now exported
   at the top level (``frontrun.CrossProcessResult``) and carries a

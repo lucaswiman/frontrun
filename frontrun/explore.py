@@ -27,12 +27,14 @@ Examples::
 
 from __future__ import annotations
 
+import functools
+import inspect
 from collections.abc import Callable
 from typing import Any, Literal
 
 from frontrun._strategy import ASYNC_STRATEGIES, STRATEGIES
 from frontrun._virtual_clock import ClockMode, validate_clock_options
-from frontrun.common import all_async, any_async
+from frontrun.common import _is_async_callable, any_async
 
 Strategy = Literal["dpor", "random"]
 Execution = Literal["thread", "process"]
@@ -223,7 +225,7 @@ def explore(
 
     Raises:
         ValueError: If ``count`` and a list of workers are both provided,
-            ``count <= 0``, ``workers`` mixes async and sync callables,
+            ``count <= 0``,
             ``strategy``, ``execution`` or ``clock`` is
             unrecognised, or a non-real ``clock`` is combined with
             ``patch_sleep=False``, ``serializable_invariant``, or
@@ -247,15 +249,6 @@ def explore(
             omitting it, and is accepted (a no-op either way).
     """
     worker_list = _resolve_workers(workers, count)
-
-    # A mixed worker list has no single execution model: any_async() would
-    # route the whole list to the async engine and the sync workers would be
-    # silently mishandled instead of running as threads. Reject it eagerly.
-    if any_async(worker_list) and not all_async(worker_list):
-        raise ValueError(
-            "explore(): workers mix async and sync callables; frontrun explores one execution model at a time. "
-            "Make every worker `async def` (run as asyncio tasks) or every worker a plain `def` (run as threads)."
-        )
 
     validate_clock_options(
         clock,
@@ -377,9 +370,40 @@ def explore(
 
     if is_async:
         async_adapter = ASYNC_STRATEGIES[strategy]
-        return async_adapter.run(setup=setup, workers=worker_list, invariant=invariant, **all_kwargs)
+        # The async engines accept any callable returning an awaitable, not
+        # just ``async def`` (see async_dpor's task contract) — so a genuinely
+        # sync worker in a mixed list is statically indistinguishable from a
+        # coroutine-returning plain callable and is diagnosed at call time.
+        workers_async = [w if _is_async_callable(w) else _require_awaitable_worker(w) for w in worker_list]
+        return async_adapter.run(setup=setup, workers=workers_async, invariant=invariant, **all_kwargs)
     sync_adapter = STRATEGIES[strategy]
     return sync_adapter.run(setup=setup, workers=worker_list, invariant=invariant, **all_kwargs)
+
+
+def _require_awaitable_worker(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Adapt a non-``async def`` worker for the async engines.
+
+    A plain callable returning an awaitable is a valid async worker, and a
+    genuinely sync callable in a mixed worker list looks identical until it is
+    called — so the mix is diagnosed at call time, with the worker named and
+    the fix stated, instead of surfacing as an opaque ``can't be used in
+    'await' expression``.
+    """
+
+    @functools.wraps(fn)
+    async def _adapter(*args: Any, **kwargs: Any) -> Any:
+        result = fn(*args, **kwargs)
+        if not inspect.isawaitable(result):
+            name = getattr(fn, "__qualname__", None) or repr(fn)
+            raise TypeError(
+                f"explore(): worker {name} returned {type(result).__name__}, not an awaitable; the worker list "
+                "mixes async and sync callables, and frontrun explores one execution model at a time. Make every "
+                "worker `async def` (or a callable returning an awaitable), or every worker a plain `def` "
+                "(run as threads)."
+            )
+        return await result
+
+    return _adapter
 
 
 def _reject_unsupported_strategy_options(strategy: str, unsupported: frozenset[str], *, is_async: bool) -> None:
