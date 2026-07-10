@@ -377,3 +377,68 @@ class TestExploreMarkerInterleavingsAssertionError:
         assert result.explanation is not None, (
             "explanation should be set from the first failure even with stop_on_first=False"
         )
+
+    def test_thread_exception_detail_in_explanation(self):
+        """A worker-raised exception should surface its detail in ``explanation``.
+
+        Invariant failures report their ``assertion_msg`` via ``explanation``, but
+        the ``except Exception`` branch dropped the exception entirely (bare
+        ``except Exception:`` with no ``as e``), so a counterexample produced by a
+        crashing worker carried ``explanation=None`` — no reason for the failure.
+        """
+
+        class Boom:
+            def go(self) -> None:
+                _ = 1  # frontrun: step
+                raise ValueError("kaboom")
+
+        result = explore_marker_interleavings(
+            setup=Boom,
+            threads={"t1": (lambda s: s.go(), ["step"])},
+            invariant=lambda s: True,
+        )
+        assert not result.property_holds
+        assert result.counterexample is not None
+        assert result.explanation is not None, "worker exception detail was dropped from explanation"
+        assert "kaboom" in result.explanation
+        assert "ValueError" in result.explanation
+
+    def test_exception_first_then_invariant_explanation_matches_counterexample(self):
+        """With stop_on_first=False, explanation must describe failures[0].
+
+        first_explanation was only ever set on invariant violations, so when the
+        first failure was a worker exception and a later one an invariant failure,
+        the final result paired failures[0] (the exception's schedule) with the
+        *invariant's* message — a counterexample/explanation mismatch.
+        """
+
+        class State:
+            def __init__(self) -> None:
+                self.value = 0
+
+            def crasher(self) -> None:
+                _ = 1  # frontrun: c
+                raise ValueError("worker crashed")
+
+            def increment(self) -> None:
+                temp = self.value  # frontrun: read
+                self.value = temp + 1  # frontrun: write
+
+        def invariant(s: State) -> bool:
+            assert s.value == 2, "Expected 2"
+            return True
+
+        result = explore_marker_interleavings(
+            setup=State,
+            threads={
+                "t1": (lambda s: s.crasher(), ["c"]),
+                "t2": (lambda s: s.increment(), ["read", "write"]),
+            },
+            invariant=invariant,
+            stop_on_first=False,
+        )
+        assert not result.property_holds
+        # Every interleaving crashes in t1, so the first (and every) failure is the
+        # exception — the explanation must reflect that, not a later invariant msg.
+        assert result.explanation is not None
+        assert "worker crashed" in result.explanation
