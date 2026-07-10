@@ -139,6 +139,8 @@ def _relay_loop(
     accesses_lock: threading.Lock,
     worker_errors: dict[int, str],
     unclean: set[int],
+    progress: list[float] | None = None,
+    recv_timeout: float | None = None,
 ) -> None:
     """Translate one worker's socket frames into scheduler calls.
 
@@ -146,7 +148,28 @@ def _relay_loop(
     terminal (DONE/ERROR). An abort mid-handshake or a recv timeout leaves the
     worker still running and its socket at an unknown frame boundary; in reuse
     mode the coordinator uses *unclean* to avoid reusing a poisoned connection.
+
+    *progress* is a shared single-element heartbeat: the relay bumps it
+    whenever a frame arrives or a grant is issued, and ``_drive_relays`` treats
+    relays as hung only when NO relay has made progress for the whole join
+    budget (deadlock_timeout bounds silence between steps, not iteration wall
+    time). *recv_timeout* (normally ``deadlock_timeout``) bounds each recv:
+    when it fires the worker is alive but silent — a statement slower than
+    deadlock_timeout or blocking outside frontrun's model — which is reported
+    through the scheduler's error slot so ``_evaluate`` diagnoses
+    ``failure_kind="timeout"`` with the raise-deadlock_timeout advice, not a
+    misleading worker disconnect.
     """
+    if recv_timeout is not None and recv_timeout > 0:
+        try:
+            sock.settimeout(recv_timeout)
+        except OSError:
+            pass
+
+    def _bump_progress() -> None:
+        if progress is not None:
+            progress[0] = time.monotonic()
+
     pending_io = _setup_relay_tls(scheduler, worker_id)
     registered_groups: set[int] = set()
     clean = False
@@ -158,8 +181,58 @@ def _relay_loop(
         while True:
             try:
                 msg = proto.recv_msg(sock)
-            except (TimeoutError, OSError):
+            except TimeoutError:
+                # Socket still open but silent past deadlock_timeout: the
+                # worker is alive but its statement overran (or blocked at the
+                # DB level, outside frontrun's model). Latch a TimeoutError on
+                # the scheduler BEFORE releasing the held turn (the finally
+                # does that) so no other relay gets granted and _evaluate's
+                # failure_kind="timeout" diagnosis wins over any disconnect /
+                # relay-join error.
+                report_error = getattr(scheduler, "report_error", None)
+                if callable(report_error):
+                    report_error(
+                        TimeoutError(f"worker {worker_id} sent no frame for {recv_timeout}s while still connected")
+                    )
+                break
+            except OSError:
                 msg = None
+            if msg is not None:
+                _bump_progress()
+                if msg["t"] == proto.ACCESS:
+                    # Record the access while this worker still holds any
+                    # granted turn. Appending after the turn release (as the
+                    # other frame kinds below do) would let the next scheduled
+                    # relay interleave ITS appends first depending on OS thread
+                    # timing, so the human-facing access trace of the same
+                    # counterexample schedule could differ run to run. Engine
+                    # behavior is unchanged: the access is only buffered in
+                    # pending_io here and flushed at this worker's own next
+                    # grant.
+                    rid = msg["rid"]
+                    access_kind = msg["kind"]
+                    obj_key = _make_object_key(hash(rid), rid)
+                    pending_io.append((obj_key, access_kind, True))  # synced=True: Python-level SQL/Redis
+                    with accesses_lock:
+                        accesses.append((worker_id, rid, access_kind))
+                    # Register the resource's table group with the engine once
+                    # per obj_key (Defect #15). Gate the parse/hash on the
+                    # membership check so a recurring access doesn't re-split
+                    # and re-hash.
+                    if rid.startswith("sql:") and obj_key not in registered_groups:
+                        parts = rid.split(":")
+                        table_group = f"sql:{parts[1]}" if len(parts) >= 2 else rid
+                        group_key = hash(table_group) & 0xFFFFFFFFFFFFFFFF
+                        with scheduler._engine_lock:
+                            scheduler.engine.register_resource_group(obj_key, group_key)
+                        registered_groups.add(obj_key)
+                    if holding_sync_turn:
+                        # The ACCESS frame doubles as this worker's "statement
+                        # finished" signal; release the turn only now that the
+                        # access is recorded.
+                        scheduler.after_sync_retry(worker_id)
+                        holding_sync_turn = False
+                    continue
             if holding_sync_turn:
                 # The statement the last grant covered has finished executing
                 # (the worker sent its next frame); release the held turn so
@@ -171,32 +244,16 @@ def _relay_loop(
                 holding_sync_turn = False
             if msg is None:
                 with accesses_lock:
-                    worker_errors[worker_id] = "worker disconnected or timed out"
+                    worker_errors[worker_id] = "worker disconnected"
                 break
             kind = msg["t"]
-            if kind == proto.ACCESS:
-                rid = msg["rid"]
-                access_kind = msg["kind"]
-                obj_key = _make_object_key(hash(rid), rid)
-                pending_io.append((obj_key, access_kind, True))  # synced=True: Python-level SQL/Redis
-                with accesses_lock:
-                    accesses.append((worker_id, rid, access_kind))
-                # Register the resource's table group with the engine once per
-                # obj_key (Defect #15). Gate the parse/hash on the membership
-                # check so a recurring access doesn't re-split and re-hash.
-                if rid.startswith("sql:") and obj_key not in registered_groups:
-                    parts = rid.split(":")
-                    table_group = f"sql:{parts[1]}" if len(parts) >= 2 else rid
-                    group_key = hash(table_group) & 0xFFFFFFFFFFFFFFFF
-                    with scheduler._engine_lock:
-                        scheduler.engine.register_resource_group(obj_key, group_key)
-                    registered_groups.add(obj_key)
-            elif kind == proto.REPORT_AND_WAIT:
+            if kind == proto.REPORT_AND_WAIT:
                 # Take the turn (flushing this worker's buffered pre-declared
                 # accesses at its own step, inside before_sync_retry) and HOLD
                 # it: the worker executes its real statement after the grant,
                 # and the turn is released only when its next frame arrives.
                 granted = scheduler.before_sync_retry(worker_id)
+                _bump_progress()
                 _reply(sock, granted)
                 if not granted:
                     break
@@ -224,6 +281,7 @@ def _relay_loop(
                     break
                 # Keep the turn: the worker performs the real (locked) driver
                 # call after this grant; released when its next frame arrives.
+                _bump_progress()
                 _reply(sock, True)
                 holding_sync_turn = True
             elif kind == proto.RELEASE_LOCKS:
@@ -235,6 +293,7 @@ def _relay_loop(
                 # on _finished/_error, which other relays mutate.
                 with scheduler._condition:
                     granted = scheduler._active_io_thread == worker_id
+                _bump_progress()
                 _reply(sock, granted)
                 if not granted:
                     break
@@ -343,8 +402,9 @@ class DporCrossProcessCoordinator:
     ) -> None:
         self.num_workers = num_workers
         self.deadlock_timeout = deadlock_timeout
-        # Overall budget for a worker to connect and send HELLO; also the relay
-        # join budget. Generous vs deadlock_timeout because process spawn is slow.
+        # Overall budget for a worker to connect and send HELLO; also the
+        # no-progress backstop in _drive_relays. Generous vs deadlock_timeout
+        # because process spawn is slow.
         self._connect_budget = deadlock_timeout * 2 + 10.0
         self.preemption_bound = preemption_bound
         self.max_executions = max_executions
@@ -388,6 +448,10 @@ class DporCrossProcessCoordinator:
         num_explored = 0
         exhausted = True
         first_failure: CrossProcessResult | None = None
+        # Every failing execution as (execution_number, schedule), mirroring
+        # thread-mode InterleavingResult.failures — with stop_on_first=False
+        # later failing schedules must not be discarded.
+        failures: list[tuple[int, list[int]]] = []
         try:
             # Reuse mode: spawn persistent workers and accept their connections once.
             if self.reuse_workers:
@@ -444,8 +508,10 @@ class DporCrossProcessCoordinator:
                     execution, scheduler, engine_lock, invariant, worker_errors, accesses, num_explored
                 )
                 if result is not None:
+                    if result.failing_schedule is not None:
+                        failures.append((num_explored, list(result.failing_schedule)))
                     if self.stop_on_first:
-                        return result
+                        return replace(result, failures=failures)
                     if first_failure is None:
                         first_failure = result
                     # An aborted execution (deadlock or worker error) unwinds its
@@ -477,7 +543,7 @@ class DporCrossProcessCoordinator:
                 elif deadline is not None and time.monotonic() > deadline:
                     exhausted = False
             if first_failure is not None:
-                return replace(first_failure, iterations=num_explored, exhausted=exhausted)
+                return replace(first_failure, iterations=num_explored, exhausted=exhausted, failures=failures)
             return CrossProcessResult(ok=True, iterations=num_explored, exhausted=exhausted)
         finally:
             if self.reuse_workers:
@@ -505,10 +571,26 @@ class DporCrossProcessCoordinator:
         unclean: set[int],
     ) -> None:
         accesses_lock = threading.Lock()
+        # Shared heartbeat: bumped by every relay when a frame arrives or a
+        # grant is issued. Liveness is judged on PROGRESS, not iteration wall
+        # time — deadlock_timeout bounds silence between steps, so a healthy
+        # iteration may legitimately run far longer than any fixed multiple of
+        # it and must not be aborted mid-flight.
+        progress = [time.monotonic()]
         relays = [
             threading.Thread(
                 target=_relay_loop,
-                args=(scheduler, wid, sock, accesses, accesses_lock, worker_errors, unclean),
+                args=(
+                    scheduler,
+                    wid,
+                    sock,
+                    accesses,
+                    accesses_lock,
+                    worker_errors,
+                    unclean,
+                    progress,
+                    self.deadlock_timeout,
+                ),
                 name=f"xproc-relay-{wid}",
                 daemon=True,
             )
@@ -516,22 +598,31 @@ class DporCrossProcessCoordinator:
         ]
         for t in relays:
             t.start()
-        join_budget = max(0.0, self.deadlock_timeout * 2 + 10.0)
-        deadline = time.monotonic() + join_budget
+        # A genuine stall is detected FIRST by the relays themselves (per-recv
+        # socket timeout == deadlock_timeout) or by the scheduler's own
+        # deadlock_timeout waits, both of which latch a TimeoutError on the
+        # scheduler so _evaluate diagnoses failure_kind="timeout" with the
+        # raise-deadlock_timeout advice. This budget is only the last-resort
+        # backstop for a relay that is alive yet stuck somewhere neither of
+        # those bounds. A live relay must never be abandoned silently: a ghost
+        # thread would keep calling into the shared engine/engine_lock with a
+        # stale scheduler while the next iteration runs a fresh one — a
+        # concurrent-engine data race. Fail loudly instead; the exploration
+        # loop catches (TimeoutError, OSError) and returns a clean result.
+        no_progress_budget = max(0.0, self.deadlock_timeout * 2 + 10.0)
+        pending = list(relays)
         timeout_error: TimeoutError | None = None
-        for t in relays:
-            t.join(max(0.0, deadline - time.monotonic()))
-            # The deadlock_timeout-bounded scheduler normally guarantees every
-            # relay terminates within the budget. If one is still alive, that
-            # invariant was violated: abandoning it here would let a ghost
-            # thread keep calling into the shared engine/engine_lock with a
-            # stale scheduler while the next iteration runs a fresh one — a
-            # concurrent-engine data race. Fail loudly instead. The exploration
-            # loop catches (TimeoutError, OSError) and returns a clean result.
-            if t.is_alive():
+        while pending:
+            pending[0].join(timeout=0.05)
+            pending = [t for t in pending if t.is_alive()]
+            if not pending:
+                break
+            if time.monotonic() - progress[0] > no_progress_budget:
+                names = ", ".join(t.name for t in pending)
                 timeout_error = TimeoutError(
-                    f"cross-process relay thread {t.name!r} did not terminate within "
-                    f"{join_budget}s; aborting to avoid a concurrent-engine data race"
+                    f"cross-process relay thread(s) {names} made no progress within "
+                    f"{no_progress_budget}s and did not terminate; aborting to avoid a "
+                    f"concurrent-engine data race"
                 )
                 break
         if timeout_error is None:
