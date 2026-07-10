@@ -704,7 +704,7 @@ def test_explore_async_accepts_detect_sql():
 
 
 # ---------------------------------------------------------------------------
-# (m) mixed sync/async workers are rejected eagerly
+# (m) mixed sync/async workers are diagnosed; awaitable-returning callables work
 # ---------------------------------------------------------------------------
 
 
@@ -712,24 +712,46 @@ def _sync_increment(c: AsyncCounter) -> None:
     c.value += 1
 
 
-def test_explore_rejects_mixed_sync_async_workers():
-    """A mix of async def and plain def workers must raise ValueError eagerly.
+def test_explore_mixed_sync_async_workers_fail_with_actionable_diagnosis():
+    """A genuinely sync worker in an async run must fail with a named,
+    actionable diagnostic on the first execution.
 
-    Without the check, any_async() routes the whole list to the async engine
-    and the sync worker is silently mishandled instead of running as a thread.
+    Static rejection is impossible: a plain callable returning an awaitable is
+    a *valid* async worker (async_dpor's task contract), statically identical
+    to a sync worker. So the mix is diagnosed at call time instead of
+    surfacing as an opaque "can't be used in 'await' expression".
     """
-    with pytest.raises(ValueError, match="mix"):
+    result = asyncio.run(
         frontrun.explore(
             setup=AsyncCounter,
             workers=[_sync_increment, AsyncCounter.increment],
             invariant=lambda c: c.value == 2,
+            reproduce_on_failure=0,
         )
+    )
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "mixes async and sync callables" in result.explanation
+    assert "_sync_increment" in result.explanation
 
 
-def test_explore_process_rejects_mixed_workers_eagerly():
-    """execution='process' must also reject mixed workers with the mixed-worker
-    message (not fall through to the generic async-workers rejection)."""
-    with pytest.raises(ValueError, match="mix"):
+def test_explore_accepts_plain_callable_returning_awaitable():
+    """A non-``async def`` callable returning a coroutine is a valid async
+    worker and must not be misdiagnosed as a mixed sync worker."""
+    result = asyncio.run(
+        frontrun.explore(
+            setup=AsyncCounter,
+            workers=[AsyncCounter.increment, lambda c: asyncio.sleep(0)],
+            invariant=lambda c: c.value == 1,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_explore_process_rejects_async_workers_in_mixed_list_eagerly():
+    """execution='process' runs sync code only, so a worker list containing
+    any async worker (mixed or not) is rejected eagerly."""
+    with pytest.raises(ValueError, match="async workers are not supported"):
         frontrun.explore(
             setup=AsyncCounter,
             workers=[_sync_increment, AsyncCounter.increment],
