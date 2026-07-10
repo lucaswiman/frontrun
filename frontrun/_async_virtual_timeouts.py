@@ -132,11 +132,17 @@ def _virtual_timeout_impl(value: float | None, *, at: bool) -> Any:
             name = "timeout_at" if at else "timeout"
             raise RuntimeError(f"asyncio.{name} is not available on this Python version")
         return real(value)
-    if at:
-        when = value
-    else:
-        when = None if value is None else asyncio.get_running_loop().time() + value
-    return _VirtualAsyncTimeoutContext(scheduler, task_id, when)
+    if at or value is None:
+        return _VirtualAsyncTimeoutContext(scheduler, task_id, value)
+    # Relative form (asyncio.timeout(delay)): the loop-time ``when`` below is
+    # kept only for stdlib ``when()`` parity.  The virtual deadline is computed
+    # from the *delay* with a single ``clock.now() + delay`` read at
+    # registration time — round-tripping through two real ``loop.time()``
+    # reads would smear per-run real-time jitter into the deadline, giving two
+    # identical timeouts distinct deadlines and defeating the
+    # DeadlineCoordinator's deterministic tie-break (broken replay).
+    when = asyncio.get_running_loop().time() + value
+    return _VirtualAsyncTimeoutContext(scheduler, task_id, when, delay=value)
 
 
 def _virtual_timeout_context(delay: float | None) -> Any:
@@ -148,11 +154,16 @@ def _virtual_timeout_at_context(when: float | None) -> Any:
 
 
 class _VirtualAsyncTimeoutContext:
-    def __init__(self, scheduler: Any, task_id: int, when: float | None) -> None:
+    def __init__(self, scheduler: Any, task_id: int, when: float | None, *, delay: float | None = None) -> None:
         self._scheduler = scheduler
         self._task_id = task_id
         self._initial_when = when
-        self._when: float | None = None
+        #: Exact relative delay for the ``asyncio.timeout(delay)`` form; the
+        #: virtual deadline is then ``clock.now() + delay`` (one clock read).
+        self._initial_delay = delay
+        # Stdlib parity: asyncio.Timeout stores its loop-time deadline at
+        # construction, so when() reports it even before __aenter__.
+        self._when: float | None = when
         self._token: _VirtualAsyncTimeoutToken | None = None
         self._task: asyncio.Task[Any] | None = None
         self._cancelling = 0
@@ -167,7 +178,7 @@ class _VirtualAsyncTimeoutContext:
         self._task = asyncio.current_task()
         if self._task is not None:
             self._cancelling = self._task.cancelling()
-        self.reschedule(self._initial_when)
+        self._reschedule(self._initial_when, delay=self._initial_delay)
         return self
 
     def when(self) -> float | None:
@@ -176,16 +187,27 @@ class _VirtualAsyncTimeoutContext:
     def expired(self) -> bool:
         return self._token.expired if self._token is not None else False
 
-    def _to_virtual_deadline(self, when: float | None) -> float | None:
+    def _to_virtual_deadline(self, when: float | None, delay: float | None) -> float | None:
         if when is None:
             return None
         clock = self._scheduler.virtual_clock
         if clock is None:
             return None
-        delay = when - asyncio.get_running_loop().time()
-        return clock.now() + max(0.0, delay)
+        if delay is not None:
+            # asyncio.timeout(delay): exact deadline from a single clock read,
+            # so identical delays registered at the same virtual time share
+            # one deadline (deterministic coordinator tie-break / replay).
+            return clock.now() + max(0.0, delay)
+        # asyncio.timeout_at(when) / user reschedule(when): the input lives in
+        # loop.time() space, so translate it through a real loop.time() read
+        # exactly once, here.  The sub-microsecond real-time jitter this
+        # leaves in the deadline is inherent to absolute loop-time input.
+        return clock.now() + max(0.0, when - asyncio.get_running_loop().time())
 
     def reschedule(self, when: float | None) -> None:
+        self._reschedule(when)
+
+    def _reschedule(self, when: float | None, delay: float | None = None) -> None:
         if not self._entered:
             raise RuntimeError("Timeout has not been entered")
         if self._exited:
@@ -199,7 +221,7 @@ class _VirtualAsyncTimeoutContext:
             self._scheduler.remove_timeout_deadline(self._task_id, self._token)
         self._token = None
         self._when = when
-        deadline = self._to_virtual_deadline(when)
+        deadline = self._to_virtual_deadline(when, delay)
         if deadline is None or self._task is None:
             return
 
@@ -262,19 +284,30 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
         inner_awaitable = _AutoPauseCoroutine(awaitable, task_id, scheduler)
     inner = asyncio.ensure_future(inner_awaitable)
 
-    token = _VirtualAsyncTimeoutToken()
-    scheduler.add_timeout_deadline(task_id, clock.now() + timeout, token)
     event_blocked = scheduler._event_blocked
     engine_execution = None if wraps_logical_task else getattr(scheduler, "execution", None)
+    # A bare-future wait under an engineless scheduler (the random strategy's
+    # AwaitScheduler) has no engine bookkeeping to hide the parked task from
+    # the schedule, so register it as a timed park: the schedule skips it like
+    # a sleeper and the clock advance is what wakes it.  Without this the
+    # schedule head stalls on the parked task until the wall-clock watchdog
+    # cancels a *different* task mid-suspension (false counterexample).
+    parked = engine_execution is None and not wraps_logical_task
+    token = _VirtualAsyncTimeoutToken(
+        on_fire=(lambda: scheduler.unpark_timed_wait(task_id)) if parked else None,
+    )
+    scheduler.add_timeout_deadline(task_id, clock.now() + timeout, token)
     if engine_execution is not None and event_blocked is not None:
         event_blocked.add(task_id)
     if engine_execution is not None:
         engine_execution.block_thread(task_id)
+    if parked:
+        scheduler.park_timed_wait(task_id)
     depth = _in_scheduler_pause.get()
     _in_scheduler_pause.set(depth + 1)
     unblocked = False
     try:
-        if engine_execution is not None:
+        if engine_execution is not None or parked:
             await scheduler.kick_stalled_schedule(task_id)
         done, _pending = await asyncio.wait({inner, token.future}, return_when=asyncio.FIRST_COMPLETED)
         if engine_execution is not None:
@@ -299,6 +332,8 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
     finally:
         _in_scheduler_pause.set(depth)
         scheduler.remove_timeout_deadline(task_id, token)
+        if parked:
+            scheduler.unpark_timed_wait(task_id)
         if engine_execution is not None and event_blocked is not None:
             event_blocked.discard(task_id)
         if engine_execution is not None and not unblocked:
