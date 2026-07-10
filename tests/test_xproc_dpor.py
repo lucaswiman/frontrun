@@ -8,10 +8,13 @@ relay/engine integration deterministically without spawning subprocesses.
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
+from typing import Any
 
-from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
+from frontrun._dpor_runtime.xproc import protocol as proto
+from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator, _relay_loop
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
 
 
@@ -349,10 +352,135 @@ def test_dpor_scheduler_timeout_is_a_failure_not_a_pass() -> None:
         setup=lambda: None,
         invariant=lambda: False,
     )
+    # The stall is now diagnosed at ~deadlock_timeout, i.e. faster than the
+    # workers' 1.5s sleep finishes — and ThreadLauncher cannot force-kill a
+    # thread the way the process launchers kill children, so reap the
+    # stragglers here before the leak checker runs.
+    for t in threading.enumerate():
+        if t.name.startswith("xproc-worker-"):
+            t.join(timeout=10.0)
     assert not result.ok, "scheduler timeout was scored as a pass despite an always-False invariant"
     assert result.failure_kind == "timeout"
     assert "deadlock_timeout" in (result.failure or "")
     assert not result.exhausted
+
+
+def test_dpor_stop_on_first_false_collects_all_failures() -> None:
+    # Regression (api-shape): the coordinator kept only first_failure, so with
+    # stop_on_first=False every subsequent failing schedule was discarded. The
+    # result must carry every failing execution as (execution_number, schedule)
+    # pairs, mirroring thread-mode InterleavingResult.failures.
+    db = _DB()
+    worker = _rmw_worker(db)
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, stop_on_first=False)
+    result = coord.explore(
+        worker_set=ThreadLauncher([worker, worker]),
+        setup=db.reset,
+        invariant=lambda: False,  # every completed execution fails
+    )
+    assert not result.ok
+    assert result.failure_kind == "invariant"
+    assert len(result.failures) == result.iterations
+    assert len(result.failures) >= 1
+    exec_no, schedule = result.failures[0]
+    assert exec_no == 1
+    assert schedule == result.failing_schedule
+    # Execution numbers are 1-based and strictly increasing.
+    assert [n for n, _ in result.failures] == list(range(1, result.iterations + 1))
+
+
+def test_dpor_stop_on_first_true_still_records_its_failure() -> None:
+    # With stop_on_first=True the single failing execution appears in failures
+    # too (thread-mode records the failure it stops on).
+    db = _DB()
+    worker = _rmw_worker(db)
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
+    result = coord.explore(
+        worker_set=ThreadLauncher([worker, worker]),
+        setup=db.reset,
+        invariant=lambda: db.balance == 200,
+    )
+    assert not result.ok
+    assert len(result.failures) == 1
+    assert result.failures[0] == (result.iterations, result.failing_schedule)
+
+
+class _NoopEngine:
+    """Engine stub for driving _relay_loop without the Rust extension."""
+
+    def report_synced_io_access(self, *args: Any) -> None:
+        pass
+
+    def report_io_access(self, *args: Any) -> None:
+        pass
+
+    def register_resource_group(self, *args: Any) -> None:
+        pass
+
+
+class _TurnOrderScheduler:
+    """Fake scheduler capturing the shared accesses list at turn release.
+
+    Exposes exactly what ``_relay_loop`` touches. ``after_sync_retry`` snapshots
+    the accesses list so the test can assert the relay appended its worker's
+    ACCESS entry BEFORE releasing the turn.
+    """
+
+    def __init__(self, accesses: list[tuple[int, str, str]]) -> None:
+        self.engine = _NoopEngine()
+        self.execution = None
+        self.deadlock_timeout = 5.0
+        self._engine_lock = threading.Lock()
+        self._lock_depth_by_thread: dict[int, int] = {}
+        self._pending_io_by_thread: dict[int, list[Any]] = {}
+        self._accesses = accesses
+        self.accesses_at_release: list[tuple[int, str, str]] | None = None
+
+    def before_sync_retry(self, worker_id: int) -> bool:
+        return True
+
+    def after_sync_retry(self, worker_id: int) -> None:
+        if self.accesses_at_release is None:
+            self.accesses_at_release = list(self._accesses)
+
+    def mark_done(self, worker_id: int) -> None:
+        pass
+
+    def report_error(self, error: Exception) -> None:
+        pass
+
+
+def test_relay_appends_access_before_releasing_turn() -> None:
+    # Regression (exactness): the relay released the sync turn (after_sync_retry)
+    # BEFORE appending the worker's ACCESS frame to the shared accesses list, so
+    # the next scheduled relay could interleave ITS appends first depending on
+    # OS thread timing — the human-facing access trace of the same DPOR
+    # counterexample differed run to run. The access must be recorded while the
+    # owning worker still holds the turn.
+    accesses: list[tuple[int, str, str]] = []
+    scheduler = _TurnOrderScheduler(accesses)
+    coord_end, worker_end = socket.socketpair()
+    relay = threading.Thread(
+        target=_relay_loop,
+        args=(scheduler, 0, coord_end, accesses, threading.Lock(), {}, set()),
+        name="xproc-relay-ordering-test",
+        daemon=True,
+    )
+    relay.start()
+    try:
+        proto.send_msg(worker_end, {"t": proto.REPORT_AND_WAIT, "w": 0})
+        grant = proto.recv_msg(worker_end)
+        assert grant is not None and grant["t"] == proto.GRANT
+        proto.send_msg(worker_end, {"t": proto.ACCESS, "w": 0, "rid": "redis:k1", "kind": "write"})
+        proto.send_msg(worker_end, {"t": proto.DONE, "w": 0})
+        relay.join(10.0)
+        assert not relay.is_alive()
+    finally:
+        worker_end.close()
+        coord_end.close()
+    assert scheduler.accesses_at_release == [(0, "redis:k1", "write")], (
+        f"turn released before the worker's access was recorded: {scheduler.accesses_at_release!r}"
+    )
 
 
 def test_dpor_no_race_when_safe() -> None:
