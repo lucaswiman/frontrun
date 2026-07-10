@@ -124,5 +124,5 @@ def test_process_execution_rejects_async_workers() -> None:
     async def worker(state):  # noqa: RUF029 - intentionally async to trigger the guard
         return None
 
-    with pytest.raises(ValueError, match="does not support async"):
+    with pytest.raises(ValueError, match="async workers are not supported"):
         frontrun.explore(setup=lambda: None, workers=worker, count=2, invariant=lambda s: True, execution="process")

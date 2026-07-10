@@ -704,6 +704,93 @@ def test_explore_async_accepts_detect_sql():
 
 
 # ---------------------------------------------------------------------------
+# (m) mixed sync/async workers are rejected eagerly
+# ---------------------------------------------------------------------------
+
+
+def _sync_increment(c: AsyncCounter) -> None:
+    c.value += 1
+
+
+def test_explore_rejects_mixed_sync_async_workers():
+    """A mix of async def and plain def workers must raise ValueError eagerly.
+
+    Without the check, any_async() routes the whole list to the async engine
+    and the sync worker is silently mishandled instead of running as a thread.
+    """
+    with pytest.raises(ValueError, match="mix"):
+        frontrun.explore(
+            setup=AsyncCounter,
+            workers=[_sync_increment, AsyncCounter.increment],
+            invariant=lambda c: c.value == 2,
+        )
+
+
+def test_explore_process_rejects_mixed_workers_eagerly():
+    """execution='process' must also reject mixed workers with the mixed-worker
+    message (not fall through to the generic async-workers rejection)."""
+    with pytest.raises(ValueError, match="mix"):
+        frontrun.explore(
+            setup=AsyncCounter,
+            workers=[_sync_increment, AsyncCounter.increment],
+            invariant=lambda c: c.value == 2,
+            execution="process",
+        )
+
+
+# ---------------------------------------------------------------------------
+# (n) reuse_workers is a process-only option
+# ---------------------------------------------------------------------------
+
+
+def test_explore_thread_rejects_reuse_workers():
+    """reuse_workers=True with thread execution was a silent no-op; it must
+    raise like every other explicitly-passed unsupported option."""
+    with pytest.raises(ValueError, match="reuse_workers"):
+        frontrun.explore(
+            setup=Counter,
+            workers=[Counter.increment, Counter.increment],
+            invariant=counter_invariant,
+            reuse_workers=True,
+        )
+
+
+def test_explore_thread_accepts_reuse_workers_default():
+    """Passing reuse_workers=False (the default) is indistinguishable from
+    omitting it and must not raise."""
+    result = frontrun.explore(
+        setup=Counter,
+        workers=[Counter.increment, Counter.increment],
+        invariant=counter_invariant,
+        reuse_workers=False,
+    )
+    assert isinstance(result, InterleavingResult)
+
+
+# ---------------------------------------------------------------------------
+# (o) process-branch rejection messages match the thread-branch style
+# ---------------------------------------------------------------------------
+
+
+def test_process_unsupported_option_message_shape():
+    """The process-branch rejection must use the thread-branch sentence shape:
+    name the option (with '=' suffix), say it is 'not supported with' the mode,
+    and point at what to do instead."""
+    with pytest.raises(ValueError) as exc_info:
+        frontrun.explore(
+            setup=Counter,
+            workers=[Counter.increment, Counter.increment],
+            invariant=counter_invariant,
+            execution="process",
+            seed=42,
+        )
+    msg = str(exc_info.value)
+    assert "seed=" in msg
+    assert "not supported with execution='process'" in msg
+    assert "execution='thread'" in msg
+
+
+# ---------------------------------------------------------------------------
 # explore_async_random: total_timeout support
 # ---------------------------------------------------------------------------
 

@@ -33,7 +33,6 @@ def test_lost_update_race_found_across_processes(tmp_path) -> None:
         },
         setup=lambda: xproc_demo_counter.setup(db),
         invariant=lambda _state: xproc_demo_counter.read(db) == 2,
-        max_iterations=50,
     )
     assert not result.ok, "expected the lost-update interleaving to be found"
     assert result.failure_kind == "invariant"
@@ -79,7 +78,6 @@ def test_count_shorthand_replicates_spec(tmp_path) -> None:
         count=2,
         setup=lambda: xproc_demo_counter.setup(db),
         invariant=lambda _state: xproc_demo_counter.read(db) == 2,
-        max_iterations=50,
     )
     assert not result.ok
     assert result.failure_kind == "invariant"
@@ -108,7 +106,6 @@ def test_invariant_receives_setup_state_handle(tmp_path) -> None:
         },
         setup=setup,
         invariant=invariant,
-        max_iterations=50,
     )
     assert received, "invariant was never called"
     assert all(s is handle for s in received), "invariant must receive the setup() return value"
@@ -159,7 +156,6 @@ def test_atomic_increment_has_no_race(tmp_path) -> None:
         },
         setup=lambda: xproc_demo_counter.setup(db),
         invariant=lambda _state: xproc_demo_counter.read(db) == 2,
-        max_iterations=50,
     )
     assert result.ok, f"unexpected failure {result.failure!r} at {result.failing_schedule!r}"
     assert result.exhausted
