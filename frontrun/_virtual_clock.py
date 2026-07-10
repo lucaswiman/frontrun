@@ -391,65 +391,112 @@ class DeadlineCoordinator:
         return due
 
 
+# The virtual datetime/date shims below all dispatch on ``cls``:
+#
+# - For the virtual class *itself* (``cls is _VirtualDateTime`` /
+#   ``_VirtualDate``) constructors return instances of the *saved original*
+#   class (plain real datetime, or whatever third-party fake — freezegun,
+#   time-machine — was installed before us) and isinstance/issubclass are
+#   transparent to the real type.  Instances built inside the patch scope must
+#   never carry the virtual type once the scope unwinds (``type(x) is
+#   datetime.datetime``, pydantic strict, sqlite adapters).
+# - For a genuine *user subclass* defined inside the scope (its base resolves
+#   to the virtual class — e.g. ``pandas.Timestamp`` if pandas is imported
+#   lazily inside the scope) stdlib subclass semantics must hold: construction
+#   preserves the subclass, isinstance/issubclass are exact, and alternate
+#   constructors (``now``/``fromtimestamp``/...) return the subclass while
+#   still reading virtual time.  User subclasses inherit these metaclasses,
+#   which is why the transparency must be gated on ``cls`` — an ungated check
+#   would make *every* datetime an "instance" of the user subclass.
+
+
 class _VirtualDateTimeMeta(type):
     def __instancecheck__(cls, instance: object) -> bool:
-        return isinstance(instance, _real_datetime)
+        if cls is _VirtualDateTime:
+            return isinstance(instance, _real_datetime)
+        return type.__instancecheck__(cls, instance)
 
     def __subclasscheck__(cls, subclass: type) -> bool:
-        return issubclass(subclass, _real_datetime)
+        if cls is _VirtualDateTime:
+            return issubclass(subclass, _real_datetime)
+        return type.__subclasscheck__(cls, subclass)
 
 
 class _VirtualDateMeta(type):
     def __instancecheck__(cls, instance: object) -> bool:
-        return isinstance(instance, _real_date)
+        if cls is _VirtualDate:
+            return isinstance(instance, _real_date)
+        return type.__instancecheck__(cls, instance)
 
     def __subclasscheck__(cls, subclass: type) -> bool:
-        return issubclass(subclass, _real_date)
+        if cls is _VirtualDate:
+            return issubclass(subclass, _real_date)
+        return type.__subclasscheck__(cls, subclass)
 
 
 class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
     def __new__(cls, *args: Any, **kwargs: Any) -> _datetime.datetime:
-        return _saved_originals["datetime"](*args, **kwargs)
+        if cls is _VirtualDateTime:
+            return _saved_originals["datetime"](*args, **kwargs)
+        # User subclass: preserve cls.  Delegating to the real C __new__ also
+        # handles the pickle/copy bytes-state constructor form.
+        return super().__new__(cls, *args, **kwargs)
 
     @classmethod
     def now(cls, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
         clock = _active_virtual_clock()
-        real = _saved_originals["datetime"]
-        if clock is None:
-            return real.now(tz)
-        return real.fromtimestamp(clock.now(), tz)
+        if clock is not None:
+            return cls.fromtimestamp(clock.now(), tz)
+        if cls is _VirtualDateTime:
+            return _saved_originals["datetime"].now(tz)
+        return super().now(tz)
 
     @classmethod
     def utcnow(cls) -> _datetime.datetime:
         clock = _active_virtual_clock()
-        real = _saved_originals["datetime"]
-        if clock is None:
-            return real.now(_datetime.timezone.utc).replace(tzinfo=None)
-        return real.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
+        if clock is not None:
+            return cls.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
+        if cls is _VirtualDateTime:
+            return _saved_originals["datetime"].now(_datetime.timezone.utc).replace(tzinfo=None)
+        return super().now(_datetime.timezone.utc).replace(tzinfo=None)
 
     @classmethod
     def fromtimestamp(cls, timestamp: float, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
-        return _saved_originals["datetime"].fromtimestamp(timestamp, tz)
+        if cls is _VirtualDateTime:
+            return _saved_originals["datetime"].fromtimestamp(timestamp, tz)
+        # Deliberate divergence for subclasses: bypass any saved third-party
+        # fake and construct via the real C implementation — cls already
+        # derives from the real class, and only the real classmethod can bind
+        # an arbitrary cls.  (``.replace()`` preserves the subclass.)
+        return super().fromtimestamp(timestamp, tz)
 
     @classmethod
     def utcfromtimestamp(cls, timestamp: float) -> _datetime.datetime:
-        return _saved_originals["datetime"].fromtimestamp(timestamp, _datetime.timezone.utc).replace(tzinfo=None)
+        return cls.fromtimestamp(timestamp, _datetime.timezone.utc).replace(tzinfo=None)
 
 
 class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):
     def __new__(cls, *args: Any, **kwargs: Any) -> _datetime.date:
-        return _saved_originals["date"](*args, **kwargs)
+        if cls is _VirtualDate:
+            return _saved_originals["date"](*args, **kwargs)
+        return super().__new__(cls, *args, **kwargs)
 
     @classmethod
     def today(cls) -> _datetime.date:
         clock = _active_virtual_clock()
-        if clock is None:
+        if clock is not None:
+            if cls is _VirtualDate:
+                return _saved_originals["datetime"].fromtimestamp(clock.now()).date()
+            return cls.fromtimestamp(clock.now())
+        if cls is _VirtualDate:
             return _saved_originals["date"].today()
-        return _saved_originals["datetime"].fromtimestamp(clock.now()).date()
+        return super().today()
 
     @classmethod
     def fromtimestamp(cls, timestamp: float) -> _datetime.date:
-        return _saved_originals["date"].fromtimestamp(timestamp)
+        if cls is _VirtualDate:
+            return _saved_originals["date"].fromtimestamp(timestamp)
+        return super().fromtimestamp(timestamp)
 
 
 # ---------------------------------------------------------------------------
