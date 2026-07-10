@@ -668,6 +668,191 @@ def test_async_timeout_context_uses_virtual_deadline_and_reports_expiry() -> Non
     assert result.property_holds, result.explanation
 
 
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_contexts_share_exact_virtual_deadline() -> None:
+    """Two tasks entering ``asyncio.timeout(1.0)`` at virtual t=0 must get the
+    *exact same* virtual deadline (one ``clock.now() + delay`` read, no
+    ``loop.time()`` round-trip smearing real-time jitter into it).  With exact
+    deadlines the DeadlineCoordinator's deterministic ``(deadline, actor_id,
+    order)`` tie-break controls firing order, so identical runs observe the
+    same order every time."""
+
+    class State:
+        def __init__(self) -> None:
+            self.stamps: dict[str, float] = {}
+            self.order: list[str] = []
+
+    async def worker(name: str, s: State) -> None:
+        start = time.monotonic()
+        try:
+            async with asyncio.timeout(1.0):
+                await asyncio.Event().wait()
+        except TimeoutError:
+            s.stamps[name] = time.monotonic() - start
+            s.order.append(name)
+
+    async def worker_a(s: State) -> None:
+        await worker("a", s)
+
+    async def worker_b(s: State) -> None:
+        await worker("b", s)
+
+    orders: list[tuple[str, ...]] = []
+
+    def invariant(s: State) -> bool:
+        orders.append(tuple(s.order))
+        assert s.stamps.get("a") == 1.0, f"virtual deadline contaminated by real-time jitter: {s.stamps}"
+        assert s.stamps.get("b") == 1.0, f"virtual deadline contaminated by real-time jitter: {s.stamps}"
+        return True
+
+    for _ in range(5):
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[worker_a, worker_b],
+                invariant=invariant,
+                clock="virtual",
+                max_executions=1,
+                reproduce_on_failure=0,
+            )
+        )
+        assert result.property_holds, result.explanation
+
+    assert len(set(orders)) == 1, f"timeout firing order flipped across identical runs: {orders}"
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_expiry_order_counterexample_replays_deterministically() -> None:
+    """A counterexample that depends on the relative resume order of two
+    identical ``asyncio.timeout(1.0)`` expiries must replay: exact virtual
+    deadlines make the coordinator tie-break (and hence the recorded
+    schedule's clock steps) deterministic across exploration and replay."""
+
+    class State:
+        def __init__(self) -> None:
+            self.order: list[str] = []
+
+    async def worker(name: str, s: State) -> None:
+        try:
+            async with asyncio.timeout(1.0):
+                await asyncio.Event().wait()
+        except TimeoutError:
+            s.order.append(name)
+
+    async def worker_a(s: State) -> None:
+        await worker("a", s)
+
+    async def worker_b(s: State) -> None:
+        await worker("b", s)
+
+    def invariant(s: State) -> bool:
+        assert s.order != ["a", "b"], f"observed firing order {s.order}"
+        return True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker_a, worker_b],
+            invariant=invariant,
+            clock="virtual",
+        )
+    )
+    _assert_invariant_failure(result, "observed firing order")
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_when_before_enter_matches_stdlib() -> None:
+    """Stdlib ``asyncio.Timeout`` stores its loop-time deadline at
+    construction, so ``when()`` reports it before ``__aenter__`` (``w`` for
+    ``timeout_at(w)``, ``loop.time() + delay`` for ``timeout(delay)``, None
+    for ``timeout(None)``); the virtual context must match."""
+
+    class State:
+        def __init__(self) -> None:
+            self.at_when_ok = False
+            self.rel_when_ok = False
+            self.none_when_ok = False
+
+    async def worker(s: State) -> None:
+        loop = asyncio.get_running_loop()
+        w = loop.time() + 5.0
+        s.at_when_ok = asyncio.timeout_at(w).when() == w
+        before = loop.time()
+        cm = asyncio.timeout(5.0)
+        after = loop.time()
+        when = cm.when()
+        s.rel_when_ok = when is not None and before + 5.0 <= when <= after + 5.0
+        s.none_when_ok = asyncio.timeout(None).when() is None
+        await asyncio.sleep(0)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.at_when_ok and s.rel_when_ok and s.none_when_ok,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_random_wait_for_bare_future_with_concurrent_worker() -> None:
+    """Random strategy + virtual clock: a task parked in ``asyncio.wait_for``
+    on a bare future must be registered as blocked so the schedule skips it
+    and the clock advance fires its deadline.  Without that, the schedule
+    stalls on the parked task's entries, the pause watchdog kills the
+    *other* task mid-suspension after a real ``deadlock_timeout``, and the
+    truncated run is scored as a completed interleaving (false
+    counterexample / false pass)."""
+
+    class State:
+        def __init__(self) -> None:
+            self.timed_out = False
+            self.elapsed = 0.0
+            self.b_steps = 0
+            self.b_done = False
+
+    async def parked(s: State) -> None:
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(fut, timeout=1.0)
+        except TimeoutError:
+            s.timed_out = True
+            s.elapsed = time.monotonic() - start
+
+    async def runner(s: State) -> None:
+        for _ in range(5):
+            await asyncio.sleep(0)
+            s.b_steps += 1
+        s.b_done = True
+
+    def invariant(s: State) -> bool:
+        assert s.timed_out and s.elapsed >= 1.0, f"parked task did not time out at its virtual deadline: {s.elapsed}"
+        assert s.b_done and s.b_steps == 5, f"concurrent worker was cut short (steps={s.b_steps}, done={s.b_done})"
+        return True
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[parked, runner],
+            invariant=invariant,
+            strategy="random",
+            clock="virtual",
+            max_attempts=3,
+            seed=0,
+            timeout_per_run=5.0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 3.0, f"parked wait_for stalled the schedule for {wall_elapsed:.1f}s (watchdog rescue?)"
+
+
 def test_async_random_wait_for_bare_future_uses_virtual_deadline() -> None:
     class State:
         def __init__(self) -> None:
@@ -1751,6 +1936,107 @@ def test_async_condition_wait_timeout_does_not_release_other_task_lock() -> None
     )
     assert result.property_holds, result.explanation
     assert "Task crash" not in (result.explanation or ""), result.explanation
+
+
+def test_async_condition_wait_for_predicate_timeout_uses_virtual_deadline() -> None:
+    """The frontrun-extension ``Condition.wait_for(pred, timeout=...)`` must
+    time out at its virtual deadline (zero wall time) inside explored tasks."""
+
+    class State:
+        def __init__(self) -> None:
+            self.cond = asyncio.Condition()
+            self.timed_out = False
+            self.elapsed = 0.0
+
+    async def waiter(s: State) -> None:
+        start = time.monotonic()
+        async with s.cond:
+            try:
+                await s.cond.wait_for(lambda: False, timeout=1.0)
+            except (TimeoutError, asyncio.TimeoutError):
+                s.timed_out = True
+                s.elapsed = time.monotonic() - start
+
+    wall_start = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter],
+            invariant=lambda s: s.timed_out and s.elapsed >= 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    wall_elapsed = time.monotonic() - wall_start
+    assert result.property_holds, result.explanation
+    assert wall_elapsed < 4.0, f"condition wait_for timeout burned {wall_elapsed:.1f}s wall time"
+
+
+def test_async_condition_wait_for_timeout_without_asyncio_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``Condition.wait_for(pred, timeout=...)`` must not depend on
+    ``asyncio.timeout``, which does not exist on Python 3.10 (the timeout
+    guard must go through ``asyncio.wait_for`` instead)."""
+    from frontrun._async_cooperative import _CooperativeAsyncCondition
+
+    monkeypatch.delattr(asyncio, "timeout", raising=False)
+
+    async def scenario() -> tuple[bool, object]:
+        cond = _CooperativeAsyncCondition()
+        timed_out = False
+        async with cond:
+            try:
+                await cond.wait_for(lambda: False, timeout=0.05)
+            except (TimeoutError, asyncio.TimeoutError):
+                timed_out = True
+        async with cond:
+            satisfied = await cond.wait_for(lambda: True, timeout=1.0)
+        return timed_out, satisfied
+
+    timed_out, satisfied = asyncio.run(scenario())
+    assert timed_out
+    assert satisfied is True
+
+
+def test_async_condition_wait_for_returns_last_predicate_result() -> None:
+    """``Condition.wait_for`` must return the already-evaluated predicate
+    result (stdlib behavior), not call the side-effecting predicate an extra
+    time on the way out."""
+    from frontrun._async_cooperative import _CooperativeAsyncCondition
+
+    calls = 0
+
+    def predicate() -> int:
+        nonlocal calls
+        calls += 1
+        return calls
+
+    async def scenario() -> int:
+        cond = _CooperativeAsyncCondition()
+        async with cond:
+            return await cond.wait_for(predicate)
+
+    assert asyncio.run(scenario()) == 1
+    assert calls == 1
+
+
+def test_async_condition_wait_for_returns_last_predicate_result_with_timeout() -> None:
+    """Same as above for the ``timeout=`` path of the frontrun extension."""
+    from frontrun._async_cooperative import _CooperativeAsyncCondition
+
+    calls = 0
+
+    def predicate() -> int:
+        nonlocal calls
+        calls += 1
+        return calls
+
+    async def scenario() -> int:
+        cond = _CooperativeAsyncCondition()
+        async with cond:
+            return await cond.wait_for(predicate, timeout=1.0)
+
+    assert asyncio.run(scenario()) == 1
+    assert calls == 1
 
 
 def test_async_default_condition_lock_is_engine_visible() -> None:
