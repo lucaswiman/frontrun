@@ -218,6 +218,14 @@ class InterleavedLoop:
     def remove_timeout_deadline(self, task_id: int, token: object) -> None:
         """Cancel a virtual timeout deadline (no-op default)."""
 
+    def park_timed_wait(self, task_id: int) -> None:
+        """Register a task parked in a virtual timed wait with no engine
+        bookkeeping (e.g. ``asyncio.wait_for`` on a bare future under the
+        random strategy); no-op default for engine-backed schedulers."""
+
+    def unpark_timed_wait(self, task_id: int) -> None:
+        """Unregister a task from a virtual timed park (no-op default)."""
+
     def _advance_virtual_deadline_for_idle(self) -> bool:
         """Advance the virtual clock to the next pending deadline when the run is
         idle; returns True if it made progress (default: no virtual clock)."""

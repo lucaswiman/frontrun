@@ -719,14 +719,33 @@ class _CooperativeAsyncCondition:
         return True
 
     async def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> Any:
-        if timeout is not None:
-            async with asyncio.timeout(timeout):
-                while not predicate():
-                    await self.wait()
-        else:
-            while not predicate():
+        # ``timeout=`` is a frontrun extension (stdlib asyncio.Condition
+        # .wait_for has no timeout parameter).  Both paths return the last
+        # *evaluated* predicate result — stdlib behavior — rather than calling
+        # the possibly side-effecting predicate one extra time on the way out.
+        result = predicate()
+        if result or timeout is None:
+            while not result:
                 await self.wait()
-        return predicate()
+                result = predicate()
+            return result
+
+        # Guard the wait loop with ``asyncio.wait_for``, not
+        # ``asyncio.timeout``: wait_for exists on Python 3.10 (asyncio.timeout
+        # is 3.11+) and is patched to the virtual-deadline implementation
+        # under a virtual clock.  On timeout the inner coroutine is cancelled
+        # while parked in wait(), whose cancellation path re-acquires the
+        # lock before propagating — same contract as the previous
+        # asyncio.timeout-based guard.
+        async def _wait_until_true() -> Any:
+            # The predicate was just evaluated falsy above, so wait first.
+            while True:
+                await self.wait()
+                wait_result = predicate()
+                if wait_result:
+                    return wait_result
+
+        return await asyncio.wait_for(_wait_until_true(), timeout)
 
     def _wake_cooperative_waiters(self, n: int, scheduler: Any, task_id: int | None) -> None:
         woke = 0

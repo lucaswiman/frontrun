@@ -126,6 +126,11 @@ class AwaitScheduler(InterleavedLoop):
         self.clock_mode = clock_mode
         self._deadlines = DeadlineCoordinator()
         self._sleepers: dict[int, float] = {}
+        # Tasks parked in a virtual timed wait with no scheduler-side loop
+        # (asyncio.wait_for on a bare future/task).  The schedule skips them
+        # like sleepers; their pending timeout deadline in _deadlines is the
+        # only thing that can wake them, and the token's on_fire unparks.
+        self._timed_parked: set[int] = set()
         # Table/row accesses observed via SQL interception, in arrival order.
         # Exposed so callers can inspect cross-task table conflicts.
         self.sql_accesses: list[tuple[int, str, str]] = []
@@ -153,6 +158,59 @@ class AwaitScheduler(InterleavedLoop):
 
     def remove_timeout_deadline(self, task_id: int, token: object) -> None:
         self._deadlines.cancel(task_id, token)
+
+    def park_timed_wait(self, task_id: int) -> None:
+        """Register *task_id* as parked in a virtual timed wait.
+
+        Called by the virtual ``asyncio.wait_for`` wrapper for waits on bare
+        futures/tasks: the parked task has no further scheduling points, so
+        the schedule must skip its entries (see ``should_proceed``) and the
+        clock advance is what wakes it.
+        """
+        self._timed_parked.add(task_id)
+
+    def unpark_timed_wait(self, task_id: int) -> None:
+        self._timed_parked.discard(task_id)
+
+    def _advance_clock_for_parked_if_blocked(self) -> None:
+        """Advance to the next deadline when only parked/sleeping tasks remain.
+
+        Caller must hold ``self._condition``.  Sleepers drive their own
+        autojump loop inside ``sleep_until``, but a task parked in a virtual
+        ``wait_for`` has no scheduler-side loop — so the transitions that can
+        leave only blocked tasks alive (the park itself, or another task
+        finishing) must advance the clock here, or the run stalls until the
+        wall-clock watchdog rescues it a ``deadlock_timeout`` later.
+        """
+        if self.virtual_clock is None or not self._timed_parked:
+            return
+        alive = [t for t in range(self.num_tasks) if t not in self._tasks_done]
+        if not alive or not all(t in self._timed_parked or t in self._sleepers for t in alive):
+            return
+        next_deadline = self._deadlines.next_deadline()
+        if next_deadline is not None:
+            self._advance_clock_to(next_deadline)
+
+    async def kick_stalled_schedule(self, task_id: int) -> None:
+        """Wake schedule progress after *task_id* parked itself in a timed wait.
+
+        Tasks waiting in ``pause()`` for the parked task's schedule entries
+        must re-check ``should_proceed`` (which now skips those entries), and
+        if every live task is blocked only the clock can move.
+        """
+        async with self._condition:
+            if self._error:
+                return
+            self._advance_clock_for_parked_if_blocked()
+            self._condition.notify_all()
+
+    async def _mark_done(self, task_id: Any) -> None:
+        """Mark a task done; if only parked tasks remain, advance the clock."""
+        self._progress += 1
+        async with self._condition:
+            self._tasks_done.add(task_id)
+            self._advance_clock_for_parked_if_blocked()
+            self._condition.notify_all()
 
     def _advance_virtual_deadline_for_idle(self) -> bool:
         if self.virtual_clock is None:
@@ -195,8 +253,9 @@ class AwaitScheduler(InterleavedLoop):
                             self._condition.notify_all()
                             return
                         alive = [t for t in range(self.num_tasks) if t not in self._tasks_done]
-                        if alive and all(t in self._sleepers for t in alive):
-                            # Every live task is asleep: only time can move.
+                        if alive and all(t in self._sleepers or t in self._timed_parked for t in alive):
+                            # Every live task is asleep or parked in a timed
+                            # wait: only time can move.
                             next_deadline = self._deadlines.next_deadline()
                             if next_deadline is not None:
                                 self._advance_clock_to(next_deadline)
@@ -240,27 +299,37 @@ class AwaitScheduler(InterleavedLoop):
             if entry in self._tasks_done:
                 self._index += 1
                 continue
-            if self.virtual_clock is not None and entry in self._sleepers:
+            if self.virtual_clock is not None and (entry in self._sleepers or entry in self._timed_parked):
                 if self.clock_mode == "explored":
                     # "Maybe advance": the random schedule picked a sleeping
-                    # task — let time pass toward its deadline; the woken task
-                    # then consumes this entry.  Each speculative hop is
-                    # clamped to the *earliest* pending deadline so an earlier
-                    # timed wait fires (and wakes its waiter) at its own clock
-                    # value, never at a later sleeper's target.  Convergence
-                    # is automatic: control returns to the event loop after
-                    # each hop — letting the woken waiter run first — and the
-                    # next should_proceed call re-advances until the scheduled
-                    # sleeper's own deadline is reached.
-                    target = self._sleepers[entry]
+                    # (or timed-parked) task — let time pass toward its
+                    # deadline; the woken task then consumes this entry.  Each
+                    # speculative hop is clamped to the *earliest* pending
+                    # deadline so an earlier timed wait fires (and wakes its
+                    # waiter) at its own clock value, never at a later
+                    # sleeper's target.  Convergence is automatic: control
+                    # returns to the event loop after each hop — letting the
+                    # woken waiter run first — and the next should_proceed
+                    # call re-advances until the scheduled sleeper's own
+                    # deadline is reached.  A timed-parked entry has no
+                    # _sleepers deadline; its own timeout is pending in the
+                    # coordinator, so the earliest-deadline clamp is the hop.
+                    target = self._sleepers.get(entry)
                     next_deadline = self._deadlines.next_deadline()
-                    if next_deadline is not None:
+                    if target is None:
+                        target = next_deadline
+                    elif next_deadline is not None:
                         target = min(target, next_deadline)
+                    if target is None:
+                        # No pending deadline (already fired): the task is
+                        # waking — skip the stale slot.
+                        self._index += 1
+                        continue
                     self._advance_clock_to(target)
                     self._condition.notify_all()
                     break
-                # Autojump semantics: a sleeping task cannot run before the
-                # clock advances; skip its slot.
+                # Autojump semantics: a sleeping/parked task cannot run before
+                # the clock advances; skip its slot.
                 self._index += 1
                 continue
             break
