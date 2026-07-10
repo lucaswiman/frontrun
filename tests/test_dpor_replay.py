@@ -156,6 +156,235 @@ class TestIOAnchoredReplayScheduler:
         assert sched._lock.acquire(timeout=1.0), "condition lock still held by a busy-spinner"
         sched._lock.release()
 
+    def test_positional_replay_detects_exact_event_deadlock(self) -> None:
+        """Replaying a schedule that ends in an Event-wait cycle must raise
+        DeadlockError promptly, not spin out the op budget and die with a
+        plain TimeoutError after deadlock_timeout."""
+        from frontrun._deadlock import DeadlockError
+        from frontrun._dpor_runtime.replay import _run_dpor_schedule
+        from frontrun._virtual_clock import VirtualClock
+
+        class State:
+            def __init__(self) -> None:
+                self.e1 = threading.Event()
+                self.e2 = threading.Event()
+
+        def w1(s: State) -> None:
+            s.e1.wait()
+            s.e2.set()
+
+        def w2(s: State) -> None:
+            s.e2.wait()
+            s.e1.set()
+
+        wall_start = time.monotonic()
+        with pytest.raises(DeadlockError):
+            _run_dpor_schedule(
+                [0, 1],
+                State,
+                [w1, w2],
+                timeout=5.0,
+                detect_io=False,
+                deadlock_timeout=2.0,
+                clock="virtual",
+                virtual_clock=VirtualClock(),
+            )
+        wall_elapsed = time.monotonic() - wall_start
+        assert wall_elapsed < 1.5, f"replay deadlock detection took {wall_elapsed:.1f}s (fallback timeout burned?)"
+
+    def test_io_anchored_replay_detects_exact_event_deadlock(self) -> None:
+        """Same as above through the IO-anchored replay scheduler (defect #16 path)."""
+        from frontrun._deadlock import DeadlockError
+        from frontrun._dpor_runtime.replay import _run_dpor_schedule
+        from frontrun._virtual_clock import VirtualClock
+
+        class State:
+            def __init__(self) -> None:
+                self.e1 = threading.Event()
+                self.e2 = threading.Event()
+
+        def w1(s: State) -> None:
+            s.e1.wait()
+            s.e2.set()
+
+        def w2(s: State) -> None:
+            s.e2.wait()
+            s.e1.set()
+
+        wall_start = time.monotonic()
+        with pytest.raises(DeadlockError):
+            _run_dpor_schedule(
+                [0, 1],
+                State,
+                [w1, w2],
+                timeout=5.0,
+                detect_io=True,
+                deadlock_timeout=2.0,
+                io_schedule=[(0, "dummy")],
+                clock="virtual",
+                virtual_clock=VirtualClock(),
+            )
+        wall_elapsed = time.monotonic() - wall_start
+        assert wall_elapsed < 1.5, f"replay deadlock detection took {wall_elapsed:.1f}s (fallback timeout burned?)"
+
+    def test_io_anchored_replay_expires_timed_wait_virtually(self) -> None:
+        """A timeout-kind deadline (Event.wait(timeout=...)) must expire during
+        IO-anchored replay.  The io_schedule carries no clock-actor entries, so
+        the scheduler itself must advance the virtual clock when the thread it
+        waits on is blocked in a timed wait."""
+        from frontrun._dpor_runtime.replay import _run_dpor_schedule
+        from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
+
+        class State:
+            def __init__(self) -> None:
+                self.event = threading.Event()
+                self.elapsed = 0.0
+                self.timed_out: bool | None = None
+
+        def worker(s: State) -> None:
+            start = time.monotonic()
+            got = s.event.wait(timeout=1.0)  # nobody sets it; must expire virtually
+            s.elapsed = time.monotonic() - start
+            s.timed_out = not got
+
+        clock = VirtualClock()
+        wall_start = time.monotonic()
+        state = _run_dpor_schedule(
+            [0],
+            State,
+            [worker],
+            timeout=1.0,
+            detect_io=True,
+            deadlock_timeout=0.1,
+            io_schedule=[(0, "dummy")],
+            clock="virtual",
+            virtual_clock=clock,
+        )
+        wall_elapsed = time.monotonic() - wall_start
+
+        assert state.timed_out is True
+        assert state.elapsed >= 1.0
+        assert clock.now() >= VIRTUAL_EPOCH + 1.0
+        assert wall_elapsed < 0.5, f"virtual replay timed wait burned wall time ({wall_elapsed:.3f}s)"
+
+    def test_io_anchored_replay_timed_acquire_expiry_with_holder(self) -> None:
+        """A recorded lock.acquire(timeout=...) expiry must replay under the
+        IO-anchored scheduler when the lock is held by an event-blocked thread.
+
+        Exercises the two FIX pieces together: the scheduler must hand the
+        turn from the blocked anchor owner to the live waiter, then advance
+        the virtual clock to the waiter's timeout-kind deadline (the
+        io_schedule carries no clock-actor entries to replay the expiry).
+        """
+        from frontrun._dpor_runtime.replay import _run_dpor_schedule
+        from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
+
+        class State:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.done = threading.Event()
+                self.got: bool | None = None
+
+        def holder(s: State) -> None:
+            with s.lock:
+                s.done.wait()  # hold the lock until the waiter gave up
+
+        def waiter(s: State) -> None:
+            got = s.lock.acquire(timeout=1.0)
+            s.got = got
+            if got:
+                s.lock.release()
+            s.done.set()
+
+        clock = VirtualClock()
+        wall_start = time.monotonic()
+        state = _run_dpor_schedule(
+            [0, 1],
+            State,
+            [holder, waiter],
+            timeout=5.0,
+            detect_io=True,
+            deadlock_timeout=2.0,
+            io_schedule=[(0, "dummy-a"), (1, "dummy-b")],
+            clock="virtual",
+            virtual_clock=clock,
+        )
+        wall_elapsed = time.monotonic() - wall_start
+
+        assert state.got is False, "the recorded timeout branch must replay"
+        assert clock.now() >= VIRTUAL_EPOCH + 1.0
+        assert wall_elapsed < 1.5, f"timed-acquire replay burned wall time ({wall_elapsed:.3f}s)"
+
+    def test_reproduction_replays_timed_acquire_expiry_end_to_end(self) -> None:
+        """End-to-end: a counterexample whose failing schedule includes a timed
+        lock.acquire(timeout=...) expiry must reproduce N/N under clock="virtual"
+        with detect_io=True (SQL activity in the run).
+
+        Note: SQL cursors do not emit before_io/after_io anchors (only Redis
+        does), so this pipeline reproduces via the positional replay scheduler
+        and its recorded clock-actor entries; the IO-anchored twin is covered
+        by the unit tests above.
+        """
+        import sqlite3
+        import uuid
+
+        db_uri = f"file:fix2_timed_{uuid.uuid4().hex}?mode=memory&cache=shared"
+        keeper = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
+        keeper.execute("CREATE TABLE hits (worker TEXT, got INTEGER)")
+        keeper.commit()
+        try:
+
+            class State:
+                def __init__(self) -> None:
+                    self.lock = threading.Lock()
+                    self.done = threading.Event()
+                    self.got: bool | None = None
+                    conn = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
+                    conn.execute("DELETE FROM hits")
+                    conn.commit()
+                    conn.close()
+
+            def holder(s: State) -> None:
+                with s.lock:
+                    conn = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
+                    conn.execute("INSERT INTO hits VALUES ('holder', 1)")
+                    conn.commit()
+                    conn.close()
+                    s.done.wait()  # hold the lock until the waiter gave up
+
+            def waiter(s: State) -> None:
+                got = s.lock.acquire(timeout=1.0)
+                s.got = got
+                conn = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
+                conn.execute("INSERT INTO hits VALUES ('waiter', ?)", (1 if got else 0,))
+                conn.commit()
+                conn.close()
+                if got:
+                    s.lock.release()
+                s.done.set()
+
+            wall_start = time.monotonic()
+            result = frontrun.explore(
+                setup=State,
+                workers=[holder, waiter],
+                invariant=lambda s: s.got is True,
+                clock="virtual",
+                detect_io=True,
+                deadlock_timeout=2.0,
+                timeout_per_run=5.0,
+                reproduce_on_failure=3,
+            )
+            wall_elapsed = time.monotonic() - wall_start
+            assert not result.property_holds, "the holder-first interleaving must fail the invariant"
+            assert result.reproduction_attempts == 3
+            assert result.reproduction_successes == 3, (
+                f"timed-acquire expiry reproduced {result.reproduction_successes}/{result.reproduction_attempts} "
+                "under IO-anchored replay"
+            )
+            assert wall_elapsed < 20.0, f"reproduction took {wall_elapsed:.1f}s (deadlock_timeout burned per attempt?)"
+        finally:
+            keeper.close()
+
     def test_io_anchored_replay_advances_virtual_sleep(self) -> None:
         from frontrun._dpor_runtime.replay import _run_dpor_schedule
         from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
