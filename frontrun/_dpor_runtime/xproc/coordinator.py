@@ -24,7 +24,7 @@ import socket
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from frontrun._dpor_core import LivenessProbe, RowLockRegistry, WorkerSet, WorkerTarget
@@ -114,9 +114,14 @@ class CrossProcessResult:
     failing_schedule: list[int] | None = None
     failure: str | None = None
     # One of: "invariant", "worker_error", "deadlock", "timeout",
-    # "nondeterministic", None.
+    # "nondeterministic", "step_limit", None.
     failure_kind: str | None = None
     accesses: list[tuple[int, str, str]] | None = None
+    # Every failing execution as (execution_number, schedule) pairs, mirroring
+    # thread-mode InterleavingResult.failures. Populated by the DPOR
+    # coordinator; with stop_on_first=False it accumulates ALL failing
+    # executions instead of only the first.
+    failures: list[tuple[int, list[int]]] = field(default_factory=list)
 
 
 class _Conn:
@@ -128,6 +133,9 @@ class _Conn:
         self.pending: dict[str, Any] | None = None  # blocking request awaiting a grant
         self.done = False
         self.error: str | None = None
+        # recv timed out with the socket still open: the worker is alive but
+        # silent past deadlock_timeout (distinct from a disconnect/EOF).
+        self.timed_out = False
 
 
 @dataclass
@@ -140,8 +148,13 @@ class _Outcome:
     #   "deadlock"       — a genuine cross-worker deadlock (no runnable worker)
     #   "nondeterministic" — the recorded prefix choice is no longer grantable
     #                        during replay (a nondeterministic workload)
+    #   "step_limit"     — the run exceeded max_steps_per_run scheduling points
+    #                      without finishing (nonterminating worker)
     stop: str | None
     errors: dict[int, str]
+    # Workers whose recv timed out while still connected (alive but silent past
+    # deadlock_timeout), mapped to a human-facing diagnosis.
+    timeouts: dict[int, str]
 
 
 class CrossProcessCoordinator:
@@ -151,9 +164,17 @@ class CrossProcessCoordinator:
         num_workers: int,
         socket_path: str | None = None,
         deadlock_timeout: float = 10.0,
+        max_steps_per_run: int = 100_000,
     ) -> None:
         self.num_workers = num_workers
         self.deadlock_timeout = deadlock_timeout
+        # Per-run bound on scheduling points. A nonterminating worker
+        # (``while True`` around scheduled statements) keeps frames arriving,
+        # so the per-recv deadlock_timeout never fires and max_iterations only
+        # bounds *completed* iterations — without this cap explore() would hang
+        # forever. Generous by default (matching the DPOR path's max_branches
+        # spirit); raise it if a workload genuinely has more scheduling points.
+        self.max_steps_per_run = max_steps_per_run
         self._own_dir: str | None = None
         if socket_path is None:
             self._own_dir = tempfile.mkdtemp(prefix="frontrun-xproc-")
@@ -226,6 +247,29 @@ class CrossProcessCoordinator:
                     failure_kind="worker_error",
                     accesses=outcome.accesses,
                 )
+            if outcome.timeouts:
+                _wid, msg = next(iter(sorted(outcome.timeouts.items())))
+                return CrossProcessResult(
+                    ok=False,
+                    iterations=iterations,
+                    exhausted=False,
+                    failing_schedule=outcome.schedule,
+                    failure=msg,
+                    failure_kind="timeout",
+                    accesses=outcome.accesses,
+                )
+            if outcome.stop == "step_limit":
+                return CrossProcessResult(
+                    ok=False,
+                    iterations=iterations,
+                    exhausted=False,
+                    failure=(
+                        f"run exceeded max_steps_per_run={self.max_steps_per_run} scheduling points without "
+                        "completing; a worker may be nonterminating (e.g. an unbounded loop around scheduled "
+                        "statements). Raise max_steps_per_run if the workload genuinely runs this long."
+                    ),
+                    failure_kind="step_limit",
+                )
             if outcome.stop == "deadlock":
                 return CrossProcessResult(
                     ok=False,
@@ -282,7 +326,25 @@ class CrossProcessCoordinator:
                 self._advance(conn, accesses, registry)
             schedule, branch_points, stop = self._drive(conns, prefix, accesses, registry)
             errors = {wid: c.error for wid, c in conns.items() if c.error is not None}
-            return _Outcome(schedule, branch_points, accesses, stop, errors)
+            timeouts: dict[int, str] = {}
+            for wid, c in sorted(conns.items()):
+                if not c.timed_out:
+                    continue
+                # A recv timeout means the socket stayed open but silent — the
+                # worker is (almost certainly) alive. Confirm with the
+                # WorkerSet's liveness probe when it has one: a child that
+                # crashed without closing the socket is a worker_error, not a
+                # too-small deadlock_timeout.
+                if isinstance(worker_set, LivenessProbe) and worker_set.any_exited(handles):
+                    detail = worker_set.diagnose(handles)
+                    errors.setdefault(wid, f"worker process exited during the run ({detail or 'nonzero exit'})")
+                    continue
+                timeouts[wid] = (
+                    f"worker {wid} sent no frame within deadlock_timeout={self.deadlock_timeout}s but is still "
+                    "running: it blocked outside frontrun's model (e.g. database-level locking) or a statement "
+                    "ran longer than deadlock_timeout; raise deadlock_timeout if the workload is just slow"
+                )
+            return _Outcome(schedule, branch_points, accesses, stop, errors, timeouts)
         finally:
             for c in conns.values():
                 try:
@@ -302,6 +364,8 @@ class CrossProcessCoordinator:
         branch_points: list[list[int]] = []
         step = 0
         while True:
+            if step >= self.max_steps_per_run:
+                return schedule, branch_points, "step_limit"
             grantable = self._grantable(conns, registry)
             if not grantable:
                 if all(c.done for c in conns.values()):
@@ -357,13 +421,24 @@ class CrossProcessCoordinator:
         while True:
             try:
                 msg = proto.recv_msg(conn.sock)
-            except (TimeoutError, OSError):
+            except TimeoutError:
+                # The socket is still open but silent past deadlock_timeout:
+                # the worker is alive but slow/blocked, NOT disconnected.
+                # Record that distinctly so _run_once can diagnose
+                # failure_kind="timeout" (with raise-deadlock_timeout advice)
+                # instead of a misleading "worker disconnected" worker_error.
+                conn.done = True
+                conn.pending = None
+                conn.timed_out = True
+                registry.pop_all(conn.worker_id, None)
+                return
+            except OSError:
                 msg = None
             if msg is None:
                 conn.done = True
                 conn.pending = None
                 if conn.error is None:
-                    conn.error = "worker disconnected or timed out"
+                    conn.error = "worker disconnected"
                 registry.pop_all(conn.worker_id, None)
                 return
             kind = msg["t"]
