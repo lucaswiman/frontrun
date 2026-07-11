@@ -17,8 +17,8 @@ from frontrun._io_detection import tx_store
 __all__ = ["_acquire_pending_row_locks", "_release_dpor_row_locks"]
 
 
-def _acquire_pending_row_locks() -> None:
-    """Drain pending row-lock resources from TLS and acquire them on the scheduler."""
+def _acquire_pending_row_locks() -> list[str]:
+    """Drain pending resources, acquire them, and return those actually acquired."""
     store = tx_store()
     lock_resources = getattr(store, "_pending_row_locks", None)
     if lock_resources:
@@ -34,13 +34,19 @@ def _acquire_pending_row_locks() -> None:
                 held = set()
                 store._held_row_locks = held
             held.update(acquired)
+            return list(acquired)
+    return []
 
 
-def _release_dpor_row_locks() -> None:
-    """Release any DPOR row locks held by the current thread."""
+def _release_dpor_row_locks(resources: list[str] | None = None) -> None:
+    """Release selected DPOR row locks, or every lock when *resources* is ``None``."""
     store = tx_store()
-    if hasattr(store, "_held_row_locks"):
-        store._held_row_locks = set()
+    held = getattr(store, "_held_row_locks", None)
+    if held is not None:
+        if resources is None:
+            held.clear()
+        else:
+            held.difference_update(resources)
     ctx = _get_dpor_context()
     if ctx is not None:
-        ctx[0].release_row_locks(ctx[1])
+        ctx[0].release_row_locks(ctx[1], resources)

@@ -315,6 +315,33 @@ class TestPgAutocommitPhantomRace:
         )
 
 
+def test_postgres_retains_prior_lock_after_zero_row_update(pg_table) -> None:
+    """A later missing-row UPDATE does not release an earlier PostgreSQL row lock."""
+    conn1 = psycopg2.connect(_DSN)
+    conn2 = psycopg2.connect(_DSN)
+    try:
+        with conn1.cursor() as cur1:
+            cur1.execute("INSERT INTO defect6_domains (name, is_primary) VALUES ('locked', FALSE) RETURNING id")
+            row_id = cur1.fetchone()[0]
+        conn1.commit()
+
+        with conn1.cursor() as cur1:
+            cur1.execute("UPDATE defect6_domains SET name = 'held' WHERE id = %s", (row_id,))
+            assert cur1.rowcount == 1
+            cur1.execute("UPDATE defect6_domains SET name = 'missing' WHERE id = -1")
+            assert cur1.rowcount == 0
+
+        with conn2.cursor() as cur2:
+            cur2.execute("SET LOCAL lock_timeout = '100ms'")
+            with pytest.raises(psycopg2.errors.LockNotAvailable):
+                cur2.execute("UPDATE defect6_domains SET name = 'contender' WHERE id = %s", (row_id,))
+    finally:
+        conn1.rollback()
+        conn2.rollback()
+        conn1.close()
+        conn2.close()
+
+
 class TestPgTransactionalPhantomRace:
     """Defect #6: transactional mode must also detect UPDATE-INSERT phantom race.
 

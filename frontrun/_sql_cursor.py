@@ -27,7 +27,7 @@ from frontrun._deadlock import SchedulerAbort
 from frontrun._io_detection import _io_tls, get_io_reporter
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
-from frontrun._schema import get_schema
+from frontrun._schema import _detect_driver, get_schema
 from frontrun._sql_db_scope import (
     _CONNECTION_DB_SCOPES,
     _DB_SCOPE_ATTR,
@@ -180,6 +180,7 @@ def _dpor_schedule_and_suppress_sync(
     parameters: Any,
     paramstyle: str,
     execute: Callable[[], Any],
+    acquired_row_locks: list[str] | None = None,
 ) -> Any:
     """DPOR scheduling point + endpoint I/O suppression for sync SQL execution.
 
@@ -241,7 +242,9 @@ def _dpor_schedule_and_suppress_sync(
         # after the scheduling boundary and, for DporScheduler, while the SQL
         # transition still owns the turn. Otherwise a thread can become the
         # modeled row-lock holder while it is still waiting to be scheduled.
-        _acquire_pending_row_locks()
+        acquired = _acquire_pending_row_locks()
+        if acquired_row_locks is not None:
+            acquired_row_locks.extend(acquired)
         if reported:
             with _suppress_endpoint_io():
                 return execute()
@@ -263,6 +266,17 @@ def _dpor_schedule_and_suppress_sync(
 # ---------------------------------------------------------------------------
 # Core interception logic
 # ---------------------------------------------------------------------------
+
+
+def _is_postgresql_db_object(db_obj: Any) -> bool:
+    """Whether *db_obj* is a PostgreSQL cursor/connection with matched-row counts."""
+    connection = getattr(db_obj, "connection", None)
+    if connection is None:
+        connection = db_obj
+    try:
+        return _detect_driver(connection) == "postgresql"
+    except ValueError:
+        return False
 
 
 def _sql_resource_id(
@@ -678,25 +692,30 @@ def _intercept_execute(
         paramstyle=paramstyle,
     )
 
+    statement_row_locks: list[str] = []
     result = _dpor_schedule_and_suppress_sync(
         reported,
         operation,
         parameters,
         paramstyle,
         lambda: _execute_with_retry(original_method, self, operation, parameters),
+        statement_row_locks,
     )
 
-    # Defect #6 fix: release row locks for 0-row UPDATEs.
+    # Defect #6 fix: release this statement's speculative row locks for
+    # PostgreSQL 0-row UPDATEs.
     # In PostgreSQL, an UPDATE that matches 0 rows acquires no row locks
     # (there are no rows to lock).  But frontrun's row-lock arbitration
     # acquired a scheduler-level lock based on the WHERE-clause resource ID
     # regardless of whether any rows matched.  This over-serialization
     # prevents DPOR from exploring interleavings where both 0-row UPDATEs
     # execute before either INSERT (the UPDATE-INSERT phantom race pattern).
-    if update_match is not None and reported:
+    # PostgreSQL reports matched rows. MySQL reports changed rows by default,
+    # so zero there does not prove that no row matched and took a lock.
+    if update_match is not None and reported and statement_row_locks and _is_postgresql_db_object(self):
         rowcount = getattr(self, "rowcount", -1)
         if rowcount == 0:
-            _release_dpor_row_locks()
+            _release_dpor_row_locks(statement_row_locks)
 
     # Post-INSERT: capture lastrowid and record indexical alias
     if insert_match is not None and reported:

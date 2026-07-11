@@ -80,11 +80,14 @@ class SchedulerProxy:
         if not self._await_grant():
             raise SchedulerAbort("cross-process scheduler aborted while acquiring row locks")
 
-    def release_row_locks(self, thread_id: int) -> None:
-        """Drop all row locks held by this worker (COMMIT/ROLLBACK). Fire-and-forget."""
+    def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
+        """Drop selected row locks, or all locks on COMMIT/ROLLBACK. Fire-and-forget."""
         if self._aborted:
             return
-        proto.send_msg(self._sock, {"t": proto.RELEASE_LOCKS, "w": self._worker_id})
+        msg: dict[str, Any] = {"t": proto.RELEASE_LOCKS, "w": self._worker_id}
+        if resources is not None:
+            msg["res"] = list(resources)
+        proto.send_msg(self._sock, msg)
 
     def before_io(self, thread_id: int, resource_id: str) -> bool:
         """Enter a two-phase IO boundary (Redis); block until granted the turn.

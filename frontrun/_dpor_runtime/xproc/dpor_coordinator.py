@@ -274,7 +274,7 @@ def _relay_loop(
                 _reply(sock, True)
                 holding_sync_turn = True
             elif kind == proto.RELEASE_LOCKS:
-                scheduler.release_row_locks(worker_id)
+                scheduler.release_row_locks(worker_id, msg.get("res"))
             elif kind == proto.BEFORE_IO:
                 scheduler.before_io(worker_id, msg["rid"])
                 # The turn was granted iff before_io made this worker the active

@@ -189,3 +189,18 @@ def test_release_row_locks_is_fire_and_forget() -> None:
     finally:
         worker.close()
         coord.close()
+
+
+def test_release_selected_row_locks_carries_resources() -> None:
+    worker, coord = _pair()
+    try:
+        proxy = SchedulerProxy(worker, worker_id=5)
+        proxy.release_row_locks(5, ["sql:accounts:id=2"])
+        assert proto.recv_msg(coord) == {
+            "t": proto.RELEASE_LOCKS,
+            "w": 5,
+            "res": ["sql:accounts:id=2"],
+        }
+    finally:
+        worker.close()
+        coord.close()

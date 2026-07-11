@@ -82,19 +82,23 @@ def _detect_driver(conn: Any) -> str:
 
     Raises ``ValueError`` if the driver cannot be identified.
     """
-    mod = type(conn).__module__
-    cls = type(conn).__qualname__
+    conn_type = type(conn)
+    mod = conn_type.__module__
+    cls = conn_type.__qualname__
+    modules = tuple(base.__module__ for base in conn_type.__mro__)
 
     # SQLite: stdlib sqlite3 or aiosqlite
-    if mod.startswith(("sqlite3", "aiosqlite")) or (cls.startswith("Connection") and "sqlite" in mod):
+    if any(module.startswith(("sqlite3", "aiosqlite")) for module in modules) or (
+        cls.startswith("Connection") and "sqlite" in mod
+    ):
         return "sqlite"
 
     # PostgreSQL: psycopg2, psycopg (v3), asyncpg
-    if mod.startswith(("psycopg2", "psycopg.", "psycopg_", "asyncpg")):
+    if any(module.startswith(("psycopg2", "psycopg.", "psycopg_", "asyncpg")) for module in modules):
         return "postgresql"
 
     # MySQL: pymysql, mysqlclient (MySQLdb), aiomysql, mysql.connector
-    if mod.startswith(("pymysql", "MySQLdb", "_mysql", "aiomysql", "mysql")):
+    if any(module.startswith(("pymysql", "MySQLdb", "_mysql", "aiomysql", "mysql")) for module in modules):
         return "mysql"
 
     raise ValueError(f"Cannot detect database driver for connection type {mod}.{cls}")

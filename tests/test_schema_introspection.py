@@ -59,6 +59,18 @@ class TestDetectDriver:
         FakeConn.__qualname__ = "Connection"
         assert _detect_driver(FakeConn()) == "postgresql"
 
+    def test_traced_subclass_uses_driver_base_module(self):
+        class DriverConnection:
+            pass
+
+        DriverConnection.__module__ = "psycopg2.extensions"
+
+        class TracedConnection(DriverConnection):
+            pass
+
+        TracedConnection.__module__ = "frontrun._sql_cursor"
+        assert _detect_driver(TracedConnection()) == "postgresql"
+
     def test_pymysql_connection_detected(self):
         class FakeConn:
             pass

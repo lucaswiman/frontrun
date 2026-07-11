@@ -23,9 +23,10 @@ class RowLockRegistry:
     * ``record_acquire(owner_id, res_id, graph)`` — update ownership dicts and
       call ``graph.add_holding`` after the caller decides to proceed.  Both
       schedulers run this after their (divergent) blocking/non-blocking decisions.
-    * ``pop_all(owner_id, graph)`` — release all locks for *owner_id*, call
-      ``graph.remove_holding`` for each, return ``(res_id, int_id)`` pairs so the
-      sync scheduler can call ``engine.report_sync`` (async does not).
+    * ``pop(owner_id, graph, resources)`` — release selected locks (or all when
+      ``resources`` is ``None``), call ``graph.remove_holding`` for each, and
+      return ``(res_id, int_id)`` pairs for sync-engine release events.
+    * ``pop_all(owner_id, graph)`` — compatibility shorthand for releasing all.
     * ``id_to_resource()`` — inverse mapping passed to ``format_cycle``.
 
     The blocking-vs-non-blocking acquire loop remains scheduler-specific because
@@ -98,25 +99,36 @@ class RowLockRegistry:
         if graph is not None:
             graph.add_holding(owner_id, lid, kind="row_lock")
 
-    def pop_all(self, owner_id: int, graph: Any) -> list[tuple[str, int]]:
-        """Release all row locks held by *owner_id* and return their ``(res_id, int_id)`` pairs.
+    def pop(
+        self,
+        owner_id: int,
+        graph: Any,
+        resources: list[str] | None = None,
+    ) -> list[tuple[str, int]]:
+        """Release selected row locks, or all locks when *resources* is ``None``.
 
-        Removes ownership entries from ``_active_row_locks`` and
-        ``_task_row_locks``, and calls ``graph.remove_holding`` for each
-        released resource (if *graph* is not ``None``).
+        Only locks currently held by *owner_id* are affected. Remaining locks
+        stay in both ownership indexes and in the wait-for graph.
 
         Returns:
             A list of ``(res_id, int_id)`` pairs for every released resource,
             so the caller can pass each to ``engine.report_sync`` if needed
             (the sync scheduler does; the async scheduler does not).
-            Returns ``[]`` if *owner_id* held no locks.
+            Returns ``[]`` if none of the requested locks were held.
         """
-        held = self._task_row_locks.pop(owner_id, None)
+        held = self._task_row_locks.get(owner_id)
         if not held:
             return []
+        selected = set(held) if resources is None else held.intersection(resources)
+        if not selected:
+            return []
+        held.difference_update(selected)
+        if not held:
+            self._task_row_locks.pop(owner_id, None)
         released: list[tuple[str, int]] = []
-        for res_id in held:
-            self._active_row_locks.pop(res_id, None)
+        for res_id in selected:
+            if self._active_row_locks.get(res_id) == owner_id:
+                self._active_row_locks.pop(res_id, None)
             lid = self._row_lock_ids.get(res_id)
             if lid is not None:
                 released.append((res_id, lid))
@@ -127,3 +139,7 @@ class RowLockRegistry:
             for _res_id, lid in released:
                 graph.remove_holding(owner_id, lid, kind="row_lock")
         return released
+
+    def pop_all(self, owner_id: int, graph: Any) -> list[tuple[str, int]]:
+        """Release all row locks held by *owner_id*."""
+        return self.pop(owner_id, graph)

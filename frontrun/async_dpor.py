@@ -744,15 +744,12 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._start_opcode_trace()
         try:
             await super().run_all(wrapped, timeout=timeout, detect_external_deadlock=detect_external_deadlock)
-        except DeadlockError:
-            raise
         except Exception:
-            # An exact-deadlock abort makes the remaining tasks free-run to
-            # completion under false pretenses (parked event waits return on
-            # an unset event); anything they raise while free-running is an
-            # artifact, and the base run_all surfaces task errors before
-            # self._error — reassert the DeadlockError's priority.
-            if isinstance(self._error, DeadlockError):
+            # A scheduler abort makes the remaining tasks free-run to completion
+            # under false pretenses (for example, parked event waits return on an
+            # unset event). The base run_all surfaces resulting task errors before
+            # self._error, so reassert the scheduler abort's priority.
+            if isinstance(self._error, (DeadlockError, SchedulerTimeoutError)):
                 raise self._error from None
             raise
         finally:
@@ -934,12 +931,12 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             # Record ownership and notify graph — shared logic via registry.
             self._row_lock_registry.record_acquire(thread_id, res_id, graph)
 
-    def release_row_locks(self, thread_id: int) -> None:
-        """Release all row locks held by *thread_id* (called on COMMIT/ROLLBACK)."""
+    def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
+        """Release selected row locks, or all locks on COMMIT/ROLLBACK."""
         graph = _async_cooperative._async_wait_graph
-        # Shared release logic via registry (sync also uses pop_all; async skips
+        # Shared release logic via registry (sync also uses pop; async skips
         # engine.report_sync because row-lock release is tracked at await points).
-        self._row_lock_registry.pop_all(thread_id, graph)
+        self._row_lock_registry.pop(thread_id, graph, resources)
 
     def _flush_pending_io(self, task_id: int) -> None:
         """Flush pending I/O accesses to the DPOR engine."""

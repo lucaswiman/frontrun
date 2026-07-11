@@ -141,6 +141,34 @@ class TestPyDporEngine:
 
         assert exec_count == 2
 
+    def test_direct_io_conflict_is_not_an_attribute_race(self) -> None:
+        engine = PyDporEngine(2)
+        execution = engine.begin_execution()
+
+        first = engine.schedule(execution)
+        engine.report_io_access(execution, first, 1, "write")
+        execution.finish_thread(first)
+
+        second = engine.schedule(execution)
+        engine.report_io_access(execution, second, 1, "write")
+
+        assert len(engine.pending_races()) == 1
+        assert engine.attribute_races() == []
+
+    def test_synced_io_conflict_is_not_an_attribute_race(self) -> None:
+        engine = PyDporEngine(2)
+        execution = engine.begin_execution()
+
+        first = engine.schedule(execution)
+        engine.report_synced_io_access(execution, first, 1, "write")
+        execution.finish_thread(first)
+
+        second = engine.schedule(execution)
+        engine.report_synced_io_access(execution, second, 1, "write")
+
+        assert len(engine.pending_races()) == 1
+        assert engine.attribute_races() == []
+
     def test_read_read_no_conflict(self) -> None:
         engine = PyDporEngine(2)
         execution = engine.begin_execution()

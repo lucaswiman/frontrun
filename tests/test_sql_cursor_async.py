@@ -693,58 +693,78 @@ async def test_non_string_operation_passthrough() -> None:
 
 
 class TestAsyncUpdateZeroRowRelease:
-    """Bug: async _intercept_execute_async doesn't release row locks for 0-row UPDATEs.
-
-    The sync _intercept_execute (Defect #6 fix) checks cursor.rowcount after
-    UPDATE statements and calls _release_dpor_row_locks() when rowcount == 0.
-    This prevents over-serialization in DPOR exploration: a 0-row UPDATE
-    acquires no real database row locks, so the scheduler-level lock should
-    also be released.
-
-    The async version is missing this handling entirely.
-    """
+    """Async PostgreSQL zero-row handling mirrors transaction lock ownership."""
 
     @pytest.mark.asyncio
-    async def test_zero_row_update_releases_row_locks(self) -> None:
-        """After a 0-row UPDATE, pending row locks should be released."""
-        release_calls: list[bool] = []
+    async def test_zero_row_update_releases_only_current_statement_row_lock(self) -> None:
+        from frontrun._io_detection import (
+            set_dpor_scheduler_task,
+            set_dpor_thread_id_task,
+            set_tx_store_task,
+        )
 
-        # Mock cursor with rowcount = 0
-        class MockCursor:
-            rowcount = 0
+        class FakeConnection:
+            autocommit = False
 
-        async def fake_execute(self: Any, sql: Any, params: Any = None) -> None:
-            pass
+        FakeConnection.__module__ = "psycopg.connection"
 
-        # Patch _release_dpor_row_locks to track calls
-        import frontrun._sql_cursor_async as mod
+        class FakeCursor:
+            connection = FakeConnection()
+            rowcount = -1
 
-        orig_release = mod._release_dpor_row_locks
+        class FakeScheduler:
+            def __init__(self, prior: str) -> None:
+                self.held = {prior}
+                self.acquired: list[str] = []
+                self.release_calls: list[list[str] | None] = []
 
-        def tracking_release() -> None:
-            release_calls.append(True)
-            orig_release()
+            def report_and_wait(self, _frame: object, _task_id: int) -> bool:
+                return True
 
-        mod._release_dpor_row_locks = tracking_release  # type: ignore[assignment]
+            def acquire_row_locks(self, _task_id: int, resources: list[str]) -> list[str]:
+                self.acquired.extend(resources)
+                self.held.update(resources)
+                return resources
 
-        log = IOLog()
-        set_io_reporter(log)
+            def release_row_locks(self, _task_id: int, resources: list[str] | None = None) -> None:
+                self.release_calls.append(resources)
+                if resources is None:
+                    self.held.clear()
+                else:
+                    self.held.difference_update(resources)
+
+        prior = "sql:accounts:(('id', '1'),)"
+        scheduler = FakeScheduler(prior)
+        store = set_tx_store_task()
+        store._in_transaction = True
+        store._is_autobegin = True
+        store._held_row_locks = {prior}
+        store._pending_row_locks = []
+        set_dpor_scheduler_task(scheduler)
+        set_dpor_thread_id_task(0)
+        set_io_reporter(IOLog())
+
+        async def execute(cursor: FakeCursor, _operation: object, _parameters: object) -> None:
+            cursor.rowcount = 0
 
         try:
-            cursor = MockCursor()
             await _intercept_execute_async(
-                fake_execute,
-                cursor,
-                "UPDATE users SET name = 'x' WHERE id = 999",
-                paramstyle="qmark",
+                execute,
+                FakeCursor(),
+                "UPDATE accounts SET balance = %s WHERE id = %s",
+                (100, 2),
+                paramstyle="format",
             )
-            assert len(release_calls) > 0, (
-                "_release_dpor_row_locks was not called after 0-row UPDATE in async path. "
-                "The sync path (Defect #6 fix) releases row locks when rowcount == 0, "
-                "but the async path is missing this handling."
-            )
+
+            assert len(scheduler.acquired) == 1
+            assert scheduler.release_calls == [scheduler.acquired]
+            assert scheduler.held == {prior}
+            assert store._held_row_locks == {prior}
         finally:
-            mod._release_dpor_row_locks = orig_release  # type: ignore[assignment]
+            set_dpor_scheduler_task(None)
+            set_dpor_thread_id_task(None)
+            set_tx_store_task()
+            set_io_reporter(None)
 
     def test_source_has_update_match(self) -> None:
         """_intercept_execute_async should extract _RE_UPDATE_TABLE match like the sync version."""
@@ -755,6 +775,73 @@ class TestAsyncUpdateZeroRowRelease:
             "_intercept_execute_async should check for UPDATE statements "
             "to release row locks on 0-row matches (Defect #6 fix)"
         )
+
+    @pytest.mark.parametrize(
+        ("method_name", "result", "releases"),
+        [("fetch", [], True), ("fetchrow", None, True), ("fetchval", None, False)],
+    )
+    async def test_asyncpg_result_shape_controls_statement_lock_release(
+        self, method_name: str, result: Any, releases: bool
+    ) -> None:
+        from frontrun._io_detection import (
+            set_dpor_scheduler_task,
+            set_dpor_thread_id_task,
+            set_tx_store_task,
+        )
+        from frontrun._sql_cursor_async import _intercept_asyncpg_execute
+
+        class FakeScheduler:
+            def __init__(self) -> None:
+                self.acquired: list[str] = []
+                self.release_calls: list[list[str] | None] = []
+
+            def report_and_wait(self, _frame: object, _task_id: int) -> bool:
+                return True
+
+            def acquire_row_locks(self, _task_id: int, resources: list[str]) -> list[str]:
+                self.acquired.extend(resources)
+                return resources
+
+            def release_row_locks(self, _task_id: int, resources: list[str] | None = None) -> None:
+                self.release_calls.append(resources)
+
+        class FakeConnection:
+            pass
+
+        FakeConnection.__module__ = "asyncpg.connection"
+        scheduler = FakeScheduler()
+        store = set_tx_store_task()
+        store._in_transaction = True
+        store._is_autobegin = True
+        store._held_row_locks = set()
+        store._pending_row_locks = []
+        set_dpor_scheduler_task(scheduler)
+        set_dpor_thread_id_task(0)
+        set_io_reporter(IOLog())
+
+        async def execute(_connection: object, _operation: object) -> Any:
+            return result
+
+        try:
+            actual = await _intercept_asyncpg_execute(
+                execute,
+                FakeConnection(),
+                "UPDATE accounts SET balance = 100 WHERE id = 2 RETURNING id",
+                method_name=method_name,
+            )
+            assert actual == result
+            assert len(scheduler.acquired) == 1
+            if releases:
+                assert scheduler.release_calls == [scheduler.acquired]
+                assert store._held_row_locks == set()
+            else:
+                assert scheduler.release_calls == []
+                assert store._held_row_locks == set(scheduler.acquired)
+        finally:
+            set_dpor_scheduler_task(None)
+            set_dpor_thread_id_task(None)
+            set_tx_store_task()
+            set_io_reporter(None)
 
 
 class TestAsyncpgExecutemanyDbObj:

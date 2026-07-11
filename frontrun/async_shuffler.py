@@ -403,7 +403,7 @@ class AwaitScheduler(InterleavedLoop):
     def acquire_row_locks(self, _thread_id: int, _resource_ids: list[str]) -> None:
         """No-op: random exploration does not arbitrate SQL row locks."""
 
-    def release_row_locks(self, _thread_id: int) -> None:
+    def release_row_locks(self, _thread_id: int, _resources: object = None) -> None:
         """No-op: random exploration does not arbitrate SQL row locks."""
 
     async def pause(self, task_id: Any, marker: Any = None) -> None:

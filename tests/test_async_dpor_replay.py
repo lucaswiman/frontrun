@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
+from frontrun._deadlock import DeadlockError
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
 from frontrun.async_dpor import (
@@ -197,6 +200,40 @@ def test_handle_timeout_wakes_parked_primitive_waiters() -> None:
             _async_parked_events.clear()
 
     assert asyncio.run(scenario()) is True
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [RuntimeError("free-run artifact"), DeadlockError("free-run deadlock artifact", "artifact")],
+    ids=["runtime-error", "deadlock-error"],
+)
+def test_scheduler_timeout_takes_priority_over_free_run_task_error(
+    monkeypatch: pytest.MonkeyPatch, artifact: Exception
+) -> None:
+    """A scheduler abort remains the cause even if a released task then crashes."""
+    from frontrun._dpor import PyDporEngine
+
+    async def scenario() -> tuple[SchedulerTimeoutError, BaseException]:
+        engine = PyDporEngine(1)
+        scheduler = AsyncDporScheduler(engine, engine.begin_execution(), 1)
+        monkeypatch.setattr("frontrun.async_dpor.wrap_auto_paused_tasks", lambda tasks, _scheduler: tasks)
+        monkeypatch.setattr(scheduler, "_start_opcode_trace", lambda: None)
+        monkeypatch.setattr(scheduler, "_stop_opcode_trace", lambda: None)
+
+        async def worker() -> None:
+            async with scheduler._condition:
+                scheduler._handle_timeout(0, marker="forced")
+            raise artifact
+
+        with pytest.raises(Exception) as exc_info:
+            await scheduler.run_all([worker])
+
+        scheduler_error = scheduler._error
+        assert isinstance(scheduler_error, SchedulerTimeoutError)
+        return scheduler_error, exc_info.value
+
+    scheduler_error, raised = asyncio.run(scenario())
+    assert raised is scheduler_error
 
 
 def test_handle_all_waiting_deadlock_wakes_parked_primitive_waiters() -> None:
