@@ -64,15 +64,24 @@ def random_round_robin_schedule(
     requiring one thread to run several opcodes inside another thread's window
     become reachable.
 
-    ``num_rounds`` is drawn uniformly from ``[1, max(1, max_ops // num_actors)]``.
+    ``num_rounds`` is drawn uniformly from ``[1, max_ops // num_actors]``.
+    ``max_ops`` must provide at least one slot per actor.
     """
-    num_rounds = rng.randint(1, max(1, max_ops // num_actors))
+    if num_actors <= 0:
+        raise ValueError(f"num_actors must be positive, got {num_actors!r}")
+    if max_ops < num_actors:
+        raise ValueError(f"max_ops must be at least num_actors ({num_actors}), got {max_ops!r}")
+    num_rounds = rng.randint(1, max_ops // num_actors)
     schedule: list[int] = []
-    for _ in range(num_rounds):
+    for round_index in range(num_rounds):
         round_perm = list(range(num_actors))
         rng.shuffle(round_perm)
-        for actor in round_perm:
-            burst = _draw_burst(rng, max_burst, skew_max_burst)
+        for actor_index, actor in enumerate(round_perm):
+            # Reserve one slot for every actor in the rest of this and all
+            # later rounds so bursts can never violate the public hard cap.
+            actors_left = (len(round_perm) - actor_index - 1) + (num_rounds - round_index - 1) * num_actors
+            available = max_ops - len(schedule) - actors_left
+            burst = min(_draw_burst(rng, max_burst, skew_max_burst), available)
             schedule.extend([actor] * burst)
     return schedule
 
@@ -87,19 +96,28 @@ def fair_schedule_strategy(num_actors: int, max_ops: int) -> Any:
     """
     from hypothesis import strategies as st  # type: ignore[import-not-found]
 
-    max_rounds = max(1, max_ops // num_actors)
+    if num_actors <= 0:
+        raise ValueError(f"num_actors must be positive, got {num_actors!r}")
+    if max_ops < num_actors:
+        raise ValueError(f"max_ops must be at least num_actors ({num_actors}), got {max_ops!r}")
+    max_rounds = max_ops // num_actors
     actors = list(range(num_actors))
 
     @st.composite  # type: ignore[attr-defined]
     def _fair_schedule(draw: st.DrawFn) -> list[int]:  # type: ignore[attr-defined,name-defined]
         num_rounds = draw(st.integers(min_value=1, max_value=max_rounds))  # type: ignore[attr-defined]
         schedule: list[int] = []
-        for _ in range(num_rounds):
-            for actor in draw(st.permutations(actors)):  # type: ignore[attr-defined]
+        for round_index in range(num_rounds):
+            permutation = draw(st.permutations(actors))  # type: ignore[attr-defined]
+            for actor_index, actor in enumerate(permutation):
                 # Variable-length burst so the schedule can express relative
                 # opcode drift > 1.  min_value=1 keeps lockstep round-robin in
                 # the shrink target (Hypothesis shrinks toward 1).
-                burst = draw(st.integers(min_value=1, max_value=_DEFAULT_MAX_BURST))  # type: ignore[attr-defined]
+                actors_left = (len(actors) - actor_index - 1) + (num_rounds - round_index - 1) * num_actors
+                available = max_ops - len(schedule) - actors_left
+                burst = draw(  # type: ignore[attr-defined]
+                    st.integers(min_value=1, max_value=min(_DEFAULT_MAX_BURST, available))
+                )
                 schedule.extend([actor] * burst)
         return schedule
 

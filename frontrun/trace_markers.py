@@ -37,7 +37,7 @@ from frontrun._marker_coordination import (
     finalize_marker_executor_run,
 )
 from frontrun._trace_marker_runtime import build_trace_function, run_traced_callable
-from frontrun.common import InterleavingResult, Schedule, Step, any_async, check_invariant
+from frontrun.common import InterleavingResult, Schedule, Step, _is_async_callable, any_async, check_invariant
 
 __all__ = [
     "MARKER_PATTERN",
@@ -331,14 +331,26 @@ def frontrun(
             a: tuple[Any, ...] = t_args
             kw: dict[str, Any] = t_kwargs
 
-            def _wrap(
+            if _is_async_callable(fn):
+
+                async def _wrap_async(
+                    _fn: Callable[..., Any] = fn,
+                    _a: tuple[Any, ...] = a,
+                    _kw: dict[str, Any] = kw,
+                ) -> None:
+                    await _fn(*_a, **_kw)
+
+                wrapped[execution_name] = _wrap_async
+                continue
+
+            def _wrap_sync(
                 _fn: Callable[..., Any] = fn,
                 _a: tuple[Any, ...] = a,
                 _kw: dict[str, Any] = kw,
             ) -> None:
                 _fn(*_a, **_kw)
 
-            wrapped[execution_name] = _wrap
+            wrapped[execution_name] = _wrap_sync
         else:
             wrapped[execution_name] = target
 
@@ -511,9 +523,28 @@ def explore_marker_interleavings(
 
         try:
             executor.run(runners, timeout=timeout)
-        except TimeoutError:
-            # Schedule stall — treat as non-violation and skip
+            if executor.coordinator.current_step < len(schedule.steps) and not executor.coordinator.completed:
+                remaining = schedule.steps[executor.coordinator.current_step :]
+                step_strs = [f"Step({s.execution_name!r}, {s.marker_name!r})" for s in remaining]
+                raise TimeoutError(
+                    f"Schedule incomplete: {len(remaining)} step(s) were never reached: {', '.join(step_strs)}"
+                )
+        except TimeoutError as exc:
+            # An unexecuted schedule proves nothing. Surface it as a failing
+            # exploration instead of claiming exhaustive marker coverage.
             num_explored += 1
+            explanation = f"TimeoutError: {exc}"
+            if first_explanation is None:
+                first_explanation = explanation
+            failures.append((i, schedule))
+            if stop_on_first:
+                return InterleavingResult(
+                    property_holds=False,
+                    counterexample=schedule,
+                    num_explored=num_explored,
+                    unique_interleavings=num_explored,
+                    explanation=explanation,
+                )
             continue
         except Exception as exc:
             # Thread exceptions are violations, just like failed invariants.

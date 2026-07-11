@@ -479,6 +479,11 @@ class DporCrossProcessCoordinator:
                         persistent_handles = worker_set.launch(
                             worker_targets(self.socket_path, list(range(self.num_workers)))
                         )
+                        # A partially connected set cannot be shut down through
+                        # the protocol: children that never completed HELLO have
+                        # no coordinator socket. Treat it as poisoned until every
+                        # expected connection has been accepted.
+                        persistent_poisoned = True
                     except WorkerSerializationError as exc:
                         return replace(_serialization_failure(exc, num_explored), failures=failures)
                     try:
@@ -487,6 +492,7 @@ class DporCrossProcessCoordinator:
                                 listener, worker_set, persistent_handles, self._connect_budget
                             )
                             persistent_socks[wid] = sock
+                        persistent_poisoned = False
                     except (TimeoutError, OSError) as exc:
                         return replace(
                             _connection_failure(_launch_error(worker_set, persistent_handles, exc), num_explored),

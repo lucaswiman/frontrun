@@ -44,6 +44,32 @@ __all__ = [
 ]
 
 
+def _prepare_tx_end(reporter: Any, tx: TxOp) -> None:
+    """Report effects needed at a tx-end boundary without finalizing state.
+
+    COMMIT makes an explicitly-buffered transaction's accesses visible to the
+    scheduler at the commit boundary.  The physical driver call can still fail,
+    so the transaction flags, buffer, savepoints, and modeled locks remain
+    untouched until :func:`_finalize_tx_end` runs after successful I/O.
+    """
+    if tx is TxOp.COMMIT and reporter is not None:
+        for res_id, kind in getattr(tx_store(), "_tx_buffer", []):
+            reporter(res_id, kind)
+
+
+def _finalize_tx_end(tx: TxOp, *, release_locks: bool = True) -> None:
+    """Finalize a successfully completed COMMIT or ROLLBACK."""
+    if tx not in (TxOp.COMMIT, TxOp.ROLLBACK):
+        raise ValueError(f"expected COMMIT or ROLLBACK, got {tx!r}")
+    store = tx_store()
+    store._in_transaction = False
+    store._is_autobegin = False
+    store._tx_buffer = []
+    store._tx_savepoints = {}
+    if release_locks:
+        _release_dpor_row_locks()
+
+
 def _report_or_buffer(
     reporter: Any,
     res_id: str,
@@ -183,23 +209,11 @@ def _handle_tx_op(reporter: Any, tx: Any, *, release_locks: bool = True) -> None
         store._tx_buffer = []
         store._tx_savepoints = {}
     elif tx is TxOp.COMMIT:
-        store._in_transaction = False
-        store._is_autobegin = False
-        buffer = getattr(store, "_tx_buffer", [])
-        if reporter is not None:
-            for res_id, kind in buffer:
-                reporter(res_id, kind)
-        store._tx_buffer = []
-        store._tx_savepoints = {}
-        if release_locks:
-            _release_dpor_row_locks()
+        _prepare_tx_end(reporter, tx)
+        _finalize_tx_end(tx, release_locks=release_locks)
     elif tx is TxOp.ROLLBACK:
-        store._in_transaction = False
-        store._is_autobegin = False
-        store._tx_buffer = []
-        store._tx_savepoints = {}
-        if release_locks:
-            _release_dpor_row_locks()
+        _prepare_tx_end(reporter, tx)
+        _finalize_tx_end(tx, release_locks=release_locks)
     else:  # SavepointOp
         savepoints = getattr(store, "_tx_savepoints", {})
         if tx.op == "savepoint":
@@ -218,7 +232,7 @@ def _handle_tx_op(reporter: Any, tx: Any, *, release_locks: bool = True) -> None
             savepoints.pop(tx.name, None)
 
 
-def handle_connection_commit(*, release_locks: bool = True) -> None:
+def handle_connection_commit(*, release_locks: bool = True, finalize: bool = True) -> None:
     """Drive the COMMIT state machine for a Python-level ``conn.commit()``.
 
     DB-API drivers expose ``commit()`` / ``rollback()`` as connection methods;
@@ -234,10 +248,12 @@ def handle_connection_commit(*, release_locks: bool = True) -> None:
     from frontrun._sql_endpoint_suppression import suppress_sql_write
 
     suppress_sql_write("COMMIT")
-    _handle_tx_op(get_io_reporter(), TxOp.COMMIT, release_locks=release_locks)
+    _prepare_tx_end(get_io_reporter(), TxOp.COMMIT)
+    if finalize:
+        _finalize_tx_end(TxOp.COMMIT, release_locks=release_locks)
 
 
-def handle_connection_rollback(*, release_locks: bool = True) -> None:
+def handle_connection_rollback(*, release_locks: bool = True, finalize: bool = True) -> None:
     """Drive the ROLLBACK state machine for a Python-level ``conn.rollback()``."""
     if not getattr(tx_store(), "_in_transaction", False):
         return
@@ -245,7 +261,9 @@ def handle_connection_rollback(*, release_locks: bool = True) -> None:
     from frontrun._sql_endpoint_suppression import suppress_sql_write
 
     suppress_sql_write("ROLLBACK")
-    _handle_tx_op(get_io_reporter(), TxOp.ROLLBACK, release_locks=release_locks)
+    _prepare_tx_end(get_io_reporter(), TxOp.ROLLBACK)
+    if finalize:
+        _finalize_tx_end(TxOp.ROLLBACK, release_locks=release_locks)
 
 
 def reset_connection_state() -> None:

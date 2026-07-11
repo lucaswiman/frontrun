@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import Any
 
 from frontrun._deadlock import SchedulerAbort
-from frontrun._io_detection import _io_tls, get_io_reporter
+from frontrun._io_detection import _io_tls, get_io_reporter, tx_store
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._schema import _detect_driver, get_schema
@@ -62,7 +62,9 @@ from frontrun._sql_patch_registry import CONNECT_FACTORY_TARGETS, PYTHON_CURSOR_
 from frontrun._sql_row_locks import _acquire_pending_row_locks, _release_dpor_row_locks
 from frontrun._sql_transactions import (
     _detect_autobegin,
+    _finalize_tx_end,
     _handle_tx_op,
+    _prepare_tx_end,
     _report_or_buffer,
     handle_connection_commit,
     handle_connection_rollback,
@@ -182,6 +184,8 @@ def _dpor_schedule_and_suppress_sync(
     paramstyle: str,
     execute: Callable[[], Any],
     acquired_row_locks: list[str] | None = None,
+    *,
+    release_row_locks_on_error: bool = True,
 ) -> Any:
     """DPOR scheduling point + endpoint I/O suppression for sync SQL execution.
 
@@ -256,7 +260,8 @@ def _dpor_schedule_and_suppress_sync(
         # OperationalError from SQLite lock contention), any row locks
         # acquired by _acquire_pending_row_locks remain held until thread
         # exit, blocking other DPOR threads indefinitely.
-        _release_dpor_row_locks()
+        if release_row_locks_on_error:
+            _release_dpor_row_locks()
         raise
     finally:
         unsuppress_sync_reporting()
@@ -312,7 +317,7 @@ def _report_sql_access(
     is_executemany: bool = False,
     paramstyle: str = "format",
     defer_tx_lock_release: bool = False,
-    deferred_tx_end: list[bool] | None = None,
+    deferred_tx_end: list[TxOp] | None = None,
 ) -> bool:
     """Parse SQL and report table accesses to the per-thread reporter.
 
@@ -331,9 +336,20 @@ def _report_sql_access(
         # 1. Handle Transaction Control Operations
         if access.tx_op is not None:
             reported = True  # Suppress endpoint I/O for TX control too
-            _handle_tx_op(reporter, access.tx_op, release_locks=not defer_tx_lock_release)
-            if deferred_tx_end is not None and access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK):
-                deferred_tx_end.append(True)
+            if defer_tx_lock_release and access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK):
+                _prepare_tx_end(reporter, access.tx_op)
+            else:
+                _handle_tx_op(reporter, access.tx_op, release_locks=not defer_tx_lock_release)
+            if (
+                deferred_tx_end is not None
+                and isinstance(access.tx_op, TxOp)
+                and access.tx_op
+                in (
+                    TxOp.COMMIT,
+                    TxOp.ROLLBACK,
+                )
+            ):
+                deferred_tx_end.append(access.tx_op)
 
         # 2. Handle Data Access Operations
         if access.read_tables or access.write_tables:
@@ -556,16 +572,20 @@ def _report_sql_access(
 
 def _run_connection_tx_method(method: Callable[[], Any], operation: str) -> Any:
     """Run a DB-API commit/rollback as one deterministic sync transition."""
+    tx_op = TxOp.COMMIT if operation == "COMMIT" else TxOp.ROLLBACK
     handler = handle_connection_commit if operation == "COMMIT" else handle_connection_rollback
-    handler(release_locks=False)
+    tx_active = bool(getattr(tx_store(), "_in_transaction", False))
+    handler(release_locks=False, finalize=False)
 
     def execute() -> Any:
-        try:
-            return method()
-        finally:
-            # Keep modeled locks until the physical transaction is over, then
-            # drop them before handing the scheduler turn to another worker.
+        result = method()
+        # Keep modeled state and locks intact if physical I/O raises. On
+        # success, finalize before handing the scheduler turn to another worker.
+        if tx_active:
+            _finalize_tx_end(tx_op)
+        else:
             _release_dpor_row_locks()
+        return result
 
     return _dpor_schedule_and_suppress_sync(
         reported=True,
@@ -573,6 +593,7 @@ def _run_connection_tx_method(method: Callable[[], Any], operation: str) -> Any:
         parameters=None,
         paramstyle="format",
         execute=execute,
+        release_row_locks_on_error=False,
     )
 
 
@@ -711,7 +732,7 @@ def _intercept_execute(
     # for endpoint-based suppression (which handles remote connections).
     suppress_tid_permanently()
 
-    deferred_tx_end: list[bool] = []
+    deferred_tx_end: list[TxOp] = []
     reported = _report_sql_access(
         operation,
         parameters,
@@ -721,14 +742,13 @@ def _intercept_execute(
         defer_tx_lock_release=True,
         deferred_tx_end=deferred_tx_end,
     )
-    defer_tx_lock_release = bool(deferred_tx_end)
+    deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
 
     def execute() -> Any:
-        try:
-            return _execute_with_retry(original_method, self, operation, parameters)
-        finally:
-            if defer_tx_lock_release:
-                _release_dpor_row_locks()
+        result = _execute_with_retry(original_method, self, operation, parameters)
+        if deferred_tx_op is not None:
+            _finalize_tx_end(deferred_tx_op)
+        return result
 
     statement_row_locks: list[str] = []
     result = _dpor_schedule_and_suppress_sync(
@@ -738,6 +758,7 @@ def _intercept_execute(
         paramstyle,
         execute,
         statement_row_locks,
+        release_row_locks_on_error=deferred_tx_op is None,
     )
 
     # Defect #6 fix: release this statement's speculative row locks for

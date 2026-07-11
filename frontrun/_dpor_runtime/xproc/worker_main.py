@@ -28,6 +28,14 @@ def _install_interception(proxy: SchedulerProxy, worker_id: int) -> None:
     SQL cursor patching is global; Redis patching is installed only when the
     ``redis`` package is importable so SQL-only workers need no Redis dependency.
     """
+    try:
+        import sqlglot  # noqa: F401  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            "cross-process SQL interception requires the sqlglot SQL parser; "
+            "install it with `pip install frontrun[process]`"
+        ) from exc
+
     from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
     from frontrun._sql_cursor import patch_sql
 

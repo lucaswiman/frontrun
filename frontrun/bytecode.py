@@ -100,6 +100,14 @@ from frontrun.common import (
 T = TypeVar("T")
 
 
+class _WorkerExecutionError(Exception):
+    """Internal wrapper distinguishing worker crashes from setup failures."""
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 class OpcodeScheduler:
     """Controls thread execution at bytecode instruction granularity.
 
@@ -145,6 +153,7 @@ class OpcodeScheduler:
         self.clock_mode = clock_mode
         self._clock_diagnostics = clock_diagnostics
         self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10000
+        self._max_ops_exhausted = False
         # Deterministic RNG for dynamic schedule extension.  Seeded from the
         # initial schedule so the extension is reproducible for a given run
         # (and replay re-uses the already-recorded self.schedule list anyway).
@@ -179,6 +188,8 @@ class OpcodeScheduler:
         threads are done or the max_ops cap was reached.
         """
         if self._index >= self._max_ops:
+            if any(t not in self._threads_done for t in range(self.num_threads)):
+                self._max_ops_exhausted = True
             return False
         active = [t for t in range(self.num_threads) if t not in self._threads_done]
         if not active:
@@ -186,6 +197,8 @@ class OpcodeScheduler:
         # Only add entries up to the max_ops cap to prevent overshoot.
         remaining = self._max_ops - len(self.schedule)
         if remaining <= 0:
+            if active:
+                self._max_ops_exhausted = True
             return False
         appended = burst_round(self._extend_rng, active)
         self.schedule.extend(appended[:remaining])
@@ -754,6 +767,8 @@ def run_with_schedule(
     clock: ClockMode = "real",
     _virtual_clock: VirtualClock | None = None,
     clock_diagnostics: bool = False,
+    _max_ops: int | None = None,
+    _worker_errors_as_findings: bool = False,
 ) -> T:
     """Run one interleaving and return the state object.
 
@@ -792,6 +807,7 @@ def run_with_schedule(
         virtual_clock=virtual_clock,
         clock_mode=clock,
         clock_diagnostics=clock_diagnostics,
+        max_ops=_max_ops or 0,
     )
     runner = BytecodeShuffler(scheduler, detect_io=detect_io)
 
@@ -814,6 +830,12 @@ def run_with_schedule(
             if debug:
                 print(f"Timed out with {timeout=} on {schedule=}", flush=True)
             timed_out = True
+        except DeadlockError:
+            raise
+        except Exception as exc:
+            if _worker_errors_as_findings and runner.errors:
+                raise _WorkerExecutionError(exc) from exc
+            raise
         # Re-raise DeadlockError so callers (e.g. reproduction logic) can
         # detect that a deadlock occurred during replay.
         if isinstance(scheduler._error, DeadlockError):
@@ -823,7 +845,7 @@ def run_with_schedule(
         # threads may still be mutating.  Evaluating an invariant on such a
         # half-finished racing state is meaningless (finding 9d).  Callers in
         # exploration loops catch this and skip the schedule as inconclusive.
-        if timed_out or isinstance(scheduler._error, TimeoutError):
+        if timed_out or isinstance(scheduler._error, TimeoutError) or scheduler._max_ops_exhausted:
             raise TimeoutError(f"run_with_schedule timed out after {timeout}s; worker threads did not complete")
     return state
 
@@ -959,6 +981,8 @@ def explore_random(
                     clock=clock,
                     _virtual_clock=attempt_clock,
                     clock_diagnostics=clock_diagnostics,
+                    _max_ops=max_ops,
+                    _worker_errors_as_findings=True,
                 )
             except DeadlockError as dl_err:
                 result.num_explored += 1
@@ -980,6 +1004,15 @@ def explore_random(
                 result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))
                 continue
+            except _WorkerExecutionError as worker_err:
+                result.num_explored += 1
+                seen_schedule_hashes.add(hash(tuple(schedule)))
+                result.property_holds = False
+                result.counterexample = schedule
+                result.unique_interleavings = len(seen_schedule_hashes)
+                cause = worker_err.cause
+                result.explanation = f"Worker crash in execution {result.num_explored}: {type(cause).__name__}: {cause}"
+                return result
             result.num_explored += 1
             seen_schedule_hashes.add(hash(tuple(schedule)))
 
@@ -1022,6 +1055,7 @@ def explore_random(
                                 clock=clock,
                                 _virtual_clock=replay_clock,
                                 clock_diagnostics=clock_diagnostics,
+                                _max_ops=max_ops,
                             )
                             with clock_scope(replay_clock):
                                 replay_failed, _ = check_invariant(invariant, replay_state)
