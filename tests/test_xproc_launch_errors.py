@@ -10,6 +10,7 @@ work (not just module-level functions); only genuinely unserialisable captures
 from __future__ import annotations
 
 import socket
+import subprocess
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ from frontrun._dpor_runtime.xproc.launch import (
     WorkerSerializationError,
     _dumps_worker,
     _stderr_last_line,
+    _terminate_procs,
 )
 
 
@@ -334,6 +336,42 @@ def test_mp_launcher_join_escalates_to_kill() -> None:
     assert proc in alive
     assert proc.terminated
     assert proc.killed
+
+
+class _UnkillableMpProc:
+    def terminate(self) -> None:
+        pass
+
+    def kill(self) -> None:
+        pass
+
+    def join(self, timeout: float | None = None) -> None:  # noqa: ARG002 - fake
+        pass
+
+    def is_alive(self) -> bool:
+        return True
+
+
+def test_mp_termination_fails_loudly_if_worker_survives() -> None:
+    with pytest.raises(RuntimeError, match="still alive"):
+        _terminate_procs([_UnkillableMpProc()])
+
+
+class _UnkillablePopenProc:
+    def kill(self) -> None:
+        pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        raise subprocess.TimeoutExpired("worker", timeout)
+
+    def poll(self) -> None:
+        return None
+
+
+def test_subprocess_termination_fails_loudly_if_worker_survives() -> None:
+    launcher = SubprocessLauncher([Subprocess("pkg.mod:go")], reuse=True)
+    with pytest.raises(RuntimeError, match="still alive"):
+        launcher.terminate([_UnkillablePopenProc()], timeout=0.01)
 
 
 # --- stderr capture must not deadlock a chatty worker ----------------------
