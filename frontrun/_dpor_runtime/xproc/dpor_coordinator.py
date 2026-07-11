@@ -41,7 +41,7 @@ from frontrun._dpor_runtime.scheduler import DporScheduler
 from frontrun._opcode_observer import StableObjectIds
 
 from . import protocol as proto
-from .coordinator import CrossProcessResult, accept_hello_live, worker_targets
+from .coordinator import CrossProcessResult, accept_hello_live, bind_coordination_listener, worker_targets
 from .launch import WorkerSerializationError
 
 
@@ -437,10 +437,9 @@ class DporCrossProcessCoordinator:
         stable_ids = StableObjectIds()
         deadline = make_deadline(self.total_timeout)
 
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(self.socket_path)
-        listener.listen(self.num_workers)
-        listener.settimeout(self._connect_budget)
+        listener = bind_coordination_listener(
+            self.socket_path, self.num_workers, self._connect_budget, self._cleanup_socket
+        )
         install_wait_for_graph()
 
         persistent_handles: Any = None

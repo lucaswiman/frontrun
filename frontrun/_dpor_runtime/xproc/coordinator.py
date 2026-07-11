@@ -37,6 +37,37 @@ def worker_targets(socket_path: str, worker_ids: list[int]) -> list[WorkerTarget
     return [WorkerTarget(worker_id=wid, args=(socket_path,)) for wid in worker_ids]
 
 
+def bind_coordination_listener(
+    socket_path: str,
+    num_workers: int,
+    timeout: float,
+    on_error: Callable[[], None],
+) -> socket.socket:
+    """Create, bind, and listen the AF_UNIX coordination socket.
+
+    Shared by the exhaustive and DPOR coordinators.  Binding happens before
+    the coordinators enter their cleanup try/finally, so a bind failure —
+    realistically ``socket_path`` exceeding the AF_UNIX ~108-byte limit under
+    a deep ``$TMPDIR`` — must run *on_error* (the coordinator's socket/tempdir
+    cleanup) here rather than leak the mkdtemp'd working directory on every
+    call, and must say which path failed and what to do about it.
+    """
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(socket_path)
+        listener.listen(num_workers)
+        listener.settimeout(timeout)
+    except OSError as exc:
+        listener.close()
+        on_error()
+        raise OSError(
+            f"cannot bind cross-process coordination socket {socket_path!r}: {exc} "
+            "(AF_UNIX socket paths are limited to ~108 bytes on Linux; set a shorter "
+            "$TMPDIR or pass an explicit short socket_path=)"
+        ) from exc
+    return listener
+
+
 def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket, int]:
     """Accept one worker connection and read its HELLO frame, returning (sock, worker_id).
 
@@ -189,10 +220,9 @@ class CrossProcessCoordinator:
         invariant: Callable[[], bool],
         max_iterations: int = 4096,
     ) -> CrossProcessResult:
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(self.socket_path)
-        listener.listen(self.num_workers)
-        listener.settimeout(self.deadlock_timeout)
+        listener = bind_coordination_listener(
+            self.socket_path, self.num_workers, self.deadlock_timeout, self._cleanup_socket
+        )
         try:
             return self._explore(listener, worker_set, setup, invariant, max_iterations)
         finally:
