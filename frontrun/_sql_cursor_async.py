@@ -22,11 +22,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
+from frontrun._io_detection import tx_store
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._sql_cursor import (
     _RE_INSERT_TABLE,
     _RE_UPDATE_TABLE,
-    _acquire_pending_row_locks,
     _capture_insert_id,
     _detect_autobegin,
     _is_postgresql_db_object,
@@ -35,16 +35,47 @@ from frontrun._sql_cursor import (
     _report_sql_access,
     _suppress_endpoint_io,
 )
+from frontrun._sql_parsing import TxOp
+from frontrun._sql_transactions import _finalize_tx_end
 
 # ---------------------------------------------------------------------------
 # Shared async DPOR scheduling + endpoint suppression
 # ---------------------------------------------------------------------------
 
 
+async def _acquire_pending_row_locks_async() -> list[str]:
+    """Drain and asynchronously acquire the current task's modeled row locks."""
+    store = tx_store()
+    lock_resources = getattr(store, "_pending_row_locks", None)
+    if not lock_resources:
+        return []
+    store._pending_row_locks = []
+    lock_resources = list(dict.fromkeys(lock_resources))
+    ctx = _get_dpor_context()
+    if ctx is None:
+        return []
+    scheduler, task_id = ctx
+    acquire_async = getattr(scheduler, "acquire_row_locks_async", None)
+    if acquire_async is None:
+        acquired = scheduler.acquire_row_locks(task_id, lock_resources)
+    else:
+        acquired = await acquire_async(task_id, lock_resources)
+    if acquired is None:
+        acquired = lock_resources
+    held = getattr(store, "_held_row_locks", None)
+    if held is None:
+        held = set()
+        store._held_row_locks = held
+    held.update(acquired)
+    return list(acquired)
+
+
 async def _dpor_schedule_and_suppress_async(
     reported: bool,
     execute: Callable[[], Awaitable[Any]],
     acquired_row_locks: list[str] | None = None,
+    *,
+    release_locks_on_error: bool = True,
 ) -> Any:
     """DPOR scheduling point + endpoint I/O suppression for async SQL execution.
 
@@ -69,7 +100,7 @@ async def _dpor_schedule_and_suppress_async(
         execute: A zero-argument async callable that performs the actual
             driver method call.
     """
-    acquired = _acquire_pending_row_locks()
+    acquired = await _acquire_pending_row_locks_async()
     if acquired_row_locks is not None:
         acquired_row_locks.extend(acquired)
     if reported:
@@ -82,8 +113,17 @@ async def _dpor_schedule_and_suppress_async(
                 return await execute()
         return await execute()
     except Exception:
-        _release_dpor_row_locks()
+        if release_locks_on_error:
+            _release_dpor_row_locks()
         raise
+
+
+async def _execute_and_finalize_tx_end(execute: Callable[[], Awaitable[Any]], tx_op: TxOp | None) -> Any:
+    """Finalize modeled transaction state only after physical async I/O succeeds."""
+    result = await execute()
+    if tx_op is not None:
+        _finalize_tx_end(tx_op)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -108,17 +148,32 @@ async def _intercept_execute_async(
     insert_match = _RE_INSERT_TABLE.match(operation) if isinstance(operation, str) else None
     update_match = _RE_UPDATE_TABLE.match(operation) if isinstance(operation, str) else None
     _detect_autobegin(self)
+    deferred_tx_end: list[TxOp] = []
     reported = _report_sql_access(
-        operation, parameters, db_obj=self, is_executemany=is_executemany, paramstyle=paramstyle
+        operation,
+        parameters,
+        db_obj=self,
+        is_executemany=is_executemany,
+        paramstyle=paramstyle,
+        defer_tx_lock_release=True,
+        deferred_tx_end=deferred_tx_end,
     )
+    deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
 
     async def _execute() -> Any:
         if parameters is not None:
-            return await original_method(self, operation, parameters)
-        return await original_method(self, operation)
+            return await _execute_and_finalize_tx_end(
+                lambda: original_method(self, operation, parameters), deferred_tx_op
+            )
+        return await _execute_and_finalize_tx_end(lambda: original_method(self, operation), deferred_tx_op)
 
     statement_row_locks: list[str] = []
-    result = await _dpor_schedule_and_suppress_async(reported, _execute, statement_row_locks)
+    result = await _dpor_schedule_and_suppress_async(
+        reported,
+        _execute,
+        statement_row_locks,
+        release_locks_on_error=deferred_tx_op is None,
+    )
 
     # Defect #6 fix: release only this statement's speculative lock for a
     # PostgreSQL 0-row UPDATE. Other transaction locks remain held until end.
@@ -152,12 +207,23 @@ async def _intercept_asyncpg_execute(
     resolution for asyncpg's binary protocol parameters).
     """
     update_match = _RE_UPDATE_TABLE.match(operation) if isinstance(operation, str) else None
-    reported = _report_sql_access(operation, None, db_obj=self, is_executemany=False, paramstyle="dollar")
+    deferred_tx_end: list[TxOp] = []
+    reported = _report_sql_access(
+        operation,
+        None,
+        db_obj=self,
+        is_executemany=False,
+        paramstyle="dollar",
+        defer_tx_lock_release=True,
+        deferred_tx_end=deferred_tx_end,
+    )
+    deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
     statement_row_locks: list[str] = []
     result = await _dpor_schedule_and_suppress_async(
         reported,
-        lambda: original_method(self, operation, *args, **kwargs),
+        lambda: _execute_and_finalize_tx_end(lambda: original_method(self, operation, *args, **kwargs), deferred_tx_op),
         statement_row_locks,
+        release_locks_on_error=deferred_tx_op is None,
     )
     zero_rows = (
         (method_name == "execute" and result == "UPDATE 0")
@@ -248,14 +314,23 @@ def _patch_psycopg_async() -> None:
         # resolution) — F7.
         async def _patched(self: Any, query: Any, params: Any = None, **kwargs: Any) -> Any:
             update_match = _RE_UPDATE_TABLE.match(query) if isinstance(query, str) else None
+            deferred_tx_end: list[TxOp] = []
             reported = _report_sql_access(
-                query, params, db_obj=self, is_executemany=method_name == "executemany", paramstyle="format"
+                query,
+                params,
+                db_obj=self,
+                is_executemany=method_name == "executemany",
+                paramstyle="format",
+                defer_tx_lock_release=True,
+                deferred_tx_end=deferred_tx_end,
             )
+            deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
             statement_row_locks: list[str] = []
             result = await _dpor_schedule_and_suppress_async(
                 reported,
-                lambda: orig(self, query, params, **kwargs),
+                lambda: _execute_and_finalize_tx_end(lambda: orig(self, query, params, **kwargs), deferred_tx_op),
                 statement_row_locks,
+                release_locks_on_error=deferred_tx_op is None,
             )
             if update_match is not None and reported and statement_row_locks and getattr(self, "rowcount", -1) == 0:
                 _release_dpor_row_locks(statement_row_locks)
@@ -284,10 +359,22 @@ def _patch_aiomysql() -> None:
 
     def _make_patched(orig: Any, method_name: str) -> Any:
         async def _patched(self: Any, query: Any, args: Any = None, *extra: Any, **kwargs: Any) -> Any:
+            deferred_tx_end: list[TxOp] = []
             reported = _report_sql_access(
-                query, args, db_obj=self, is_executemany=method_name == "executemany", paramstyle="pyformat"
+                query,
+                args,
+                db_obj=self,
+                is_executemany=method_name == "executemany",
+                paramstyle="pyformat",
+                defer_tx_lock_release=True,
+                deferred_tx_end=deferred_tx_end,
             )
-            return await _dpor_schedule_and_suppress_async(reported, lambda: orig(self, query, args, *extra, **kwargs))
+            deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
+            return await _dpor_schedule_and_suppress_async(
+                reported,
+                lambda: _execute_and_finalize_tx_end(lambda: orig(self, query, args, *extra, **kwargs), deferred_tx_op),
+                release_locks_on_error=deferred_tx_op is None,
+            )
 
         return wrap_method_metadata(_patched, orig, name=method_name)
 
@@ -323,8 +410,22 @@ def _patch_asyncpg() -> None:
     if orig_em is not None:
 
         async def _patched_executemany(self: Any, command: Any, args: Any, **kwargs: Any) -> Any:
-            reported = _report_sql_access(command, None, db_obj=self, is_executemany=True, paramstyle="dollar")
-            return await _dpor_schedule_and_suppress_async(reported, lambda: orig_em(self, command, args, **kwargs))
+            deferred_tx_end: list[TxOp] = []
+            reported = _report_sql_access(
+                command,
+                None,
+                db_obj=self,
+                is_executemany=True,
+                paramstyle="dollar",
+                defer_tx_lock_release=True,
+                deferred_tx_end=deferred_tx_end,
+            )
+            deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
+            return await _dpor_schedule_and_suppress_async(
+                reported,
+                lambda: _execute_and_finalize_tx_end(lambda: orig_em(self, command, args, **kwargs), deferred_tx_op),
+                release_locks_on_error=deferred_tx_op is None,
+            )
 
         patch_method(
             conn_cls,

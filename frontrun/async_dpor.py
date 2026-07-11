@@ -335,6 +335,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._active_row_locks: dict[str, int] = self._row_lock_registry._active_row_locks
         self._task_row_locks: dict[int, set[str]] = self._row_lock_registry._task_row_locks
         self._row_lock_ids: dict[str, int] = self._row_lock_registry._row_lock_ids
+        self._row_lock_waiters: dict[str, list[tuple[int, asyncio.Future[None]]]] = {}
 
         # The clock actor starts blocked; it becomes runnable only when a
         # deadline is pending (see _sync_clock_actor / _schedule_next).
@@ -688,6 +689,10 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         # _wait_watching_progress, sleep_until, and the exact-deadlock confirm —
         # goes through one mechanism.
         _wake_parked_async_primitive_waiters()
+        for waiters in getattr(self, "_row_lock_waiters", {}).values():
+            for _task_id, future in waiters:
+                if not future.done():
+                    future.set_result(None)
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         self._error = SchedulerTimeoutError(
@@ -944,12 +949,79 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             # Record ownership and notify graph — shared logic via registry.
             self._row_lock_registry.record_acquire(thread_id, res_id, graph)
 
+    async def acquire_row_locks_async(self, task_id: int, resource_ids: list[str]) -> list[str]:
+        """Park on contended modeled row locks without entering the real DB call.
+
+        A wait edge must remain in the unified graph while parked: another task
+        can subsequently wait on an asyncio lock held by this task and close a
+        cross-resource cycle.  The old synchronous path removed the edge and
+        optimistically transferred ownership before awaiting the driver, which
+        hid that future cycle and let SQLite/PostgreSQL block outside the model.
+        """
+        graph = _async_cooperative._async_wait_graph
+        acquired: list[str] = []
+        self.engine.report_access(self.execution, task_id, _SHARED_SYNC_ACQUIRE_KEY, "write")
+        for res_id in resource_ids:
+            lock_int_id = self._row_lock_int_id(res_id)
+            while (holder := self._active_row_locks.get(res_id)) is not None and holder != task_id:
+                if graph is not None:
+                    cycle = graph.add_waiting(task_id, lock_int_id, kind="row_lock")
+                    if cycle is not None:
+                        graph.remove_waiting(task_id, lock_int_id, kind="row_lock")
+                        desc = format_cycle(cycle, self._row_lock_registry.id_to_resource())
+                        error = DeadlockError(f"Row-lock deadlock detected: {desc}", desc)
+                        await self._report_error(error)
+                        raise error
+
+                future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                waiters = self._row_lock_waiters.setdefault(res_id, [])
+                waiters.append((task_id, future))
+                self._event_blocked.add(task_id)
+                self._lock_blocked[task_id] = holder
+                self.execution.block_thread(task_id)
+                depth = _in_scheduler_pause.get()
+                _in_scheduler_pause.set(depth + 1)
+                unblocked = False
+                try:
+                    await self.kick_stalled_schedule(task_id)
+                    await future
+                    self.execution.unblock_thread(task_id)
+                    unblocked = True
+                    self._event_blocked.discard(task_id)
+                    self._lock_blocked.pop(task_id, None)
+                    if self._error is not None:
+                        raise self._error
+                    await self.wait_until_scheduled_after_block(task_id, "SQL row lock")
+                    if self._error is not None:
+                        raise self._error
+                finally:
+                    if graph is not None:
+                        graph.remove_waiting(task_id, lock_int_id, kind="row_lock")
+                    current_waiters = self._row_lock_waiters.get(res_id)
+                    if current_waiters is not None:
+                        current_waiters[:] = [entry for entry in current_waiters if entry[1] is not future]
+                        if not current_waiters:
+                            self._row_lock_waiters.pop(res_id, None)
+                    self._event_blocked.discard(task_id)
+                    self._lock_blocked.pop(task_id, None)
+                    if not unblocked:
+                        self.execution.unblock_thread(task_id)
+                    _in_scheduler_pause.set(depth)
+
+            self._row_lock_registry.record_acquire(task_id, res_id, graph)
+            acquired.append(res_id)
+        return acquired
+
     def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
         """Release selected row locks, or all locks on COMMIT/ROLLBACK."""
         graph = _async_cooperative._async_wait_graph
         # Shared release logic via registry (sync also uses pop; async skips
         # engine.report_sync because row-lock release is tracked at await points).
-        self._row_lock_registry.pop(thread_id, graph, resources)
+        released = self._row_lock_registry.pop(thread_id, graph, resources)
+        for res_id, _lock_id in released:
+            for _waiter, future in self._row_lock_waiters.get(res_id, []):
+                if not future.done():
+                    future.set_result(None)
 
     def _flush_pending_io(self, task_id: int) -> None:
         """Flush pending I/O accesses to the DPOR engine."""
@@ -1088,6 +1160,8 @@ async def _reproduce_async_counterexample(
     timeout_per_run: float,
     deadlock_timeout: float,
     clock: ClockMode = "real",
+    detect_sql: bool = False,
+    detect_redis: bool = False,
 ) -> tuple[int, int]:
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
@@ -1103,6 +1177,8 @@ async def _reproduce_async_counterexample(
             deadlock_timeout=deadlock_timeout,
             virtual_clock=replay_clock,
             clock_actor_id=clock_config.actor_id(num_tasks),
+            detect_sql=detect_sql,
+            detect_redis=detect_redis,
         )
         # One clock_context owns the time.* patch across setup + tasks +
         # invariant for this replay attempt.
@@ -1292,6 +1368,8 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             timeout_per_run=timeout_per_run,
             deadlock_timeout=deadlock_timeout,
             clock=clock,
+            detect_sql=detect_sql,
+            detect_redis=detect_redis,
         )
         result.reproduction_attempts = attempts
         result.reproduction_successes = successes

@@ -833,6 +833,8 @@ def run_with_schedule(
         except DeadlockError:
             raise
         except Exception as exc:
+            if scheduler._max_ops_exhausted:
+                raise TimeoutError("run_with_schedule exhausted max_ops before workers completed") from exc
             if _worker_errors_as_findings and runner.errors:
                 raise _WorkerExecutionError(exc) from exc
             raise
