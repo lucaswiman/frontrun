@@ -10,6 +10,7 @@ work (not just module-level functions); only genuinely unserialisable captures
 from __future__ import annotations
 
 import socket
+from typing import Any
 
 import pytest
 
