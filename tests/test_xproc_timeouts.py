@@ -27,31 +27,31 @@ from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
 
+
+def _join_worker_threads() -> None:
+    for thread in threading.enumerate():
+        if thread.name.startswith("xproc-worker-"):
+            thread.join(timeout=10.0)
+
+
 # ---------------------------------------------------------------------------
 # DPOR coordinator: relay liveness must be progress-based
 # ---------------------------------------------------------------------------
 
 
 def test_dpor_healthy_long_iteration_is_not_killed_by_join_budget() -> None:
-    # Regression: _drive_relays used a fixed absolute join deadline of
-    # deadlock_timeout*2 + 10s per iteration. But deadlock_timeout bounds
-    # silence BETWEEN steps, not iteration wall time: two workers doing 20
-    # steps of ~0.35s healthy work each (~14s total, every silence well under
-    # deadlock_timeout=1.0) were aborted at 12s with a misleading
-    # "worker connection failed ... relay thread did not terminate" error.
-    steps, step_time = 20, 0.35
+    # Each step stays below the recv timeout, while the total run exceeds the
+    # injected relay backstop. Every frame must reset the no-progress budget.
+    steps, step_time = 6, 0.03
 
     def healthy(proxy) -> None:
         for _ in range(steps):
             if not proxy.report_and_wait(None, 0):
                 return
-            time.sleep(step_time)  # healthy work while holding the turn
+            time.sleep(step_time)
 
-    coord = DporCrossProcessCoordinator(
-        num_workers=2,
-        deadlock_timeout=1.0,  # old fixed budget: 2*1.0 + 10 = 12s < ~14s of healthy work
-        max_executions=1,  # a single (long) iteration is enough
-    )
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=0.2, max_executions=1)
+    coord._relay_no_progress_budget = 0.12
     result = coord.explore(
         worker_set=ThreadLauncher([healthy, healthy]),
         setup=lambda: None,
@@ -90,6 +90,7 @@ def test_dpor_genuine_stall_is_diagnosed_as_timeout_not_worker_error() -> None:
         )
     finally:
         release.set()  # let the stalled worker unwind promptly
+        _join_worker_threads()
     assert not result.ok
     assert result.failure_kind == "timeout", f"got {result.failure_kind!r}: {result.failure!r}"
     assert "deadlock_timeout" in (result.failure or "")
@@ -140,6 +141,7 @@ def test_exhaustive_slow_worker_is_diagnosed_as_timeout() -> None:
         )
     finally:
         release.set()
+        _join_worker_threads()
     assert not result.ok
     assert result.failure_kind == "timeout", f"got {result.failure_kind!r}: {result.failure!r}"
     assert "deadlock_timeout" in (result.failure or "")
