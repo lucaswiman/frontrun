@@ -18,8 +18,10 @@ The intended rule is:
 
 from __future__ import annotations
 
+import threading
+
 from frontrun._deadlock import install_wait_for_graph, uninstall_wait_for_graph
-from frontrun.dpor import DporScheduler, _dpor_tls
+from frontrun.dpor import DporBytecodeRunner, DporScheduler, _dpor_tls
 
 
 class _FakeExecution:
@@ -105,6 +107,80 @@ class TestLockDepthIoWindow:
         assert engine.io_calls == [(0, 789, "write"), (1, 999, "read")]
         assert scheduler._pending_io_by_thread[0] == []
         assert _dpor_tls.pending_io == []
+
+    def test_teardown_serializes_orphan_pending_io_flush(self) -> None:
+        """Teardown and a cross-thread flush must not report the same event twice."""
+        engine = _FakeEngine()
+        execution = _FakeExecution([0, 1])
+        scheduler = DporScheduler(engine, execution, num_threads=2)
+        runner = DporBytecodeRunner(scheduler, detect_io=False)
+        pending_io = [(123, "write", False)]
+        scheduler._pending_io_by_thread[0] = pending_io
+        scheduler._lock_depth_by_thread[0] = 0
+
+        flush_boundary = threading.Event()
+        condition_held = threading.Event()
+        competitor_done = threading.Event()
+        errors: list[BaseException] = []
+        real_condition = scheduler._condition
+
+        class SignalingCondition:
+            def __enter__(self) -> object:
+                if threading.current_thread().name == "teardown":
+                    flush_boundary.set()
+                return real_condition.__enter__()
+
+            def __exit__(self, *args: object) -> None:
+                real_condition.__exit__(*args)
+
+        class HandoffEngineLock:
+            def __enter__(self) -> None:
+                if threading.current_thread().name == "teardown":
+                    flush_boundary.set()
+                    if not competitor_done.wait(2):
+                        raise TimeoutError("competitor did not flush pending I/O")
+
+            def __exit__(self, *args: object) -> None:
+                pass
+
+        scheduler._condition = SignalingCondition()  # type: ignore[assignment]
+        scheduler._engine_lock = HandoffEngineLock()  # type: ignore[assignment]
+
+        def competitor() -> None:
+            try:
+                with scheduler._condition:
+                    condition_held.set()
+                    if not flush_boundary.wait(2):
+                        raise TimeoutError("teardown did not reach the flush boundary")
+                    scheduler._flush_pending_io_for_unlocked(0, allow_inside_lock=True)
+                    competitor_done.set()
+            except BaseException as exc:
+                errors.append(exc)
+                competitor_done.set()
+
+        def teardown() -> None:
+            try:
+                _dpor_tls.thread_id = 0
+                _dpor_tls.engine = engine
+                _dpor_tls.execution = execution
+                _dpor_tls.pending_io = pending_io
+                _dpor_tls.lock_depth = 0
+                runner._teardown_dpor_tls()
+            except BaseException as exc:
+                errors.append(exc)
+
+        competitor_thread = threading.Thread(target=competitor, name="competitor")
+        teardown_thread = threading.Thread(target=teardown, name="teardown")
+        competitor_thread.start()
+        assert condition_held.wait(2)
+        teardown_thread.start()
+        competitor_thread.join(3)
+        teardown_thread.join(3)
+
+        assert not competitor_thread.is_alive()
+        assert not teardown_thread.is_alive()
+        assert errors == []
+        assert engine.io_calls == [(0, 123, "write")]
 
     def test_mark_done_sets_dpor_machinery_guard(self) -> None:
         """``mark_done`` holds the (non-reentrant) scheduler condition while
