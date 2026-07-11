@@ -799,6 +799,38 @@ def test_async_timeout_when_before_enter_matches_stdlib() -> None:
     assert result.property_holds, result.explanation
 
 
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_async_timeout_deadline_starts_at_construction() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.elapsed_inside: float | None = None
+
+    async def worker(s: State) -> None:
+        timeout = asyncio.timeout(5.0)
+        await asyncio.sleep(3.0)
+        entered_at = time.monotonic()
+        try:
+            async with timeout:
+                await asyncio.Event().wait()
+        except TimeoutError:
+            s.elapsed_inside = time.monotonic() - entered_at
+
+    def invariant(s: State) -> bool:
+        assert s.elapsed_inside == 2.0, f"timeout had {s.elapsed_inside}s left after entering 3s late"
+        return True
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=invariant,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
 def test_async_random_wait_for_bare_future_with_concurrent_worker() -> None:
     """Random strategy + virtual clock: a task parked in ``asyncio.wait_for``
     on a bare future must be registered as blocked so the schedule skips it
