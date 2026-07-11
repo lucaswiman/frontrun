@@ -114,9 +114,7 @@ def test_reuse_no_state_leak_across_iterations() -> None:
             db.balance += 100
         proxy.io_report("sql:accounts:id=1", "write")
 
-    coord = DporCrossProcessCoordinator(
-        num_workers=2, deadlock_timeout=5.0, reuse_workers=True, preemption_bound=None
-    )
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, reuse_workers=True, preemption_bound=None)
     result = coord.explore(
         worker_set=PersistentThreadLauncher([atomic, atomic]),
         setup=db.reset,

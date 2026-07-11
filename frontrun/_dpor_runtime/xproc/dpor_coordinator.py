@@ -498,9 +498,7 @@ class DporCrossProcessCoordinator:
                             persistent_socks, worker_set, scheduler, accesses, worker_errors, unclean, deadline
                         )
                     else:
-                        self._run_spawned(
-                            listener, worker_set, scheduler, accesses, worker_errors, unclean, deadline
-                        )
+                        self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean, deadline)
                 except _TotalTimeoutExpiredError:
                     # The in-flight execution was truncated by the user's time
                     # budget: nothing about it was verified, so it neither

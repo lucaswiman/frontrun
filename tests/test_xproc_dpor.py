@@ -123,9 +123,7 @@ def test_dpor_stop_on_first_false_still_reports_race() -> None:
     # invariant violation, not silently explore to exhaustion and return ok.
     db = _DB()
     worker = _rmw_worker(db)
-    coord = DporCrossProcessCoordinator(
-        num_workers=2, deadlock_timeout=5.0, stop_on_first=False, preemption_bound=None
-    )
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, stop_on_first=False, preemption_bound=None)
     result = coord.explore(
         worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
