@@ -152,9 +152,10 @@ class CrossProcessResult:
     failure_kind: str | None = None
     accesses: list[tuple[int, str, str]] | None = None
     # Every failing execution as (execution_number, schedule) pairs, mirroring
-    # thread-mode InterleavingResult.failures. Populated by the DPOR
-    # coordinator; with stop_on_first=False it accumulates ALL failing
-    # executions instead of only the first.
+    # thread-mode InterleavingResult.failures. Both strategies populate it for
+    # any failure that carries a failing_schedule; the DPOR coordinator with
+    # stop_on_first=False accumulates ALL failing executions instead of only
+    # the first.
     failures: list[tuple[int, list[int]]] = field(default_factory=list)
 
 
@@ -279,6 +280,7 @@ class CrossProcessCoordinator:
                     failure=f"worker {wid} failed: {msg}",
                     failure_kind="worker_error",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
             if outcome.timeouts:
                 _wid, msg = next(iter(sorted(outcome.timeouts.items())))
@@ -290,6 +292,7 @@ class CrossProcessCoordinator:
                     failure=msg,
                     failure_kind="timeout",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
             if outcome.stop == "step_limit":
                 return CrossProcessResult(
@@ -312,6 +315,7 @@ class CrossProcessCoordinator:
                     failure="cross-worker deadlock (no runnable worker)",
                     failure_kind="deadlock",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
             if outcome.stop == "nondeterministic":
                 return CrossProcessResult(
@@ -322,6 +326,7 @@ class CrossProcessCoordinator:
                     failure="recorded schedule no longer reproducible (nondeterministic workload?)",
                     failure_kind="nondeterministic",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
             if not invariant():
                 return CrossProcessResult(
@@ -332,6 +337,7 @@ class CrossProcessCoordinator:
                     failure="invariant violated",
                     failure_kind="invariant",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
 
             # Push a fresh prefix for every unexplored alternative at each

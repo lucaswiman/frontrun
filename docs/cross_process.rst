@@ -211,7 +211,8 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
      - The interleaving (a list of worker ids) that triggered the failure.
    * - ``failures``
      - Every failing execution as ``(execution_number, schedule)`` pairs,
-       mirroring thread-mode ``InterleavingResult.failures``. With
+       mirroring thread-mode ``InterleavingResult.failures``. Populated by
+       both strategies whenever a failure carries a schedule; with
        ``stop_on_first=False`` the DPOR strategy accumulates all failing
        executions here instead of stopping at the first.
    * - ``iterations``
