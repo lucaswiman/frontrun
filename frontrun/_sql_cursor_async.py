@@ -29,6 +29,7 @@ from frontrun._sql_cursor import (
     _acquire_pending_row_locks,
     _capture_insert_id,
     _detect_autobegin,
+    _is_postgresql_db_object,
     _record_uncaptured_insert,
     _release_dpor_row_locks,
     _report_sql_access,
@@ -43,6 +44,7 @@ from frontrun._sql_cursor import (
 async def _dpor_schedule_and_suppress_async(
     reported: bool,
     execute: Callable[[], Awaitable[Any]],
+    acquired_row_locks: list[str] | None = None,
 ) -> Any:
     """DPOR scheduling point + endpoint I/O suppression for async SQL execution.
 
@@ -67,7 +69,9 @@ async def _dpor_schedule_and_suppress_async(
         execute: A zero-argument async callable that performs the actual
             driver method call.
     """
-    _acquire_pending_row_locks()
+    acquired = _acquire_pending_row_locks()
+    if acquired_row_locks is not None:
+        acquired_row_locks.extend(acquired)
     if reported:
         _dpor_ctx = _get_dpor_context()
         if _dpor_ctx is not None:
@@ -113,18 +117,15 @@ async def _intercept_execute_async(
             return await original_method(self, operation, parameters)
         return await original_method(self, operation)
 
-    result = await _dpor_schedule_and_suppress_async(reported, _execute)
+    statement_row_locks: list[str] = []
+    result = await _dpor_schedule_and_suppress_async(reported, _execute, statement_row_locks)
 
-    # Defect #6 fix: release row locks for 0-row UPDATEs.
-    # An UPDATE that matches 0 rows acquires no real database row locks,
-    # but frontrun's row-lock arbitration may have acquired a scheduler-level
-    # lock based on the WHERE-clause resource ID.  Releasing it prevents
-    # over-serialization that blocks DPOR from exploring interleavings where
-    # both 0-row UPDATEs execute before either INSERT.
-    if update_match is not None and reported:
+    # Defect #6 fix: release only this statement's speculative lock for a
+    # PostgreSQL 0-row UPDATE. Other transaction locks remain held until end.
+    if update_match is not None and reported and statement_row_locks and _is_postgresql_db_object(self):
         rowcount = getattr(self, "rowcount", -1)
         if rowcount == 0:
-            _release_dpor_row_locks()
+            _release_dpor_row_locks(statement_row_locks)
 
     # Post-INSERT: capture lastrowid and record indexical alias
     if insert_match is not None and reported:
@@ -149,8 +150,17 @@ async def _intercept_asyncpg_execute(
     a single parameters collection.  We report at table level (no parameter
     resolution for asyncpg's binary protocol parameters).
     """
+    update_match = _RE_UPDATE_TABLE.match(operation) if isinstance(operation, str) else None
     reported = _report_sql_access(operation, None, db_obj=self, is_executemany=False, paramstyle="dollar")
-    return await _dpor_schedule_and_suppress_async(reported, lambda: original_method(self, operation, *args, **kwargs))
+    statement_row_locks: list[str] = []
+    result = await _dpor_schedule_and_suppress_async(
+        reported,
+        lambda: original_method(self, operation, *args, **kwargs),
+        statement_row_locks,
+    )
+    if update_match is not None and reported and statement_row_locks and result == "UPDATE 0":
+        _release_dpor_row_locks(statement_row_locks)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -229,10 +239,19 @@ def _patch_psycopg_async() -> None:
         # here (rather than swallowing it into **kwargs and losing row-level
         # resolution) — F7.
         async def _patched(self: Any, query: Any, params: Any = None, **kwargs: Any) -> Any:
+            update_match = _RE_UPDATE_TABLE.match(query) if isinstance(query, str) else None
             reported = _report_sql_access(
                 query, params, db_obj=self, is_executemany=method_name == "executemany", paramstyle="format"
             )
-            return await _dpor_schedule_and_suppress_async(reported, lambda: orig(self, query, params, **kwargs))
+            statement_row_locks: list[str] = []
+            result = await _dpor_schedule_and_suppress_async(
+                reported,
+                lambda: orig(self, query, params, **kwargs),
+                statement_row_locks,
+            )
+            if update_match is not None and reported and statement_row_locks and getattr(self, "rowcount", -1) == 0:
+                _release_dpor_row_locks(statement_row_locks)
+            return result
 
         return wrap_method_metadata(_patched, orig, name=method_name)
 

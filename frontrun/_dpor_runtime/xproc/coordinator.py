@@ -445,7 +445,7 @@ class CrossProcessCoordinator:
             if kind == proto.ACCESS:
                 accesses.append((conn.worker_id, msg["rid"], msg["kind"]))
             elif kind == proto.RELEASE_LOCKS:
-                registry.pop_all(conn.worker_id, None)
+                registry.pop(conn.worker_id, None, msg.get("res"))
             elif kind in (proto.REPORT_AND_WAIT, proto.ACQUIRE_LOCKS):
                 conn.pending = msg
                 return

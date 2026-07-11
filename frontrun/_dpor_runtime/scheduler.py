@@ -1402,12 +1402,12 @@ class DporScheduler:
                         self.engine.report_sync(self.execution, thread_id, "lock_acquire", lock_int_id, _saved_path_id)
         return acquired
 
-    def _release_row_locks_unlocked(self, thread_id: int) -> bool:
+    def _release_row_locks_unlocked(self, thread_id: int, resources: list[str] | None = None) -> bool:
         """Remove row locks for *thread_id*. Caller must hold ``self._condition``."""
         from frontrun._deadlock import get_wait_for_graph
 
         graph = get_wait_for_graph()
-        released = self._row_lock_registry.pop_all(thread_id, graph)
+        released = self._row_lock_registry.pop(thread_id, graph, resources)
         if not released:
             return False
         # Report each release to the DPOR engine so vector clocks
@@ -1420,10 +1420,10 @@ class DporScheduler:
                     self.engine.report_sync(self.execution, thread_id, "lock_release", lid, _saved_path_id)
         return True
 
-    def release_row_locks(self, thread_id: int) -> None:
-        """Release all row locks held by *thread_id* (called on COMMIT/ROLLBACK)."""
+    def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
+        """Release selected row locks, or all locks on COMMIT/ROLLBACK."""
         with self._condition:
-            if self._release_row_locks_unlocked(thread_id):
+            if self._release_row_locks_unlocked(thread_id, resources):
                 self._condition.notify_all()
 
 

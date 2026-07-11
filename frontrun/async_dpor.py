@@ -933,12 +933,12 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             # Record ownership and notify graph — shared logic via registry.
             self._row_lock_registry.record_acquire(thread_id, res_id, graph)
 
-    def release_row_locks(self, thread_id: int) -> None:
-        """Release all row locks held by *thread_id* (called on COMMIT/ROLLBACK)."""
+    def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
+        """Release selected row locks, or all locks on COMMIT/ROLLBACK."""
         graph = _async_cooperative._async_wait_graph
-        # Shared release logic via registry (sync also uses pop_all; async skips
+        # Shared release logic via registry (sync also uses pop; async skips
         # engine.report_sync because row-lock release is tracked at await points).
-        self._row_lock_registry.pop_all(thread_id, graph)
+        self._row_lock_registry.pop(thread_id, graph, resources)
 
     def _flush_pending_io(self, task_id: int) -> None:
         """Flush pending I/O accesses to the DPOR engine."""

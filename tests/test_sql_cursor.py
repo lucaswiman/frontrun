@@ -1564,6 +1564,23 @@ def test_zero_row_update_releases_only_current_statement_row_lock() -> None:
             del _io_tls._held_row_locks
 
 
+def test_zero_row_update_release_is_postgresql_only() -> None:
+    """MySQL's zero changed-row count does not prove that no row matched or locked."""
+    from frontrun._sql_cursor import _is_postgresql_db_object
+
+    class PostgreSQLConnection:
+        pass
+
+    class MySQLConnection:
+        pass
+
+    PostgreSQLConnection.__module__ = "psycopg.connection"
+    MySQLConnection.__module__ = "pymysql.connections"
+
+    assert _is_postgresql_db_object(PostgreSQLConnection())
+    assert not _is_postgresql_db_object(MySQLConnection())
+
+
 # ---------------------------------------------------------------------------
 # Finding 3: connection.commit() / rollback() interception
 # ---------------------------------------------------------------------------
