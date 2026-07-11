@@ -769,6 +769,7 @@ def run_with_schedule(
     clock_diagnostics: bool = False,
     _max_ops: int | None = None,
     _worker_errors_as_findings: bool = False,
+    _recorded_schedule: list[int] | None = None,
 ) -> T:
     """Run one interleaving and return the state object.
 
@@ -838,6 +839,9 @@ def run_with_schedule(
             if _worker_errors_as_findings and runner.errors:
                 raise _WorkerExecutionError(exc) from exc
             raise
+        finally:
+            if _recorded_schedule is not None:
+                _recorded_schedule[:] = scheduler.schedule
         # Re-raise DeadlockError so callers (e.g. reproduction logic) can
         # detect that a deadlock occurred during replay.
         if isinstance(scheduler._error, DeadlockError):
@@ -895,7 +899,10 @@ def explore_random(
         threads: Callables that each receive the state as their argument.
         invariant: Predicate on the state. Returns True if the property holds.
         max_attempts: How many random interleavings to try.
-        max_ops: Maximum schedule length per attempt.
+        max_ops: Maximum randomly sampled schedule-prefix length per attempt.
+            If workers need more turns to finish, the scheduler extends the
+            prefix deterministically and records those turns in any returned
+            counterexample.
         timeout_per_run: Timeout for each individual run.
         seed: Optional RNG seed for reproducibility.
         detect_io: Automatically detect socket/file I/O and treat them
@@ -983,8 +990,8 @@ def explore_random(
                     clock=clock,
                     _virtual_clock=attempt_clock,
                     clock_diagnostics=clock_diagnostics,
-                    _max_ops=max_ops,
                     _worker_errors_as_findings=True,
+                    _recorded_schedule=schedule,
                 )
             except DeadlockError as dl_err:
                 result.num_explored += 1
@@ -1057,7 +1064,6 @@ def explore_random(
                                 clock=clock,
                                 _virtual_clock=replay_clock,
                                 clock_diagnostics=clock_diagnostics,
-                                _max_ops=max_ops,
                             )
                             with clock_scope(replay_clock):
                                 replay_failed, _ = check_invariant(invariant, replay_state)
