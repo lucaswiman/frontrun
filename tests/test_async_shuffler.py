@@ -148,6 +148,23 @@ def test_scheduler_virtual_autojump_skips_only_sleeping_slot():
     assert scheduler._index == 2
 
 
+def test_random_scheduler_extends_exhausted_prefix_deterministically():
+    """Random exploration must not free-run once its sampled prefix ends."""
+    scheduler = AwaitScheduler([0], num_tasks=2, max_ops=6, extension_seed=17)
+
+    assert scheduler.should_proceed(0)
+    scheduler.on_proceed(0)
+    assert scheduler._index == 1
+
+    # Exhaustion grows the recorded schedule and still grants exactly one
+    # actor, so the counterexample controls every resume through max_ops.
+    allowed = [task_id for task_id in range(2) if scheduler.should_proceed(task_id)]
+    assert len(allowed) == 1
+    assert len(scheduler.schedule) > 1
+    assert len(scheduler.schedule) <= 6
+    assert not scheduler._finished
+
+
 # ---------------------------------------------------------------------------
 # Integration tests: AsyncShuffler with exact schedules
 # ---------------------------------------------------------------------------
