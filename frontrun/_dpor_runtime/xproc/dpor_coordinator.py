@@ -320,7 +320,7 @@ class _WorkerLaunchError(OSError):
     """A worker failed to connect; its message already carries child diagnostics."""
 
 
-class _TotalTimeoutExpired(Exception):
+class _TotalTimeoutExpiredError(Exception):
     """total_timeout expired while an execution was in flight.
 
     Deliberately NOT a TimeoutError subclass: the exploration loop's
@@ -501,7 +501,7 @@ class DporCrossProcessCoordinator:
                         self._run_spawned(
                             listener, worker_set, scheduler, accesses, worker_errors, unclean, deadline
                         )
-                except _TotalTimeoutExpired:
+                except _TotalTimeoutExpiredError:
                     # The in-flight execution was truncated by the user's time
                     # budget: nothing about it was verified, so it neither
                     # counts as explored nor as a failure — but the search can
@@ -627,7 +627,7 @@ class DporCrossProcessCoordinator:
                 # timeout and this heartbeat, so neither liveness guard would
                 # ever end the run (the engine's max_branches step cap would,
                 # eventually — a step count, not the user's time budget).
-                timeout_error = _TotalTimeoutExpired(
+                timeout_error = _TotalTimeoutExpiredError(
                     f"total_timeout={self.total_timeout}s expired while an execution was in flight"
                 )
                 break
