@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import datetime as dt
+import math
 import threading
 import time
 import warnings
@@ -19,6 +20,7 @@ from typing import Any
 import pytest
 
 import frontrun
+from frontrun import _async_virtual_timeouts as async_virtual_timeouts
 from frontrun import _cooperative
 from frontrun import _virtual_clock as vc
 from frontrun._virtual_clock import (
@@ -98,6 +100,119 @@ def test_patch_time_preserves_preexisting_patch(monkeypatch: pytest.MonkeyPatch)
     assert time.time() == sentinel
     assert other_thread_saw["time"] == sentinel
     assert other_thread_saw["monotonic"] == sentinel
+
+
+def test_async_sleep_patch_is_reference_counted() -> None:
+    """One overlapping owner must not unpatch ``asyncio.sleep`` for another."""
+    async_virtual_timeouts._patch_asyncio_sleep()
+    async_virtual_timeouts._patch_asyncio_sleep()
+    try:
+        async_virtual_timeouts._unpatch_asyncio_sleep()
+        assert asyncio.sleep is async_virtual_timeouts._cooperative_async_sleep
+    finally:
+        async_virtual_timeouts._unpatch_asyncio_sleep()
+
+
+def test_async_timeout_patch_is_reference_counted() -> None:
+    """The virtual timeout shims must survive teardown of one overlapping scope."""
+    async_virtual_timeouts._patch_asyncio_timeouts()
+    async_virtual_timeouts._patch_asyncio_timeouts()
+    try:
+        async_virtual_timeouts._unpatch_asyncio_timeouts()
+        assert asyncio.wait_for is async_virtual_timeouts._virtual_asyncio_wait_for
+    finally:
+        async_virtual_timeouts._unpatch_asyncio_timeouts()
+
+
+def test_async_sleep_patch_preserves_preexisting_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An outer asyncio instrumentation patch must survive frontrun's scope."""
+
+    async def fake_sleep(delay: float, result: Any = None) -> Any:  # noqa: ANN401
+        return result
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    async_virtual_timeouts._patch_asyncio_sleep()
+    try:
+        assert asyncio.sleep is async_virtual_timeouts._cooperative_async_sleep
+    finally:
+        async_virtual_timeouts._unpatch_asyncio_sleep()
+    assert asyncio.sleep is fake_sleep
+
+
+def test_async_timeout_patch_preserves_preexisting_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An outer ``asyncio.wait_for`` patch must be restored after exploration."""
+
+    async def fake_wait_for(awaitable: Any, timeout: float | None) -> Any:  # noqa: ANN401
+        return await awaitable
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    async_virtual_timeouts._patch_asyncio_timeouts()
+    try:
+        assert asyncio.wait_for is async_virtual_timeouts._virtual_asyncio_wait_for
+    finally:
+        async_virtual_timeouts._unpatch_asyncio_timeouts()
+    assert asyncio.wait_for is fake_wait_for
+
+
+def test_unmanaged_sync_sleep_keeps_its_real_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process-wide shim must delegate sleeps from unrelated threads."""
+    observed: list[float] = []
+    monkeypatch.setattr(_cooperative, "_real_time_sleep", observed.append)
+
+    _cooperative._cooperative_sleep(0.25)
+
+    assert observed == [0.25]
+
+
+def test_sync_sleep_patch_preserves_preexisting_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An outer time.sleep instrumentation patch must survive exploration."""
+    observed: list[float] = []
+
+    def fake_sleep(delay: float) -> None:
+        observed.append(delay)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    _cooperative.patch_sleep()
+    try:
+        assert time.sleep is _cooperative._cooperative_sleep
+    finally:
+        _cooperative.unpatch_sleep()
+
+    assert time.sleep is fake_sleep
+
+
+def test_unmanaged_async_sleep_keeps_its_real_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process-wide shim must delegate sleeps from unrelated async tasks."""
+    observed: list[float] = []
+
+    async def fake_sleep(delay: float, result: Any = None) -> Any:  # noqa: ANN401
+        observed.append(delay)
+        return result
+
+    monkeypatch.setattr(async_virtual_timeouts, "_real_asyncio_sleep", fake_sleep)
+    result = asyncio.run(async_virtual_timeouts._cooperative_async_sleep(0.25, "sentinel"))
+
+    assert result == "sentinel"
+    assert observed == [0.25]
+
+
+@pytest.mark.parametrize(
+    ("delay", "error"),
+    [
+        (-1.0, ValueError),
+        (math.nan, ValueError),
+        (math.inf, OverflowError),
+    ],
+)
+def test_virtual_time_sleep_rejects_invalid_delay(
+    monkeypatch: pytest.MonkeyPatch, delay: float, error: type[Exception]
+) -> None:
+    """Virtual ``time.sleep`` preserves the stdlib's invalid-delay contract."""
+    monkeypatch.setattr(_cooperative, "_active_virtual_clock", lambda: VirtualClock())
+
+    with pytest.raises(error):
+        _cooperative._cooperative_sleep(delay)
 
 
 # ---------------------------------------------------------------------------
