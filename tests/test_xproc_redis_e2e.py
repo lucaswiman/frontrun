@@ -52,6 +52,7 @@ def test_redis_atomic_incr_has_no_race(redis_demo) -> None:
         },
         setup=redis_demo.setup,
         invariant=lambda _state: redis_demo.read() == 2,
+        preemption_bound=None,
     )
     assert result.ok, f"unexpected {result.failure_kind}: {result.failure!r}"
     assert result.exhausted

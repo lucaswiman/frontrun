@@ -133,7 +133,10 @@ class InterleavingResult:
             ``execution="process"`` (from
             :class:`~frontrun.CrossProcessResult` ``.exhausted``); ``None``
             means the mode that produced this result does not report it
-            (thread/async execution currently leaves it unset).
+            (thread/async execution currently leaves it unset).  A
+            preemption-bounded DPOR search (the default,
+            ``preemption_bound=2``) never claims ``True`` — full coverage
+            requires ``preemption_bound=None``.
         failure_kind: Structured category of the failure for
             ``execution="process"`` — one of ``"invariant"``,
             ``"worker_error"``, ``"deadlock"``, ``"timeout"``,

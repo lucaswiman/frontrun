@@ -445,7 +445,12 @@ class DporCrossProcessCoordinator:
         persistent_handles: Any = None
         persistent_socks: dict[int, socket.socket] = {}
         num_explored = 0
-        exhausted = True
+        # A preemption-bounded search (the default, preemption_bound=2) only
+        # traverses the bounded tree — schedules needing more preemptions are
+        # never scheduled — so exhausted=True (documented as "the search space
+        # was fully covered") is reserved for a genuinely unbounded search,
+        # mirroring how max_executions / total_timeout truncation demotes it.
+        exhausted = self.preemption_bound is None
         first_failure: CrossProcessResult | None = None
         # Every failing execution as (execution_number, schedule), mirroring
         # thread-mode InterleavingResult.failures — with stop_on_first=False

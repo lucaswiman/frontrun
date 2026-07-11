@@ -123,7 +123,9 @@ def test_dpor_stop_on_first_false_still_reports_race() -> None:
     # invariant violation, not silently explore to exhaustion and return ok.
     db = _DB()
     worker = _rmw_worker(db)
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, stop_on_first=False)
+    coord = DporCrossProcessCoordinator(
+        num_workers=2, deadlock_timeout=5.0, stop_on_first=False, preemption_bound=None
+    )
     result = coord.explore(
         worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
@@ -132,7 +134,7 @@ def test_dpor_stop_on_first_false_still_reports_race() -> None:
     assert not result.ok
     assert result.failure_kind == "invariant"
     assert result.failing_schedule is not None
-    assert result.exhausted  # whole space explored, yet the failure is still surfaced
+    assert result.exhausted  # whole (unbounded) space explored, yet the failure is still surfaced
 
 
 def test_dpor_bounded_search_does_not_claim_exhausted() -> None:
@@ -236,7 +238,7 @@ def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
 
     db_dp = _DB()
     w_dp = _rmw_worker(db_dp)
-    dpor = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False).explore(
+    dpor = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False, preemption_bound=None).explore(
         worker_set=ThreadLauncher([w_dp, w_dp]),
         setup=db_dp.reset,
         invariant=lambda: True,
@@ -566,7 +568,7 @@ def test_dpor_no_race_when_safe() -> None:
             db.balance += 100
         proxy.io_report("sql:accounts:id=1", "write")
 
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, preemption_bound=None)
     result = coord.explore(
         worker_set=ThreadLauncher([atomic, atomic]),
         setup=db.reset,

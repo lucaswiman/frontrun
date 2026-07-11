@@ -122,7 +122,7 @@ def test_dpor_redis_atomic_incr_has_no_race() -> None:
         proxy.io_report(KEY, "write")
         proxy.after_io(0, "redis:INCR:counter")
 
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, preemption_bound=None)
     result = coord.explore(
         worker_set=ThreadLauncher([atomic, atomic]),
         setup=store.reset,

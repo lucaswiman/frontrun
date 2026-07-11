@@ -24,7 +24,11 @@ Unreleased
   ``reuse_workers=True``; the lower-level ``explore_processes`` API still
   supports explicit ``Subprocess`` targets and exhaustive search. Process-mode
   errors now fail fast with clearer messages, report truncation honestly via
-  ``CrossProcessResult.exhausted``, and reject in-process-only options instead
+  ``CrossProcessResult.exhausted`` (``exhausted=True`` requires a genuinely
+  unbounded search: the default ``preemption_bound=2`` truncates the DPOR
+  tree, so bounded runs report ``False`` — pass ``preemption_bound=None`` to
+  claim full coverage), honor ``total_timeout`` even while a single execution
+  is in flight, and reject in-process-only options instead
   of silently ignoring them. A scheduler stall (``deadlock_timeout`` expiry —
   e.g. unmodeled database-level blocking) is reported as
   ``failure_kind="timeout"`` rather than counting as a clean pass. See

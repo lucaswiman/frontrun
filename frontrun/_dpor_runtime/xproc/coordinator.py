@@ -141,6 +141,9 @@ class CrossProcessResult:
 
     ok: bool
     iterations: int
+    # True only when the search space was genuinely fully covered: any
+    # truncating bound (max_iterations / max_executions / total_timeout, or a
+    # non-None preemption_bound on the DPOR strategy) demotes this to False.
     exhausted: bool
     failing_schedule: list[int] | None = None
     failure: str | None = None

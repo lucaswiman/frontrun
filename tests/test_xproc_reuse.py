@@ -57,13 +57,15 @@ def test_reuse_finds_lost_update() -> None:
 def test_reuse_matches_spawn_execution_count() -> None:
     # Reuse must explore the same DPOR search as spawn-per-iteration.
     db_spawn = _DB()
-    spawn = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False).explore(
+    spawn = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False, preemption_bound=None).explore(
         worker_set=ThreadLauncher([_rmw_worker(db_spawn), _rmw_worker(db_spawn)]),
         setup=db_spawn.reset,
         invariant=lambda: True,
     )
     db_reuse = _DB()
-    reuse = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False, reuse_workers=True).explore(
+    reuse = DporCrossProcessCoordinator(
+        num_workers=2, stop_on_first=False, reuse_workers=True, preemption_bound=None
+    ).explore(
         worker_set=PersistentThreadLauncher([_rmw_worker(db_reuse), _rmw_worker(db_reuse)]),
         setup=db_reuse.reset,
         invariant=lambda: True,
@@ -112,7 +114,9 @@ def test_reuse_no_state_leak_across_iterations() -> None:
             db.balance += 100
         proxy.io_report("sql:accounts:id=1", "write")
 
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, reuse_workers=True)
+    coord = DporCrossProcessCoordinator(
+        num_workers=2, deadlock_timeout=5.0, reuse_workers=True, preemption_bound=None
+    )
     result = coord.explore(
         worker_set=PersistentThreadLauncher([atomic, atomic]),
         setup=db.reset,

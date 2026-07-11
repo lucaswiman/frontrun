@@ -217,7 +217,11 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
    * - ``iterations``
      - Number of interleavings explored.
    * - ``exhausted``
-     - ``True`` if the search space was fully covered.
+     - ``True`` if the search space was fully covered.  Under
+       ``strategy="dpor"`` this requires ``preemption_bound=None``: the
+       default bound (2) truncates the search to low-preemption schedules,
+       so bounded runs honestly report ``exhausted=False`` even when the
+       bounded tree was fully traversed.
    * - ``accesses``
      - The external accesses observed on the failing run, as
        ``(worker_id, resource, "read"|"write")`` tuples, or ``None``.

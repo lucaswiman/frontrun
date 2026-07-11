@@ -190,10 +190,12 @@ def explore_processes(
       / ``max_branches`` / ``total_timeout`` bound the search, ``search``
       selects the wakeup-tree traversal order, and ``stop_on_first=False``
       keeps exploring after a failure, accumulating every failing execution in
-      ``CrossProcessResult.failures``.
+      ``CrossProcessResult.failures``. ``exhausted=True`` (full coverage)
+      requires ``preemption_bound=None``; the default bound (2) truncates the
+      search, so bounded runs report ``exhausted=False``.
+    * ``"exhaustive"`` enumerates every interleaving at external-access
       granularity, bounded by ``max_iterations`` and ``max_steps_per_run``
       per execution. Useful as a reduction-free cross-check.
-      cross-check.
 
     Each strategy rejects the other's bounds when passed explicitly (a
     silently ignored option is a correctness footgun): ``max_iterations`` is
