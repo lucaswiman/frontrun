@@ -200,15 +200,10 @@ def _relay_loop(
             if msg is not None:
                 _bump_progress()
                 if msg["t"] == proto.ACCESS:
-                    # Record the access while this worker still holds any
-                    # granted turn. Appending after the turn release (as the
-                    # other frame kinds below do) would let the next scheduled
-                    # relay interleave ITS appends first depending on OS thread
-                    # timing, so the human-facing access trace of the same
-                    # counterexample schedule could differ run to run. Engine
-                    # behavior is unchanged: the access is only buffered in
-                    # pending_io here and flushed at this worker's own next
-                    # grant.
+                    # ACCESS frames declare the next operation. Keep the previous
+                    # sync turn until the following non-ACCESS boundary so every
+                    # access from one SQL/Redis operation is recorded contiguously.
+                    # The pending buffer is flushed when that boundary is granted.
                     rid = msg["rid"]
                     access_kind = msg["kind"]
                     obj_key = _make_object_key(hash(rid), rid)
@@ -226,12 +221,6 @@ def _relay_loop(
                         with scheduler._engine_lock:
                             scheduler.engine.register_resource_group(obj_key, group_key)
                         registered_groups.add(obj_key)
-                    if holding_sync_turn:
-                        # The ACCESS frame doubles as this worker's "statement
-                        # finished" signal; release the turn only now that the
-                        # access is recorded.
-                        scheduler.after_sync_retry(worker_id)
-                        holding_sync_turn = False
                     continue
             if holding_sync_turn:
                 # The statement the last grant covered has finished executing
@@ -417,6 +406,7 @@ class DporCrossProcessCoordinator:
         if socket_path is None:
             self._own_dir = tempfile.mkdtemp(prefix="frontrun-xproc-")
             socket_path = os.path.join(self._own_dir, "s")
+        self._relay_no_progress_budget = self._connect_budget
         self.socket_path = socket_path
 
     def explore(
@@ -494,14 +484,14 @@ class DporCrossProcessCoordinator:
                     else:
                         self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean)
                 except (TimeoutError, OSError) as exc:
-                    return _connection_failure(exc, num_explored + 1)
+                    return replace(_connection_failure(exc, num_explored + 1), failures=failures)
                 except WorkerSerializationError as exc:
                     # A dill serialisation failure in worker_set.launch(...) /
                     # iter_start_message(...) — surface it as a structured
                     # worker_error rather than a bare exception. Anything
                     # broader (a generic TypeError from launch machinery) is a
                     # bug and must propagate rather than be mislabeled.
-                    return _serialization_failure(exc, num_explored + 1)
+                    return replace(_serialization_failure(exc, num_explored + 1), failures=failures)
                 num_explored += 1
 
                 result = self._evaluate(
@@ -609,7 +599,7 @@ class DporCrossProcessCoordinator:
         # stale scheduler while the next iteration runs a fresh one — a
         # concurrent-engine data race. Fail loudly instead; the exploration
         # loop catches (TimeoutError, OSError) and returns a clean result.
-        no_progress_budget = max(0.0, self.deadlock_timeout * 2 + 10.0)
+        no_progress_budget = self._relay_no_progress_budget
         pending = list(relays)
         timeout_error: TimeoutError | None = None
         while pending:

@@ -241,15 +241,15 @@ Strategies and worker reuse
   traversal order, and ``stop_on_first=False`` keeps exploring after a
   failure, accumulating every failing execution in ``result.failures``.
 * ``"exhaustive"`` brute-forces every interleaving at external-access
-  granularity, bounded by ``max_iterations``. Useful as a reduction-free
-  cross-check that DPOR reaches the same verdict.
+  granularity, bounded by ``max_iterations`` and by ``max_steps_per_run`` per
+  execution. Useful as a reduction-free cross-check that DPOR reaches the same
+  verdict.
 
-Each strategy rejects the other's bounds with ``ValueError`` when they are
-passed explicitly: ``max_iterations`` only applies to ``"exhaustive"`` (bound
-a DPOR search with ``max_executions`` instead), and the DPOR knobs above only
-apply to ``"dpor"``. A silently ignored option is a correctness footgun, so
-nothing is dropped quietly. Detection is value-based: passing a knob at its
-default value is indistinguishable from omitting it.
+Each strategy rejects the other's bounds when passed explicitly:
+``max_iterations`` and ``max_steps_per_run`` only apply to ``"exhaustive"``
+(bound a DPOR search with ``max_executions`` instead), and the DPOR knobs above
+only apply to ``"dpor"``. Detection is value-based, so passing a default value
+is indistinguishable from omitting it.
 
 ``reuse_workers=True`` keeps the worker processes alive across iterations,
 re-running the target in place instead of respawning for each interleaving. The

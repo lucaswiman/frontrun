@@ -160,6 +160,7 @@ def explore_processes(
     count: int | None = None,
     strategy: Literal["dpor", "exhaustive"] = "dpor",
     max_iterations: int = 4096,
+    max_steps_per_run: int = 100_000,
     max_executions: int | None = None,
     preemption_bound: int | None = 2,
     max_branches: int = 100_000,
@@ -190,8 +191,8 @@ def explore_processes(
       selects the wakeup-tree traversal order, and ``stop_on_first=False``
       keeps exploring after a failure, accumulating every failing execution in
       ``CrossProcessResult.failures``.
-    * ``"exhaustive"`` brute-forces every interleaving at external-access
-      granularity, bounded by ``max_iterations``. Useful as a reduction-free
+      granularity, bounded by ``max_iterations`` and ``max_steps_per_run``
+      per execution. Useful as a reduction-free cross-check.
       cross-check.
 
     Each strategy rejects the other's bounds when passed explicitly (a
@@ -217,6 +218,8 @@ def explore_processes(
                 "explore_processes(): max_iterations only applies to strategy='exhaustive'; "
                 "bound strategy='dpor' with max_executions instead."
             )
+        if max_steps_per_run != 100_000:
+            raise ValueError("explore_processes(): max_steps_per_run only applies to strategy='exhaustive'.")
         return DporCrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,
@@ -257,6 +260,7 @@ def explore_processes(
             raise ValueError("explore_processes(): search only applies to strategy='dpor'.")
         return CrossProcessCoordinator(
             num_workers=len(specs),
+            max_steps_per_run=max_steps_per_run,
             deadlock_timeout=deadlock_timeout,
         ).explore(
             worker_set=SubprocessLauncher(specs),
