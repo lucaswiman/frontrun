@@ -391,23 +391,9 @@ class DeadlineCoordinator:
         return due
 
 
-# The virtual datetime/date shims below all dispatch on ``cls``:
-#
-# - For the virtual class *itself* (``cls is _VirtualDateTime`` /
-#   ``_VirtualDate``) constructors return instances of the *saved original*
-#   class (plain real datetime, or whatever third-party fake — freezegun,
-#   time-machine — was installed before us) and isinstance/issubclass are
-#   transparent to the real type.  Instances built inside the patch scope must
-#   never carry the virtual type once the scope unwinds (``type(x) is
-#   datetime.datetime``, pydantic strict, sqlite adapters).
-# - For a genuine *user subclass* defined inside the scope (its base resolves
-#   to the virtual class — e.g. ``pandas.Timestamp`` if pandas is imported
-#   lazily inside the scope) stdlib subclass semantics must hold: construction
-#   preserves the subclass, isinstance/issubclass are exact, and alternate
-#   constructors (``now``/``fromtimestamp``/...) return the subclass while
-#   still reading virtual time.  User subclasses inherit these metaclasses,
-#   which is why the transparency must be gated on ``cls`` — an ungated check
-#   would make *every* datetime an "instance" of the user subclass.
+# The shim itself is transparent to the saved datetime type, including a
+# third-party fake installed before it. User subclasses retain normal datetime
+# construction and type-checking semantics, so transparency is gated on ``cls``.
 
 
 class _VirtualDateTimeMeta(type):

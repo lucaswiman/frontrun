@@ -561,11 +561,7 @@ class DporCrossProcessCoordinator:
         unclean: set[int],
     ) -> None:
         accesses_lock = threading.Lock()
-        # Shared heartbeat: bumped by every relay when a frame arrives or a
-        # grant is issued. Liveness is judged on PROGRESS, not iteration wall
-        # time — deadlock_timeout bounds silence between steps, so a healthy
-        # iteration may legitimately run far longer than any fixed multiple of
-        # it and must not be aborted mid-flight.
+        # Relays update this heartbeat on every received frame or issued grant.
         progress = [time.monotonic()]
         relays = [
             threading.Thread(
@@ -588,17 +584,8 @@ class DporCrossProcessCoordinator:
         ]
         for t in relays:
             t.start()
-        # A genuine stall is detected FIRST by the relays themselves (per-recv
-        # socket timeout == deadlock_timeout) or by the scheduler's own
-        # deadlock_timeout waits, both of which latch a TimeoutError on the
-        # scheduler so _evaluate diagnoses failure_kind="timeout" with the
-        # raise-deadlock_timeout advice. This budget is only the last-resort
-        # backstop for a relay that is alive yet stuck somewhere neither of
-        # those bounds. A live relay must never be abandoned silently: a ghost
-        # thread would keep calling into the shared engine/engine_lock with a
-        # stale scheduler while the next iteration runs a fresh one — a
-        # concurrent-engine data race. Fail loudly instead; the exploration
-        # loop catches (TimeoutError, OSError) and returns a clean result.
+        # Socket and scheduler timeouts handle normal stalls. This backstop
+        # prevents a stuck relay from surviving into the next iteration.
         no_progress_budget = self._relay_no_progress_budget
         pending = list(relays)
         timeout_error: TimeoutError | None = None

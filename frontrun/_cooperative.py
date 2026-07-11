@@ -305,14 +305,7 @@ def _forget_spin_scheduler(resource_id: int, thread_id: int) -> None:
 
 
 def _purge_spin_schedulers(scheduler: Any) -> None:  # pyright: ignore[reportUnusedFunction]  # used by DPOR scheduler teardown
-    """Drop every registry entry recorded against *scheduler* (teardown hook).
-
-    The registry is module-global and strongly references schedulers, keyed by
-    ``(id(primitive), thread_id)``.  Without a purge, a scheduler whose waiters
-    never unflagged (aborted run, killed thread) stays alive forever, and a new
-    primitive that reuses a dead primitive's ``id()`` would route
-    ``_note_spin_release`` to the previous execution's scheduler.
-    """
+    """Drop registry entries that could retain or route to a finished scheduler."""
     with _spin_flag_lock:
         for resource_id, schedulers in list(_spin_flag_schedulers.items()):
             for thread_id, sched in list(schedulers.items()):
