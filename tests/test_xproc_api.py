@@ -157,6 +157,19 @@ def test_explore_processes_wires_dpor_knobs_to_coordinator(monkeypatch: pytest.M
     assert captured["max_branches"] == 123
 
 
+def test_explore_processes_preserves_mapping_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(frontrun.cross_process, "DporCrossProcessCoordinator", _RecordingCoordinator)
+    result = frontrun.explore_processes(
+        {
+            "checkout": frontrun.Subprocess(_TARGET, ("unused.db",)),
+            "inventory": frontrun.Subprocess(_TARGET, ("unused.db",)),
+        },
+        setup=lambda: None,
+        invariant=lambda _state: True,
+    )
+    assert result.worker_labels == {0: "checkout", 1: "inventory"}
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

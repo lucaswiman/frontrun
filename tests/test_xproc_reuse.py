@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import socket
 import threading
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -98,6 +99,65 @@ def test_reuse_stops_safely_on_deadlock() -> None:
     )
     assert not result.ok
     assert result.failure_kind == "deadlock"
+
+
+def test_reuse_restarts_killable_workers_after_unclean_iteration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A poisoned process-style worker set is killed and freshly launched."""
+    import frontrun._dpor_runtime.xproc.dpor_coordinator as coordinator_module
+
+    class RestartablePersistentLauncher(PersistentThreadLauncher):
+        def __init__(self) -> None:
+            super().__init__([lambda _proxy: None])
+            self.launches = 0
+            self.terminations = 0
+
+        def launch(self, targets: Any) -> Any:
+            self.launches += 1
+            return super().launch(targets)
+
+        def terminate(self, handles: Any, timeout: float) -> None:
+            self.terminations += 1
+            for thread in handles:
+                thread.join(timeout)
+            assert all(not thread.is_alive() for thread in handles)
+            self._threads = []
+
+    class DummyScheduler:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self._error = None
+
+    def two_executions(**_kwargs: Any):
+        yield SimpleNamespace(execution=SimpleNamespace(schedule_trace=[0]), index=1)
+        yield SimpleNamespace(execution=SimpleNamespace(schedule_trace=[0]), index=2)
+
+    class UncleanFirstCoordinator(DporCrossProcessCoordinator):
+        runs = 0
+
+        def _run_reused(self, _socks, _worker_set, _scheduler, _accesses, _worker_errors, unclean) -> None:
+            self.runs += 1
+            if self.runs == 1:
+                unclean.add(0)
+
+    monkeypatch.setattr(coordinator_module, "_RelayDporScheduler", DummyScheduler)
+    monkeypatch.setattr(coordinator_module, "dpor_exploration_iter", two_executions)
+    launcher = RestartablePersistentLauncher()
+    invariant_checks = 0
+
+    def invariant() -> bool:
+        nonlocal invariant_checks
+        invariant_checks += 1
+        return invariant_checks != 1
+
+    result = UncleanFirstCoordinator(num_workers=1, reuse_workers=True, stop_on_first=False).explore(
+        worker_set=launcher,
+        setup=lambda: None,
+        invariant=invariant,
+    )
+
+    assert not result.ok
+    assert result.iterations == 2
+    assert launcher.launches == 2
+    assert launcher.terminations == 1
 
 
 def test_reuse_no_state_leak_across_iterations() -> None:
