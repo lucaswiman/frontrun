@@ -504,13 +504,14 @@ def test_relay_appends_access_before_releasing_turn() -> None:
         grant = proto.recv_msg(worker_end)
         assert grant is not None and grant["t"] == proto.GRANT
         proto.send_msg(worker_end, {"t": proto.ACCESS, "w": 0, "rid": "redis:k1", "kind": "write"})
+        proto.send_msg(worker_end, {"t": proto.ACCESS, "w": 0, "rid": "redis:k2", "kind": "read"})
         proto.send_msg(worker_end, {"t": proto.DONE, "w": 0})
         relay.join(10.0)
         assert not relay.is_alive()
     finally:
         worker_end.close()
         coord_end.close()
-    assert scheduler.accesses_at_release == [(0, "redis:k1", "write")], (
+    assert scheduler.accesses_at_release == [(0, "redis:k1", "write"), (0, "redis:k2", "read")], (
         f"turn released before the worker's access was recorded: {scheduler.accesses_at_release!r}"
     )
 
