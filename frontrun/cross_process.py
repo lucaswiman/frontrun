@@ -22,6 +22,7 @@ Example::
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
@@ -30,6 +31,30 @@ from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordi
 from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, SubprocessLauncher
 
 __all__ = ["CrossProcessResult", "Subprocess", "explore_processes"]
+
+
+def _validate_positive(name: str, value: int | float, *, api: str = "explore_processes()") -> None:
+    if value <= 0 or (isinstance(value, float) and not math.isfinite(value)):
+        raise ValueError(f"{api}: {name} must be positive and finite, got {value!r}")
+
+
+def _validate_dpor_bounds(
+    *,
+    deadlock_timeout: float,
+    max_executions: int | None,
+    preemption_bound: int | None,
+    max_branches: int,
+    total_timeout: float | None,
+    api: str = "explore_processes()",
+) -> None:
+    _validate_positive("deadlock_timeout", deadlock_timeout, api=api)
+    if max_executions is not None:
+        _validate_positive("max_executions", max_executions, api=api)
+    if preemption_bound is not None and preemption_bound < 0:
+        raise ValueError(f"{api}: preemption_bound must be non-negative or None, got {preemption_bound!r}")
+    _validate_positive("max_branches", max_branches, api=api)
+    if total_timeout is not None:
+        _validate_positive("total_timeout", total_timeout, api=api)
 
 
 def _to_interleaving_result(result: CrossProcessResult) -> Any:
@@ -108,6 +133,14 @@ def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazil
     ``setup`` and ``invariant`` run in this (coordinator) process. With
     ``reuse_workers`` the processes are spawned once and re-run per interleaving.
     """
+    _validate_dpor_bounds(
+        deadlock_timeout=deadlock_timeout,
+        max_executions=max_executions,
+        preemption_bound=preemption_bound,
+        max_branches=max_branches,
+        total_timeout=total_timeout,
+        api="explore()",
+    )
     # Workers also need setup()'s handle (via state_fn); read it from the same box
     # the helper captures it into, so invariant(state) and the workers agree.
     coord_setup, coord_invariant, state_box = _state_threaded_hooks(setup, invariant)
@@ -206,6 +239,7 @@ def explore_processes(
     specs = _resolve_specs(processes, count)
     if not specs:
         raise ValueError("explore_processes requires at least one Subprocess")
+    _validate_positive("deadlock_timeout", deadlock_timeout)
     if reuse_workers and strategy == "exhaustive":
         raise ValueError("explore_processes(): reuse_workers is not supported with strategy='exhaustive'")
     # Coordinators call setup()/invariant() nullary; thread setup()'s handle into
@@ -222,6 +256,13 @@ def explore_processes(
             )
         if max_steps_per_run != 100_000:
             raise ValueError("explore_processes(): max_steps_per_run only applies to strategy='exhaustive'.")
+        _validate_dpor_bounds(
+            deadlock_timeout=deadlock_timeout,
+            max_executions=max_executions,
+            preemption_bound=preemption_bound,
+            max_branches=max_branches,
+            total_timeout=total_timeout,
+        )
         return DporCrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,
@@ -260,6 +301,8 @@ def explore_processes(
             )
         if search is not None:
             raise ValueError("explore_processes(): search only applies to strategy='dpor'.")
+        _validate_positive("max_iterations", max_iterations)
+        _validate_positive("max_steps_per_run", max_steps_per_run)
         return CrossProcessCoordinator(
             num_workers=len(specs),
             max_steps_per_run=max_steps_per_run,

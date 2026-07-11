@@ -188,6 +188,11 @@ Semantics and limitations
   heuristic advances the clock when nothing has progressed for a short
   interval.  Prefer ``strategy="dpor"`` for lock-heavy async code — it
   patches ``asyncio.Lock`` and needs no heuristic.
+* **Dynamically created child tasks are not separate explored actors.** An
+  explored async worker should not use ``asyncio.create_task()`` to introduce
+  additional concurrency: descendants inherit the worker's scheduler identity,
+  so overlapping virtual sleeps or waits can serialize unexpectedly. Pass each
+  concurrent coroutine as its own item in ``workers=`` instead.
 * **Broken-down and formatted wall-clock time is not patched.**
   ``time.localtime`` / ``time.gmtime`` / ``time.strftime`` (no-arg) /
   ``time.ctime`` / ``time.asctime`` / ``time.clock_gettime`` /

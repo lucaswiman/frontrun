@@ -46,6 +46,10 @@ Unreleased
   connect timeout, hiding e.g. the child's ``ModuleNotFoundError``).
   See :doc:`cross_process`.
 
+  Invalid process bounds now fail before workers launch, and lower-level
+  ``Subprocess`` targets that return awaitables report an unsupported-async
+  worker error instead of silently succeeding with an unawaited coroutine.
+
 * **explore() rejects options its strategy would ignore.** Thread-mode
   ``frontrun.explore(...)`` now raises ``ValueError`` for any explicitly-passed
   option the selected strategy does not support (e.g. ``seed=`` with

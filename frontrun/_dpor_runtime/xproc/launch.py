@@ -387,8 +387,9 @@ class Subprocess:
     arrives as a list and a dict with non-string keys comes back string-keyed.
     Pass plain scalars / lists / string-keyed dicts, or use
     ``frontrun.explore(execution="process")`` (which pickles) for richer args.
-    The callable runs in the child with frontrun's SQL interception routed to
-    the coordinator.
+    The callable must be synchronous; async/awaitable targets are rejected.
+    It runs in the child with frontrun's SQL interception routed to the
+    coordinator.
     """
 
     target: str

@@ -181,6 +181,10 @@ pickles) when you need richer argument types. Because the child imports the
 target by name, it must be importable in a fresh interpreter --- a module-level
 callable in an installed or on-path module.
 
+Targets must be synchronous callables. If a target is ``async def`` (or a
+plain callable that returns an awaitable), the worker reports a clear error;
+cross-process exploration has no asyncio scheduler in the child process.
+
 ``setup`` and ``invariant`` both run in the coordinator process. ``setup``
 resets the external state before each interleaving and returns a handle to it;
 that handle is passed to ``invariant(state)``, which checks the state afterwards
