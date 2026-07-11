@@ -1203,16 +1203,16 @@ class DporScheduler:
     def _replay_blocked_threads_unlocked(self) -> set[int]:
         """Thread ids blocked on a cooperative wait, as seen by replay.
 
-        Replay has no engine runnable-set (``ReplayExecution`` block/unblock are
-        no-ops), so blockedness is reconstructed from the Python-side
-        registries: pending virtual-clock deadlines and blocking-spin flags
-        (clock port) plus cooperative lock/event waiters (``_lock_waiters``,
-        maintained by the sync reporter in exploration and replay alike).
-        Caller must hold ``self._condition``.
+        Replay has no engine runnable set, so reconstruct blockedness from
+        cooperative lock/event waiters, sleepers, and active blocking spins. A
+        timed-wait deadline alone is not blockedness: after another thread
+        releases the resource, the deadline remains registered until the waiter
+        re-probes and cancels it.
         """
         with self._engine_lock:
             blocked = {tid for waiters in self._lock_waiters.values() for tid in waiters}
-        blocked.update(t for t in range(self.num_threads) if self._clock_port.blocks_clock_progress(t))
+        blocked.update(self._deadlines.sleeping_actors())
+        blocked.update(self._spin_waiters)
         return blocked
 
     def _replay_all_live_blocked_unlocked(self) -> bool:
@@ -1846,6 +1846,15 @@ class _IOAnchoredReplayScheduler(DporScheduler):
         if cur is None or self.virtual_clock is None:
             return False
         if not self._deadlines.in_timed_wait(cur):
+            return False
+        blocked = self._replay_blocked_threads_unlocked()
+        if cur not in blocked:
+            return False
+        if any(
+            thread_id not in self._threads_done and thread_id not in blocked
+            for thread_id in range(self.num_threads)
+            if thread_id != cur
+        ):
             return False
         self._replay_advance_clock_to()
         self._condition.notify_all()
