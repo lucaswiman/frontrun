@@ -199,6 +199,66 @@ def test_exhaustive_disconnected_worker_still_reported_as_worker_error() -> None
     assert "disconnected" in (result.failure or "")
 
 
+class _ProbeThreadLauncher(ThreadLauncher):
+    """ThreadLauncher plus a scripted LivenessProbe.
+
+    ``state['detail']`` (set from a worker body mid-run) makes the fleet-wide
+    probe report an abnormal process exit, exactly as MpLauncher /
+    SubprocessLauncher do when one child dies without closing its socket.
+    """
+
+    def __init__(self, bodies, state: dict) -> None:
+        super().__init__(bodies)
+        self._state = state
+
+    def any_exited(self, handles) -> bool:  # noqa: ARG002 - fleet-wide fake
+        return self._state.get("detail") is not None
+
+    def all_exited(self, handles) -> bool:  # noqa: ARG002
+        return False
+
+    def diagnose(self, handles) -> str | None:  # noqa: ARG002
+        return self._state.get("detail")
+
+
+def test_exhaustive_timeout_diagnosis_does_not_blame_the_slow_worker_for_anothers_exit() -> None:
+    # Regression: any_exited()/diagnose() are fleet-wide, but the timeout-
+    # diagnosis loop recorded the exit under the *timed-out* worker's id, so
+    # the top line read "worker 0 failed: worker process exited during the run
+    # (worker 1: ...)" — claiming the merely-slow worker 0 exited when the
+    # embedded detail names worker 1 as the process that actually died.
+    release = threading.Event()
+    probe_state: dict = {}
+
+    def slow(proxy) -> None:
+        if not proxy.report_and_wait(None, 0):
+            return
+        # Simulate a sibling process dying abnormally mid-run, then overrun
+        # deadlock_timeout ourselves.
+        probe_state["detail"] = "worker 1: ModuleNotFoundError: No module named 'missing_dep'"
+        release.wait(5.0)
+        proxy.report_and_wait(None, 0)
+
+    coord = CrossProcessCoordinator(num_workers=1, deadlock_timeout=1.0)
+    try:
+        result = coord.explore(
+            worker_set=_ProbeThreadLauncher([slow], probe_state),
+            setup=lambda: None,
+            invariant=lambda: True,
+            max_iterations=2,
+        )
+    finally:
+        release.set()
+        _join_worker_threads()
+    assert not result.ok
+    assert result.failure_kind == "worker_error"
+    failure = result.failure or ""
+    # The real culprit from diagnose() must be preserved...
+    assert "worker 1: ModuleNotFoundError" in failure
+    # ...and the timed-out worker must not be claimed to have exited.
+    assert "worker 0 failed: worker process exited" not in failure, failure
+
+
 # ---------------------------------------------------------------------------
 # Exhaustive coordinator: per-run step bound
 # ---------------------------------------------------------------------------
