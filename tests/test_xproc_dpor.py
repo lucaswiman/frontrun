@@ -574,3 +574,35 @@ def test_dpor_no_race_when_safe() -> None:
     )
     assert result.ok
     assert result.exhausted
+
+
+def test_dpor_branch_cap_is_reported_as_branch_limit_not_a_fabricated_timeout() -> None:
+    # Regression: when an execution hit the engine's max_branches cap the
+    # engine silently refused to schedule (execution.aborted), the still-
+    # waiting worker then burned deadlock_timeout, and _evaluate misreported
+    # the truncation as failure_kind="timeout" — presenting the truncated
+    # schedule as an exact counterexample and advising the WRONG knob ("raise
+    # deadlock_timeout") when the real cause is max_branches. Mirror the
+    # exhaustive coordinator's honest, distinct "step_limit" kind instead.
+    def chatty(proxy) -> None:
+        for _ in range(6):
+            if not proxy.report_and_wait(None, 0):
+                return
+
+    coord = DporCrossProcessCoordinator(
+        num_workers=2, deadlock_timeout=1.0, preemption_bound=None, max_branches=3
+    )
+    result = coord.explore(
+        worker_set=ThreadLauncher([chatty, chatty]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert not result.ok
+    assert result.failure_kind == "branch_limit", f"got {result.failure_kind!r}: {result.failure!r}"
+    failure = result.failure or ""
+    # The message must point at the knob that actually ends the truncation...
+    assert "max_branches" in failure
+    # ...not at deadlock_timeout, which cannot help.
+    assert "raise deadlock_timeout" not in failure
+    # A truncated search must never claim full coverage.
+    assert not result.exhausted
