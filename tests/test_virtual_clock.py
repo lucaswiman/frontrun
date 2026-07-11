@@ -1915,3 +1915,45 @@ def test_invariant_sleep_is_virtual_not_wall_clock() -> None:
     # The invariant's sleep must be virtual: multiple interleavings each
     # sleeping a real 5s would take tens of seconds.
     assert wall < 4.0, f"invariant sleep ran on the wall clock ({wall:.1f}s elapsed)"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="known gap (round-2 review): a timeout-kind deadline firing carries no engine-visible "
+    "event (scheduler.py _on_clock_wake 'timeout' branch), so it commutes with every worker step "
+    "and DPOR never seeds the 'timeout beats the zero-virtual-time holder's release' branch — "
+    "unlike sleep wakes, which report release/acquire edges. Tracked in "
+    "ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md #10.",
+)
+def test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder() -> None:
+    # Desired: with clock="explored", "the timeout fired before the holder
+    # released" is a legitimate interleaving (distinct final state — the timed
+    # acquire returns False), so DPOR must explore it and report the invariant
+    # violation. Today only the acquired=True branch is ever explored.
+    class State:
+        def __init__(self) -> None:
+            self.lock = threading.Lock()
+            self.holder_has_lock = threading.Event()
+            self.acquire_result: bool | None = None
+
+    def holder(s: State) -> None:
+        s.lock.acquire()
+        s.holder_has_lock.set()
+        s.lock.release()  # runnable in zero virtual time: never sleeps
+
+    def contender(s: State) -> None:
+        s.holder_has_lock.wait()
+        s.acquire_result = s.lock.acquire(timeout=1.0)
+        if s.acquire_result:
+            s.lock.release()
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[holder, contender],
+        invariant=lambda s: s.acquire_result is True,
+        clock="explored",
+        reproduce_on_failure=0,
+    )
+    assert not result.property_holds, (
+        f"the timeout branch (acquire_result=False) was never explored: {result.num_explored} interleavings"
+    )
