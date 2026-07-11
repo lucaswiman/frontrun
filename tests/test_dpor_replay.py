@@ -246,6 +246,36 @@ class TestIOAnchoredReplayScheduler:
         wall_elapsed = time.monotonic() - wall_start
         assert wall_elapsed < 1.5, f"replay deadlock detection took {wall_elapsed:.1f}s (fallback timeout burned?)"
 
+    def test_io_anchored_replay_runs_unblocker_before_timed_wait_expiry(self) -> None:
+        from frontrun._dpor_runtime.replay import _run_dpor_schedule
+        from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
+
+        class State:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.lock.acquire()
+                self.acquired: bool | None = None
+
+        def release(s: State) -> None:
+            s.lock.release()
+
+        def acquire(s: State) -> None:
+            s.acquired = s.lock.acquire(timeout=1.0)
+
+        clock = VirtualClock()
+        state = _run_dpor_schedule(
+            [1, 0],
+            State,
+            [release, acquire],
+            detect_io=True,
+            io_schedule=[(1, "dummy")],
+            clock="virtual",
+            virtual_clock=clock,
+        )
+
+        assert state.acquired is True
+        assert clock.now() == VIRTUAL_EPOCH
+
     def test_io_anchored_replay_expires_timed_wait_virtually(self) -> None:
         """A timeout-kind deadline (Event.wait(timeout=...)) must expire during
         IO-anchored replay.  The io_schedule carries no clock-actor entries, so
