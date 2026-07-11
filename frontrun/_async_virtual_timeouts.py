@@ -132,17 +132,17 @@ def _virtual_timeout_impl(value: float | None, *, at: bool) -> Any:
             name = "timeout_at" if at else "timeout"
             raise RuntimeError(f"asyncio.{name} is not available on this Python version")
         return real(value)
-    if at or value is None:
-        return _VirtualAsyncTimeoutContext(scheduler, task_id, value)
-    # Relative form (asyncio.timeout(delay)): the loop-time ``when`` below is
-    # kept only for stdlib ``when()`` parity.  The virtual deadline is computed
-    # from the *delay* with a single ``clock.now() + delay`` read at
-    # registration time — round-tripping through two real ``loop.time()``
-    # reads would smear per-run real-time jitter into the deadline, giving two
-    # identical timeouts distinct deadlines and defeating the
-    # DeadlineCoordinator's deterministic tie-break (broken replay).
-    when = asyncio.get_running_loop().time() + value
-    return _VirtualAsyncTimeoutContext(scheduler, task_id, when, delay=value)
+    if value is None:
+        return _VirtualAsyncTimeoutContext(scheduler, task_id, None, deadline=None)
+    loop_now = asyncio.get_running_loop().time()
+    if at:
+        when = value
+        remaining = value - loop_now
+    else:
+        when = loop_now + value
+        remaining = value
+    deadline = clock.now() + max(0.0, remaining)
+    return _VirtualAsyncTimeoutContext(scheduler, task_id, when, deadline=deadline)
 
 
 def _virtual_timeout_context(delay: float | None) -> Any:
@@ -154,16 +154,12 @@ def _virtual_timeout_at_context(when: float | None) -> Any:
 
 
 class _VirtualAsyncTimeoutContext:
-    def __init__(self, scheduler: Any, task_id: int, when: float | None, *, delay: float | None = None) -> None:
+    def __init__(self, scheduler: Any, task_id: int, when: float | None, *, deadline: float | None) -> None:
         self._scheduler = scheduler
         self._task_id = task_id
         self._initial_when = when
-        #: Exact relative delay for the ``asyncio.timeout(delay)`` form; the
-        #: virtual deadline is then ``clock.now() + delay`` (one clock read).
-        self._initial_delay = delay
-        # Stdlib parity: asyncio.Timeout stores its loop-time deadline at
-        # construction, so when() reports it even before __aenter__.
-        self._when: float | None = when
+        self._initial_deadline = deadline
+        self._when = when
         self._token: _VirtualAsyncTimeoutToken | None = None
         self._task: asyncio.Task[Any] | None = None
         self._cancelling = 0
@@ -178,7 +174,7 @@ class _VirtualAsyncTimeoutContext:
         self._task = asyncio.current_task()
         if self._task is not None:
             self._cancelling = self._task.cancelling()
-        self._reschedule(self._initial_when, delay=self._initial_delay)
+        self._reschedule(self._initial_when, deadline=self._initial_deadline)
         return self
 
     def when(self) -> float | None:
@@ -187,27 +183,19 @@ class _VirtualAsyncTimeoutContext:
     def expired(self) -> bool:
         return self._token.expired if self._token is not None else False
 
-    def _to_virtual_deadline(self, when: float | None, delay: float | None) -> float | None:
+    def _to_virtual_deadline(self, when: float | None) -> float | None:
         if when is None:
             return None
         clock = self._scheduler.virtual_clock
         if clock is None:
             return None
-        if delay is not None:
-            # asyncio.timeout(delay): exact deadline from a single clock read,
-            # so identical delays registered at the same virtual time share
-            # one deadline (deterministic coordinator tie-break / replay).
-            return clock.now() + max(0.0, delay)
-        # asyncio.timeout_at(when) / user reschedule(when): the input lives in
-        # loop.time() space, so translate it through a real loop.time() read
-        # exactly once, here.  The sub-microsecond real-time jitter this
-        # leaves in the deadline is inherent to absolute loop-time input.
-        return clock.now() + max(0.0, when - asyncio.get_running_loop().time())
+        loop_now = asyncio.get_running_loop().time()
+        return clock.now() + max(0.0, when - loop_now)
 
     def reschedule(self, when: float | None) -> None:
-        self._reschedule(when)
+        self._reschedule(when, translate=True)
 
-    def _reschedule(self, when: float | None, delay: float | None = None) -> None:
+    def _reschedule(self, when: float | None, *, deadline: float | None = None, translate: bool = False) -> None:
         if not self._entered:
             raise RuntimeError("Timeout has not been entered")
         if self._exited:
@@ -221,7 +209,8 @@ class _VirtualAsyncTimeoutContext:
             self._scheduler.remove_timeout_deadline(self._task_id, self._token)
         self._token = None
         self._when = when
-        deadline = self._to_virtual_deadline(when, delay)
+        if translate:
+            deadline = self._to_virtual_deadline(when)
         if deadline is None or self._task is None:
             return
 
