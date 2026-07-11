@@ -419,15 +419,11 @@ class CooperativeLock:
                 self._report("lock_attempt_fail")
             return result
 
-        # Fast path: uncontested
-        if self._lock.acquire(blocking=False):
-            self._set_owner_and_report("lock_acquire")
-            return True
-
-        # Slow path: lock is held – get scheduler context from TLS.
         ctx = get_context()
         if ctx is None:
-            # Not in a managed thread — fall back to real blocking
+            if self._lock.acquire(blocking=False):
+                self._set_owner_and_report("lock_acquire")
+                return True
             result = self._lock.acquire(blocking=blocking, timeout=timeout)
             if result:
                 self._set_owner_and_report("lock_acquire")
@@ -436,6 +432,18 @@ class CooperativeLock:
         scheduler, thread_id = ctx
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
+        if before_sync_retry is not None:
+            assert after_sync_retry is not None
+            if before_sync_retry(thread_id):
+                acquired = self._lock.acquire(blocking=False)
+                if acquired:
+                    self._set_owner_and_report("lock_acquire")
+                after_sync_retry(thread_id)
+                if acquired:
+                    return True
+        elif self._lock.acquire(blocking=False):
+            self._set_owner_and_report("lock_acquire")
+            return True
 
         # Register waiting edge in the wait-for graph; raises SchedulerAbort on
         # cycle.  Skipped (graph is None) for timed acquires — see
