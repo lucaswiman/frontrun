@@ -362,7 +362,7 @@ impl DporEngine {
                     thread_id,
                     race_object: Some(object_id),
                     inline_skipped: skip_inline,
-                    is_attribute_race: true,
+                    is_attribute_race: false,
                 });
             }
         }
@@ -408,7 +408,6 @@ impl DporEngine {
 
         let object_state = execution.objects.entry(object_id).or_insert_with(ObjectState::new);
 
-        let is_real_race = !matches!(origin, AccessOrigin::LockSynthetic);
         for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_io_vv) {
                 self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
@@ -418,7 +417,7 @@ impl DporEngine {
                     thread_id,
                     race_object: Some(object_id),
                     inline_skipped: false,
-                    is_attribute_race: is_real_race,
+                    is_attribute_race: false,
                 });
             }
         }
