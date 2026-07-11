@@ -1721,12 +1721,14 @@ def test_random_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
     def consumer(s: State) -> None:
         s.got = s.q.get()
 
+    # timeout is only the hang backstop (a starved autojump never completes at
+    # any budget); keep it generous — 1.0s flaked on loaded free-threaded CI.
     state = run_with_schedule(
         [0, 1] * 20,
         setup=State,
         threads=[consumer, producer],
         clock="virtual",
-        timeout=1.0,
+        timeout=10.0,
         deadlock_timeout=0.05,
     )
     assert state.got == "x"
@@ -1877,3 +1879,81 @@ def test_stale_timed_wait_spin_flag_is_refused() -> None:
     scheduler.add_timed_wait(1, clock.now() + 5.0)
     scheduler.note_blocking_spin(1, resource_id, True, timed_wait=True)
     assert 1 in scheduler._spin_waiters
+
+
+def test_invariant_sleep_is_virtual_not_wall_clock() -> None:
+    # Regression: the sync driver held clock_scope (time.* READS -> virtual)
+    # across setup/run/invariant, but runner.patch_scope (time.sleep patch)
+    # ended before invariant evaluation. A TTL-style invariant that sleeps to
+    # age past an expiry then re-checks therefore blocked for REAL wall time
+    # while its time reads stayed frozen at virtual time — self-inconsistent
+    # (elapsed == 0.0 after sleep(5)) and costing real seconds per explored
+    # interleaving in a test the user declared "virtual". setup() already ran
+    # inside the patch scope; the invariant must see the identical clock.
+    class State:
+        elapsed: float | None = None
+
+    def worker(s: State) -> None:
+        time.sleep(1.0)
+
+    def invariant(s: State) -> bool:
+        t0 = time.monotonic()
+        time.sleep(5.0)
+        s.elapsed = time.monotonic() - t0
+        return s.elapsed >= 5.0
+
+    start = time.monotonic()
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker, worker],
+        invariant=invariant,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    wall = time.monotonic() - start
+    assert result.property_holds, f"invariant saw frozen/real-time-inconsistent clock: {result.explanation}"
+    # The invariant's sleep must be virtual: multiple interleavings each
+    # sleeping a real 5s would take tens of seconds.
+    assert wall < 4.0, f"invariant sleep ran on the wall clock ({wall:.1f}s elapsed)"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="known gap (round-2 review): a timeout-kind deadline firing carries no engine-visible "
+    "event (scheduler.py _on_clock_wake 'timeout' branch), so it commutes with every worker step "
+    "and DPOR never seeds the 'timeout beats the zero-virtual-time holder's release' branch — "
+    "unlike sleep wakes, which report release/acquire edges. Tracked in "
+    "ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md #10.",
+)
+def test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder() -> None:
+    # Desired: with clock="explored", "the timeout fired before the holder
+    # released" is a legitimate interleaving (distinct final state — the timed
+    # acquire returns False), so DPOR must explore it and report the invariant
+    # violation. Today only the acquired=True branch is ever explored.
+    class State:
+        def __init__(self) -> None:
+            self.lock = threading.Lock()
+            self.holder_has_lock = threading.Event()
+            self.acquire_result: bool | None = None
+
+    def holder(s: State) -> None:
+        s.lock.acquire()
+        s.holder_has_lock.set()
+        s.lock.release()  # runnable in zero virtual time: never sleeps
+
+    def contender(s: State) -> None:
+        s.holder_has_lock.wait()
+        s.acquire_result = s.lock.acquire(timeout=1.0)
+        if s.acquire_result:
+            s.lock.release()
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[holder, contender],
+        invariant=lambda s: s.acquire_result is True,
+        clock="explored",
+        reproduce_on_failure=0,
+    )
+    assert not result.property_holds, (
+        f"the timeout branch (acquire_result=False) was never explored: {result.num_explored} interleavings"
+    )

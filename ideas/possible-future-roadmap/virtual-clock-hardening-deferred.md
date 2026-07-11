@@ -167,3 +167,37 @@ release/acquire edges; `Condition` / `Queue` wakes do not.
 **Fix direction.** Report per-waiter release/acquire edges on notify / put wakes
 the way `Event` does (the `event_wake_sync_id` pattern), eliminating the false
 race branches. Needs stable wake ids and replay compatibility.
+
+## 10. `clock="explored"` never fires a timeout-kind deadline against a runnable holder
+
+**Symptom.** Under `clock="explored"`, "timer fires before the holder's next
+step" is explored for *sleep* deadlines but not for *timeout*-kind deadlines
+(timed `lock.acquire(timeout=)` in sync, `asyncio.wait_for` in async). If the
+lock holder / event setter is runnable and completes in zero virtual time, the
+timeout branch is never explored and `property_holds=True` is a false negative
+for a reachable outcome. Holders that sleep or block across virtual time are
+unaffected (the timeout fires correctly). Encoded as a strict xfail:
+`tests/test_virtual_clock.py::test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder`.
+
+**Mechanism.** The clock actor's sleep wake reports a release/acquire
+happens-before pair (`report_clock_sleep_wake`), and the woken sleeper's
+subsequent memory ops race with other workers' ops, seeding the
+"timer fires first" branch in the wakeup tree. The timeout wake deliberately
+carries no engine-visible event (`_on_clock_wake`'s `timeout` branch just
+calls `execution.unblock_thread`; see the comment there): the waiter
+re-reports `lock_wait` before it can observe expiry. That makes the actor's
+timeout step commute with every worker step, so no reversal is ever seeded —
+verified independent of `preemption_bound` (2, 10, None all explore the same
+3 interleavings for the two-worker repro).
+
+**Fix direction.** The firing must be made *dependent* on the operations that
+can beat it — most naturally the holder's `lock_release` on the same resource
+(the timeout and the release genuinely race: distinct final states). Options:
+report a sync event from the actor on the timed-wait's `wake_sync_id` at fire
+time paired with an acquire-half on the waiter's give-up path (mirroring the
+sleep-wake pattern, but requiring the timed-acquire retry loop to
+distinguish "woke to retry" from "woke to expire"), or report a synthetic
+access by the actor to the contended lock's object id. Either changes
+engine-visible semantics of every timed wait, so it needs wakeup-tree /
+replay validation (and the TLA spec) — deferred rather than patched
+pre-release.

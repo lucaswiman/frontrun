@@ -37,6 +37,69 @@ def worker_targets(socket_path: str, worker_ids: list[int]) -> list[WorkerTarget
     return [WorkerTarget(worker_id=wid, args=(socket_path,)) for wid in worker_ids]
 
 
+class _WorkerLaunchError(OSError):
+    """A worker failed to connect; its message already carries child diagnostics."""
+
+
+def _launch_error(worker_set: WorkerSet, handles: Any, exc: Exception) -> Exception:
+    """Enrich a connect failure with the WorkerSet's diagnosis of dead children.
+
+    Turns a bare ``TimeoutError`` (worker never sent HELLO) into a message naming
+    the real cause — e.g. a child that exited with ``ModuleNotFoundError`` for a
+    bad ``module:callable`` target — when the WorkerSet can recover it.  Shared
+    by both coordinators: the launchers capture each child's stderr precisely so
+    ``diagnose()`` can surface it, and which strategy the user picked must not
+    decide whether they see it.
+    """
+    detail = worker_set.diagnose(handles) if isinstance(worker_set, LivenessProbe) else None
+    if not detail:
+        return exc
+    return _WorkerLaunchError(f"{type(exc).__name__}: {exc}; {detail}")
+
+
+def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
+    """A worker never connected (or its socket broke): report a clean result."""
+    detail = str(exc) if isinstance(exc, _WorkerLaunchError) else f"{type(exc).__name__}: {exc}"
+    return CrossProcessResult(
+        ok=False,
+        iterations=iterations,
+        exhausted=False,
+        failure=f"worker connection failed: {detail}",
+        failure_kind="worker_error",
+    )
+
+
+def bind_coordination_listener(
+    socket_path: str,
+    num_workers: int,
+    timeout: float,
+    on_error: Callable[[], None],
+) -> socket.socket:
+    """Create, bind, and listen the AF_UNIX coordination socket.
+
+    Shared by the exhaustive and DPOR coordinators.  Binding happens before
+    the coordinators enter their cleanup try/finally, so a bind failure —
+    realistically ``socket_path`` exceeding the AF_UNIX ~108-byte limit under
+    a deep ``$TMPDIR`` — must run *on_error* (the coordinator's socket/tempdir
+    cleanup) here rather than leak the mkdtemp'd working directory on every
+    call, and must say which path failed and what to do about it.
+    """
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(socket_path)
+        listener.listen(num_workers)
+        listener.settimeout(timeout)
+    except OSError as exc:
+        listener.close()
+        on_error()
+        raise OSError(
+            f"cannot bind cross-process coordination socket {socket_path!r}: {exc} "
+            "(AF_UNIX socket paths are limited to ~108 bytes on Linux; set a shorter "
+            "$TMPDIR or pass an explicit short socket_path=)"
+        ) from exc
+    return listener
+
+
 def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket, int]:
     """Accept one worker connection and read its HELLO frame, returning (sock, worker_id).
 
@@ -110,17 +173,22 @@ class CrossProcessResult:
 
     ok: bool
     iterations: int
+    # True only when the search space was genuinely fully covered: any
+    # truncating bound (max_iterations / max_executions / total_timeout, or a
+    # non-None preemption_bound on the DPOR strategy) demotes this to False.
     exhausted: bool
     failing_schedule: list[int] | None = None
     failure: str | None = None
     # One of: "invariant", "worker_error", "deadlock", "timeout",
-    # "nondeterministic", "step_limit", None.
+    # "nondeterministic", "step_limit" (exhaustive: max_steps_per_run hit),
+    # "branch_limit" (DPOR: max_branches hit), None.
     failure_kind: str | None = None
     accesses: list[tuple[int, str, str]] | None = None
     # Every failing execution as (execution_number, schedule) pairs, mirroring
-    # thread-mode InterleavingResult.failures. Populated by the DPOR
-    # coordinator; with stop_on_first=False it accumulates ALL failing
-    # executions instead of only the first.
+    # thread-mode InterleavingResult.failures. Both strategies populate it for
+    # any failure that carries a failing_schedule; the DPOR coordinator with
+    # stop_on_first=False accumulates ALL failing executions instead of only
+    # the first.
     failures: list[tuple[int, list[int]]] = field(default_factory=list)
 
 
@@ -189,10 +257,9 @@ class CrossProcessCoordinator:
         invariant: Callable[[], bool],
         max_iterations: int = 4096,
     ) -> CrossProcessResult:
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(self.socket_path)
-        listener.listen(self.num_workers)
-        listener.settimeout(self.deadlock_timeout)
+        listener = bind_coordination_listener(
+            self.socket_path, self.num_workers, self.deadlock_timeout, self._cleanup_socket
+        )
         try:
             return self._explore(listener, worker_set, setup, invariant, max_iterations)
         finally:
@@ -227,13 +294,7 @@ class CrossProcessCoordinator:
             try:
                 outcome = self._run_once(listener, worker_set, prefix)
             except (TimeoutError, OSError) as exc:
-                return CrossProcessResult(
-                    ok=False,
-                    iterations=iterations + 1,
-                    exhausted=False,
-                    failure=f"worker connection failed: {type(exc).__name__}: {exc}",
-                    failure_kind="worker_error",
-                )
+                return _connection_failure(exc, iterations + 1)
             iterations += 1
 
             if outcome.errors:
@@ -246,6 +307,7 @@ class CrossProcessCoordinator:
                     failure=f"worker {wid} failed: {msg}",
                     failure_kind="worker_error",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
             if outcome.timeouts:
                 _wid, msg = next(iter(sorted(outcome.timeouts.items())))
@@ -257,6 +319,7 @@ class CrossProcessCoordinator:
                     failure=msg,
                     failure_kind="timeout",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
             if outcome.stop == "step_limit":
                 return CrossProcessResult(
@@ -279,6 +342,7 @@ class CrossProcessCoordinator:
                     failure="cross-worker deadlock (no runnable worker)",
                     failure_kind="deadlock",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
             if outcome.stop == "nondeterministic":
                 return CrossProcessResult(
@@ -289,6 +353,7 @@ class CrossProcessCoordinator:
                     failure="recorded schedule no longer reproducible (nondeterministic workload?)",
                     failure_kind="nondeterministic",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
             if not invariant():
                 return CrossProcessResult(
@@ -299,6 +364,7 @@ class CrossProcessCoordinator:
                     failure="invariant violated",
                     failure_kind="invariant",
                     accesses=outcome.accesses,
+                    failures=[(iterations, list(outcome.schedule))],
                 )
 
             # Push a fresh prefix for every unexplored alternative at each
@@ -319,11 +385,18 @@ class CrossProcessCoordinator:
         conns: dict[int, _Conn] = {}
         accesses: list[tuple[int, str, str]] = []
         try:
-            for _ in range(self.num_workers):
-                sock, wid = accept_hello_live(listener, worker_set, handles, self.deadlock_timeout)
-                conn = _Conn(wid, sock)
-                conns[wid] = conn
-                self._advance(conn, accesses, registry)
+            try:
+                for _ in range(self.num_workers):
+                    sock, wid = accept_hello_live(listener, worker_set, handles, self.deadlock_timeout)
+                    conn = _Conn(wid, sock)
+                    conns[wid] = conn
+                    self._advance(conn, accesses, registry)
+            except (TimeoutError, OSError) as exc:
+                # Reap dead children so the WorkerSet can read their exit/stderr,
+                # then surface the real cause instead of a bare connect timeout
+                # (mirrors the DPOR coordinator's _run_spawned).
+                worker_set.join(handles, self.deadlock_timeout)
+                raise _launch_error(worker_set, handles, exc) from exc
             schedule, branch_points, stop = self._drive(conns, prefix, accesses, registry)
             errors = {wid: c.error for wid, c in conns.items() if c.error is not None}
             timeouts: dict[int, str] = {}
@@ -336,8 +409,16 @@ class CrossProcessCoordinator:
                 # crashed without closing the socket is a worker_error, not a
                 # too-small deadlock_timeout.
                 if isinstance(worker_set, LivenessProbe) and worker_set.any_exited(handles):
+                    # any_exited/diagnose are fleet-wide: the process that died
+                    # need not be *wid* (which merely went silent), so the
+                    # message must not claim wid exited — diagnose names the
+                    # worker(s) that actually did.
                     detail = worker_set.diagnose(handles)
-                    errors.setdefault(wid, f"worker process exited during the run ({detail or 'nonzero exit'})")
+                    errors.setdefault(
+                        wid,
+                        f"sent no frame within deadlock_timeout={self.deadlock_timeout}s during a run in "
+                        f"which a worker process exited ({detail or 'nonzero exit'})",
+                    )
                     continue
                 timeouts[wid] = (
                     f"worker {wid} sent no frame within deadlock_timeout={self.deadlock_timeout}s but is still "

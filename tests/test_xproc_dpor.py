@@ -123,7 +123,7 @@ def test_dpor_stop_on_first_false_still_reports_race() -> None:
     # invariant violation, not silently explore to exhaustion and return ok.
     db = _DB()
     worker = _rmw_worker(db)
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, stop_on_first=False)
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, stop_on_first=False, preemption_bound=None)
     result = coord.explore(
         worker_set=ThreadLauncher([worker, worker]),
         setup=db.reset,
@@ -132,7 +132,46 @@ def test_dpor_stop_on_first_false_still_reports_race() -> None:
     assert not result.ok
     assert result.failure_kind == "invariant"
     assert result.failing_schedule is not None
-    assert result.exhausted  # whole space explored, yet the failure is still surfaced
+    assert result.exhausted  # whole (unbounded) space explored, yet the failure is still surfaced
+
+
+def test_dpor_bounded_search_does_not_claim_exhausted() -> None:
+    # `exhausted` is documented as "the search space was fully covered". The
+    # default preemption_bound=2 truncates the DPOR tree — schedules needing
+    # more than 2 preemptions are never scheduled — so a clean bounded run
+    # must report exhausted=False, exactly like the other truncating bounds
+    # (max_executions, total_timeout) already do.
+    def quick(proxy) -> None:
+        for _ in range(2):
+            if not proxy.report_and_wait(None, 0):
+                return
+
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=2.0)
+    result = coord.explore(
+        worker_set=ThreadLauncher([quick, quick]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert result.ok
+    assert result.exhausted is False, "a preemption-bounded search must not claim full coverage"
+
+
+def test_dpor_unbounded_search_still_claims_exhausted() -> None:
+    # Control: with preemption_bound=None there is no truncating bound, so a
+    # cleanly completed search may claim exhaustion.
+    def quick(proxy) -> None:
+        for _ in range(2):
+            if not proxy.report_and_wait(None, 0):
+                return
+
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=2.0, preemption_bound=None)
+    result = coord.explore(
+        worker_set=ThreadLauncher([quick, quick]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert result.ok
+    assert result.exhausted is True
 
 
 def _unlocked_write_then_lock_worker(db: _DB):
@@ -197,7 +236,7 @@ def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
 
     db_dp = _DB()
     w_dp = _rmw_worker(db_dp)
-    dpor = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False).explore(
+    dpor = DporCrossProcessCoordinator(num_workers=2, stop_on_first=False, preemption_bound=None).explore(
         worker_set=ThreadLauncher([w_dp, w_dp]),
         setup=db_dp.reset,
         invariant=lambda: True,
@@ -527,7 +566,7 @@ def test_dpor_no_race_when_safe() -> None:
             db.balance += 100
         proxy.io_report("sql:accounts:id=1", "write")
 
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0)
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, preemption_bound=None)
     result = coord.explore(
         worker_set=ThreadLauncher([atomic, atomic]),
         setup=db.reset,
@@ -535,3 +574,33 @@ def test_dpor_no_race_when_safe() -> None:
     )
     assert result.ok
     assert result.exhausted
+
+
+def test_dpor_branch_cap_is_reported_as_branch_limit_not_a_fabricated_timeout() -> None:
+    # Regression: when an execution hit the engine's max_branches cap the
+    # engine silently refused to schedule (execution.aborted), the still-
+    # waiting worker then burned deadlock_timeout, and _evaluate misreported
+    # the truncation as failure_kind="timeout" — presenting the truncated
+    # schedule as an exact counterexample and advising the WRONG knob ("raise
+    # deadlock_timeout") when the real cause is max_branches. Mirror the
+    # exhaustive coordinator's honest, distinct "step_limit" kind instead.
+    def chatty(proxy) -> None:
+        for _ in range(6):
+            if not proxy.report_and_wait(None, 0):
+                return
+
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=1.0, preemption_bound=None, max_branches=3)
+    result = coord.explore(
+        worker_set=ThreadLauncher([chatty, chatty]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert not result.ok
+    assert result.failure_kind == "branch_limit", f"got {result.failure_kind!r}: {result.failure!r}"
+    failure = result.failure or ""
+    # The message must point at the knob that actually ends the truncation...
+    assert "max_branches" in failure
+    # ...not at deadlock_timeout, which cannot help.
+    assert "raise deadlock_timeout" not in failure
+    # A truncated search must never claim full coverage.
+    assert not result.exhausted

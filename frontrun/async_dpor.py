@@ -454,37 +454,50 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                     if next_task is not None:
                         self._set_current_task(next_task)
                 self._condition.notify_all()
-                # Phase 1: wait for the clock advance that removes us.
-                while task_id in self._sleepers:
-                    if self._finished or self._error:
-                        self._sleepers.pop(task_id, None)
-                        self._deadlines.cancel_sleep(task_id)
-                        self.execution.unblock_thread(task_id)
-                        self._sync_clock_actor()
-                        return
-                    try:
-                        await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                    except asyncio.TimeoutError:
-                        self._error = SchedulerTimeoutError(
-                            f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
-                        )
-                        self._condition.notify_all()
-                        self._sleepers.pop(task_id, None)
-                        self._deadlines.cancel_sleep(task_id)
-                        self.execution.unblock_thread(task_id)
-                        self._on_error_set()
-                        return
-                # Phase 2: woken — wait until the engine schedules us again.
-                while not (self._finished or self._error) and self._current_task != task_id:
-                    try:
-                        await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                    except asyncio.TimeoutError:
-                        self._error = SchedulerTimeoutError(
-                            f"Deadlock: task {task_id} woke at t={deadline} but was never rescheduled"
-                        )
-                        self._condition.notify_all()
-                        self._on_error_set()
-                        return
+                try:
+                    # Phase 1: wait for the clock advance that removes us.
+                    while task_id in self._sleepers:
+                        if self._finished or self._error:
+                            self._sleepers.pop(task_id, None)
+                            self._deadlines.cancel_sleep(task_id)
+                            self.execution.unblock_thread(task_id)
+                            self._sync_clock_actor()
+                            return
+                        try:
+                            await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                        except asyncio.TimeoutError:
+                            self._error = SchedulerTimeoutError(
+                                f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
+                            )
+                            self._condition.notify_all()
+                            self._sleepers.pop(task_id, None)
+                            self._deadlines.cancel_sleep(task_id)
+                            self.execution.unblock_thread(task_id)
+                            self._on_error_set()
+                            return
+                    # Phase 2: woken — wait until the engine schedules us again.
+                    while not (self._finished or self._error) and self._current_task != task_id:
+                        try:
+                            await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                        except asyncio.TimeoutError:
+                            self._error = SchedulerTimeoutError(
+                                f"Deadlock: task {task_id} woke at t={deadline} but was never rescheduled"
+                            )
+                            self._condition.notify_all()
+                            self._on_error_set()
+                            return
+                except BaseException:
+                    # A virtual timeout (asyncio.wait_for / timeout) cancelling
+                    # this task lands here while it is parked; scrub its sleeper
+                    # entry and sleep deadline so a stale deadline can't make a
+                    # later genuine deadlock look like a pending timer (and be
+                    # misreported as an inconclusive scheduler timeout).
+                    self._sleepers.pop(task_id, None)
+                    self._deadlines.cancel_sleep(task_id)
+                    self.execution.unblock_thread(task_id)
+                    self._sync_clock_actor()
+                    self._condition.notify_all()
+                    raise
                 if self._finished or self._error:
                     return
                 # Close the wake happens-before edge (clock advance → resume).

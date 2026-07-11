@@ -391,3 +391,99 @@ def test_process_launchers_expose_capability_protocols() -> None:
     assert isinstance(mp, IterationCustomizer)
     assert isinstance(sub, LivenessProbe)
     assert not isinstance(sub, IterationCustomizer)
+
+
+# --- Listener bind failure must not leak the private temp dir ---------------
+
+
+@pytest.mark.parametrize("coordinator_cls_name", ["CrossProcessCoordinator", "DporCrossProcessCoordinator"])
+def test_bind_failure_cleans_up_own_tempdir_and_names_the_socket_path(
+    coordinator_cls_name: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The default socket path is $TMPDIR/frontrun-xproc-*/s; a deep $TMPDIR
+    # (common in sandboxed/CI environments) pushes it past the AF_UNIX ~108
+    # byte limit and bind() raises. The listener was created/bound above the
+    # coordinators' try/finally, so the mkdtemp'd working directory leaked
+    # (one per call) and the user saw a bare OSError with no frontrun context.
+    from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator
+    from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
+
+    cls = {
+        "CrossProcessCoordinator": CrossProcessCoordinator,
+        "DporCrossProcessCoordinator": DporCrossProcessCoordinator,
+    }[coordinator_cls_name]
+
+    deep = tmp_path / ("d" * 90)
+    deep.mkdir()
+    monkeypatch.setenv("TMPDIR", str(deep))
+    import tempfile as _tempfile
+
+    monkeypatch.setattr(_tempfile, "tempdir", None)  # re-read $TMPDIR
+
+    coord = cls(num_workers=1)
+    assert coord._own_dir is not None and len(coord.socket_path) > 108
+
+    class _NeverLaunched:
+        def launch(self, targets):  # pragma: no cover - bind fails first
+            raise AssertionError("launch must not be reached when bind fails")
+
+        def join(self, handles, timeout):  # pragma: no cover
+            pass
+
+    with pytest.raises(OSError) as excinfo:
+        coord.explore(worker_set=_NeverLaunched(), setup=lambda: None, invariant=lambda: True)
+    # The error names the socket path and points at the fix, instead of a
+    # bare "AF_UNIX path too long".
+    assert coord.socket_path in str(excinfo.value)
+    assert "socket_path" in str(excinfo.value)
+    # And the private working directory is cleaned up, not leaked.
+    import os as _os
+
+    assert not _os.path.exists(coord._own_dir)
+
+
+class _NeverConnectingWorkerSet:
+    """launch() succeeds but no worker ever connects; the fleet probe reports
+    a dead child with a captured traceback — the exact shape MpLauncher /
+    SubprocessLauncher produce for a bad ``module:callable`` target."""
+
+    def __init__(self, detail: str | None) -> None:
+        self._detail = detail
+
+    def launch(self, targets):
+        return ["handle"] * len(targets)
+
+    def join(self, handles, timeout) -> None:  # noqa: ARG002 - fake
+        return None
+
+    def any_exited(self, handles) -> bool:  # noqa: ARG002 - fake
+        return True
+
+    def all_exited(self, handles) -> bool:  # noqa: ARG002 - fake
+        return True
+
+    def diagnose(self, handles) -> str | None:  # noqa: ARG002 - fake
+        return self._detail
+
+
+def test_exhaustive_connect_failure_surfaces_worker_set_diagnosis() -> None:
+    # Regression: the exhaustive coordinator's _explore caught the connect
+    # TimeoutError and reported a bare "worker connection failed:
+    # TimeoutError: ..." without ever calling worker_set.diagnose() — even
+    # though the launchers capture the dead child's stderr traceback precisely
+    # so diagnose() can recover the real cause, and the DPOR coordinator
+    # surfaces it for the identical failure (via _launch_error). Switching to
+    # strategy="exhaustive" silently lost the ModuleNotFoundError.
+    from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator
+
+    coord = CrossProcessCoordinator(num_workers=1, deadlock_timeout=1.0)
+    result = coord.explore(
+        worker_set=_NeverConnectingWorkerSet("worker 0: ModuleNotFoundError: No module named 'missing_dep'"),
+        setup=lambda: None,
+        invariant=lambda: True,
+        max_iterations=2,
+    )
+    assert not result.ok
+    assert result.failure_kind == "worker_error"
+    assert "ModuleNotFoundError" in (result.failure or ""), result.failure
+    assert "_WorkerLaunchError" not in (result.failure or "")

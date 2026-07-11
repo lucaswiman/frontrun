@@ -156,6 +156,7 @@ def test_atomic_increment_has_no_race(tmp_path) -> None:
         },
         setup=lambda: xproc_demo_counter.setup(db),
         invariant=lambda _state: xproc_demo_counter.read(db) == 2,
+        preemption_bound=None,
     )
     assert result.ok, f"unexpected failure {result.failure!r} at {result.failing_schedule!r}"
     assert result.exhausted

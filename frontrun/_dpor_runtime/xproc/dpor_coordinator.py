@@ -30,7 +30,6 @@ from typing import Any
 from frontrun._deadlock import DeadlockError, SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
 from frontrun._dpor_core import (
     IterationCustomizer,
-    LivenessProbe,
     WorkerSet,
     dpor_exploration_iter,
     make_deadline,
@@ -41,7 +40,14 @@ from frontrun._dpor_runtime.scheduler import DporScheduler
 from frontrun._opcode_observer import StableObjectIds
 
 from . import protocol as proto
-from .coordinator import CrossProcessResult, accept_hello_live, worker_targets
+from .coordinator import (
+    CrossProcessResult,
+    _connection_failure,
+    _launch_error,
+    accept_hello_live,
+    bind_coordination_listener,
+    worker_targets,
+)
 from .launch import WorkerSerializationError
 
 
@@ -316,33 +322,14 @@ def _reply(sock: socket.socket, granted: bool) -> None:
         pass
 
 
-class _WorkerLaunchError(OSError):
-    """A worker failed to connect; its message already carries child diagnostics."""
+class _TotalTimeoutExpiredError(Exception):
+    """total_timeout expired while an execution was in flight.
 
-
-def _launch_error(worker_set: WorkerSet, handles: Any, exc: Exception) -> Exception:
-    """Enrich a connect failure with the WorkerSet's diagnosis of dead children.
-
-    Turns a bare ``TimeoutError`` (worker never sent HELLO) into a message naming
-    the real cause — e.g. a child that exited with ``ModuleNotFoundError`` for a
-    bad ``module:callable`` target — when the WorkerSet can recover it.
+    Deliberately NOT a TimeoutError subclass: the exploration loop's
+    ``except (TimeoutError, OSError)`` maps those to a ``worker_error``
+    connection-failure result, whereas a total_timeout expiry is a clean
+    truncation of the search (``exhausted=False``), not a workload failure.
     """
-    detail = worker_set.diagnose(handles) if isinstance(worker_set, LivenessProbe) else None
-    if not detail:
-        return exc
-    return _WorkerLaunchError(f"{type(exc).__name__}: {exc}; {detail}")
-
-
-def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
-    """A worker never connected (or its socket broke): report a clean result."""
-    detail = str(exc) if isinstance(exc, _WorkerLaunchError) else f"{type(exc).__name__}: {exc}"
-    return CrossProcessResult(
-        ok=False,
-        iterations=iterations,
-        exhausted=False,
-        failure=f"worker connection failed: {detail}",
-        failure_kind="worker_error",
-    )
 
 
 def _serialization_failure(exc: Exception, iterations: int) -> CrossProcessResult:
@@ -427,16 +414,20 @@ class DporCrossProcessCoordinator:
         stable_ids = StableObjectIds()
         deadline = make_deadline(self.total_timeout)
 
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(self.socket_path)
-        listener.listen(self.num_workers)
-        listener.settimeout(self._connect_budget)
+        listener = bind_coordination_listener(
+            self.socket_path, self.num_workers, self._connect_budget, self._cleanup_socket
+        )
         install_wait_for_graph()
 
         persistent_handles: Any = None
         persistent_socks: dict[int, socket.socket] = {}
         num_explored = 0
-        exhausted = True
+        # A preemption-bounded search (the default, preemption_bound=2) only
+        # traverses the bounded tree — schedules needing more preemptions are
+        # never scheduled — so exhausted=True (documented as "the search space
+        # was fully covered") is reserved for a genuinely unbounded search,
+        # mirroring how max_executions / total_timeout truncation demotes it.
+        exhausted = self.preemption_bound is None
         first_failure: CrossProcessResult | None = None
         # Every failing execution as (execution_number, schedule), mirroring
         # thread-mode InterleavingResult.failures — with stop_on_first=False
@@ -480,9 +471,18 @@ class DporCrossProcessCoordinator:
                 setup()  # reset external state before each interleaving
                 try:
                     if self.reuse_workers:
-                        self._run_reused(persistent_socks, worker_set, scheduler, accesses, worker_errors, unclean)
+                        self._run_reused(
+                            persistent_socks, worker_set, scheduler, accesses, worker_errors, unclean, deadline
+                        )
                     else:
-                        self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean)
+                        self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean, deadline)
+                except _TotalTimeoutExpiredError:
+                    # The in-flight execution was truncated by the user's time
+                    # budget: nothing about it was verified, so it neither
+                    # counts as explored nor as a failure — but the search can
+                    # no longer claim exhaustion.
+                    exhausted = False
+                    break
                 except (TimeoutError, OSError) as exc:
                     return replace(_connection_failure(exc, num_explored + 1), failures=failures)
                 except WorkerSerializationError as exc:
@@ -513,7 +513,7 @@ class DporCrossProcessCoordinator:
                     # with exhausted=False; an invariant failure completes fully so
                     # it does NOT demote). Only max_executions/total_timeout were
                     # previously handled, in the for..else below.
-                    if result.failure_kind in ("deadlock", "worker_error", "timeout"):
+                    if result.failure_kind in ("deadlock", "worker_error", "timeout", "branch_limit"):
                         exhausted = False
 
                 # In reuse mode a worker aborted mid-iteration leaves stray
@@ -559,6 +559,7 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
         unclean: set[int],
+        total_deadline: float | None = None,
     ) -> None:
         accesses_lock = threading.Lock()
         # Relays update this heartbeat on every received frame or issued grant.
@@ -588,13 +589,24 @@ class DporCrossProcessCoordinator:
         # prevents a stuck relay from surviving into the next iteration.
         no_progress_budget = self._relay_no_progress_budget
         pending = list(relays)
-        timeout_error: TimeoutError | None = None
+        timeout_error: Exception | None = None
         while pending:
             pending[0].join(timeout=0.05)
             pending = [t for t in pending if t.is_alive()]
             if not pending:
                 break
-            if time.monotonic() - progress[0] > no_progress_budget:
+            now = time.monotonic()
+            if total_deadline is not None and now > total_deadline:
+                # total_timeout must bound the search even mid-execution: a
+                # worker that keeps sending frames resets both the per-recv
+                # timeout and this heartbeat, so neither liveness guard would
+                # ever end the run (the engine's max_branches step cap would,
+                # eventually — a step count, not the user's time budget).
+                timeout_error = _TotalTimeoutExpiredError(
+                    f"total_timeout={self.total_timeout}s expired while an execution was in flight"
+                )
+                break
+            if now - progress[0] > no_progress_budget:
                 names = ", ".join(t.name for t in pending)
                 timeout_error = TimeoutError(
                     f"cross-process relay thread(s) {names} made no progress within "
@@ -630,6 +642,7 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
         unclean: set[int],
+        total_deadline: float | None = None,
     ) -> None:
         handles = worker_set.launch(worker_targets(self.socket_path, list(range(self.num_workers))))
         socks_by_id: dict[int, socket.socket] = {}
@@ -643,7 +656,7 @@ class DporCrossProcessCoordinator:
                 # then surface the real cause instead of a bare connect timeout.
                 worker_set.join(handles, self.deadlock_timeout)
                 raise _launch_error(worker_set, handles, exc) from exc
-            self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
+            self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline)
         finally:
             for s in socks_by_id.values():
                 try:
@@ -660,6 +673,7 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
         unclean: set[int],
+        total_deadline: float | None = None,
     ) -> None:
         customizer = worker_set if isinstance(worker_set, IterationCustomizer) else None
         for wid, sock in socks_by_id.items():
@@ -668,7 +682,7 @@ class DporCrossProcessCoordinator:
             else:
                 msg = {"t": proto.ITER_START}
             proto.send_msg(sock, msg)
-        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
+        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline)
 
     def _evaluate(
         self,
@@ -687,6 +701,7 @@ class DporCrossProcessCoordinator:
         """
         with engine_lock:
             schedule_trace = list(execution.schedule_trace)
+            engine_aborted = bool(getattr(execution, "aborted", False))
         err = scheduler._error
 
         def _fail(failure: str, kind: str) -> CrossProcessResult:
@@ -705,6 +720,21 @@ class DporCrossProcessCoordinator:
         # deadlock behind that induced crash (mirrors the in-process priority).
         if isinstance(err, DeadlockError):
             return _fail(getattr(err, "cycle_description", None) or str(err), "deadlock")
+        # Branch-cap truncation next: the engine refused to schedule past
+        # max_branches (execution.aborted), so the still-waiting workers were
+        # denied/timed out as a *consequence* — the induced TimeoutError and
+        # any induced worker unwind must not masquerade as a genuine stall
+        # ("raise deadlock_timeout" is the wrong knob) or reach invariant()
+        # with half-executed state. The schedule-length guard keeps a
+        # hypothetical other aborted=True source from being mislabeled.
+        if engine_aborted and len(schedule_trace) >= self.max_branches:
+            return _fail(
+                f"execution truncated at max_branches={self.max_branches} scheduling points; the "
+                "schedule shown is the truncated prefix, not a verified counterexample. Raise "
+                "max_branches if the workload legitimately needs more steps per execution, or "
+                "check for a nonterminating worker.",
+                "branch_limit",
+            )
         if worker_errors:
             wid = min(worker_errors)
             return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")

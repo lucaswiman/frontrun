@@ -206,18 +206,26 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
        blocked outside frontrun's model or a statement outran the budget, so
        the schedule was never driven to completion), ``"nondeterministic"``,
        ``"step_limit"`` (a run exceeded the exhaustive coordinator's
-       per-run scheduling-point bound), or ``None``.
+       per-run scheduling-point bound), ``"branch_limit"`` (an execution
+       exceeded the DPOR strategy's ``max_branches`` scheduling points and was
+       truncated — the reported schedule is the truncated prefix, not a
+       verified counterexample), or ``None``.
    * - ``failing_schedule``
      - The interleaving (a list of worker ids) that triggered the failure.
    * - ``failures``
      - Every failing execution as ``(execution_number, schedule)`` pairs,
-       mirroring thread-mode ``InterleavingResult.failures``. With
+       mirroring thread-mode ``InterleavingResult.failures``. Populated by
+       both strategies whenever a failure carries a schedule; with
        ``stop_on_first=False`` the DPOR strategy accumulates all failing
        executions here instead of stopping at the first.
    * - ``iterations``
      - Number of interleavings explored.
    * - ``exhausted``
-     - ``True`` if the search space was fully covered.
+     - ``True`` if the search space was fully covered.  Under
+       ``strategy="dpor"`` this requires ``preemption_bound=None``: the
+       default bound (2) truncates the search to low-preemption schedules,
+       so bounded runs honestly report ``exhausted=False`` even when the
+       bounded tree was fully traversed.
    * - ``accesses``
      - The external accesses observed on the failing run, as
        ``(worker_id, resource, "read"|"write")`` tuples, or ``None``.
