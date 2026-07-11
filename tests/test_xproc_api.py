@@ -40,6 +40,11 @@ class _RecordingCoordinator:
         return CrossProcessResult(ok=True, iterations=0, exhausted=True)
 
 
+class _UnexpectedCoordinator:
+    def __init__(self, **_kwargs: Any) -> None:
+        pytest.fail("invalid public bounds must be rejected before coordinator construction")
+
+
 # ---------------------------------------------------------------------------
 # max_iterations must not silently no-op under strategy="dpor"
 # ---------------------------------------------------------------------------
@@ -94,6 +99,37 @@ def test_explore_processes_rejects_exhaustive_step_limit_with_dpor() -> None:
             setup=lambda: None,
             invariant=lambda _state: True,
             max_steps_per_run=123,
+        )
+
+
+@pytest.mark.parametrize(
+    ("strategy", "kwargs", "option"),
+    [
+        ("dpor", {"deadlock_timeout": 0.0}, "deadlock_timeout"),
+        ("dpor", {"max_executions": 0}, "max_executions"),
+        ("dpor", {"max_branches": 0}, "max_branches"),
+        ("dpor", {"total_timeout": 0.0}, "total_timeout"),
+        ("dpor", {"preemption_bound": -1}, "preemption_bound"),
+        ("exhaustive", {"max_iterations": 0}, "max_iterations"),
+        ("exhaustive", {"max_steps_per_run": 0}, "max_steps_per_run"),
+    ],
+)
+def test_explore_processes_rejects_nonpositive_bounds_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    strategy: str,
+    kwargs: dict[str, Any],
+    option: str,
+) -> None:
+    monkeypatch.setattr(frontrun.cross_process, "DporCrossProcessCoordinator", _UnexpectedCoordinator)
+    monkeypatch.setattr(frontrun.cross_process, "CrossProcessCoordinator", _UnexpectedCoordinator)
+
+    with pytest.raises(ValueError, match=option):
+        frontrun.explore_processes(
+            frontrun.Subprocess(_TARGET, ("unused.db",)),
+            setup=lambda: None,
+            invariant=lambda _state: True,
+            strategy=strategy,  # type: ignore[arg-type]
+            **kwargs,
         )
 
 

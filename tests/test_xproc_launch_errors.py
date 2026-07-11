@@ -487,3 +487,25 @@ def test_exhaustive_connect_failure_surfaces_worker_set_diagnosis() -> None:
     assert result.failure_kind == "worker_error"
     assert "ModuleNotFoundError" in (result.failure or ""), result.failure
     assert "_WorkerLaunchError" not in (result.failure or "")
+
+
+def test_worker_main_rejects_async_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """String targets must not silently discard an async worker coroutine."""
+    from frontrun._dpor_runtime.xproc import worker_main
+
+    async def async_target() -> None:
+        pass
+
+    monkeypatch.setenv("FRONTRUN_XPROC_SOCKET", "unused.sock")
+    monkeypatch.setenv("FRONTRUN_XPROC_WORKER_ID", "0")
+    monkeypatch.setenv("FRONTRUN_XPROC_TARGET", "tests.fake:async_target")
+    monkeypatch.setattr(worker_main, "_resolve_target", lambda _target: async_target)
+    monkeypatch.setattr(worker_main, "_install_interception", lambda _proxy, _worker_id: None)
+
+    def run_inline(_socket_path: str, _worker_id: int, body: Any) -> None:
+        body(object())
+
+    monkeypatch.setattr(worker_main, "_connect_and_serve", run_inline)
+
+    with pytest.raises(TypeError, match="async"):
+        worker_main.main()
