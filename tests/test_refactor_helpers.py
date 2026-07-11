@@ -73,6 +73,35 @@ def test_row_lock_registry_pop_all_returns_pairs() -> None:
     assert "row:4" not in reg._active_row_locks
 
 
+def test_row_lock_registry_pop_selected_preserves_other_holding() -> None:
+    """A speculative statement lock can be removed without ending the transaction."""
+    from frontrun._dpor_core import RowLockRegistry
+
+    class _FakeGraph:
+        def __init__(self) -> None:
+            self.released: list[tuple[int, int, str]] = []
+
+        def add_holding(self, _owner: int, _lid: int, kind: str = "lock") -> None:
+            pass
+
+        def remove_holding(self, owner: int, lid: int, kind: str = "lock") -> None:
+            self.released.append((owner, lid, kind))
+
+    reg = RowLockRegistry()
+    graph = _FakeGraph()
+    reg.record_acquire(4, "row:prior", graph)
+    reg.record_acquire(4, "row:missing", graph)
+    missing_id = reg._row_lock_int_id("row:missing")
+
+    released = reg.pop(4, graph, ["row:missing"])
+
+    assert released == [("row:missing", missing_id)]
+    assert reg.active_lock_owner("row:prior") == 4
+    assert reg.active_lock_owner("row:missing") is None
+    assert reg._task_row_locks[4] == {"row:prior"}
+    assert graph.released == [(4, missing_id, "row_lock")]
+
+
 def test_row_lock_registry_pop_all_returns_deterministic_order() -> None:
     from frontrun._dpor_core import RowLockRegistry
 

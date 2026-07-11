@@ -1493,6 +1493,77 @@ def test_release_dpor_row_locks_no_scheduler() -> None:
     _release_dpor_row_locks()
 
 
+def test_zero_row_update_releases_only_current_statement_row_lock() -> None:
+    """A missing-row UPDATE must not release locks retained from earlier statements."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _intercept_execute
+
+    class FakeConnection:
+        autocommit = False
+
+    FakeConnection.__module__ = "psycopg.connection"
+
+    class FakeCursor:
+        connection = FakeConnection()
+        rowcount = -1
+
+    class FakeScheduler:
+        def __init__(self, prior: str) -> None:
+            self.held = {prior}
+            self.acquired: list[str] = []
+            self.release_calls: list[list[str] | None] = []
+
+        def report_and_wait(self, _frame: object, _thread_id: int) -> bool:
+            return True
+
+        def acquire_row_locks(self, _thread_id: int, resources: list[str]) -> list[str]:
+            self.acquired.extend(resources)
+            self.held.update(resources)
+            return resources
+
+        def release_row_locks(self, _thread_id: int, resources: list[str] | None = None) -> None:
+            self.release_calls.append(resources)
+            if resources is None:
+                self.held.clear()
+            else:
+                self.held.difference_update(resources)
+
+    prior = "sql:accounts:(('id', '1'),)"
+    scheduler = FakeScheduler(prior)
+    cursor = FakeCursor()
+    log = IOLog()
+
+    def execute(_cursor: object, _operation: object, _parameters: object) -> None:
+        cursor.rowcount = 0
+
+    set_io_reporter(log)
+    set_dpor_scheduler(scheduler)
+    set_dpor_thread_id(0)
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._held_row_locks = {prior}
+    _io_tls._pending_row_locks = []
+    try:
+        _intercept_execute(
+            execute,
+            cursor,
+            "UPDATE accounts SET balance = %s WHERE id = %s",
+            (100, 2),
+            paramstyle="format",
+        )
+
+        assert len(scheduler.acquired) == 1
+        assert scheduler.release_calls == [scheduler.acquired]
+        assert scheduler.held == {prior}
+        assert _io_tls._held_row_locks == {prior}
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        if hasattr(_io_tls, "_held_row_locks"):
+            del _io_tls._held_row_locks
+
+
 # ---------------------------------------------------------------------------
 # Finding 3: connection.commit() / rollback() interception
 # ---------------------------------------------------------------------------
