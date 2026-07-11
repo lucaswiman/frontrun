@@ -78,6 +78,26 @@ def test_finds_lost_update_race() -> None:
     assert result.failure_kind == "invariant"
 
 
+def test_exhaustive_failure_populates_failures_like_dpor() -> None:
+    # CrossProcessResult.failures exists regardless of strategy, and the DPOR
+    # coordinator records its failing (execution_number, schedule) there even
+    # with the default stop_on_first. A strategy-agnostic caller iterating
+    # result.failures must not silently see [] for the identical bug just
+    # because it picked strategy='exhaustive' as the reduction-free cross-check.
+    db = _DB()
+    coord = CrossProcessCoordinator(num_workers=2)
+    worker = _incrementer_without_locks(db)
+    result = coord.explore(
+        worker_set=ThreadLauncher([worker, worker]),
+        setup=db.reset,
+        invariant=lambda: db.balance == 200,
+        max_iterations=100,
+    )
+    assert not result.ok
+    assert result.failing_schedule is not None
+    assert result.failures == [(result.iterations, list(result.failing_schedule))]
+
+
 def test_row_lock_prevents_lost_update() -> None:
     db = _DB()
     coord = CrossProcessCoordinator(num_workers=2)
