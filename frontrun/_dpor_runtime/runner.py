@@ -417,20 +417,18 @@ class DporBytecodeRunner:
         # would be silently discarded.  Flushing here ensures the DPOR engine
         # sees all I/O events, even those reported after the last scheduling
         # point.
-        _pending = getattr(_dpor_tls, "pending_io", None)
-        if _pending:
-            _tid = getattr(_dpor_tls, "thread_id", None)
-            _engine = getattr(_dpor_tls, "engine", None)
-            _execution = getattr(_dpor_tls, "execution", None)
-            if _tid is not None and _engine is not None and _execution is not None:
-                _elock = self.scheduler._engine_lock
-                for _obj_key, _io_kind, _synced in _pending:
-                    with _elock:
-                        if _synced:
-                            _engine.report_synced_io_access(_execution, _tid, _obj_key, _io_kind)
-                        else:
-                            _engine.report_io_access(_execution, _tid, _obj_key, _io_kind)
-                _pending.clear()
+        if _tid is not None:
+            from frontrun._cooperative import _scheduler_tls
+
+            previous_guard = getattr(_scheduler_tls, "_in_dpor_machinery", False)
+            _scheduler_tls._in_dpor_machinery = True
+            try:
+                with self.scheduler._condition:
+                    self.scheduler._flush_pending_io_for_unlocked(_tid, allow_inside_lock=True)
+                    self.scheduler._lock_depth_by_thread.pop(_tid, None)
+                    self.scheduler._pending_io_by_thread.pop(_tid, None)
+            finally:
+                _scheduler_tls._in_dpor_machinery = previous_guard
 
         if self.detect_io:
             set_io_reporter(None)
@@ -447,9 +445,6 @@ class DporBytecodeRunner:
         _dpor_tls.execution = None
         _dpor_tls.lock_depth = 0
         _dpor_tls.pending_io = []
-        if _tid is not None:
-            self.scheduler._lock_depth_by_thread.pop(_tid, None)
-            self.scheduler._pending_io_by_thread.pop(_tid, None)
 
     @contextmanager
     def _thread_runtime(self, thread_id: int):
