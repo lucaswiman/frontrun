@@ -37,6 +37,38 @@ def worker_targets(socket_path: str, worker_ids: list[int]) -> list[WorkerTarget
     return [WorkerTarget(worker_id=wid, args=(socket_path,)) for wid in worker_ids]
 
 
+class _WorkerLaunchError(OSError):
+    """A worker failed to connect; its message already carries child diagnostics."""
+
+
+def _launch_error(worker_set: WorkerSet, handles: Any, exc: Exception) -> Exception:
+    """Enrich a connect failure with the WorkerSet's diagnosis of dead children.
+
+    Turns a bare ``TimeoutError`` (worker never sent HELLO) into a message naming
+    the real cause — e.g. a child that exited with ``ModuleNotFoundError`` for a
+    bad ``module:callable`` target — when the WorkerSet can recover it.  Shared
+    by both coordinators: the launchers capture each child's stderr precisely so
+    ``diagnose()`` can surface it, and which strategy the user picked must not
+    decide whether they see it.
+    """
+    detail = worker_set.diagnose(handles) if isinstance(worker_set, LivenessProbe) else None
+    if not detail:
+        return exc
+    return _WorkerLaunchError(f"{type(exc).__name__}: {exc}; {detail}")
+
+
+def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
+    """A worker never connected (or its socket broke): report a clean result."""
+    detail = str(exc) if isinstance(exc, _WorkerLaunchError) else f"{type(exc).__name__}: {exc}"
+    return CrossProcessResult(
+        ok=False,
+        iterations=iterations,
+        exhausted=False,
+        failure=f"worker connection failed: {detail}",
+        failure_kind="worker_error",
+    )
+
+
 def bind_coordination_listener(
     socket_path: str,
     num_workers: int,
@@ -262,13 +294,7 @@ class CrossProcessCoordinator:
             try:
                 outcome = self._run_once(listener, worker_set, prefix)
             except (TimeoutError, OSError) as exc:
-                return CrossProcessResult(
-                    ok=False,
-                    iterations=iterations + 1,
-                    exhausted=False,
-                    failure=f"worker connection failed: {type(exc).__name__}: {exc}",
-                    failure_kind="worker_error",
-                )
+                return _connection_failure(exc, iterations + 1)
             iterations += 1
 
             if outcome.errors:
@@ -359,11 +385,18 @@ class CrossProcessCoordinator:
         conns: dict[int, _Conn] = {}
         accesses: list[tuple[int, str, str]] = []
         try:
-            for _ in range(self.num_workers):
-                sock, wid = accept_hello_live(listener, worker_set, handles, self.deadlock_timeout)
-                conn = _Conn(wid, sock)
-                conns[wid] = conn
-                self._advance(conn, accesses, registry)
+            try:
+                for _ in range(self.num_workers):
+                    sock, wid = accept_hello_live(listener, worker_set, handles, self.deadlock_timeout)
+                    conn = _Conn(wid, sock)
+                    conns[wid] = conn
+                    self._advance(conn, accesses, registry)
+            except (TimeoutError, OSError) as exc:
+                # Reap dead children so the WorkerSet can read their exit/stderr,
+                # then surface the real cause instead of a bare connect timeout
+                # (mirrors the DPOR coordinator's _run_spawned).
+                worker_set.join(handles, self.deadlock_timeout)
+                raise _launch_error(worker_set, handles, exc) from exc
             schedule, branch_points, stop = self._drive(conns, prefix, accesses, registry)
             errors = {wid: c.error for wid, c in conns.items() if c.error is not None}
             timeouts: dict[int, str] = {}

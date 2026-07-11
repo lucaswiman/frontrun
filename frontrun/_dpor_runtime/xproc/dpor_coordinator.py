@@ -30,7 +30,6 @@ from typing import Any
 from frontrun._deadlock import DeadlockError, SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
 from frontrun._dpor_core import (
     IterationCustomizer,
-    LivenessProbe,
     WorkerSet,
     dpor_exploration_iter,
     make_deadline,
@@ -41,7 +40,14 @@ from frontrun._dpor_runtime.scheduler import DporScheduler
 from frontrun._opcode_observer import StableObjectIds
 
 from . import protocol as proto
-from .coordinator import CrossProcessResult, accept_hello_live, bind_coordination_listener, worker_targets
+from .coordinator import (
+    CrossProcessResult,
+    _connection_failure,
+    _launch_error,
+    accept_hello_live,
+    bind_coordination_listener,
+    worker_targets,
+)
 from .launch import WorkerSerializationError
 
 
@@ -316,10 +322,6 @@ def _reply(sock: socket.socket, granted: bool) -> None:
         pass
 
 
-class _WorkerLaunchError(OSError):
-    """A worker failed to connect; its message already carries child diagnostics."""
-
-
 class _TotalTimeoutExpiredError(Exception):
     """total_timeout expired while an execution was in flight.
 
@@ -328,31 +330,6 @@ class _TotalTimeoutExpiredError(Exception):
     connection-failure result, whereas a total_timeout expiry is a clean
     truncation of the search (``exhausted=False``), not a workload failure.
     """
-
-
-def _launch_error(worker_set: WorkerSet, handles: Any, exc: Exception) -> Exception:
-    """Enrich a connect failure with the WorkerSet's diagnosis of dead children.
-
-    Turns a bare ``TimeoutError`` (worker never sent HELLO) into a message naming
-    the real cause — e.g. a child that exited with ``ModuleNotFoundError`` for a
-    bad ``module:callable`` target — when the WorkerSet can recover it.
-    """
-    detail = worker_set.diagnose(handles) if isinstance(worker_set, LivenessProbe) else None
-    if not detail:
-        return exc
-    return _WorkerLaunchError(f"{type(exc).__name__}: {exc}; {detail}")
-
-
-def _connection_failure(exc: Exception, iterations: int) -> CrossProcessResult:
-    """A worker never connected (or its socket broke): report a clean result."""
-    detail = str(exc) if isinstance(exc, _WorkerLaunchError) else f"{type(exc).__name__}: {exc}"
-    return CrossProcessResult(
-        ok=False,
-        iterations=iterations,
-        exhausted=False,
-        failure=f"worker connection failed: {detail}",
-        failure_kind="worker_error",
-    )
 
 
 def _serialization_failure(exc: Exception, iterations: int) -> CrossProcessResult:
