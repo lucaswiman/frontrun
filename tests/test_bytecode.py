@@ -531,24 +531,27 @@ def test_explore_random_reports_worker_crash_as_counterexample() -> None:
     assert result.explanation and "IndexError: race-shaped crash" in result.explanation
 
 
-def test_explore_random_wires_max_ops_into_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The public max_ops bound must remain the hard scheduler step budget."""
-    observed_budgets: list[int] = []
+def test_explore_random_records_dynamic_schedule_extension(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crash counterexample must include turns executed after its sampled prefix."""
+    monkeypatch.setattr("frontrun.bytecode.random_round_robin_schedule", lambda *_args, **_kwargs: [0, 1])
 
-    class RecordingScheduler(OpcodeScheduler):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            observed_budgets.append(self._max_ops)
+    def crash_after_prefix(_state: object) -> None:
+        values = [1, 2, 3]
+        _ = sum(values)
+        raise IndexError("crash after extension")
 
-    monkeypatch.setattr("frontrun.bytecode.OpcodeScheduler", RecordingScheduler)
-    explore_random(
+    result = explore_random(
         setup=object,
-        threads=[lambda _state: None],
+        threads=[crash_after_prefix, lambda _state: None],
         invariant=lambda _state: True,
         max_attempts=1,
-        max_ops=7,
+        max_ops=2,
         reproduce_on_failure=0,
         seed=1,
     )
 
-    assert observed_budgets == [7]
+    assert not result.property_holds
+    assert result.counterexample is not None
+    assert result.counterexample[:2] == [0, 1]
+    assert len(result.counterexample) > 2
+    assert result.explanation and "IndexError: crash after extension" in result.explanation
