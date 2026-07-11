@@ -320,6 +320,16 @@ class _WorkerLaunchError(OSError):
     """A worker failed to connect; its message already carries child diagnostics."""
 
 
+class _TotalTimeoutExpired(Exception):
+    """total_timeout expired while an execution was in flight.
+
+    Deliberately NOT a TimeoutError subclass: the exploration loop's
+    ``except (TimeoutError, OSError)`` maps those to a ``worker_error``
+    connection-failure result, whereas a total_timeout expiry is a clean
+    truncation of the search (``exhausted=False``), not a workload failure.
+    """
+
+
 def _launch_error(worker_set: WorkerSet, handles: Any, exc: Exception) -> Exception:
     """Enrich a connect failure with the WorkerSet's diagnosis of dead children.
 
@@ -480,9 +490,20 @@ class DporCrossProcessCoordinator:
                 setup()  # reset external state before each interleaving
                 try:
                     if self.reuse_workers:
-                        self._run_reused(persistent_socks, worker_set, scheduler, accesses, worker_errors, unclean)
+                        self._run_reused(
+                            persistent_socks, worker_set, scheduler, accesses, worker_errors, unclean, deadline
+                        )
                     else:
-                        self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean)
+                        self._run_spawned(
+                            listener, worker_set, scheduler, accesses, worker_errors, unclean, deadline
+                        )
+                except _TotalTimeoutExpired:
+                    # The in-flight execution was truncated by the user's time
+                    # budget: nothing about it was verified, so it neither
+                    # counts as explored nor as a failure — but the search can
+                    # no longer claim exhaustion.
+                    exhausted = False
+                    break
                 except (TimeoutError, OSError) as exc:
                     return replace(_connection_failure(exc, num_explored + 1), failures=failures)
                 except WorkerSerializationError as exc:
@@ -559,6 +580,7 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
         unclean: set[int],
+        total_deadline: float | None = None,
     ) -> None:
         accesses_lock = threading.Lock()
         # Relays update this heartbeat on every received frame or issued grant.
@@ -588,13 +610,24 @@ class DporCrossProcessCoordinator:
         # prevents a stuck relay from surviving into the next iteration.
         no_progress_budget = self._relay_no_progress_budget
         pending = list(relays)
-        timeout_error: TimeoutError | None = None
+        timeout_error: Exception | None = None
         while pending:
             pending[0].join(timeout=0.05)
             pending = [t for t in pending if t.is_alive()]
             if not pending:
                 break
-            if time.monotonic() - progress[0] > no_progress_budget:
+            now = time.monotonic()
+            if total_deadline is not None and now > total_deadline:
+                # total_timeout must bound the search even mid-execution: a
+                # worker that keeps sending frames resets both the per-recv
+                # timeout and this heartbeat, so neither liveness guard would
+                # ever end the run (the engine's max_branches step cap would,
+                # eventually — a step count, not the user's time budget).
+                timeout_error = _TotalTimeoutExpired(
+                    f"total_timeout={self.total_timeout}s expired while an execution was in flight"
+                )
+                break
+            if now - progress[0] > no_progress_budget:
                 names = ", ".join(t.name for t in pending)
                 timeout_error = TimeoutError(
                     f"cross-process relay thread(s) {names} made no progress within "
@@ -630,6 +663,7 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
         unclean: set[int],
+        total_deadline: float | None = None,
     ) -> None:
         handles = worker_set.launch(worker_targets(self.socket_path, list(range(self.num_workers))))
         socks_by_id: dict[int, socket.socket] = {}
@@ -643,7 +677,7 @@ class DporCrossProcessCoordinator:
                 # then surface the real cause instead of a bare connect timeout.
                 worker_set.join(handles, self.deadlock_timeout)
                 raise _launch_error(worker_set, handles, exc) from exc
-            self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
+            self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline)
         finally:
             for s in socks_by_id.values():
                 try:
@@ -660,6 +694,7 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         worker_errors: dict[int, str],
         unclean: set[int],
+        total_deadline: float | None = None,
     ) -> None:
         customizer = worker_set if isinstance(worker_set, IterationCustomizer) else None
         for wid, sock in socks_by_id.items():
@@ -668,7 +703,7 @@ class DporCrossProcessCoordinator:
             else:
                 msg = {"t": proto.ITER_START}
             proto.send_msg(sock, msg)
-        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean)
+        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline)
 
     def _evaluate(
         self,
