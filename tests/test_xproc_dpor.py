@@ -589,9 +589,7 @@ def test_dpor_branch_cap_is_reported_as_branch_limit_not_a_fabricated_timeout() 
             if not proxy.report_and_wait(None, 0):
                 return
 
-    coord = DporCrossProcessCoordinator(
-        num_workers=2, deadlock_timeout=1.0, preemption_bound=None, max_branches=3
-    )
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=1.0, preemption_bound=None, max_branches=3)
     result = coord.explore(
         worker_set=ThreadLauncher([chatty, chatty]),
         setup=lambda: None,
