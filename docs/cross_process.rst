@@ -264,8 +264,10 @@ re-running the target in place instead of respawning for each interleaving. The
 verdict is identical; reuse trades startup cost for the target being run
 repeatedly in one process, so the target's process-global state must be safe to
 re-enter (frontrun resets its own per-connection SQL state between iterations).
-It is available on both entry points --- ``explore_processes(..., reuse_workers=True)``
-and ``frontrun.explore(..., execution="process", reuse_workers=True)``:
+It is available on both entry points with DPOR ---
+``explore_processes(..., reuse_workers=True)`` and
+``frontrun.explore(..., execution="process", reuse_workers=True)``. The
+lower-level exhaustive strategy rejects worker reuse:
 
 .. note::
 

@@ -445,13 +445,13 @@ class CrossProcessCoordinator:
         branch_points: list[list[int]] = []
         step = 0
         while True:
-            if step >= self.max_steps_per_run:
-                return schedule, branch_points, "step_limit"
             grantable = self._grantable(conns, registry)
             if not grantable:
                 if all(c.done for c in conns.values()):
                     return schedule, branch_points, None
                 return schedule, branch_points, "deadlock"  # some worker stuck: deadlock
+            if step >= self.max_steps_per_run:
+                return schedule, branch_points, "step_limit"
             branch_points.append(grantable)
             if step < len(prefix):
                 choice = prefix[step]

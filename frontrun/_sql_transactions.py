@@ -168,7 +168,7 @@ def _detect_autobegin(cursor: Any) -> None:
         store._tx_savepoints = {}
 
 
-def _handle_tx_op(reporter: Any, tx: Any) -> None:
+def _handle_tx_op(reporter: Any, tx: Any, *, release_locks: bool = True) -> None:
     """Apply a transaction-control operation (BEGIN/COMMIT/ROLLBACK/SAVEPOINT).
 
     Updates the per-thread transaction state, flushes the buffered access
@@ -191,13 +191,15 @@ def _handle_tx_op(reporter: Any, tx: Any) -> None:
                 reporter(res_id, kind)
         store._tx_buffer = []
         store._tx_savepoints = {}
-        _release_dpor_row_locks()
+        if release_locks:
+            _release_dpor_row_locks()
     elif tx is TxOp.ROLLBACK:
         store._in_transaction = False
         store._is_autobegin = False
         store._tx_buffer = []
         store._tx_savepoints = {}
-        _release_dpor_row_locks()
+        if release_locks:
+            _release_dpor_row_locks()
     else:  # SavepointOp
         savepoints = getattr(store, "_tx_savepoints", {})
         if tx.op == "savepoint":
@@ -216,7 +218,7 @@ def _handle_tx_op(reporter: Any, tx: Any) -> None:
             savepoints.pop(tx.name, None)
 
 
-def handle_connection_commit() -> None:
+def handle_connection_commit(*, release_locks: bool = True) -> None:
     """Drive the COMMIT state machine for a Python-level ``conn.commit()``.
 
     DB-API drivers expose ``commit()`` / ``rollback()`` as connection methods;
@@ -232,10 +234,10 @@ def handle_connection_commit() -> None:
     from frontrun._sql_endpoint_suppression import suppress_sql_write
 
     suppress_sql_write("COMMIT")
-    _handle_tx_op(get_io_reporter(), TxOp.COMMIT)
+    _handle_tx_op(get_io_reporter(), TxOp.COMMIT, release_locks=release_locks)
 
 
-def handle_connection_rollback() -> None:
+def handle_connection_rollback(*, release_locks: bool = True) -> None:
     """Drive the ROLLBACK state machine for a Python-level ``conn.rollback()``."""
     if not getattr(tx_store(), "_in_transaction", False):
         return
@@ -243,7 +245,7 @@ def handle_connection_rollback() -> None:
     from frontrun._sql_endpoint_suppression import suppress_sql_write
 
     suppress_sql_write("ROLLBACK")
-    _handle_tx_op(get_io_reporter(), TxOp.ROLLBACK)
+    _handle_tx_op(get_io_reporter(), TxOp.ROLLBACK, release_locks=release_locks)
 
 
 def reset_connection_state() -> None:

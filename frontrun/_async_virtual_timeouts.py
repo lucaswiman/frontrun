@@ -26,6 +26,7 @@ import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from frontrun import _real_threading as _rt
 from frontrun._async_autopause import _in_scheduler_pause, _scheduler_var, _task_id_var
 from frontrun._async_cooperative import _real_asyncio_sleep
 from frontrun.async_scheduler import _in_frontrun_timer
@@ -46,8 +47,18 @@ __all__ = [
 _real_asyncio_wait_for = asyncio.wait_for
 _real_asyncio_timeout = getattr(asyncio, "timeout", None)
 _real_asyncio_timeout_at = getattr(asyncio, "timeout_at", None)
-_async_sleep_patched = False
-_async_timeout_patched = False
+# Whatever was installed when the outermost frontrun patch scope started.
+# These may be third-party instrumentation; unmanaged callers delegate to them
+# and the final unpatch restores them.  The ``_real_*`` objects above remain the
+# pristine internal helpers used by scheduler machinery, where delegating to an
+# outer wrapper could recurse back through frontrun.
+_saved_asyncio_sleep = _real_asyncio_sleep
+_saved_asyncio_wait_for = _real_asyncio_wait_for
+_saved_asyncio_timeout = _real_asyncio_timeout
+_saved_asyncio_timeout_at = _real_asyncio_timeout_at
+_async_sleep_patch_count = 0
+_async_timeout_patch_count = 0
+_async_patch_lock = _rt.lock()
 
 
 class _VirtualAsyncTimeoutToken:
@@ -89,7 +100,13 @@ async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # 
     """
     scheduler = _scheduler_var.get()
     task_id = _task_id_var.get()
-    if scheduler is not None and task_id is not None and delay and delay > 0:
+    if scheduler is None or task_id is None:
+        # The patch is process-wide, but its scheduling semantics are not:
+        # unrelated event loops/tasks retain whatever sleep behavior surrounded
+        # the outermost frontrun scope.
+        sleep = _saved_asyncio_sleep if _async_sleep_patch_count > 0 else _real_asyncio_sleep
+        return await sleep(delay, result)
+    if delay and delay > 0:
         clock = scheduler.virtual_clock
         sleep_until = getattr(scheduler, "sleep_until", None)
         if clock is not None and sleep_until is not None:
@@ -100,21 +117,26 @@ async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # 
 
 
 def _patch_asyncio_sleep() -> None:
-    """Replace ``asyncio.sleep`` with a zero-delay version."""
-    global _async_sleep_patched  # noqa: PLW0603
-    if _async_sleep_patched:
-        return
-    asyncio.sleep = _cooperative_async_sleep  # type: ignore[assignment]
-    _async_sleep_patched = True
+    """Replace ``asyncio.sleep`` with a reference-counted cooperative shim."""
+    global _async_sleep_patch_count, _saved_asyncio_sleep  # noqa: PLW0603
+    with _async_patch_lock:
+        _async_sleep_patch_count += 1
+        if _async_sleep_patch_count > 1:
+            return
+        _saved_asyncio_sleep = asyncio.sleep
+        asyncio.sleep = _cooperative_async_sleep  # type: ignore[assignment]
 
 
 def _unpatch_asyncio_sleep() -> None:
-    """Restore original ``asyncio.sleep``."""
-    global _async_sleep_patched  # noqa: PLW0603
-    if not _async_sleep_patched:
-        return
-    asyncio.sleep = _real_asyncio_sleep  # type: ignore[assignment]
-    _async_sleep_patched = False
+    """Restore the surrounding ``asyncio.sleep`` after the final owner exits."""
+    global _async_sleep_patch_count  # noqa: PLW0603
+    with _async_patch_lock:
+        if _async_sleep_patch_count <= 0:
+            return
+        _async_sleep_patch_count -= 1
+        if _async_sleep_patch_count > 0:
+            return
+        asyncio.sleep = _saved_asyncio_sleep  # type: ignore[assignment]
 
 
 def _virtual_timeout_impl(value: float | None, *, at: bool) -> Any:
@@ -126,8 +148,12 @@ def _virtual_timeout_impl(value: float | None, *, at: bool) -> Any:
     scheduler = _scheduler_var.get()
     task_id = _task_id_var.get()
     clock = scheduler.virtual_clock if scheduler is not None else None
-    real = _real_asyncio_timeout_at if at else _real_asyncio_timeout
-    if _in_frontrun_timer.get() or scheduler is None or task_id is None or clock is None or real is None:
+    internal = _in_frontrun_timer.get()
+    if internal:
+        real = _real_asyncio_timeout_at if at else _real_asyncio_timeout
+    else:
+        real = _saved_asyncio_timeout_at if at else _saved_asyncio_timeout
+    if internal or scheduler is None or task_id is None or clock is None or real is None:
         if real is None:
             name = "timeout_at" if at else "timeout"
             raise RuntimeError(f"asyncio.{name} is not available on this Python version")
@@ -251,10 +277,12 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
     scheduler = _scheduler_var.get()
     task_id = _task_id_var.get()
     clock = scheduler.virtual_clock if scheduler is not None else None
-    if timeout is None or _in_frontrun_timer.get() or scheduler is None or task_id is None or clock is None:
+    internal = _in_frontrun_timer.get()
+    if timeout is None or internal or scheduler is None or task_id is None or clock is None:
         # A scheduler with a virtual clock always provides the timeout-deadline
         # methods, so ``clock is None`` is the only gate needed here.
-        return await _real_asyncio_wait_for(awaitable, timeout)
+        wait_for = _real_asyncio_wait_for if internal else _saved_asyncio_wait_for
+        return await wait_for(awaitable, timeout)
 
     if timeout <= 0:
         inner = asyncio.ensure_future(awaitable)
@@ -334,24 +362,32 @@ async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | 
 
 
 def _patch_asyncio_timeouts() -> None:
-    global _async_timeout_patched  # noqa: PLW0603
-    if _async_timeout_patched:
-        return
-    asyncio.wait_for = _virtual_asyncio_wait_for  # type: ignore[assignment]
-    if _real_asyncio_timeout is not None:
-        asyncio.timeout = _virtual_timeout_context  # type: ignore[assignment]
-    if _real_asyncio_timeout_at is not None:
-        asyncio.timeout_at = _virtual_timeout_at_context  # type: ignore[assignment]
-    _async_timeout_patched = True
+    global _async_timeout_patch_count  # noqa: PLW0603
+    global _saved_asyncio_timeout, _saved_asyncio_timeout_at, _saved_asyncio_wait_for  # noqa: PLW0603
+    with _async_patch_lock:
+        _async_timeout_patch_count += 1
+        if _async_timeout_patch_count > 1:
+            return
+        _saved_asyncio_wait_for = asyncio.wait_for
+        _saved_asyncio_timeout = getattr(asyncio, "timeout", None)
+        _saved_asyncio_timeout_at = getattr(asyncio, "timeout_at", None)
+        asyncio.wait_for = _virtual_asyncio_wait_for  # type: ignore[assignment]
+        if _real_asyncio_timeout is not None:
+            asyncio.timeout = _virtual_timeout_context  # type: ignore[assignment]
+        if _real_asyncio_timeout_at is not None:
+            asyncio.timeout_at = _virtual_timeout_at_context  # type: ignore[assignment]
 
 
 def _unpatch_asyncio_timeouts() -> None:
-    global _async_timeout_patched  # noqa: PLW0603
-    if not _async_timeout_patched:
-        return
-    asyncio.wait_for = _real_asyncio_wait_for  # type: ignore[assignment]
-    if _real_asyncio_timeout is not None:
-        asyncio.timeout = _real_asyncio_timeout  # type: ignore[assignment]
-    if _real_asyncio_timeout_at is not None:
-        asyncio.timeout_at = _real_asyncio_timeout_at  # type: ignore[assignment]
-    _async_timeout_patched = False
+    global _async_timeout_patch_count  # noqa: PLW0603
+    with _async_patch_lock:
+        if _async_timeout_patch_count <= 0:
+            return
+        _async_timeout_patch_count -= 1
+        if _async_timeout_patch_count > 0:
+            return
+        asyncio.wait_for = _saved_asyncio_wait_for  # type: ignore[assignment]
+        if _real_asyncio_timeout is not None:
+            asyncio.timeout = _saved_asyncio_timeout  # type: ignore[assignment]
+        if _real_asyncio_timeout_at is not None:
+            asyncio.timeout_at = _saved_asyncio_timeout_at  # type: ignore[assignment]

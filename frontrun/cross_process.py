@@ -1,8 +1,8 @@
-"""Public API for cross-process exploration (Phase 1).
+"""Public API for cross-process exploration.
 
 Deterministically interleaves separate OS processes contending on shared
-external (SQL) state, scheduling at external-access granularity. See
-``ideas/cross_process_exploration.md``.
+external SQL/Redis state, scheduling at external-access granularity. See the
+cross-process exploration guide in the frontrun documentation.
 
 Example::
 

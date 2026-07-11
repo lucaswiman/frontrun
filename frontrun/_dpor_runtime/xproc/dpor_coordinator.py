@@ -177,12 +177,21 @@ def _relay_loop(
             progress[0] = time.monotonic()
 
     pending_io = _setup_relay_tls(scheduler, worker_id)
+    pending_accesses: list[tuple[int, str, str]] = []
     registered_groups: set[int] = set()
     clean = False
     # True while this worker owns the scheduler turn granted by
     # before_sync_retry: the worker is executing its real driver call, and the
     # arrival of its next frame (or its disconnect) marks that call complete.
     holding_sync_turn = False
+
+    def publish_pending_accesses() -> None:
+        if not pending_accesses:
+            return
+        with accesses_lock:
+            accesses.extend(pending_accesses)
+        pending_accesses.clear()
+
     try:
         while True:
             try:
@@ -214,8 +223,7 @@ def _relay_loop(
                     access_kind = msg["kind"]
                     obj_key = _make_object_key(hash(rid), rid)
                     pending_io.append((obj_key, access_kind, True))  # synced=True: Python-level SQL/Redis
-                    with accesses_lock:
-                        accesses.append((worker_id, rid, access_kind))
+                    pending_accesses.append((worker_id, rid, access_kind))
                     # Register the resource's table group with the engine once
                     # per obj_key (Defect #15). Gate the parse/hash on the
                     # membership check so a recurring access doesn't re-split
@@ -235,6 +243,13 @@ def _relay_loop(
                 # driver call mirrors the in-process SQL path
                 # (_sql_cursor._dpor_schedule_and_suppress_sync) and keeps two
                 # workers' real DB calls from overlapping nondeterministically.
+                # ACCESS declarations followed by a new blocking boundary
+                # belong to that *next* transition and must remain pending
+                # until its own grant. Terminal/release boundaries instead
+                # make them trailing accesses of the transition just completed.
+                next_kind = msg.get("t") if msg is not None else None
+                if next_kind not in (proto.REPORT_AND_WAIT, proto.ACQUIRE_LOCKS, proto.BEFORE_IO):
+                    publish_pending_accesses()
                 scheduler.after_sync_retry(worker_id)
                 holding_sync_turn = False
             if msg is None:
@@ -252,6 +267,7 @@ def _relay_loop(
                 _reply(sock, granted)
                 if not granted:
                     break
+                publish_pending_accesses()
                 holding_sync_turn = True
             elif kind == proto.ACQUIRE_LOCKS:
                 # Take and hold the scheduling turn through the modeled row-lock
@@ -268,6 +284,7 @@ def _relay_loop(
                 if not scheduler.before_sync_retry(worker_id):
                     _reply(sock, False)
                     break
+                publish_pending_accesses()
                 try:
                     scheduler.acquire_row_locks(worker_id, list(msg["res"]))
                 except SchedulerAbort:
@@ -292,6 +309,7 @@ def _relay_loop(
                 _reply(sock, granted)
                 if not granted:
                     break
+                publish_pending_accesses()
             elif kind == proto.AFTER_IO:
                 scheduler.after_io(worker_id, msg["rid"])
             elif kind == proto.DONE:
@@ -304,13 +322,27 @@ def _relay_loop(
                 scheduler.report_error(RuntimeError(message))
                 clean = True
                 break
+    except SchedulerAbort:
+        # Expected cooperative unwind: the scheduler already owns the root
+        # deadlock/timeout/peer error and will surface that diagnosis.
+        pass
+    except BaseException as exc:
+        message = f"relay failed: {type(exc).__name__}: {exc}"
+        with accesses_lock:
+            worker_errors[worker_id] = message
+        try:
+            scheduler.report_error(RuntimeError(message))
+        except BaseException:
+            pass
     finally:
         if holding_sync_turn:
+            publish_pending_accesses()
             scheduler.after_sync_retry(worker_id)
         if not clean:
             with accesses_lock:
                 unclean.add(worker_id)
         _flush_relay_pending_io(scheduler, worker_id, pending_io)
+        publish_pending_accesses()
         _teardown_relay_tls(scheduler, worker_id)
         scheduler.mark_done(worker_id)
 

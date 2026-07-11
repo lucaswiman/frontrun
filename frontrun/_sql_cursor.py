@@ -55,6 +55,7 @@ from frontrun._sql_endpoint_suppression import (
 from frontrun._sql_insert_tracker import record_insert, resolve_alias
 from frontrun._sql_parsing import (
     LockIntent,
+    TxOp,
     parse_sql_access,
 )
 from frontrun._sql_patch_registry import CONNECT_FACTORY_TARGETS, PYTHON_CURSOR_TARGETS
@@ -310,6 +311,8 @@ def _report_sql_access(
     db_obj: Any = None,
     is_executemany: bool = False,
     paramstyle: str = "format",
+    defer_tx_lock_release: bool = False,
+    deferred_tx_end: list[bool] | None = None,
 ) -> bool:
     """Parse SQL and report table accesses to the per-thread reporter.
 
@@ -328,7 +331,9 @@ def _report_sql_access(
         # 1. Handle Transaction Control Operations
         if access.tx_op is not None:
             reported = True  # Suppress endpoint I/O for TX control too
-            _handle_tx_op(reporter, access.tx_op)
+            _handle_tx_op(reporter, access.tx_op, release_locks=not defer_tx_lock_release)
+            if deferred_tx_end is not None and access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK):
+                deferred_tx_end.append(True)
 
         # 2. Handle Data Access Operations
         if access.read_tables or access.write_tables:
@@ -549,6 +554,28 @@ def _report_sql_access(
     return reported
 
 
+def _run_connection_tx_method(method: Callable[[], Any], operation: str) -> Any:
+    """Run a DB-API commit/rollback as one deterministic sync transition."""
+    handler = handle_connection_commit if operation == "COMMIT" else handle_connection_rollback
+    handler(release_locks=False)
+
+    def execute() -> Any:
+        try:
+            return method()
+        finally:
+            # Keep modeled locks until the physical transaction is over, then
+            # drop them before handing the scheduler turn to another worker.
+            _release_dpor_row_locks()
+
+    return _dpor_schedule_and_suppress_sync(
+        reported=True,
+        operation=operation,
+        parameters=None,
+        paramstyle="format",
+        execute=execute,
+    )
+
+
 def _wrap_connection_tx_methods(conn: Any) -> None:
     """Wrap a connection's ``commit`` / ``rollback`` to drive the tx state machine.
 
@@ -562,16 +589,16 @@ def _wrap_connection_tx_methods(conn: Any) -> None:
     instance attribute assignment; in that case we leave the connection
     unwrapped (autobegin/textual-COMMIT paths still apply).
     """
-    for name, handler in (("commit", handle_connection_commit), ("rollback", handle_connection_rollback)):
+    for name in ("commit", "rollback"):
         orig = getattr(conn, name, None)
         if orig is None or getattr(orig, "_frontrun_tx_wrapped", False):
             continue
 
-        def _make(orig_method: Any = orig, _handler: Any = handler, _name: str = name) -> Any:
+        def _make(orig_method: Any = orig, _name: str = name) -> Any:
             def _wrapped(*args: Any, **kwargs: Any) -> Any:
-                _handler()
-                suppress_sql_write(_name.upper())
-                return orig_method(*args, **kwargs)
+                operation = _name.upper()
+                suppress_sql_write(operation)
+                return _run_connection_tx_method(lambda: orig_method(*args, **kwargs), operation)
 
             _wrapped._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
             return _wrapped
@@ -684,13 +711,24 @@ def _intercept_execute(
     # for endpoint-based suppression (which handles remote connections).
     suppress_tid_permanently()
 
+    deferred_tx_end: list[bool] = []
     reported = _report_sql_access(
         operation,
         parameters,
         db_obj=self,
         is_executemany=is_executemany,
         paramstyle=paramstyle,
+        defer_tx_lock_release=True,
+        deferred_tx_end=deferred_tx_end,
     )
+    defer_tx_lock_release = bool(deferred_tx_end)
+
+    def execute() -> Any:
+        try:
+            return _execute_with_retry(original_method, self, operation, parameters)
+        finally:
+            if defer_tx_lock_release:
+                _release_dpor_row_locks()
 
     statement_row_locks: list[str] = []
     result = _dpor_schedule_and_suppress_sync(
@@ -698,7 +736,7 @@ def _intercept_execute(
         operation,
         parameters,
         paramstyle,
-        lambda: _execute_with_retry(original_method, self, operation, parameters),
+        execute,
         statement_row_locks,
     )
 
@@ -840,16 +878,16 @@ def _get_traced_connection_class(base_connection_cls: type, paramstyle: str) -> 
             return super().cursor(*args, **kwargs)
 
         def commit(self) -> None:
-            handle_connection_commit()
-            super().commit()
+            _run_connection_tx_method(super().commit, "COMMIT")
 
         def rollback(self) -> None:
-            handle_connection_rollback()
-            super().rollback()
+            _run_connection_tx_method(super().rollback, "ROLLBACK")
 
     TracedConnection.__name__ = f"Traced{base_connection_cls.__name__}"
     TracedConnection.__qualname__ = f"Traced{base_connection_cls.__qualname__}"
     TracedConnection._frontrun_traced_connection = True  # type: ignore[attr-defined]
+    TracedConnection.commit._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
+    TracedConnection.rollback._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
     _TRACED_CONNECTION_CLASSES[key] = TracedConnection
     return TracedConnection
 
@@ -910,12 +948,10 @@ def _make_traced_sqlite3_connection_class(base_cls: type = sqlite3.Connection) -
             # Drive the tx state machine before the driver call so the buffered
             # accesses are flushed even when COMMIT is issued via the connection
             # method rather than as SQL text (finding 3).
-            handle_connection_commit()
-            super().commit()
+            _run_connection_tx_method(super().commit, "COMMIT")
 
         def rollback(self) -> None:  # type: ignore[override]
-            handle_connection_rollback()
-            super().rollback()
+            _run_connection_tx_method(super().rollback, "ROLLBACK")
 
     TracedConnection.__name__ = f"Traced{base_cls.__name__}"
     TracedConnection.__qualname__ = f"Traced{base_cls.__qualname__}"

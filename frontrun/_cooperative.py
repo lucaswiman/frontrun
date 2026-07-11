@@ -1737,6 +1737,7 @@ def unpatch_locks() -> None:
 # ---------------------------------------------------------------------------
 
 _real_time_sleep = time.sleep
+_saved_time_sleep = _real_time_sleep
 _sleep_patch_count = 0
 _sleep_patch_lock = real_lock()
 
@@ -1754,15 +1755,25 @@ def _cooperative_sleep(seconds: float) -> None:
     deadline and blocks until the scheduler advances the clock to it.
     ``time.sleep(0)`` stays a pure yield, matching real Python semantics.
     """
+    # Preserve time.sleep's input contract before any virtual/no-delay branch.
+    # Calling the pristine function only for invalid values gives us CPython's
+    # platform-specific exception types/messages without ever blocking here.
+    if seconds < 0 or not math.isfinite(seconds):
+        return _real_time_sleep(seconds)
+
     ctx = get_context()
     if ctx is None:
         # No scheduler turn (e.g. setup()/invariant under clock_scope): if a
         # virtual clock is active for this thread/context, age it by the sleep
         # so TTL-aging setup code isn't frozen.  The driver thread is the only
         # clock user at that moment, so advancing here stays deterministic.
-        # With no active clock this remains the historical pure no-op.
+        # An unrelated caller has no virtual clock: retain the behavior that
+        # surrounded the outermost frontrun patch scope.
         clock = _active_virtual_clock()
-        if clock is not None and seconds > 0:
+        if clock is None:
+            sleep = _saved_time_sleep if _sleep_patch_count > 0 else _real_time_sleep
+            sleep(seconds)
+        elif seconds > 0:
             clock.advance_to(clock.now() + seconds)
         return
     scheduler, thread_id = ctx
@@ -1780,11 +1791,12 @@ def patch_sleep() -> None:
     Reference-counted like :func:`patch_locks` so multiple concurrent
     callers are safe.
     """
-    global _sleep_patch_count  # noqa: PLW0603
+    global _saved_time_sleep, _sleep_patch_count  # noqa: PLW0603
     with _sleep_patch_lock:
         _sleep_patch_count += 1
         if _sleep_patch_count > 1:
             return
+        _saved_time_sleep = time.sleep
         time.sleep = _cooperative_sleep  # type: ignore[assignment]
 
 
@@ -1801,4 +1813,4 @@ def unpatch_sleep() -> None:
         _sleep_patch_count -= 1
         if _sleep_patch_count > 0:
             return
-        time.sleep = _real_time_sleep  # type: ignore[assignment]
+        time.sleep = _saved_time_sleep  # type: ignore[assignment]

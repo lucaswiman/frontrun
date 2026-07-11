@@ -346,13 +346,14 @@ result = frontrun.explore_processes(
     count=2,                                  # replicate the spec (or pass a dict/list of specs)
     setup=reset_inventory,                    # runs in the coordinator; resets the DB, returns a handle
     invariant=lambda state: stock_never_negative(state),  # receives setup()'s handle; returns True/False
+    strategy="exhaustive",
     max_iterations=50,
 )
 if not result.ok:
     raise AssertionError(result.failure)
 ```
 
-`strategy="dpor"` (default) prunes equivalent interleavings and detects deadlocks; `strategy="exhaustive"` brute-forces every interleaving as a reduction-free cross-check. `reuse_workers=True` keeps workers alive across iterations (available on both entry points). Cross-process tests spawn real processes and are marked with the pytest `e2e` marker — run them via `make test-e2e-3.14` or `pytest -m e2e`. (Cross-process mode installs its interception in Python, so it does not need the `frontrun` CLI wrapper.)
+`strategy="dpor"` (default) prunes equivalent interleavings and detects deadlocks; `strategy="exhaustive"` brute-forces every interleaving as a reduction-free cross-check. `reuse_workers=True` keeps workers alive across iterations (available on both entry points with DPOR; the lower-level exhaustive strategy rejects it). Cross-process tests spawn real processes and are marked with the pytest `e2e` marker — run them via `make test-e2e-3.14` or `pytest -m e2e`. (Cross-process mode installs its interception in Python, so it does not need the `frontrun` CLI wrapper.)
 
 ### Virtual Clock: Timeout, Retry, and TTL Races
 

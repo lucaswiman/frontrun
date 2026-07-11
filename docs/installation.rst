@@ -10,13 +10,16 @@ Frontrun requires Python 3.10 or later.
 Optional extras
 ---------------
 
-Cross-process exploration (``frontrun.explore(execution="process")`` /
-``frontrun.explore_processes()``) serialises workers with `dill
+The ergonomic ``frontrun.explore(execution="process")`` entry point serialises
+worker callables and ``setup()`` state with `dill
 <https://pypi.org/project/dill/>`_, shipped as the ``process`` extra:
 
 .. code-block:: bash
 
    pip install "frontrun[process]"
+
+The lower-level ``frontrun.explore_processes()`` entry point uses importable
+module targets and JSON-serialisable arguments, so it does not require dill.
 
 CLI Setup
 ----------
