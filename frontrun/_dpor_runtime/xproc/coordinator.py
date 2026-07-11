@@ -148,7 +148,8 @@ class CrossProcessResult:
     failing_schedule: list[int] | None = None
     failure: str | None = None
     # One of: "invariant", "worker_error", "deadlock", "timeout",
-    # "nondeterministic", "step_limit", None.
+    # "nondeterministic", "step_limit" (exhaustive: max_steps_per_run hit),
+    # "branch_limit" (DPOR: max_branches hit), None.
     failure_kind: str | None = None
     accesses: list[tuple[int, str, str]] | None = None
     # Every failing execution as (execution_number, schedule) pairs, mirroring

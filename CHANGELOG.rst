@@ -31,8 +31,11 @@ Unreleased
   is in flight, and reject in-process-only options instead
   of silently ignoring them. A scheduler stall (``deadlock_timeout`` expiry —
   e.g. unmodeled database-level blocking) is reported as
-  ``failure_kind="timeout"`` rather than counting as a clean pass. See
-  :doc:`cross_process`.
+  ``failure_kind="timeout"`` rather than counting as a clean pass, and an
+  execution truncated by the DPOR ``max_branches`` cap is reported as its own
+  ``failure_kind="branch_limit"`` (previously it burned ``deadlock_timeout``
+  and masqueraded as a ``"timeout"`` whose message pointed at the wrong knob).
+  See :doc:`cross_process`.
 
 * **explore() rejects options its strategy would ignore.** Thread-mode
   ``frontrun.explore(...)`` now raises ``ValueError`` for any explicitly-passed

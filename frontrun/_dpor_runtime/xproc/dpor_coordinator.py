@@ -536,7 +536,7 @@ class DporCrossProcessCoordinator:
                     # with exhausted=False; an invariant failure completes fully so
                     # it does NOT demote). Only max_executions/total_timeout were
                     # previously handled, in the for..else below.
-                    if result.failure_kind in ("deadlock", "worker_error", "timeout"):
+                    if result.failure_kind in ("deadlock", "worker_error", "timeout", "branch_limit"):
                         exhausted = False
 
                 # In reuse mode a worker aborted mid-iteration leaves stray
@@ -724,6 +724,7 @@ class DporCrossProcessCoordinator:
         """
         with engine_lock:
             schedule_trace = list(execution.schedule_trace)
+            engine_aborted = bool(getattr(execution, "aborted", False))
         err = scheduler._error
 
         def _fail(failure: str, kind: str) -> CrossProcessResult:
@@ -742,6 +743,21 @@ class DporCrossProcessCoordinator:
         # deadlock behind that induced crash (mirrors the in-process priority).
         if isinstance(err, DeadlockError):
             return _fail(getattr(err, "cycle_description", None) or str(err), "deadlock")
+        # Branch-cap truncation next: the engine refused to schedule past
+        # max_branches (execution.aborted), so the still-waiting workers were
+        # denied/timed out as a *consequence* — the induced TimeoutError and
+        # any induced worker unwind must not masquerade as a genuine stall
+        # ("raise deadlock_timeout" is the wrong knob) or reach invariant()
+        # with half-executed state. The schedule-length guard keeps a
+        # hypothetical other aborted=True source from being mislabeled.
+        if engine_aborted and len(schedule_trace) >= self.max_branches:
+            return _fail(
+                f"execution truncated at max_branches={self.max_branches} scheduling points; the "
+                "schedule shown is the truncated prefix, not a verified counterexample. Raise "
+                "max_branches if the workload legitimately needs more steps per execution, or "
+                "check for a nonterminating worker.",
+                "branch_limit",
+            )
         if worker_errors:
             wid = min(worker_errors)
             return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")
