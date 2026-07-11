@@ -135,6 +135,45 @@ def test_dpor_stop_on_first_false_still_reports_race() -> None:
     assert result.exhausted  # whole space explored, yet the failure is still surfaced
 
 
+def test_dpor_bounded_search_does_not_claim_exhausted() -> None:
+    # `exhausted` is documented as "the search space was fully covered". The
+    # default preemption_bound=2 truncates the DPOR tree — schedules needing
+    # more than 2 preemptions are never scheduled — so a clean bounded run
+    # must report exhausted=False, exactly like the other truncating bounds
+    # (max_executions, total_timeout) already do.
+    def quick(proxy) -> None:
+        for _ in range(2):
+            if not proxy.report_and_wait(None, 0):
+                return
+
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=2.0)
+    result = coord.explore(
+        worker_set=ThreadLauncher([quick, quick]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert result.ok
+    assert result.exhausted is False, "a preemption-bounded search must not claim full coverage"
+
+
+def test_dpor_unbounded_search_still_claims_exhausted() -> None:
+    # Control: with preemption_bound=None there is no truncating bound, so a
+    # cleanly completed search may claim exhaustion.
+    def quick(proxy) -> None:
+        for _ in range(2):
+            if not proxy.report_and_wait(None, 0):
+                return
+
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=2.0, preemption_bound=None)
+    result = coord.explore(
+        worker_set=ThreadLauncher([quick, quick]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    assert result.ok
+    assert result.exhausted is True
+
+
 def _unlocked_write_then_lock_worker(db: _DB):
     """RMW whose unlocked write is reported just before acquiring an unrelated row lock.
 
