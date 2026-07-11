@@ -19,6 +19,7 @@ import asyncio
 import pytest
 
 from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
+from frontrun._deadlock import DeadlockError
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
 from frontrun.async_dpor import (
@@ -201,7 +202,14 @@ def test_handle_timeout_wakes_parked_primitive_waiters() -> None:
     assert asyncio.run(scenario()) is True
 
 
-def test_scheduler_timeout_takes_priority_over_free_run_task_error(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "artifact",
+    [RuntimeError("free-run artifact"), DeadlockError("free-run deadlock artifact", "artifact")],
+    ids=["runtime-error", "deadlock-error"],
+)
+def test_scheduler_timeout_takes_priority_over_free_run_task_error(
+    monkeypatch: pytest.MonkeyPatch, artifact: Exception
+) -> None:
     """A scheduler abort remains the cause even if a released task then crashes."""
     from frontrun._dpor import PyDporEngine
 
@@ -215,7 +223,7 @@ def test_scheduler_timeout_takes_priority_over_free_run_task_error(monkeypatch: 
         async def worker() -> None:
             async with scheduler._condition:
                 scheduler._handle_timeout(0, marker="forced")
-            raise RuntimeError("free-run artifact")
+            raise artifact
 
         with pytest.raises(Exception) as exc_info:
             await scheduler.run_all([worker])

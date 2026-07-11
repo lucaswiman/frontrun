@@ -776,6 +776,64 @@ class TestAsyncUpdateZeroRowRelease:
             "to release row locks on 0-row matches (Defect #6 fix)"
         )
 
+    @pytest.mark.parametrize(("method_name", "result"), [("fetch", []), ("fetchrow", None)])
+    async def test_asyncpg_zero_row_result_releases_statement_lock(self, method_name: str, result: Any) -> None:
+        from frontrun._io_detection import (
+            set_dpor_scheduler_task,
+            set_dpor_thread_id_task,
+            set_tx_store_task,
+        )
+        from frontrun._sql_cursor_async import _intercept_asyncpg_execute
+
+        class FakeScheduler:
+            def __init__(self) -> None:
+                self.acquired: list[str] = []
+                self.release_calls: list[list[str] | None] = []
+
+            def report_and_wait(self, _frame: object, _task_id: int) -> bool:
+                return True
+
+            def acquire_row_locks(self, _task_id: int, resources: list[str]) -> list[str]:
+                self.acquired.extend(resources)
+                return resources
+
+            def release_row_locks(self, _task_id: int, resources: list[str] | None = None) -> None:
+                self.release_calls.append(resources)
+
+        class FakeConnection:
+            pass
+
+        FakeConnection.__module__ = "asyncpg.connection"
+        scheduler = FakeScheduler()
+        store = set_tx_store_task()
+        store._in_transaction = True
+        store._is_autobegin = True
+        store._held_row_locks = set()
+        store._pending_row_locks = []
+        set_dpor_scheduler_task(scheduler)
+        set_dpor_thread_id_task(0)
+        set_io_reporter(IOLog())
+
+        async def execute(_connection: object, _operation: object) -> Any:
+            return result
+
+        try:
+            actual = await _intercept_asyncpg_execute(
+                execute,
+                FakeConnection(),
+                "UPDATE accounts SET balance = 100 WHERE id = 2 RETURNING id",
+                method_name=method_name,
+            )
+            assert actual == result
+            assert len(scheduler.acquired) == 1
+            assert scheduler.release_calls == [scheduler.acquired]
+            assert store._held_row_locks == set()
+        finally:
+            set_dpor_scheduler_task(None)
+            set_dpor_thread_id_task(None)
+            set_tx_store_task()
+            set_io_reporter(None)
+
 
 class TestAsyncpgExecutemanyDbObj:
     """Verify asyncpg _patched_executemany passes db_obj to _report_sql_access."""
