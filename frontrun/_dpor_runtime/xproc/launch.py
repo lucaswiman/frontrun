@@ -328,6 +328,12 @@ class MpLauncher:
                     proc.join(1.0)
         return alive
 
+    def terminate(self, handles: Any, timeout: float) -> None:
+        """Forcibly retire poisoned persistent children so they can be replaced."""
+        _terminate_procs(handles)
+        if handles is self._procs:
+            self._procs = None
+
     def any_exited(self, handles: Any) -> bool:
         """Non-destructive: has any worker process crashed (nonzero exit)?
 
@@ -458,6 +464,10 @@ class SubprocessLauncher:
                 except subprocess.TimeoutExpired:
                     pass
         return alive
+
+    def terminate(self, handles: Any, timeout: float) -> None:
+        """Forcibly retire poisoned persistent children so they can be replaced."""
+        self._reap_partial(handles)
 
     def any_exited(self, handles: Any) -> bool:
         """Non-destructive: has any worker process crashed (nonzero exit)?

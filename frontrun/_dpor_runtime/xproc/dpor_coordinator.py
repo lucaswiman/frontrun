@@ -30,6 +30,7 @@ from typing import Any
 from frontrun._deadlock import DeadlockError, SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
 from frontrun._dpor_core import (
     IterationCustomizer,
+    TerminableWorkerSet,
     WorkerSet,
     dpor_exploration_iter,
     make_deadline,
@@ -386,12 +387,10 @@ def _serialization_failure(exc: Exception, iterations: int) -> CrossProcessResul
 class DporCrossProcessCoordinator:
     """Engine-driven cross-process DPOR coordinator.
 
-    Reuse limitation: with ``reuse_workers=True`` the first iteration that ends
-    unclean (a deadlock or an aborted worker) leaves a poisoned persistent
-    socket, so the search stops early — reported honestly as
-    ``exhausted=False`` — rather than re-spawning workers. Use the default
-    respawn mode (``reuse_workers=False``) for exhaustive multi-bug search over
-    deadlock-bearing workloads.
+    With ``reuse_workers=True``, a deadlock or aborted worker poisons the
+    persistent protocol stream. Process-backed worker sets are forcibly
+    retired and freshly launched before exploration continues. In-process
+    thread test backends cannot be killed safely and therefore stop instead.
     """
 
     def __init__(
@@ -453,6 +452,7 @@ class DporCrossProcessCoordinator:
 
         persistent_handles: Any = None
         persistent_socks: dict[int, socket.socket] = {}
+        persistent_poisoned = False
         num_explored = 0
         # A preemption-bounded search (the default, preemption_bound=2) only
         # traverses the bounded tree — schedules needing more preemptions are
@@ -466,27 +466,33 @@ class DporCrossProcessCoordinator:
         # later failing schedules must not be discarded.
         failures: list[tuple[int, list[int]]] = []
         try:
-            # Reuse mode: spawn persistent workers and accept their connections once.
-            if self.reuse_workers:
-                try:
-                    persistent_handles = worker_set.launch(
-                        worker_targets(self.socket_path, list(range(self.num_workers)))
-                    )
-                except WorkerSerializationError as exc:
-                    return _serialization_failure(exc, 0)
-                try:
-                    for _ in range(self.num_workers):
-                        sock, wid = accept_hello_live(listener, worker_set, persistent_handles, self._connect_budget)
-                        persistent_socks[wid] = sock
-                except (TimeoutError, OSError) as exc:
-                    return _connection_failure(_launch_error(worker_set, persistent_handles, exc), 0)
-
             for step in dpor_exploration_iter(
                 engine=engine,
                 engine_lock=engine_lock,
                 stable_ids=stable_ids,
                 total_deadline=deadline,
             ):
+                # Initial persistent launch, and fresh launch after a poisoned
+                # process set was forcibly retired at the previous boundary.
+                if self.reuse_workers and persistent_handles is None:
+                    try:
+                        persistent_handles = worker_set.launch(
+                            worker_targets(self.socket_path, list(range(self.num_workers)))
+                        )
+                    except WorkerSerializationError as exc:
+                        return replace(_serialization_failure(exc, num_explored), failures=failures)
+                    try:
+                        for _ in range(self.num_workers):
+                            sock, wid = accept_hello_live(
+                                listener, worker_set, persistent_handles, self._connect_budget
+                            )
+                            persistent_socks[wid] = sock
+                    except (TimeoutError, OSError) as exc:
+                        return replace(
+                            _connection_failure(_launch_error(worker_set, persistent_handles, exc), num_explored),
+                            failures=failures,
+                        )
+
                 execution = step.execution
                 scheduler = _RelayDporScheduler(
                     engine,
@@ -503,9 +509,13 @@ class DporCrossProcessCoordinator:
                 setup()  # reset external state before each interleaving
                 try:
                     if self.reuse_workers:
+                        # Until the reused run returns cleanly, any exception
+                        # means its protocol/process state is unsafe to retain.
+                        persistent_poisoned = True
                         self._run_reused(
                             persistent_socks, worker_set, scheduler, accesses, worker_errors, unclean, deadline
                         )
+                        persistent_poisoned = bool(unclean)
                     else:
                         self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean, deadline)
                 except _TotalTimeoutExpiredError:
@@ -548,12 +558,26 @@ class DporCrossProcessCoordinator:
                     if result.failure_kind in ("deadlock", "worker_error", "timeout", "branch_limit"):
                         exhausted = False
 
-                # In reuse mode a worker aborted mid-iteration leaves stray
-                # frames on its persistent socket; sending the next ITER_START
-                # would desync it. Stop reusing rather than corrupt the search.
+                # A worker aborted mid-iteration leaves its persistent stream
+                # at an unknown frame boundary. Processes are safely killable:
+                # retire the whole set now and launch fresh workers if the
+                # engine has another execution. Python threads are not, so an
+                # internal thread-backed reuse test stops rather than leaking a
+                # poisoned actor into the next schedule.
                 if self.reuse_workers and unclean:
-                    exhausted = False
-                    break
+                    if isinstance(worker_set, TerminableWorkerSet):
+                        for sock in persistent_socks.values():
+                            try:
+                                sock.close()
+                            except OSError:
+                                pass
+                        persistent_socks.clear()
+                        worker_set.terminate(persistent_handles, self.deadlock_timeout)
+                        persistent_handles = None
+                        persistent_poisoned = False
+                    else:
+                        exhausted = False
+                        break
             else:
                 # The iterator ended on its own. That is only genuine exhaustion
                 # if no bound truncated the search: next_execution() returns False
@@ -569,17 +593,25 @@ class DporCrossProcessCoordinator:
             return CrossProcessResult(ok=True, iterations=num_explored, exhausted=exhausted)
         finally:
             if self.reuse_workers:
-                for sock in persistent_socks.values():
-                    try:
-                        proto.send_msg(sock, {"t": proto.SHUTDOWN})
-                    except OSError:
-                        pass
-                    try:
-                        sock.close()
-                    except OSError:
-                        pass
                 if persistent_handles is not None:
-                    worker_set.join(persistent_handles, self.deadlock_timeout)
+                    if persistent_poisoned and isinstance(worker_set, TerminableWorkerSet):
+                        for sock in persistent_socks.values():
+                            try:
+                                sock.close()
+                            except OSError:
+                                pass
+                        worker_set.terminate(persistent_handles, self.deadlock_timeout)
+                    else:
+                        for sock in persistent_socks.values():
+                            try:
+                                proto.send_msg(sock, {"t": proto.SHUTDOWN})
+                            except OSError:
+                                pass
+                            try:
+                                sock.close()
+                            except OSError:
+                                pass
+                        worker_set.join(persistent_handles, self.deadlock_timeout)
             uninstall_wait_for_graph()
             listener.close()
             self._cleanup_socket()

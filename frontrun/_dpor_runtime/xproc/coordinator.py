@@ -184,6 +184,10 @@ class CrossProcessResult:
     # "branch_limit" (DPOR: max_branches hit), None.
     failure_kind: str | None = None
     accesses: list[tuple[int, str, str]] | None = None
+    # Mapping-input labels keyed by the dense numeric ids used in schedules and
+    # access traces. Empty for sequence/single-worker inputs and direct
+    # coordinator use.
+    worker_labels: dict[int, str] = field(default_factory=dict)
     # Every failing execution as (execution_number, schedule) pairs, mirroring
     # thread-mode InterleavingResult.failures. Both strategies populate it for
     # any failure that carries a failing_schedule; the DPOR coordinator with

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any, Literal
 
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, CrossProcessResult
@@ -73,7 +74,9 @@ def _to_interleaving_result(result: CrossProcessResult) -> Any:
         # Surface the external-access trace so a process-mode failure is
         # diagnosable without dropping down to explore_processes().
         if result.accesses:
-            trace = ", ".join(f"w{wid}:{access}:{rid}" for wid, rid, access in result.accesses)
+            trace = ", ".join(
+                f"{result.worker_labels.get(wid, f'w{wid}')}:{access}:{rid}" for wid, rid, access in result.accesses
+            )
             explanation += f"\n  accesses: {trace}"
     return InterleavingResult(
         property_holds=result.ok,
@@ -185,6 +188,11 @@ def _resolve_specs(
     return list(processes.values()) if isinstance(processes, Mapping) else list(processes)
 
 
+def _worker_labels(processes: Mapping[str, Subprocess] | Sequence[Subprocess] | Subprocess) -> dict[int, str]:
+    """Preserve mapping labels alongside the engine's dense numeric ids."""
+    return dict(enumerate(processes)) if isinstance(processes, Mapping) else {}
+
+
 def explore_processes(
     processes: Mapping[str, Subprocess] | Sequence[Subprocess] | Subprocess,
     *,
@@ -205,9 +213,10 @@ def explore_processes(
 ) -> CrossProcessResult:
     """Explore interleavings of *processes* contending on shared external state.
 
-    ``processes`` is a mapping of label → :class:`Subprocess` (labels are for
-    readability), a plain sequence, or a single :class:`Subprocess` with
-    ``count=N`` to replicate it (the mirror of ``explore(workers=fn, count=N)``).
+    ``processes`` is a mapping of label → :class:`Subprocess` (preserved as
+    ``result.worker_labels``), a plain sequence, or a single
+    :class:`Subprocess` with ``count=N`` to replicate it (the mirror of
+    ``explore(workers=fn, count=N)``).
 
     ``setup`` resets the external state before each interleaving and returns a
     handle to it (e.g. a DB URL / connection info). That handle is passed to
@@ -237,6 +246,7 @@ def explore_processes(
     indistinguishable from omitting it.
     """
     specs = _resolve_specs(processes, count)
+    worker_labels = _worker_labels(processes)
     if not specs:
         raise ValueError("explore_processes requires at least one Subprocess")
     _validate_positive("deadlock_timeout", deadlock_timeout)
@@ -263,7 +273,7 @@ def explore_processes(
             max_branches=max_branches,
             total_timeout=total_timeout,
         )
-        return DporCrossProcessCoordinator(
+        result = DporCrossProcessCoordinator(
             num_workers=len(specs),
             deadlock_timeout=deadlock_timeout,
             max_executions=max_executions,
@@ -276,6 +286,7 @@ def explore_processes(
         ).explore(
             worker_set=SubprocessLauncher(specs, reuse=reuse_workers), setup=coord_setup, invariant=coord_invariant
         )
+        return replace(result, worker_labels=worker_labels)
     if strategy == "exhaustive":
         # DPOR-only knobs must not silently no-op (same principle as the
         # rejected in-process-only explore() options): the exhaustive
@@ -303,7 +314,7 @@ def explore_processes(
             raise ValueError("explore_processes(): search only applies to strategy='dpor'.")
         _validate_positive("max_iterations", max_iterations)
         _validate_positive("max_steps_per_run", max_steps_per_run)
-        return CrossProcessCoordinator(
+        result = CrossProcessCoordinator(
             num_workers=len(specs),
             max_steps_per_run=max_steps_per_run,
             deadlock_timeout=deadlock_timeout,
@@ -313,4 +324,5 @@ def explore_processes(
             invariant=coord_invariant,
             max_iterations=max_iterations,
         )
+        return replace(result, worker_labels=worker_labels)
     raise ValueError(f"unknown strategy {strategy!r}; expected 'dpor' or 'exhaustive'")

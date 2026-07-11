@@ -58,6 +58,21 @@ class WorkerSet(Protocol):
 
 
 @runtime_checkable
+class TerminableWorkerSet(Protocol):
+    """Optional capability for forcibly retiring poisoned worker processes.
+
+    Process-backed reusable workers can be killed and launched again after an
+    iteration aborts with their protocol stream in an unknown state. Thread
+    backends deliberately do not implement this capability: Python cannot
+    safely terminate an arbitrary running thread.
+    """
+
+    def terminate(self, handles: Any, timeout: float) -> None:
+        """Terminate, escalate if necessary, and reap *handles*."""
+        ...
+
+
+@runtime_checkable
 class LivenessProbe(Protocol):
     """Optional WorkerSet capability: report on worker liveness without joining.
 
