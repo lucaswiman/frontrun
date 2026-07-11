@@ -14,7 +14,13 @@ Unreleased
   cooperative timed waits, async ``wait_for`` / ``timeout`` / ``timeout_at``,
   async Event/Queue/Condition wakeups, concrete ``datetime`` / ``date`` values,
   captured ``time.*`` diagnostics where tracing is available, and preservation
-  of pre-existing third-party time patches. See :doc:`virtual_clock`.
+  of pre-existing third-party time patches. The invariant is evaluated under
+  the same clock and sleep patches as setup and the workers (a TTL-style
+  invariant that sleeps ages the virtual clock instead of blocking for real
+  wall time), and the random strategy's autojump yields to the event loop
+  after a virtual timeout fires so ``asyncio.wait_for`` / ``asyncio.timeout``
+  cancel the timed-out task instead of letting it run to completion. See
+  :doc:`virtual_clock` (including its known-limitations section).
 
 * **Cross-process exploration.** ``frontrun.explore(...)`` gains an
   ``execution="process"`` mode that runs each worker in its own Python process,
@@ -35,6 +41,9 @@ Unreleased
   execution truncated by the DPOR ``max_branches`` cap is reported as its own
   ``failure_kind="branch_limit"`` (previously it burned ``deadlock_timeout``
   and masqueraded as a ``"timeout"`` whose message pointed at the wrong knob).
+  Both strategies now surface the launcher's captured child stderr on a
+  connect failure (previously ``strategy="exhaustive"`` reported a bare
+  connect timeout, hiding e.g. the child's ``ModuleNotFoundError``).
   See :doc:`cross_process`.
 
 * **explore() rejects options its strategy would ignore.** Thread-mode
