@@ -160,6 +160,41 @@ def test_reuse_restarts_killable_workers_after_unclean_iteration(monkeypatch: py
     assert launcher.terminations == 1
 
 
+def test_reuse_initial_hello_failure_uses_verified_termination(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A partially connected persistent set must not go through unchecked join()."""
+    import frontrun._dpor_runtime.xproc.dpor_coordinator as coordinator_module
+
+    class Launcher:
+        def __init__(self) -> None:
+            self.terminations = 0
+            self.joins = 0
+
+        def launch(self, _targets: Any) -> list[object]:
+            return [object()]
+
+        def join(self, _handles: Any, _timeout: float) -> list[object]:
+            self.joins += 1
+            return [object()]  # unchecked cleanup would leave this worker alive
+
+        def terminate(self, _handles: Any, _timeout: float) -> None:
+            self.terminations += 1
+
+    def fail_hello(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("worker never completed HELLO")
+
+    monkeypatch.setattr(coordinator_module, "accept_hello_live", fail_hello)
+    launcher = Launcher()
+    result = DporCrossProcessCoordinator(num_workers=1, reuse_workers=True).explore(
+        worker_set=launcher,
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+
+    assert result.failure_kind == "worker_error"
+    assert launcher.terminations == 1
+    assert launcher.joins == 0
+
+
 def test_reuse_no_state_leak_across_iterations() -> None:
     # A safe atomic increment must hold across every reused iteration; a leak
     # would surface as balance > 200 (extra increments from a prior run).

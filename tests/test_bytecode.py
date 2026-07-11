@@ -508,3 +508,47 @@ def test_timeout_counts_as_explored():
     assert result.unique_interleavings <= result.num_explored, (
         f"unique_interleavings ({result.unique_interleavings}) should not exceed num_explored ({result.num_explored})"
     )
+
+
+def test_explore_random_reports_worker_crash_as_counterexample() -> None:
+    """A race-induced worker exception must retain its triggering schedule."""
+
+    def crash(_state: object) -> None:
+        raise IndexError("race-shaped crash")
+
+    result = explore_random(
+        setup=object,
+        threads=[crash],
+        invariant=lambda _state: True,
+        max_attempts=1,
+        max_ops=10,
+        reproduce_on_failure=0,
+        seed=1,
+    )
+
+    assert not result.property_holds
+    assert result.counterexample is not None
+    assert result.explanation and "IndexError: race-shaped crash" in result.explanation
+
+
+def test_explore_random_wires_max_ops_into_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The public max_ops bound must remain the hard scheduler step budget."""
+    observed_budgets: list[int] = []
+
+    class RecordingScheduler(OpcodeScheduler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            observed_budgets.append(self._max_ops)
+
+    monkeypatch.setattr("frontrun.bytecode.OpcodeScheduler", RecordingScheduler)
+    explore_random(
+        setup=object,
+        threads=[lambda _state: None],
+        invariant=lambda _state: True,
+        max_attempts=1,
+        max_ops=7,
+        reproduce_on_failure=0,
+        seed=1,
+    )
+
+    assert observed_budgets == [7]

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import socket
 import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ from frontrun._dpor_runtime.xproc.launch import (
     _stderr_last_line,
     _terminate_procs,
 )
+from frontrun._dpor_runtime.xproc.worker_main import _install_interception
 
 
 class _FakeWorkerSet:
@@ -40,6 +42,30 @@ class _FakeWorkerSet:
 
     def diagnose(self, handles) -> str | None:  # noqa: ARG002 - handles unused in fake
         return self._detail
+
+
+def test_xproc_sql_interception_fails_closed_without_sqlglot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing parser must abort the worker, never silently erase SQL accesses."""
+    import frontrun._sql_cursor as sql_cursor
+
+    class Proxy:
+        def io_report(self, _resource_id: str, _kind: str) -> None:
+            pass
+
+    sql_cursor.unpatch_sql()
+    monkeypatch.setitem(sys.modules, "sqlglot", None)
+    try:
+        with pytest.raises(RuntimeError, match="sqlglot|SQL parser"):
+            _install_interception(Proxy(), 0)  # type: ignore[arg-type]
+    finally:
+        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
+        from frontrun._redis_client import unpatch_redis
+
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        unpatch_redis()
+        sql_cursor.unpatch_sql()
 
 
 def test_dumps_worker_handles_closures() -> None:

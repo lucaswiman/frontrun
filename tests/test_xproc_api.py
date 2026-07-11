@@ -17,6 +17,8 @@ stubbed where a call would otherwise launch subprocesses):
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -26,6 +28,20 @@ import frontrun.cross_process
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessResult
 
 _TARGET = "tests.xproc_demo_counter:increment"
+
+
+def test_process_extra_installs_sql_parser_required_for_xproc_sql() -> None:
+    """The documented process extra must be sufficient for SQL exploration.
+
+    Cross-process workers deliberately drop the LD_PRELOAD fallback, so without
+    sqlglot ordinary SELECT/UPDATE statements produce no scheduling points and
+    a racy execution can be falsely reported as safe and exhausted.
+    """
+    pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    process_extra = re.search(r"(?ms)^process\s*=\s*\[(.*?)^\]", pyproject)
+
+    assert process_extra is not None
+    assert re.search(r"['\"]sqlglot(?:[^'\"]*)['\"]", process_extra.group(1))
 
 
 class _RecordingCoordinator:

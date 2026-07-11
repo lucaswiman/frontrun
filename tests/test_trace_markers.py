@@ -7,7 +7,13 @@ import time
 import pytest
 
 from frontrun.common import Schedule, Step
-from frontrun.trace_markers import MarkerRegistry, ThreadCoordinator, TraceExecutor, frontrun
+from frontrun.trace_markers import (
+    MarkerRegistry,
+    ThreadCoordinator,
+    TraceExecutor,
+    explore_marker_interleavings,
+    frontrun,
+)
 
 
 class BankAccount:
@@ -20,6 +26,39 @@ class BankAccount:
         current = self.balance  # frontrun: read_balance
         new_balance = current + amount
         self.balance = new_balance  # frontrun: write_balance
+
+
+def test_frontrun_async_target_with_thread_args_is_awaited() -> None:
+    """Adding convenience-function args must not turn an async target sync."""
+    observed: list[str] = []
+
+    async def worker(value: str) -> None:
+        observed.append(value)  # frontrun: async_with_args
+
+    frontrun(
+        Schedule([Step("task", "async_with_args")]),
+        {"task": worker},
+        thread_args={"task": ("ran",)},
+        timeout=2.0,
+    )
+
+    assert observed == ["ran"], "async worker coroutine was returned and discarded instead of awaited"
+
+
+def test_marker_exploration_does_not_pass_when_declared_marker_is_absent() -> None:
+    """An unexecuted schedule cannot count as an exhaustively verified pass."""
+
+    def worker(_state: object) -> None:
+        return
+
+    result = explore_marker_interleavings(
+        setup=object,
+        threads={"worker": (worker, ["declared_but_absent"])},
+        invariant=lambda _state: True,
+    )
+
+    assert not result.property_holds
+    assert result.explanation and "declared_but_absent" in result.explanation
 
 
 def test_race_condition_buggy_schedule():

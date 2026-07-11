@@ -1784,6 +1784,36 @@ def test_connection_rollback_clears_state() -> None:
     conn.close()
 
 
+@pytest.mark.parametrize("operation", ["COMMIT", "ROLLBACK"])
+def test_failed_textual_tx_end_preserves_modeled_transaction(operation: str) -> None:
+    """cursor.execute(COMMIT/ROLLBACK) must not end the model if the driver fails."""
+    log = IOLog()
+    set_io_reporter(log)
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._tx_buffer = [("sql:accounts", "write")]
+    _io_tls._tx_savepoints = {"before": 0}
+    _io_tls._held_row_locks = {"sql:accounts:id=1"}
+
+    def fail(_cursor: object, _sql: str) -> None:
+        raise RuntimeError(f"physical textual {operation.lower()} failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="physical textual"):
+            sql_cursor_mod._intercept_execute(fail, object(), operation)
+
+        assert _io_tls._in_transaction is True
+        assert _io_tls._is_autobegin is True
+        assert _io_tls._tx_buffer == [("sql:accounts", "write")]
+        assert _io_tls._tx_savepoints == {"before": 0}
+        assert _io_tls._held_row_locks == {"sql:accounts:id=1"}
+    finally:
+        set_io_reporter(None)
+        for attr in ("_in_transaction", "_is_autobegin", "_tx_buffer", "_tx_savepoints", "_held_row_locks"):
+            if hasattr(_io_tls, attr):
+                delattr(_io_tls, attr)
+
+
 # ---------------------------------------------------------------------------
 # Finding 4: pymysql autobegin detection (callable autocommit)
 # ---------------------------------------------------------------------------
