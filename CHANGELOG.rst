@@ -112,9 +112,9 @@ Unreleased
   operations retain modeled transaction state and row locks. Marker exploration
   no longer counts an unconsumed or timed-out schedule as an exhaustive pass;
   async marker workers with arguments are awaited correctly. Random exploration
-  keeps generated schedules within ``max_ops``, treats work beyond that bound as
-  inconclusive, returns sync worker crashes as structured counterexamples, and
-  deterministically extends async schedule prefixes. Async SQL row-lock
+  keeps sampled prefixes within ``max_ops``, returns sync worker crashes with
+  every deterministically extended turn in the structured counterexample, and
+  keeps async work controlled when its sampled prefix ends. Async SQL row-lock
   contenders now park inside the scheduler (including replay) rather than
   entering a blocking database call, preserving cross-resource deadlock cycles
   and replayability.
