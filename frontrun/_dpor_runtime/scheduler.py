@@ -1224,20 +1224,10 @@ class DporScheduler:
         return all(t in blocked for t in live)
 
     def _replay_check_exact_deadlock_unlocked(self) -> bool:
-        """Detect an exact deadlock during replay (caller holds ``self._condition``).
+        """Confirm an exact replay deadlock when no transition can become enabled.
 
-        The base scheduler detects exact deadlocks in ``_schedule_next`` via the
-        engine's empty runnable set; the replay subclasses override
-        ``_schedule_next`` and never consult an engine, so a replayed deadlock
-        would otherwise spin through the positional/IO-anchored schedule and die
-        with a plain ``TimeoutError`` after ``deadlock_timeout`` — scoring the
-        reproduction attempt as a failure and burning wall time.  Mirrors
-        ``_check_exact_deadlock_locked``: every live thread is blocked, no
-        deadline is pending, and no external thread could unblock a waiter, so
-        no transition can ever become enabled.  Confirmed after the same short
-        window (``_EXACT_DEADLOCK_CONFIRM_SECONDS``) to tolerate transient
-        all-blocked states.  Returns True when a :class:`DeadlockError` was
-        recorded.
+        Replay schedulers do not consult the engine runnable set, so they
+        perform the equivalent check directly. Caller holds ``self._condition``.
         """
         if (
             self.virtual_clock is None
@@ -1788,9 +1778,7 @@ class _IOAnchoredReplayScheduler(DporScheduler):
         anchor instead of busy-spinning on the done thread. Anchors of live
         threads are still enforced in order.
         """
-        # Exact-deadlock detection (see _replay_check_exact_deadlock_unlocked):
-        # this is the chokepoint every grant path funnels through
-        # (before_sync_retry, before_io/after_io, _wait_for_turn, mark_done).
+        # Every replay grant path funnels through this chokepoint.
         if self._replay_check_exact_deadlock_unlocked():
             return None
         # A timed waiter that owns the next anchor can only move once its
@@ -1805,15 +1793,7 @@ class _IOAnchoredReplayScheduler(DporScheduler):
             preferred = self._io_schedule[self._io_index][0]
         if preferred is None:
             return None
-        # When the preferred thread is cooperatively blocked (event/lock wait,
-        # blocking spin, pending deadline), hand the turn to an unblocked live
-        # thread instead — the engine never schedules a blocked thread during
-        # exploration, so in the recorded run some other thread ran (and
-        # eventually unblocked it).  Pinning the turn on the blocked thread
-        # would gate every other thread at its next opcode: a lock/event
-        # handoff — or the formation of a genuine deadlock cycle — could then
-        # never happen, stalling replay until the fallback deadlock_timeout.
-        # The anchor itself is NOT consumed; anchor order stays enforced.
+        # Let a runnable thread unblock the preferred one without consuming its anchor.
         blocked = self._replay_blocked_threads_unlocked()
         if preferred in blocked:
             runnable = [t for t in range(self.num_threads) if t not in self._threads_done and t not in blocked]
@@ -1822,25 +1802,9 @@ class _IOAnchoredReplayScheduler(DporScheduler):
         return preferred
 
     def _replay_wake_current_timed_waiter(self) -> bool:
-        """Advance the clock when the anchor-owning thread sits in a timed wait.
+        """Advance an IO replay clock when every live thread is blocked.
 
-        Unlike the positional replay, the io_schedule carries only
-        ``(tid, resource)`` anchors — recorded clock-actor steps have no
-        entry to replay them.  So when the thread the replay is waiting on is
-        blocked on a ``timeout``-kind deadline (``lock.acquire(timeout=...)``,
-        ``Event.wait(timeout=...)``), nothing in the schedule will ever
-        advance the clock and every reproduction attempt would burn a full
-        ``deadlock_timeout``.  Jump one autojump step (to the earliest pending
-        deadline), exactly like exploration does when nothing else is runnable.
-
-        Advancing early is safe for a waiter whose lock is in fact free: the
-        cooperative acquire loop probes *after* its expiry check, so the
-        acquire still succeeds within the same spin iteration — the timeout
-        branch is only taken when the resource genuinely stays unavailable,
-        which under IO-anchored replay (only the anchor-owning thread runs
-        between anchors) means the recorded run took it too.
-
-        Caller must hold ``self._condition``.
+        IO schedules omit clock-actor steps. Caller holds ``self._condition``.
         """
         cur = self._current_thread
         if cur is None or self.virtual_clock is None:
