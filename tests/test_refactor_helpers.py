@@ -74,28 +74,20 @@ def test_row_lock_registry_pop_all_returns_pairs() -> None:
 
 
 def test_row_lock_registry_pop_all_returns_deterministic_order() -> None:
-    """pop_all returns releases in a deterministic (lid-sorted) order.
-
-    ``_task_row_locks[owner]`` is a ``set[str]``; iterating it directly yields a
-    PYTHONHASHSEED-dependent order.  The sync scheduler feeds that order straight
-    into ``engine.report_sync("lock_release", lid, ...)``, so an unsorted result
-    makes the vector-clock event order for a transaction's row-lock releases vary
-    run-to-run — breaking the library's replayability/determinism contract.  The
-    released pairs must come out in a canonical order independent of set hashing.
-
-    With enough resources the odds of set-iteration order coincidentally equalling
-    the sorted order are astronomically small, so this reliably fails for any hash
-    seed if the order is left to set iteration.
-    """
     from frontrun._dpor_core import RowLockRegistry
 
+    class ReverseSet(set[str]):
+        def __iter__(self) -> Any:
+            return iter(sorted(set.copy(self), reverse=True))
+
     reg = RowLockRegistry()
-    for i in range(64):
+    for i in range(3):
         reg.record_acquire(owner_id=7, res_id=f"row:{i}", graph=None)
+    reg._task_row_locks[7] = ReverseSet(reg._task_row_locks[7])
 
     released = reg.pop_all(owner_id=7, graph=None)
     lids = [lid for _, lid in released]
-    assert lids == sorted(lids), "pop_all must return releases in a deterministic order"
+    assert lids == [0, 1, 2]
 
 
 def test_row_lock_registry_pop_all_calls_graph_remove_holding() -> None:

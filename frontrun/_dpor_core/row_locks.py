@@ -120,11 +120,8 @@ class RowLockRegistry:
             lid = self._row_lock_ids.get(res_id)
             if lid is not None:
                 released.append((res_id, lid))
-        # Iterating ``held`` (a set) yields a PYTHONHASHSEED-dependent order, but
-        # the sync scheduler feeds this list straight into
-        # ``engine.report_sync("lock_release", lid, ...)``.  Sort by the stable
-        # monotonic int ID (= allocation order) so the release order — and thus
-        # the vector-clock stamps — are identical run-to-run.
+        # The sync scheduler emits DPOR events in this order, so canonicalize
+        # the set iteration by the stable allocation ID.
         released.sort(key=lambda pair: pair[1])
         if graph is not None:
             for _res_id, lid in released:

@@ -44,15 +44,7 @@ class _FakeConnection:
 
 
 class TestDjangoFreshConnectionCleanup:
-    """_fresh_connection must not leak the freshly-opened connection on setup errors.
-
-    ``ensure_connection()`` and the ``SET lock_timeout`` cursor.execute() run the
-    connection's open + configure steps.  If either raises, the freshly-opened
-    connection must still be closed — otherwise, since the wrapper runs once per
-    thread per interleaving (thousands of times), a persistent setup error (e.g.
-    a backend that rejects ``SET lock_timeout``) leaks a connection every time and
-    exhausts the pool.  The sibling SQLAlchemy helpers already guard this.
-    """
+    """Setup failures must not leak the fresh connection."""
 
     def test_connection_closed_when_lock_timeout_setup_raises(self) -> None:
         from frontrun.contrib.django._shared import _fresh_connection
@@ -64,9 +56,7 @@ class TestDjangoFreshConnectionCleanup:
             with _fresh_connection(connections, "default", lock_timeout=5000):
                 pass
 
-        # Entry drops the stale connection (1st close); the freshly-opened one
-        # must be closed too when SET lock_timeout fails (2nd close).
-        assert conn.close_calls == 2, "fresh connection leaked when lock_timeout setup raised"
+        assert conn.close_calls == 2
 
     def test_connection_closed_when_ensure_connection_raises(self) -> None:
         from frontrun.contrib.django._shared import _fresh_connection
@@ -78,7 +68,7 @@ class TestDjangoFreshConnectionCleanup:
             with _fresh_connection(connections, "default", lock_timeout=None):
                 pass
 
-        assert conn.close_calls == 2, "connection leaked when ensure_connection raised"
+        assert conn.close_calls == 2
 
 
 class TestDjangoSharedConnectionWrapper:

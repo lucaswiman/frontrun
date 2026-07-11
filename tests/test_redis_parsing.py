@@ -75,14 +75,7 @@ class TestStringCommands:
 
 
 class TestBytesKeys:
-    """redis-py accepts ``bytes`` keys; they must map to the same resource ID as ``str``.
-
-    redis-py forwards the raw user args to ``execute_command`` before its
-    connection layer encodes them, so a key passed as ``bytes`` reaches the
-    parser as ``bytes``.  ``str(b"k")`` yields the repr ``"b'k'"`` — a *different*
-    resource ID than the same key passed as ``str`` — so two workers touching the
-    same logical key would look disjoint to DPOR and a real race would be missed.
-    """
+    """Equivalent ``bytes`` and ``str`` keys share a resource ID."""
 
     def test_get_bytes_key(self) -> None:
         result = parse_redis_access("GET", (b"mykey",))

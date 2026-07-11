@@ -516,12 +516,7 @@ def explore_marker_interleavings(
             num_explored += 1
             continue
         except Exception as exc:
-            # Thread raised an exception — treat as invariant violation.  Capture
-            # the exception detail so it surfaces in ``explanation`` (matching how
-            # invariant failures report ``assertion_msg``); otherwise the
-            # counterexample carries no reason, and with ``stop_on_first=False`` a
-            # later invariant failure's message would be mis-paired with this
-            # exception's schedule (``first_explanation`` was only set below).
+            # Thread exceptions are violations, just like failed invariants.
             num_explored += 1
             explanation = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             if first_explanation is None:
