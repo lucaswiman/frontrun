@@ -747,12 +747,11 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         except DeadlockError:
             raise
         except Exception:
-            # An exact-deadlock abort makes the remaining tasks free-run to
-            # completion under false pretenses (parked event waits return on
-            # an unset event); anything they raise while free-running is an
-            # artifact, and the base run_all surfaces task errors before
-            # self._error — reassert the DeadlockError's priority.
-            if isinstance(self._error, DeadlockError):
+            # A scheduler abort makes the remaining tasks free-run to completion
+            # under false pretenses (for example, parked event waits return on an
+            # unset event). The base run_all surfaces resulting task errors before
+            # self._error, so reassert the scheduler abort's priority.
+            if isinstance(self._error, (DeadlockError, SchedulerTimeoutError)):
                 raise self._error from None
             raise
         finally:
