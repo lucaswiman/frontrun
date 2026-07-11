@@ -1877,3 +1877,39 @@ def test_stale_timed_wait_spin_flag_is_refused() -> None:
     scheduler.add_timed_wait(1, clock.now() + 5.0)
     scheduler.note_blocking_spin(1, resource_id, True, timed_wait=True)
     assert 1 in scheduler._spin_waiters
+
+
+def test_invariant_sleep_is_virtual_not_wall_clock() -> None:
+    # Regression: the sync driver held clock_scope (time.* READS -> virtual)
+    # across setup/run/invariant, but runner.patch_scope (time.sleep patch)
+    # ended before invariant evaluation. A TTL-style invariant that sleeps to
+    # age past an expiry then re-checks therefore blocked for REAL wall time
+    # while its time reads stayed frozen at virtual time — self-inconsistent
+    # (elapsed == 0.0 after sleep(5)) and costing real seconds per explored
+    # interleaving in a test the user declared "virtual". setup() already ran
+    # inside the patch scope; the invariant must see the identical clock.
+    class State:
+        elapsed: float | None = None
+
+    def worker(s: State) -> None:
+        time.sleep(1.0)
+
+    def invariant(s: State) -> bool:
+        t0 = time.monotonic()
+        time.sleep(5.0)
+        s.elapsed = time.monotonic() - t0
+        return s.elapsed >= 5.0
+
+    start = time.monotonic()
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker, worker],
+        invariant=invariant,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    wall = time.monotonic() - start
+    assert result.property_holds, f"invariant saw frozen/real-time-inconsistent clock: {result.explanation}"
+    # The invariant's sleep must be virtual: multiple interleavings each
+    # sleeping a real 5s would take tens of seconds.
+    assert wall < 4.0, f"invariant sleep ran on the wall clock ({wall:.1f}s elapsed)"
