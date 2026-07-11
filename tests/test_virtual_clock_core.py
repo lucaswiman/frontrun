@@ -182,6 +182,25 @@ def test_sync_sleep_patch_preserves_preexisting_patch(monkeypatch: pytest.Monkey
     assert time.sleep is fake_sleep
 
 
+def test_active_sync_sleep_patch_preserves_unrelated_thread_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch ownership must not collapse a background thread's sleep."""
+    observed: list[float] = []
+
+    def fake_sleep(delay: float) -> None:
+        observed.append(delay)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    _cooperative.patch_sleep()
+    try:
+        thread = threading.Thread(target=lambda: time.sleep(0.25))
+        thread.start()
+        thread.join()
+    finally:
+        _cooperative.unpatch_sleep()
+
+    assert observed == [0.25]
+
+
 def test_unmanaged_async_sleep_keeps_its_real_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     """The process-wide shim must delegate sleeps from unrelated async tasks."""
     observed: list[float] = []

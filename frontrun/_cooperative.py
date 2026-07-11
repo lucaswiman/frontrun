@@ -1740,6 +1740,7 @@ _real_time_sleep = time.sleep
 _saved_time_sleep = _real_time_sleep
 _sleep_patch_count = 0
 _sleep_patch_lock = real_lock()
+_sleep_patch_owners: dict[int, int] = {}
 
 
 def _cooperative_sleep(seconds: float) -> None:
@@ -1771,8 +1772,15 @@ def _cooperative_sleep(seconds: float) -> None:
         # surrounded the outermost frontrun patch scope.
         clock = _active_virtual_clock()
         if clock is None:
-            sleep = _saved_time_sleep if _sleep_patch_count > 0 else _real_time_sleep
-            sleep(seconds)
+            # A direct low-level patch_sleep() owner retains the historical
+            # cooperative/no-delay contract. The process-wide shim can also be
+            # observed by unrelated background threads; those must keep the
+            # surrounding real/third-party sleep behavior.
+            with _sleep_patch_lock:
+                owned_here = _sleep_patch_owners.get(threading.get_ident(), 0) > 0
+                sleep = _saved_time_sleep if _sleep_patch_count > 0 else _real_time_sleep
+            if not owned_here:
+                sleep(seconds)
         elif seconds > 0:
             clock.advance_to(clock.now() + seconds)
         return
@@ -1794,6 +1802,8 @@ def patch_sleep() -> None:
     global _saved_time_sleep, _sleep_patch_count  # noqa: PLW0603
     with _sleep_patch_lock:
         _sleep_patch_count += 1
+        owner = threading.get_ident()
+        _sleep_patch_owners[owner] = _sleep_patch_owners.get(owner, 0) + 1
         if _sleep_patch_count > 1:
             return
         _saved_time_sleep = time.sleep
@@ -1811,6 +1821,12 @@ def unpatch_sleep() -> None:
         if _sleep_patch_count <= 0:
             return
         _sleep_patch_count -= 1
+        owner = threading.get_ident()
+        owner_count = _sleep_patch_owners.get(owner, 0)
+        if owner_count <= 1:
+            _sleep_patch_owners.pop(owner, None)
+        else:
+            _sleep_patch_owners[owner] = owner_count - 1
         if _sleep_patch_count > 0:
             return
         time.sleep = _saved_time_sleep  # type: ignore[assignment]
