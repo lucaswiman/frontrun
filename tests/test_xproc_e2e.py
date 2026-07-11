@@ -13,9 +13,13 @@ interleaving spawns processes.
 
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 import frontrun
+from frontrun._dpor_runtime.xproc.coordinator import accept_hello, worker_targets
+from frontrun._dpor_runtime.xproc.launch import SubprocessLauncher
 from tests import xproc_demo_counter
 
 pytestmark = pytest.mark.e2e
@@ -68,6 +72,40 @@ def test_lost_update_found_with_reused_workers(tmp_path) -> None:
     )
     assert not result.ok
     assert result.failure_kind == "invariant"
+
+
+def test_poisoned_subprocess_set_is_reaped_before_fresh_launch(tmp_path) -> None:
+    """Real persistent children are dead before replacement HELLOs arrive."""
+    socket_path = str(tmp_path / "xproc.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(socket_path)
+    listener.listen(1)
+    listener.settimeout(5.0)
+    launcher = SubprocessLauncher([frontrun.Subprocess(_TARGET, ("unused.db",))], reuse=True)
+    targets = worker_targets(socket_path, [0])
+    first = launcher.launch(targets)
+    first_sock, first_worker_id = accept_hello(listener, 5.0)
+    second = None
+    second_sock = None
+    try:
+        assert first_worker_id == 0
+        first_pid = first[0].pid
+        first_sock.close()  # model a poisoned/desynchronised protocol stream
+        launcher.terminate(first, timeout=5.0)
+        assert first[0].poll() is not None
+
+        second = launcher.launch(targets)
+        second_sock, second_worker_id = accept_hello(listener, 5.0)
+        assert second_worker_id == 0
+        assert second[0].pid != first_pid
+        assert first[0].poll() is not None
+    finally:
+        first_sock.close()
+        if second_sock is not None:
+            second_sock.close()
+        if second is not None:
+            launcher.terminate(second, timeout=5.0)
+        listener.close()
 
 
 def test_count_shorthand_replicates_spec(tmp_path) -> None:

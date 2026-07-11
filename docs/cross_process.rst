@@ -280,9 +280,10 @@ lower-level exhaustive strategy rejects worker reuse.
 If a reused iteration deadlocks or aborts, frontrun kills and reaps the poisoned
 worker processes, then launches a fresh set before continuing the search. This
 loses process-global re-entry state at that boundary, but never feeds another
-schedule into a desynchronised protocol stream. Thread execution does not offer
-worker reuse; Python cannot safely kill an arbitrary stuck thread, so a stuck
-thread is reported as an error instead.
+schedule into a desynchronised protocol stream. Thread execution rejects
+``reuse_workers=True`` with ``ValueError`` because Python cannot safely kill an
+arbitrary stuck thread. Independently, detected thread deadlocks are returned
+as failed ``InterleavingResult`` values rather than raised directly.
 
 .. code-block:: python
 

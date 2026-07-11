@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,29 +41,45 @@ class WorkerSerializationError(RuntimeError):
     """
 
 
-def _terminate_procs(procs: Sequence[Any]) -> None:
+class WorkerTerminationError(RuntimeError):
+    """Poisoned worker processes survived forced termination."""
+
+
+def _terminate_procs(procs: Sequence[Any], timeout: float = 1.0) -> None:
     """Terminate/kill and reap already-started multiprocessing children.
 
     Used to clean up after a partial launch so a spawn failure mid-loop never
-    orphans the children that did start. Best-effort: each step is guarded so one
-    unresponsive child cannot prevent reaping the rest.
+    orphans the children that did start. Every child is checked after SIGTERM
+    and SIGKILL: replacement workers must never overlap a surviving old child.
     """
     for proc in procs:
         try:
             proc.terminate()
         except Exception:  # noqa: BLE001 - best-effort teardown
             pass
+    deadline = time.monotonic() + max(0.0, timeout)
     for proc in procs:
         try:
-            proc.join(1.0)
+            proc.join(max(0.0, deadline - time.monotonic()))
         except Exception:  # noqa: BLE001 - best-effort teardown
-            continue
-        if proc.is_alive():
-            try:
-                proc.kill()
-                proc.join(1.0)
-            except Exception:  # noqa: BLE001 - best-effort teardown
-                pass
+            pass
+    survivors = [proc for proc in procs if proc.is_alive()]
+    for proc in survivors:
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001 - final liveness check is authoritative
+            pass
+    kill_deadline = time.monotonic() + max(0.0, timeout)
+    for proc in survivors:
+        try:
+            proc.join(max(0.0, kill_deadline - time.monotonic()))
+        except Exception:  # noqa: BLE001 - final liveness check is authoritative
+            pass
+    survivors = [proc for proc in survivors if proc.is_alive()]
+    if survivors:
+        raise WorkerTerminationError(
+            f"{len(survivors)} worker process(es) still alive after terminate/kill; refusing to relaunch"
+        )
 
 
 def _make_stderr_file(worker_id: int) -> str:
@@ -330,7 +347,7 @@ class MpLauncher:
 
     def terminate(self, handles: Any, timeout: float) -> None:
         """Forcibly retire poisoned persistent children so they can be replaced."""
-        _terminate_procs(handles)
+        _terminate_procs(handles, timeout)
         if handles is self._procs:
             self._procs = None
 
@@ -467,7 +484,22 @@ class SubprocessLauncher:
 
     def terminate(self, handles: Any, timeout: float) -> None:
         """Forcibly retire poisoned persistent children so they can be replaced."""
-        self._reap_partial(handles)
+        for proc in handles:
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001 - final poll verifies death
+                pass
+        deadline = time.monotonic() + max(0.0, timeout)
+        for proc in handles:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except Exception:  # noqa: BLE001 - final poll verifies death
+                pass
+        survivors = [proc for proc in handles if proc.poll() is None]
+        if survivors:
+            raise WorkerTerminationError(
+                f"{len(survivors)} worker process(es) still alive after kill; refusing to relaunch"
+            )
 
     def any_exited(self, handles: Any) -> bool:
         """Non-destructive: has any worker process crashed (nonzero exit)?
