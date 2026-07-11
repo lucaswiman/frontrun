@@ -105,6 +105,20 @@ Unreleased
   ``max_steps_per_run`` (``failure_kind="step_limit"``) so a nonterminating
   worker cannot hang exploration forever.
 
+* **Release-blocking proof-integrity fixes.** The ``process`` extra now installs
+  the SQL parser required by cross-process workers, and process SQL
+  interception fails closed if that parser is unavailable instead of silently
+  certifying a run with no semantic accesses. Failed physical COMMIT/ROLLBACK
+  operations retain modeled transaction state and row locks. Marker exploration
+  no longer counts an unconsumed or timed-out schedule as an exhaustive pass;
+  async marker workers with arguments are awaited correctly. Random exploration
+  keeps generated schedules within ``max_ops``, treats work beyond that bound as
+  inconclusive, returns sync worker crashes as structured counterexamples, and
+  deterministically extends async schedule prefixes. Async SQL row-lock
+  contenders now park inside the scheduler (including replay) rather than
+  entering a blocking database call, preserving cross-resource deadlock cycles
+  and replayability.
+
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
   dispatch on the subclass instead of always returning the patched base
