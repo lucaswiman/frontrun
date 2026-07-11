@@ -583,6 +583,10 @@ class DporScheduler:
                         return True
 
                     if not self._condition.wait(timeout=self._condition_wait_timeout()):
+                        if self._exact_deadlock_candidate_at is not None:
+                            self._current_thread = self._schedule_next()
+                            self._condition.notify_all()
+                            continue
                         if self.virtual_clock is not None and self._current_thread is None:
                             next_thread = self._schedule_next()
                             self._current_thread = next_thread
