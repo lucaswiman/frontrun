@@ -13,8 +13,11 @@ import threading
 import time
 from typing import Any
 
+import pytest
+
 from frontrun._dpor_runtime.xproc import protocol as proto
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator, _relay_loop
+from frontrun._dpor_runtime.xproc.launch import WorkerSerializationError
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
 
 
@@ -387,6 +390,35 @@ def test_dpor_stop_on_first_false_collects_all_failures() -> None:
     assert schedule == result.failing_schedule
     # Execution numbers are 1-based and strictly increasing.
     assert [n for n, _ in result.failures] == list(range(1, result.iterations + 1))
+
+
+@pytest.mark.parametrize("late_error", [OSError("connection lost"), WorkerSerializationError("cannot pickle")])
+def test_dpor_late_launch_error_preserves_prior_failures(late_error: Exception) -> None:
+    db = _DB()
+    worker = _rmw_worker(db)
+    delegate = ThreadLauncher([worker, worker])
+
+    class FailsSecondLaunch:
+        launches = 0
+
+        def launch(self, targets: Any) -> Any:
+            self.launches += 1
+            if self.launches == 2:
+                raise late_error
+            return delegate.launch(targets)
+
+        def join(self, handles: Any, timeout: float) -> list[Any]:
+            return delegate.join(handles, timeout)
+
+    result = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=1.0, stop_on_first=False).explore(
+        worker_set=FailsSecondLaunch(),
+        setup=db.reset,
+        invariant=lambda: False,
+    )
+
+    assert result.failure_kind == "worker_error"
+    assert len(result.failures) == 1
+    assert result.failures[0][0] == 1
 
 
 def test_dpor_stop_on_first_true_still_records_its_failure() -> None:
