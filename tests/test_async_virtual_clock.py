@@ -1169,6 +1169,48 @@ def test_uncaught_async_wait_for_timeout_is_task_crash_not_deadlock() -> None:
     assert "Deadlock detected" not in result.explanation
 
 
+def test_timeout_cancelled_sleep_does_not_leak_deadline_into_deadlock_detection() -> None:
+    """A wait_for timeout that cancels an in-flight sleep must scrub the sleep deadline.
+
+    The cancellation is delivered while the task is parked in
+    ``AsyncDporScheduler.sleep_until``; if the (task, _SLEEP_TOKEN) deadline and
+    the ``_sleepers`` entry survive, a later genuine deadlock looks like it has
+    a pending virtual deadline and is misreported as an inconclusive timeout
+    instead of an exact deadlock counterexample.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def timed_then_blocked(s: State) -> None:
+        try:
+            await asyncio.wait_for(asyncio.sleep(5), timeout=1)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        await s.event.wait()
+
+    async def sleeper_then_blocked(s: State) -> None:
+        await asyncio.sleep(10)
+        await s.event.wait()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[timed_then_blocked, sleeper_then_blocked],
+            invariant=lambda s: True,
+            clock="virtual",
+            reproduce_on_failure=0,
+            timeout_per_run=2.0,
+            deadlock_timeout=0.5,
+        )
+    )
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Deadlock detected" in result.explanation, result.explanation
+    assert "inconclusive" not in result.explanation
+
+
 def test_async_task_crash_wakes_parked_event_waiter() -> None:
     class State:
         def __init__(self) -> None:
