@@ -137,14 +137,20 @@ class AwaitScheduler(InterleavedLoop):
 
     # -- Virtual clock ---------------------------------------------------
 
-    def _advance_clock_to(self, target: float) -> None:
+    def _advance_clock_to(self, target: float) -> bool:
         """Jump the clock to *target* and wake every due sleeper.
 
-        Caller must hold ``self._condition``.
+        Caller must hold ``self._condition``.  Returns True when a
+        ``timeout``-kind deadline fired: its effect (the waiter cancelling the
+        timed-out awaitable) only lands once the event loop next runs, so an
+        autojump caller must yield to the loop before advancing further — a
+        second synchronous hop would let the doomed task's own later deadline
+        fire first, completing work a real timeout would have cancelled.
         """
         clock = self.virtual_clock
         if clock is None:
-            return
+            return False
+        fired_timeout = False
         for event in self._deadlines.advance_to(clock, target):
             if event.kind == "sleep":
                 self._sleepers.pop(event.actor_id, None)
@@ -152,6 +158,8 @@ class AwaitScheduler(InterleavedLoop):
                 fire = getattr(event.token, "fire", None)
                 if fire is not None:
                     fire()
+                fired_timeout = True
+        return fired_timeout
 
     def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
         self._deadlines.add_timeout(task_id, deadline, token)
@@ -257,10 +265,19 @@ class AwaitScheduler(InterleavedLoop):
                             # Every live task is asleep or parked in a timed
                             # wait: only time can move.
                             next_deadline = self._deadlines.next_deadline()
-                            if next_deadline is not None:
-                                self._advance_clock_to(next_deadline)
+                            if next_deadline is None or not self._advance_clock_to(next_deadline):
+                                self._condition.notify_all()
+                                continue
+                            # A timeout fired at this hop.  Do NOT advance
+                            # again yet: the waiter it woke (e.g. the virtual
+                            # wait_for wrapper) cancels its timed-out task
+                            # only when the event loop next runs, and this
+                            # sleeper may BE that task.  Fall through to the
+                            # condition wait, which releases the lock and
+                            # yields — the cancellation lands there (or, if
+                            # nothing reacts, the quiescence fallback resumes
+                            # the advance).
                             self._condition.notify_all()
-                            continue
                         snapshot = (self._progress, self._index, len(self._tasks_done))
                         quiescence_slice = min(_QUIESCENCE_SLICE, max(0.001, self.deadlock_timeout / 2.0))
                         try:
