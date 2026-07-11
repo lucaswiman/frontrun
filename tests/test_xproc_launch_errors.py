@@ -391,3 +391,52 @@ def test_process_launchers_expose_capability_protocols() -> None:
     assert isinstance(mp, IterationCustomizer)
     assert isinstance(sub, LivenessProbe)
     assert not isinstance(sub, IterationCustomizer)
+
+
+# --- Listener bind failure must not leak the private temp dir ---------------
+
+
+@pytest.mark.parametrize("coordinator_cls_name", ["CrossProcessCoordinator", "DporCrossProcessCoordinator"])
+def test_bind_failure_cleans_up_own_tempdir_and_names_the_socket_path(
+    coordinator_cls_name: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The default socket path is $TMPDIR/frontrun-xproc-*/s; a deep $TMPDIR
+    # (common in sandboxed/CI environments) pushes it past the AF_UNIX ~108
+    # byte limit and bind() raises. The listener was created/bound above the
+    # coordinators' try/finally, so the mkdtemp'd working directory leaked
+    # (one per call) and the user saw a bare OSError with no frontrun context.
+    from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator
+    from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
+
+    cls = {
+        "CrossProcessCoordinator": CrossProcessCoordinator,
+        "DporCrossProcessCoordinator": DporCrossProcessCoordinator,
+    }[coordinator_cls_name]
+
+    deep = tmp_path / ("d" * 90)
+    deep.mkdir()
+    monkeypatch.setenv("TMPDIR", str(deep))
+    import tempfile as _tempfile
+
+    monkeypatch.setattr(_tempfile, "tempdir", None)  # re-read $TMPDIR
+
+    coord = cls(num_workers=1)
+    assert coord._own_dir is not None and len(coord.socket_path) > 108
+
+    class _NeverLaunched:
+        def launch(self, targets):  # pragma: no cover - bind fails first
+            raise AssertionError("launch must not be reached when bind fails")
+
+        def join(self, handles, timeout):  # pragma: no cover
+            pass
+
+    with pytest.raises(OSError) as excinfo:
+        coord.explore(worker_set=_NeverLaunched(), setup=lambda: None, invariant=lambda: True)
+    # The error names the socket path and points at the fix, instead of a
+    # bare "AF_UNIX path too long".
+    assert coord.socket_path in str(excinfo.value)
+    assert "socket_path" in str(excinfo.value)
+    # And the private working directory is cleaned up, not leaked.
+    import os as _os
+
+    assert not _os.path.exists(coord._own_dir)
