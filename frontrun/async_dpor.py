@@ -744,8 +744,6 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._start_opcode_trace()
         try:
             await super().run_all(wrapped, timeout=timeout, detect_external_deadlock=detect_external_deadlock)
-        except DeadlockError:
-            raise
         except Exception:
             # A scheduler abort makes the remaining tasks free-run to completion
             # under false pretenses (for example, parked event waits return on an

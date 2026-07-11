@@ -142,6 +142,7 @@ async def _intercept_asyncpg_execute(
     self: Any,
     operation: Any,
     *args: Any,
+    method_name: str = "execute",
     **kwargs: Any,
 ) -> Any:
     """Intercept asyncpg connection methods (execute, fetch, fetchrow, fetchval).
@@ -158,7 +159,14 @@ async def _intercept_asyncpg_execute(
         lambda: original_method(self, operation, *args, **kwargs),
         statement_row_locks,
     )
-    if update_match is not None and reported and statement_row_locks and result == "UPDATE 0":
+    zero_rows = (
+        (method_name == "execute" and result == "UPDATE 0")
+        or (method_name == "fetch" and result == [])
+        or (method_name == "fetchrow" and result is None)
+    )
+    # fetchval() returns None both for no row and for a matched row whose first
+    # RETURNING value is SQL NULL, so retaining the lock is the only sound choice.
+    if update_match is not None and reported and statement_row_locks and zero_rows:
         _release_dpor_row_locks(statement_row_locks)
     return result
 
@@ -304,7 +312,7 @@ def _patch_asyncpg() -> None:
     # execute returns command tag, fetch/fetchrow/fetchval return results.
     def _make_patched(orig: Any, method_name: str) -> Any:
         async def _patched(self: Any, query: Any, *args: Any, **kwargs: Any) -> Any:
-            return await _intercept_asyncpg_execute(orig, self, query, *args, **kwargs)
+            return await _intercept_asyncpg_execute(orig, self, query, *args, method_name=method_name, **kwargs)
 
         return wrap_method_metadata(_patched, orig, name=method_name)
 

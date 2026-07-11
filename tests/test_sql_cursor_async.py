@@ -776,8 +776,13 @@ class TestAsyncUpdateZeroRowRelease:
             "to release row locks on 0-row matches (Defect #6 fix)"
         )
 
-    @pytest.mark.parametrize(("method_name", "result"), [("fetch", []), ("fetchrow", None)])
-    async def test_asyncpg_zero_row_result_releases_statement_lock(self, method_name: str, result: Any) -> None:
+    @pytest.mark.parametrize(
+        ("method_name", "result", "releases"),
+        [("fetch", [], True), ("fetchrow", None, True), ("fetchval", None, False)],
+    )
+    async def test_asyncpg_result_shape_controls_statement_lock_release(
+        self, method_name: str, result: Any, releases: bool
+    ) -> None:
         from frontrun._io_detection import (
             set_dpor_scheduler_task,
             set_dpor_thread_id_task,
@@ -826,8 +831,12 @@ class TestAsyncUpdateZeroRowRelease:
             )
             assert actual == result
             assert len(scheduler.acquired) == 1
-            assert scheduler.release_calls == [scheduler.acquired]
-            assert store._held_row_locks == set()
+            if releases:
+                assert scheduler.release_calls == [scheduler.acquired]
+                assert store._held_row_locks == set()
+            else:
+                assert scheduler.release_calls == []
+                assert store._held_row_locks == set(scheduler.acquired)
         finally:
             set_dpor_scheduler_task(None)
             set_dpor_thread_id_task(None)
