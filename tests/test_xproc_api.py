@@ -73,6 +73,30 @@ def test_explore_processes_max_iterations_error_names_the_dpor_bound(monkeypatch
         )
 
 
+def test_explore_processes_wires_exhaustive_step_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(frontrun.cross_process, "CrossProcessCoordinator", _RecordingCoordinator)
+    frontrun.explore_processes(
+        frontrun.Subprocess(_TARGET, ("unused.db",)),
+        count=2,
+        setup=lambda: None,
+        invariant=lambda _state: True,
+        strategy="exhaustive",
+        max_steps_per_run=123,
+    )
+    assert _RecordingCoordinator.captured["max_steps_per_run"] == 123
+
+
+def test_explore_processes_rejects_exhaustive_step_limit_with_dpor() -> None:
+    with pytest.raises(ValueError, match="exhaustive"):
+        frontrun.explore_processes(
+            frontrun.Subprocess(_TARGET, ("unused.db",)),
+            count=2,
+            setup=lambda: None,
+            invariant=lambda _state: True,
+            max_steps_per_run=123,
+        )
+
+
 # ---------------------------------------------------------------------------
 # DPOR knobs: wired through under strategy="dpor", rejected under exhaustive
 # ---------------------------------------------------------------------------
