@@ -2196,3 +2196,49 @@ def test_async_exact_deadlock_declines_with_live_external_thread() -> None:
         for thread in threads:
             thread.join(timeout=2.0)
     assert result.property_holds, result.explanation
+
+
+def test_async_random_wait_for_timeout_cancels_longer_sleep() -> None:
+    # Regression: the shuffler's autojump loop advanced the virtual clock
+    # through EVERY pending deadline in one synchronous burst (each iteration
+    # ended in ``continue`` with no await), so a fired wait_for timeout token
+    # never got back to the event loop to cancel the inner sleep before the
+    # sleep's own later deadline fired too. The inner coroutine ran code a
+    # real timeout would have prevented, wait_for returned its result instead
+    # of raising TimeoutError, and the unreachable final state was reported as
+    # a counterexample — a false counterexample manufactured by frontrun's own
+    # clock handling. (The DPOR strategy handles the same program correctly.)
+    class State:
+        def __init__(self) -> None:
+            self.past_sleep = False
+            self.result: object = None
+
+    async def slow(s: State) -> str:
+        await asyncio.sleep(5.0)
+        s.past_sleep = True
+        return "done"
+
+    async def worker(s: State) -> None:
+        try:
+            s.result = ("returned", await asyncio.wait_for(slow(s), timeout=1.0))
+        except (TimeoutError, asyncio.TimeoutError):
+            s.result = "timeout"
+
+    def invariant(s: State) -> bool:
+        # Real asyncio semantics are deterministic for this single logical
+        # task: at t=1 the timeout cancels slow() mid-sleep, so the sleep can
+        # never complete and wait_for must raise.
+        return s.result == "timeout" and not s.past_sleep
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=invariant,
+            strategy="random",
+            clock="virtual",
+            max_attempts=3,
+            seed=1,
+        )
+    )
+    assert result.property_holds, f"false counterexample — the timeout was swallowed: {result.explanation}"
