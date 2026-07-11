@@ -346,28 +346,36 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
             )
             runner = DporBytecodeRunner(scheduler, detect_io=detect_io, preload_bridge=preload_bridge)
 
-            with clock_scope(virtual_clock):
-                with runner.patch_scope(patch_sleep=patch_sleep):
-                    state = setup()
-                    # Assign stable object IDs in deterministic, schedule-independent
-                    # order *before* any worker runs.  Without this, IDs are assigned
-                    # in first-touch order, which DPOR backtracks permute across
-                    # executions — corrupting the Rust sleep-set / trace-cache
-                    # comparison that carries object-ID-keyed state across executions
-                    # (silently pruning genuinely distinct interleavings).
-                    stable_ids.pre_register(state)
+            # Both scopes span setup/run/invariant: the invariant runs on the
+            # driver thread under the same clock AND sleep/lock/io patches the
+            # workers and setup() saw.  Ending patch_scope before evaluation
+            # (as this once did) made a TTL-style invariant's time.sleep run
+            # on the REAL wall clock while its time.* reads stayed frozen at
+            # virtual time — a self-inconsistent clock (elapsed == 0.0 after
+            # sleep(5)) costing real seconds per explored interleaving.  The
+            # nested runs of _reproduce_dpor_counterexample are safe under the
+            # held scope: every patch is reference-counted.
+            with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
+                state = setup()
+                # Assign stable object IDs in deterministic, schedule-independent
+                # order *before* any worker runs.  Without this, IDs are assigned
+                # in first-touch order, which DPOR backtracks permute across
+                # executions — corrupting the Rust sleep-set / trace-cache
+                # comparison that carries object-ID-keyed state across executions
+                # (silently pruning genuinely distinct interleavings).
+                stable_ids.pre_register(state)
 
-                    def make_thread_func(thread_func: Callable[[T], None], s: T) -> Callable[[], None]:
-                        def wrapper() -> None:
-                            thread_func(s)
+                def make_thread_func(thread_func: Callable[[T], None], s: T) -> Callable[[], None]:
+                    def wrapper() -> None:
+                        thread_func(s)
 
-                        return wrapper
+                    return wrapper
 
-                    funcs = [make_thread_func(t, state) for t in threads]
-                    try:
-                        runner.run(funcs, timeout=timeout_per_run)
-                    except TimeoutError:
-                        pass
+                funcs = [make_thread_func(t, state) for t in threads]
+                try:
+                    runner.run(funcs, timeout=timeout_per_run)
+                except TimeoutError:
+                    pass
 
                 result.num_explored += 1
 
