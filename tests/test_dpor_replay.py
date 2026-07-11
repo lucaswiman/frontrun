@@ -156,6 +156,25 @@ class TestIOAnchoredReplayScheduler:
         assert sched._lock.acquire(timeout=1.0), "condition lock still held by a busy-spinner"
         sched._lock.release()
 
+    @pytest.mark.parametrize("io_anchored", [False, True])
+    def test_sync_retry_confirms_replay_deadlock_candidate(self, io_anchored: bool) -> None:
+        from frontrun._deadlock import DeadlockError
+        from frontrun._dpor_runtime.scheduler import _IOAnchoredReplayScheduler, _ReplayDporScheduler
+        from frontrun._virtual_clock import VirtualClock
+
+        if io_anchored:
+            scheduler = _IOAnchoredReplayScheduler(
+                [(0, "dummy")], 2, deadlock_timeout=0.01, virtual_clock=VirtualClock()
+            )
+        else:
+            scheduler = _ReplayDporScheduler([0], 2, deadlock_timeout=0.01, virtual_clock=VirtualClock())
+        scheduler._lock_waiters[1] = {0, 1}
+        scheduler._current_thread = 0
+        scheduler._exact_deadlock_candidate_at = time.monotonic() - 1.0
+
+        assert not scheduler.before_sync_retry(1)
+        assert isinstance(scheduler._error, DeadlockError)
+
     def test_positional_replay_detects_exact_event_deadlock(self) -> None:
         """Replaying a schedule that ends in an Event-wait cycle must raise
         DeadlockError promptly, not spin out the op budget and die with a
