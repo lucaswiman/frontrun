@@ -1721,12 +1721,14 @@ def test_random_queue_waiter_does_not_starve_virtual_sleep_autojump() -> None:
     def consumer(s: State) -> None:
         s.got = s.q.get()
 
+    # timeout is only the hang backstop (a starved autojump never completes at
+    # any budget); keep it generous — 1.0s flaked on loaded free-threaded CI.
     state = run_with_schedule(
         [0, 1] * 20,
         setup=State,
         threads=[consumer, producer],
         clock="virtual",
-        timeout=1.0,
+        timeout=10.0,
         deadlock_timeout=0.05,
     )
     assert state.got == "x"
