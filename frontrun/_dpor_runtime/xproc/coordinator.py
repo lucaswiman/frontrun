@@ -366,8 +366,16 @@ class CrossProcessCoordinator:
                 # crashed without closing the socket is a worker_error, not a
                 # too-small deadlock_timeout.
                 if isinstance(worker_set, LivenessProbe) and worker_set.any_exited(handles):
+                    # any_exited/diagnose are fleet-wide: the process that died
+                    # need not be *wid* (which merely went silent), so the
+                    # message must not claim wid exited — diagnose names the
+                    # worker(s) that actually did.
                     detail = worker_set.diagnose(handles)
-                    errors.setdefault(wid, f"worker process exited during the run ({detail or 'nonzero exit'})")
+                    errors.setdefault(
+                        wid,
+                        f"sent no frame within deadlock_timeout={self.deadlock_timeout}s during a run in "
+                        f"which a worker process exited ({detail or 'nonzero exit'})",
+                    )
                     continue
                 timeouts[wid] = (
                     f"worker {wid} sent no frame within deadlock_timeout={self.deadlock_timeout}s but is still "
