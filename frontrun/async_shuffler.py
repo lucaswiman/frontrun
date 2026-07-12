@@ -246,14 +246,24 @@ class AwaitScheduler(InterleavedLoop):
         self._advance_clock_to(next_deadline)
         return True
 
-    async def sleep_until(self, task_id: int, deadline: float) -> None:
-        """Block *task_id* until the virtual clock reaches *deadline*."""
+    async def sleep_until(self, task_id: int, deadline: float | None = None, *, duration: float | None = None) -> None:
+        """Block *task_id* until the virtual clock reaches *deadline*.
+
+        With ``duration=`` the deadline is computed under ``_condition`` after
+        the fairness yield: the yield spans a full loop pass, during which
+        another task's step can advance the clock — a caller-side ``now()``
+        read would then register an already-stale deadline.
+        """
         depth = _in_scheduler_pause.get()
         _in_scheduler_pause.set(depth + 1)
         try:
             await _real_asyncio_sleep(0)
             self._progress += 1
             async with self._condition:
+                if deadline is None:
+                    if duration is None or self.virtual_clock is None:
+                        raise TypeError("sleep_until needs either deadline= or duration= (with a virtual clock)")
+                    deadline = self.virtual_clock.now() + duration
                 if self._error:
                     return
                 if self._finished:

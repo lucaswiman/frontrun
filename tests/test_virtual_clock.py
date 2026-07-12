@@ -2094,3 +2094,43 @@ def test_replay_sleep_until_phase2_bypasses_positional_gate_when_anchor_waiters_
             sched._condition.notify_all()
         gate_done.wait(timeout=5.0)
         gate_thread.join(timeout=5.0)
+
+
+def test_timed_wait_deadline_computed_under_scheduler_lock_survives_concurrent_advance() -> None:
+    """A timed wait must never register an already-expired deadline.
+
+    ``_timed_acquire_state`` used to compute ``clock.now() + timeout`` in the
+    caller and pass the absolute deadline to ``add_timed_wait``.  Under
+    ``clock="explored"`` another thread's clock-actor step can land between
+    that read and the registration; the wait then observed (up to) the whole
+    advance as elapsed time and expired on its first probe — a timed acquire
+    seeing far more virtual time than its timeout, nondeterministically.  The
+    deadline is now computed inside the scheduler's serialising lock, which
+    every clock advance also holds.
+    """
+    from frontrun import _cooperative
+
+    clock = VirtualClock()
+    scheduler = OpcodeScheduler(
+        [0],
+        num_threads=1,
+        deadlock_timeout=0.2,
+        virtual_clock=clock,
+        clock_mode="explored",
+    )
+    original_add = scheduler.add_timed_wait
+
+    def racing_add(thread_id: int, deadline: float | None = None, *, timeout: float | None = None) -> float:
+        # Simulate the concurrent explored-mode advance landing just before
+        # the registration is serialised.
+        clock.advance_to(clock.now() + 100.0)
+        if deadline is not None:
+            return original_add(thread_id, deadline)
+        return original_add(thread_id, timeout=timeout)
+
+    scheduler.add_timed_wait = racing_add  # type: ignore[method-assign]
+    deadline, graph, got_clock = _cooperative._timed_acquire_state(5.0, scheduler, 0)
+    assert got_clock is clock
+    assert graph is None
+    assert deadline == pytest.approx(clock.now() + 5.0)
+    assert not _cooperative._timed_acquire_expired(deadline, clock)

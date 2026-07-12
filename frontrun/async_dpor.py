@@ -438,8 +438,13 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._deadlines.cancel(task_id, token)
         self._sync_clock_actor()
 
-    async def sleep_until(self, task_id: int, deadline: float) -> None:
+    async def sleep_until(self, task_id: int, deadline: float | None = None, *, duration: float | None = None) -> None:
         """Block *task_id* until the virtual clock reaches *deadline*.
+
+        With ``duration=`` the deadline is computed under ``_condition`` after
+        the fairness yield (which spans a full loop pass during which other
+        tasks can advance the clock — a caller-side ``now()`` read would then
+        register an already-stale deadline).
 
         Mirrors the sync ``DporScheduler.sleep_until``: register the
         deadline, block in the engine, release the turn, then wait for the
@@ -453,6 +458,10 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             await _real_asyncio_sleep(0)
             self._progress += 1
             async with self._condition:
+                if deadline is None:
+                    if duration is None or self.virtual_clock is None:
+                        raise TypeError("sleep_until needs either deadline= or duration= (with a virtual clock)")
+                    deadline = self.virtual_clock.now() + duration
                 if self._finished or self._error:
                     return
                 self._sleepers[task_id] = deadline

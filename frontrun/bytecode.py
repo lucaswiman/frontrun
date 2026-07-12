@@ -326,14 +326,23 @@ class OpcodeScheduler:
             return
         self._clock_port.advance_clock_to(clock, target, noop_on_wake)
 
-    def sleep_until(self, thread_id: int, deadline: float) -> None:
+    def sleep_until(self, thread_id: int, deadline: float | None = None, *, duration: float | None = None) -> None:
         """Block *thread_id* until the virtual clock reaches *deadline*.
+
+        With ``duration=`` the deadline is computed under ``_condition`` (the
+        lock all clock advances hold), so a concurrent explored-mode advance
+        cannot land between the caller's ``now()`` read and the registration
+        and instantly expire the sleep.
 
         Wakes when another thread's scheduling advances the clock past the
         deadline, or — when every live thread is deadline-blocked — by
         autojumping to the earliest pending deadline directly.
         """
         with self._condition:
+            if deadline is None:
+                if duration is None or self.virtual_clock is None:
+                    raise TypeError("sleep_until needs either deadline= or duration= (with a virtual clock)")
+                deadline = self.virtual_clock.now() + duration
             self._deadlines.add_sleep(thread_id, deadline, wake_id=None)
             self._condition.notify_all()
             try:
@@ -403,9 +412,13 @@ class OpcodeScheduler:
         """Clear spin flags for *resource_id* (it may now be acquirable)."""
         self._clock_port.note_spin_release(resource_id)
 
-    def add_timed_wait(self, thread_id: int, deadline: float) -> None:
-        """Register a virtual deadline for a timed lock acquire."""
-        self._clock_port.add_timed_wait(thread_id, deadline)
+    def add_timed_wait(self, thread_id: int, deadline: float | None = None, *, timeout: float | None = None) -> float:
+        """Register a virtual deadline for a timed lock acquire.
+
+        With ``timeout=`` the deadline is computed under the scheduler's
+        serialising lock (see ``VirtualClockPort.add_timed_wait``); returns it.
+        """
+        return self._clock_port.add_timed_wait(thread_id, deadline, timeout=timeout, clock=self.virtual_clock)
 
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""

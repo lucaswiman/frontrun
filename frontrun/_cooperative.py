@@ -180,7 +180,6 @@ def _timed_acquire_state(
     if timeout >= 0:
         clock = getattr(scheduler, "virtual_clock", None) if scheduler is not None else None
         if clock is not None and thread_id is not None:
-            deadline = clock.now() + timeout
             add_timed_wait = getattr(scheduler, "add_timed_wait", None)
             if add_timed_wait is None:
                 # Degrading to a wall-clock deadline here would silently make
@@ -191,7 +190,11 @@ def _timed_acquire_state(
                     f"scheduler {type(scheduler).__name__} exposes virtual_clock but not add_timed_wait; "
                     "virtual timed waits need both"
                 )
-            add_timed_wait(thread_id, deadline)
+            # Relative registration: the scheduler computes now+timeout under
+            # its serialising lock, so a concurrent explored-mode clock
+            # advance landing between a caller-side now() read and the
+            # registration cannot hand back an already-expired deadline.
+            deadline = add_timed_wait(thread_id, timeout=timeout)
             return deadline, None, clock
         return _real_monotonic() + timeout, None, None
     return None, get_wait_for_graph(), None
@@ -1876,7 +1879,10 @@ def _cooperative_sleep(seconds: float) -> None:
     clock = getattr(scheduler, "virtual_clock", None)
     sleep_until = getattr(scheduler, "sleep_until", None)
     if clock is not None and sleep_until is not None and seconds > 0:
-        sleep_until(thread_id, clock.now() + seconds)
+        # Relative form: the scheduler computes now+seconds under its
+        # serialising lock (see sleep_until), closing the concurrent-advance
+        # window between a caller-side now() read and the registration.
+        sleep_until(thread_id, duration=seconds)
         return
     scheduler.wait_for_turn(thread_id)
 

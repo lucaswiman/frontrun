@@ -133,7 +133,10 @@ async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # 
         clock = scheduler.virtual_clock
         sleep_until = getattr(scheduler, "sleep_until", None)
         if clock is not None and sleep_until is not None:
-            await sleep_until(task_id, clock.now() + delay)
+            # Relative form: sleep_until computes now+delay under the
+            # scheduler condition after its fairness yield — a caller-side
+            # now() read would go stale during that loop pass.
+            await sleep_until(task_id, duration=delay)
             return result
     await _real_asyncio_sleep(0)
     return result

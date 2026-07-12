@@ -163,7 +163,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         if next_actor is None:
             self._finished = True
 
-    async def sleep_until(self, task_id: int, deadline: float) -> None:
+    async def sleep_until(self, task_id: int, deadline: float | None = None, *, duration: float | None = None) -> None:
         """Replay counterpart of ``AsyncDporScheduler.sleep_until``."""
         depth = _in_scheduler_pause.get()
         _in_scheduler_pause.set(depth + 1)
@@ -171,6 +171,10 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
             await _real_asyncio_sleep(0)
             self._progress += 1
             async with self._condition:
+                if deadline is None:
+                    if duration is None or self.virtual_clock is None:
+                        raise TypeError("sleep_until needs either deadline= or duration= (with a virtual clock)")
+                    deadline = self.virtual_clock.now() + duration
                 if self._finished or self._error:
                     return
                 self._sleepers[task_id] = deadline
