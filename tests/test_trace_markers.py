@@ -631,6 +631,21 @@ def test_dict_form_returns_none():
     assert account.balance == 200
 
 
+def test_dict_form_worker_system_exit_is_not_silent_success() -> None:
+    """SystemExit in a marker worker must propagate to the caller."""
+
+    def exits() -> None:
+        reached_marker = True  # frontrun: before_system_exit
+        assert reached_marker
+        raise SystemExit(9)
+
+    executor = TraceExecutor(Schedule([Step("worker", "before_system_exit")]))
+    with pytest.raises(SystemExit) as exc_info:
+        executor.run({"worker": exits}, timeout=1.0)
+
+    assert exc_info.value.code == 9
+
+
 @pytest.mark.intentionally_leaves_dangling_threads
 def test_dict_form_timeout():
     """The dict form raises TimeoutError when threads don't finish in time."""
