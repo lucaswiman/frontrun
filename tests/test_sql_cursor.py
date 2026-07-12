@@ -1814,6 +1814,42 @@ def test_failed_textual_tx_end_preserves_modeled_transaction(operation: str) -> 
                 delattr(_io_tls, attr)
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["BEGIN", "SAVEPOINT later", "ROLLBACK TO SAVEPOINT before", "RELEASE SAVEPOINT before"],
+)
+def test_failed_textual_tx_control_preserves_modeled_transaction(operation: str) -> None:
+    """Non-terminal tx control takes effect only after physical I/O succeeds."""
+    log = IOLog()
+    set_io_reporter(log)
+    original_buffer = [("sql:accounts:id=1", "write"), ("sql:accounts:id=2", "read")]
+    original_savepoints = {"before": 1}
+    original_locks = {"sql:accounts:id=1"}
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = False
+    _io_tls._tx_buffer = list(original_buffer)
+    _io_tls._tx_savepoints = dict(original_savepoints)
+    _io_tls._held_row_locks = set(original_locks)
+
+    def fail(_cursor: object, _sql: str) -> None:
+        raise RuntimeError("physical transaction control failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="physical transaction control failed"):
+            sql_cursor_mod._intercept_execute(fail, object(), operation)
+
+        assert _io_tls._in_transaction is True
+        assert _io_tls._is_autobegin is False
+        assert _io_tls._tx_buffer == original_buffer
+        assert _io_tls._tx_savepoints == original_savepoints
+        assert _io_tls._held_row_locks == original_locks
+    finally:
+        set_io_reporter(None)
+        for attr in ("_in_transaction", "_is_autobegin", "_tx_buffer", "_tx_savepoints", "_held_row_locks"):
+            if hasattr(_io_tls, attr):
+                delattr(_io_tls, attr)
+
+
 # ---------------------------------------------------------------------------
 # Finding 4: pymysql autobegin detection (callable autocommit)
 # ---------------------------------------------------------------------------
