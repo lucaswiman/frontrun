@@ -316,6 +316,10 @@ def _sql_sequence_resource_id(table: str, *, db_scope: str | None = None) -> str
     return f"{_sql_resource_id(table, [], db_scope=db_scope)}:seq"
 
 
+def _sql_database_resource_id(*, db_scope: str | None = None) -> str:
+    return _sql_resource_id("__database__", [], db_scope=db_scope)
+
+
 def _report_sql_access(
     operation: Any,
     parameters: Any = None,
@@ -355,6 +359,20 @@ def _report_sql_access(
                     "use one connection per worker or end the active transaction first"
                 )
 
+        dpor_ctx = _get_dpor_context()
+        semantic_fallback = bool(dpor_ctx is not None and getattr(dpor_ctx[0], "requires_semantic_io_fallback", False))
+        if semantic_fallback and access.tx_op is None:
+            has_parsed_access = bool(access.read_tables or access.write_tables)
+            _report_or_buffer(
+                reporter,
+                _sql_database_resource_id(db_scope=_get_connection_db_scope(db_obj)),
+                "read" if has_parsed_access else "write",
+                track_row_lock=False,
+            )
+            reported = True
+            if not has_parsed_access:
+                return True
+
         # 1. Handle Transaction Control Operations
         if access.tx_op is not None:
             reported = True  # Suppress endpoint I/O for TX control too
@@ -370,7 +388,6 @@ def _report_sql_access(
         if access.read_tables or access.write_tables:
             reported = True
             all_tables = access.read_tables | access.write_tables
-            dpor_ctx = _get_dpor_context()
             db_scope = _get_connection_db_scope(db_obj)
 
             # Row-level predicate extraction (WHERE equality, IN-lists, and INSERT VALUES)

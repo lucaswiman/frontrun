@@ -35,6 +35,10 @@ from . import protocol as proto
 class SchedulerProxy:
     """Forwards the interception layer's scheduler calls to the coordinator."""
 
+    # Worker processes deliberately scrub LD_PRELOAD, so SQL statements the
+    # semantic parser cannot resolve need a conservative modeled fallback.
+    requires_semantic_io_fallback = True
+
     def __init__(self, sock: socket.socket, worker_id: int) -> None:
         self._sock = sock
         self._worker_id = worker_id
