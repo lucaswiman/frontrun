@@ -47,6 +47,7 @@ from .coordinator import (
     _launch_error,
     accept_hello_live,
     bind_coordination_listener,
+    check_worker_id,
     worker_targets,
 )
 from .launch import WorkerSerializationError
@@ -434,13 +435,20 @@ class DporCrossProcessCoordinator:
         setup: Callable[[], Any],
         invariant: Callable[[], bool],
     ) -> CrossProcessResult:
-        engine = make_dpor_engine(
-            num_threads=self.num_workers,
-            preemption_bound=self.preemption_bound,
-            max_branches=self.max_branches,
-            max_executions=self.max_executions,
-            search=self.search,
-        )
+        try:
+            engine = make_dpor_engine(
+                num_threads=self.num_workers,
+                preemption_bound=self.preemption_bound,
+                max_branches=self.max_branches,
+                max_executions=self.max_executions,
+                search=self.search,
+            )
+        except BaseException:
+            # Engine construction (e.g. an invalid search=) raises before the
+            # listener/try-finally below is armed; without this the mkdtemp'd
+            # socket directory from __init__ leaks on every failed call.
+            self._cleanup_socket()
+            raise
         engine_lock = threading.Lock()
         stable_ids = StableObjectIds()
         deadline = make_deadline(self.total_timeout)
@@ -491,6 +499,7 @@ class DporCrossProcessCoordinator:
                             sock, wid = accept_hello_live(
                                 listener, worker_set, persistent_handles, self._connect_budget
                             )
+                            check_worker_id(wid, self.num_workers, persistent_socks, sock)
                             persistent_socks[wid] = sock
                         persistent_poisoned = False
                     except (TimeoutError, OSError) as exc:
@@ -720,6 +729,7 @@ class DporCrossProcessCoordinator:
             try:
                 for _ in range(self.num_workers):
                     sock, wid = accept_hello_live(listener, worker_set, handles, self._connect_budget)
+                    check_worker_id(wid, self.num_workers, socks_by_id, sock)
                     socks_by_id[wid] = sock
             except (TimeoutError, OSError) as exc:
                 # Reap dead children so the WorkerSet can read their exit/stderr,

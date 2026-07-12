@@ -23,7 +23,7 @@ import shutil
 import socket
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -122,7 +122,33 @@ def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket
     if hello is None or hello.get("t") != proto.HELLO or "w" not in hello:
         sock.close()
         raise OSError(f"expected HELLO frame, got {hello!r}")
-    return sock, int(hello["w"])
+    try:
+        worker_id = int(hello["w"])
+    except (TypeError, ValueError):
+        # A non-integer id must be a connection failure (OSError, which the
+        # coordinators catch and structure), not a bare ValueError escaping
+        # explore() with the accepted socket leaked.
+        sock.close()
+        raise OSError(f"HELLO frame carries a non-integer worker id: {hello!r}") from None
+    return sock, worker_id
+
+
+def check_worker_id(worker_id: int, num_workers: int, taken: Collection[int], sock: socket.socket) -> None:
+    """Validate a HELLO-announced worker id against the expected dense range.
+
+    A duplicate id would silently overwrite the previous worker's connection
+    (that worker is then never driven — a false ``ok=True`` over half the
+    workload); an out-of-range id would flow into scheduling bookkeeping (and,
+    on the DPOR path, into the Rust engine) under a nonsense thread id.  Both
+    close the accepted socket and raise OSError so the coordinators' existing
+    connection-failure handling reports the real cause.
+    """
+    if worker_id in taken:
+        sock.close()
+        raise OSError(f"duplicate worker id {worker_id} announced by a second HELLO")
+    if not 0 <= worker_id < num_workers:
+        sock.close()
+        raise OSError(f"worker id {worker_id} out of range for num_workers={num_workers}")
 
 
 def accept_hello_live(
@@ -392,6 +418,7 @@ class CrossProcessCoordinator:
             try:
                 for _ in range(self.num_workers):
                     sock, wid = accept_hello_live(listener, worker_set, handles, self.deadlock_timeout)
+                    check_worker_id(wid, self.num_workers, conns, sock)
                     conn = _Conn(wid, sock)
                     conns[wid] = conn
                     self._advance(conn, accesses, registry)
@@ -526,12 +553,23 @@ class CrossProcessCoordinator:
                     conn.error = "worker disconnected"
                 registry.pop_all(conn.worker_id, None)
                 return
-            kind = msg["t"]
+            kind = msg.get("t")
             if kind == proto.ACCESS:
-                accesses.append((conn.worker_id, msg["rid"], msg["kind"]))
+                rid = msg.get("rid")
+                access_kind = msg.get("kind")
+                if not isinstance(rid, str) or not isinstance(access_kind, str):
+                    self._fail_malformed(conn, msg, registry)
+                    return
+                accesses.append((conn.worker_id, rid, access_kind))
             elif kind == proto.RELEASE_LOCKS:
                 registry.pop(conn.worker_id, None, msg.get("res"))
-            elif kind in (proto.REPORT_AND_WAIT, proto.ACQUIRE_LOCKS):
+            elif kind == proto.ACQUIRE_LOCKS:
+                if not isinstance(msg.get("res"), list):
+                    self._fail_malformed(conn, msg, registry)
+                    return
+                conn.pending = msg
+                return
+            elif kind == proto.REPORT_AND_WAIT:
                 conn.pending = msg
                 return
             elif kind == proto.DONE:
@@ -545,6 +583,12 @@ class CrossProcessCoordinator:
                 conn.error = msg.get("msg", "worker error")
                 registry.pop_all(conn.worker_id, None)
                 return
+            elif kind is None:
+                # A frame with no "t" at all — a buggy or desynchronised
+                # worker. Structure it like any other worker failure instead
+                # of dying on a KeyError that escapes explore().
+                self._fail_malformed(conn, msg, registry)
+                return
             else:
                 # An unexpected frame — e.g. BEFORE_IO/AFTER_IO from a Redis
                 # worker, which the exhaustive coordinator does not support.
@@ -555,6 +599,14 @@ class CrossProcessCoordinator:
                 conn.error = f"unsupported frame {kind!r} (use strategy='dpor' for Redis workers)"
                 registry.pop_all(conn.worker_id, None)
                 return
+
+    @staticmethod
+    def _fail_malformed(conn: _Conn, msg: dict[str, Any], registry: RowLockRegistry) -> None:
+        """Mark *conn* failed on a structurally invalid frame (missing/typed-wrong keys)."""
+        conn.done = True
+        conn.pending = None
+        conn.error = f"malformed frame {msg!r}"
+        registry.pop_all(conn.worker_id, None)
 
     def _cleanup_socket(self) -> None:
         try:

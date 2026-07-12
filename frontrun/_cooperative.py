@@ -861,12 +861,17 @@ class CooperativeSemaphore:
             self._lock.release()
 
     def _drain_until(self, deadline: float) -> bool:
-        """Spin on ``_try_acquire`` until *deadline*; report on success."""
+        """Spin on ``_try_acquire`` until *deadline*; report on success.
+
+        Must use the *real* sleep: this runs after the scheduler finished, when
+        the patched ``time.sleep`` is an instant no-op for managed threads —
+        the 1 s drain window would otherwise busy-spin a full CPU core.
+        """
         while _real_monotonic() < deadline:
             if self._try_acquire():
                 self._report("lock_acquire")
                 return True
-            time.sleep(0.001)
+            _real_time_sleep(0.001)
         return False
 
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
@@ -897,7 +902,10 @@ class CooperativeSemaphore:
                     return True
                 if _real_monotonic() >= deadline:
                     return False
-                time.sleep(0.001)
+                # Real sleep: the patched sleep is a no-op / clock-advance for
+                # the driver thread under clock_scope, which would make this
+                # poll a hot spin that also inflates the virtual clock.
+                _real_time_sleep(0.001)
 
         # Spin-yield loop for managed threads.  A timeout is honoured through
         # _timed_acquire_state below: under a virtual clock it registers a
@@ -1376,8 +1384,11 @@ class CooperativeCondition:
                         # to 1s.  We unify with a bounded poll loop.
                         now = clock.now() if clock is not None else _real_monotonic()
                         end = _real_monotonic() + min(1.0, max(0.0, deadline - now))
+                        # Real sleep, not the patched one: post-_finished the
+                        # patched sleep is an instant no-op for managed
+                        # threads, which would turn this poll into a hot spin.
                         while my_ticket >= self._served and _real_monotonic() < end:
-                            time.sleep(0.001)
+                            _real_time_sleep(0.001)
                         served = my_ticket < self._served
                         _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         return served
