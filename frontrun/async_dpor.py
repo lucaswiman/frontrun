@@ -1571,12 +1571,19 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         if _restore_loop_time is not None:
             _restore_loop_time()
 
-    if result.property_holds and result.num_explored > 0 and decisive_executions == 0 and inconclusive_timeouts > 0:
+    if result.property_holds and result.num_explored > 0 and inconclusive_timeouts > 0:
         result.property_holds = False
-        result.explanation = (
-            f"Async DPOR checked no completed interleavings: all {inconclusive_timeouts} explored execution(s) "
-            "timed out before completion. This is inconclusive, not a deadlock counterexample; increase "
-            "timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
-        )
+        if decisive_executions == 0:
+            result.explanation = (
+                f"Async DPOR checked no completed interleavings: all {inconclusive_timeouts} explored execution(s) "
+                "timed out before completion. This is inconclusive, not a deadlock counterexample; increase "
+                "timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
+            )
+        else:
+            result.explanation = (
+                f"Async DPOR completed {decisive_executions} interleaving(s), but {inconclusive_timeouts} additional "
+                "execution(s) timed out before completion. The search is inconclusive and cannot prove the property; "
+                "increase timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
+            )
 
     return result
