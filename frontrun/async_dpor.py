@@ -278,6 +278,10 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._user_timers_pending = user_timers_pending
         self._deadlock_confirm_pending = False
         self._deadlock_confirm_task: asyncio.Task[None] | None = None
+        self._autojump_pending = False
+        self._autojump_task: asyncio.Task[None] | None = None
+        self._autojump_seq_at_arm = 0
+        self._schedule_seq = 0
         self._deadlock_confirm_progress: int | None = None
         # Baseline OS threads alive at scheduler construction (weak refs so a
         # baseline thread that exits and is GC'd drops out, and a new external
@@ -373,6 +377,10 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._current_task = task_id
         self._current_path_id = self._last_scheduled_path_id if task_id is not None else None
         self._current_task_consumed = False
+        if task_id is not None:
+            # Every real turn hand-out bumps this; the deferred autojump uses
+            # it to tell whether the jump it was armed for is still owed.
+            self._schedule_seq += 1
 
     def _activate_current_task_path(self, task_id: int) -> None:
         if self._current_task == task_id and self._current_path_id is not None:
@@ -613,6 +621,70 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             self._deadlock_confirm_pending = False
             self._deadlock_confirm_progress = None
 
+    def _maybe_deferred_autojump(self) -> None:
+        """Arm a deferred autojump (virtual clock, nothing engine-runnable).
+
+        Idempotent while a jump is already pending.  The jump itself runs in
+        :meth:`_deferred_autojump` after draining the loop's ready queue.
+        """
+        if self._autojump_pending or self._error is not None or self._finished:
+            return
+        self._autojump_pending = True
+        self._autojump_seq_at_arm = self._schedule_seq
+        self._autojump_task = asyncio.get_running_loop().create_task(self._deferred_autojump())
+
+    async def _deferred_autojump(self) -> None:
+        """Advance the clock once in-flight wakes have had a chance to land.
+
+        Drains up to four loop passes: a resolved future's wake chain (done
+        callback → task wakeup → engine unblock in the woken wrapper) is a
+        bounded call_soon chain, so a task that already won its race becomes
+        engine-runnable within a couple of passes and the jump is skipped in
+        favour of scheduling it.  If the run stays idle, the jump proceeds
+        exactly as the old synchronous autojump did.
+        """
+        handed_off = False
+        try:
+            for _ in range(4):
+                await _real_asyncio_sleep(0)
+                async with self._condition:
+                    if self._error is not None or self._finished:
+                        return
+                    if self._schedule_seq != self._autojump_seq_at_arm:
+                        # Someone else was handed a real turn since this jump
+                        # was armed (note: _current_task alone is not a valid
+                        # signal — it retains the *stale* previous holder, e.g.
+                        # the parked sleeper whose registration armed us).
+                        return
+                    if self.execution.runnable_threads():
+                        break
+            async with self._condition:
+                if self._error is not None or self._finished:
+                    return
+                if self._schedule_seq != self._autojump_seq_at_arm:
+                    return
+                if not self.execution.runnable_threads():
+                    if not can_autojump(self.virtual_clock, self._clock_actor_id, self._has_pending_deadlines()):
+                        # The pending deadlines were cancelled while draining;
+                        # fall back to the exact-deadlock candidate path.
+                        self._maybe_confirm_exact_deadlock()
+                        return
+                    self.execution.unblock_thread(self._clock_actor_id)
+                # Clear the flag *before* rescheduling so _schedule_next can
+                # arm a fresh (freshly-draining) deferred jump if this advance
+                # leaves the run idle again with another deadline pending.
+                # After that point the flag belongs to the new task — the
+                # finally below must not clobber it.
+                self._autojump_pending = False
+                handed_off = True
+                next_task = self._schedule_next()
+                if next_task is not None:
+                    self._set_current_task(next_task)
+                self._condition.notify_all()
+        finally:
+            if not handed_off:
+                self._autojump_pending = False
+
     def _schedule_next(self) -> int | None:
         """Ask the DPOR engine which task to run next.
 
@@ -629,10 +701,20 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             runnable = self.execution.runnable_threads()
             if not runnable:
                 if can_autojump(self.virtual_clock, self._clock_actor_id, self._has_pending_deadlines()):
-                    # Autojump: everything is blocked and timers are pending —
-                    # the clock advance is the only possible transition.
-                    self.execution.unblock_thread(self._clock_actor_id)
-                    continue
+                    # Autojump candidate: everything is engine-blocked and
+                    # timers are pending.  Do NOT jump synchronously — engine
+                    # unblock happens lazily when a woken task resumes, so a
+                    # wake callback (e.g. a wait_for future resolved by a task
+                    # that then finished) may still sit in the loop's ready
+                    # queue.  Jumping now would fire a timeout that in fact
+                    # lost the race: a successful instant wait would observe
+                    # its full timeout in virtual time (a false counterexample
+                    # that also offsets every later deadline).  Defer the jump
+                    # a few loop passes so in-flight wakes land first — the
+                    # same drain the exact-deadlock confirm already does.
+                    self._maybe_deferred_autojump()
+                    self._last_scheduled_path_id = None
+                    return None
                 self._maybe_confirm_exact_deadlock()
                 self._last_scheduled_path_id = None
                 return None
@@ -779,11 +861,11 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 raise self._error from None
             raise
         finally:
-            confirm = self._deadlock_confirm_task
-            if confirm is not None and not confirm.done():
-                confirm.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await confirm
+            for background in (self._deadlock_confirm_task, self._autojump_task):
+                if background is not None and not background.done():
+                    background.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await background
             self._stop_opcode_trace()
             self._shadow_stacks.clear()
 
@@ -976,7 +1058,12 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         for res_id in resource_ids:
             lock_int_id = self._row_lock_int_id(res_id)
             while (holder := self._active_row_locks.get(res_id)) is not None and holder != task_id:
-                if graph is not None:
+                # A waiter guarded by a virtual timeout deadline registers no
+                # wait edge: the clock actor cancels it at the deadline, so
+                # the wait cannot close a *permanent* cycle (timeout-based
+                # deadlock avoidance — mirrors the async lock wrapper and the
+                # sync _timed_acquire_state rule).
+                if graph is not None and not self._deadlines.in_timed_wait(task_id):
                     cycle = graph.add_waiting(task_id, lock_int_id, kind="row_lock")
                     if cycle is not None:
                         graph.remove_waiting(task_id, lock_int_id, kind="row_lock")

@@ -23,6 +23,7 @@ import frontrun
 
 class _WaitForState:
     def __init__(self) -> None:
+        self.ready = asyncio.Event()
         self.fut: asyncio.Future[int] | None = None
         self.value: int | None = None
         self.elapsed: float | None = None
@@ -37,14 +38,16 @@ def test_async_wait_for_success_does_not_autojump_to_full_timeout() -> None:
     # a false counterexample (and offsets every later deadline in the run).
     async def waiter(s: _WaitForState) -> None:
         s.fut = asyncio.get_running_loop().create_future()
+        s.ready.set()
         start = time.monotonic()
         s.value = await asyncio.wait_for(s.fut, timeout=10.0)
         s.elapsed = time.monotonic() - start
 
     async def setter(s: _WaitForState) -> None:
-        while s.fut is None:
-            await asyncio.sleep(0)
-        s.fut.set_result(42)
+        await s.ready.wait()
+        fut = s.fut
+        assert fut is not None
+        fut.set_result(42)
 
     result = asyncio.run(
         frontrun.explore(

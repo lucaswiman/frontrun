@@ -26,6 +26,8 @@ import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from threading import get_ident
+
 from frontrun import _real_threading as _rt
 from frontrun._async_autopause import _in_scheduler_pause, _scheduler_var, _task_id_var
 from frontrun._async_cooperative import _real_asyncio_sleep
@@ -59,6 +61,27 @@ _saved_asyncio_timeout_at = _real_asyncio_timeout_at
 _async_sleep_patch_count = 0
 _async_timeout_patch_count = 0
 _async_patch_lock = _rt.lock()
+
+
+def _scheduler_for_current_thread() -> Any:
+    """The active scheduler, or ``None`` when it belongs to another thread's loop.
+
+    On the free-threaded build (3.14t) ``threading.Thread`` starts with a copy
+    of the caller's context, so a thread spawned by explored code inherits
+    ``_scheduler_var``.  ``asyncio.sleep`` / ``wait_for`` / ``timeout`` running
+    in that thread's *own* event loop must not route through the exploration
+    scheduler — its condition is bound to the exploration loop, and its engine
+    calls would come from a second OS thread (a PyO3 ``&mut self`` data race).
+    Mirrors the ``_event_loop_thread_id`` gate in
+    ``AsyncDporScheduler._get_task_id``.
+    """
+    scheduler = _scheduler_var.get()
+    if scheduler is None:
+        return None
+    loop_thread = getattr(scheduler, "_event_loop_thread_id", None)
+    if loop_thread is not None and loop_thread != get_ident():
+        return None
+    return scheduler
 
 
 class _VirtualAsyncTimeoutToken:
@@ -98,7 +121,7 @@ async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # 
     suspends until the scheduler advances the clock to it.
     ``asyncio.sleep(0)`` stays a pure yield, matching stock semantics.
     """
-    scheduler = _scheduler_var.get()
+    scheduler = _scheduler_for_current_thread()
     task_id = _task_id_var.get()
     if scheduler is None or task_id is None:
         # The patch is process-wide, but its scheduling semantics are not:
@@ -145,7 +168,7 @@ def _virtual_timeout_impl(value: float | None, *, at: bool) -> Any:
     *at* selects ``asyncio.timeout_at`` semantics (*value* is an absolute loop
     time) versus ``asyncio.timeout`` (*value* is a relative delay).
     """
-    scheduler = _scheduler_var.get()
+    scheduler = _scheduler_for_current_thread()
     task_id = _task_id_var.get()
     clock = scheduler.virtual_clock if scheduler is not None else None
     internal = _in_frontrun_timer.get()
@@ -192,6 +215,16 @@ class _VirtualAsyncTimeoutContext:
         self._immediate_handle: asyncio.Handle | None = None
         self._entered = False
         self._exited = False
+        # Loop-time ↔ virtual-time anchor, recorded at __aenter__.  The loop
+        # clock stays on *real* time while the guarded block consumes
+        # *virtual* time, so translating a rescheduled `when` via
+        # "remaining = when - loop.time()" would re-add every virtual second
+        # already spent inside the block (reschedule(cm.when()) — a no-op per
+        # asyncio semantics — would push the deadline back by exactly the
+        # virtual time elapsed so far).  Anchoring at entry keeps `when()`
+        # arithmetic (`cm.reschedule(cm.when() + 5)`) exact.
+        self._loop_entry: float | None = None
+        self._virtual_entry: float | None = None
 
     async def __aenter__(self) -> _VirtualAsyncTimeoutContext:
         if self._entered:
@@ -200,6 +233,10 @@ class _VirtualAsyncTimeoutContext:
         self._task = asyncio.current_task()
         if self._task is not None:
             self._cancelling = self._task.cancelling()
+        clock = self._scheduler.virtual_clock
+        if clock is not None:
+            self._loop_entry = asyncio.get_running_loop().time()
+            self._virtual_entry = clock.now()
         self._reschedule(self._initial_when, deadline=self._initial_deadline)
         return self
 
@@ -215,6 +252,12 @@ class _VirtualAsyncTimeoutContext:
         clock = self._scheduler.virtual_clock
         if clock is None:
             return None
+        if self._loop_entry is not None and self._virtual_entry is not None:
+            # Translate through the entry anchor (see __init__): loop-time
+            # offsets from entry are virtual-time offsets from entry.  A
+            # deadline the virtual clock has already passed fires immediately
+            # via the call_soon path in _reschedule.
+            return self._virtual_entry + (when - self._loop_entry)
         loop_now = asyncio.get_running_loop().time()
         return clock.now() + max(0.0, when - loop_now)
 
@@ -266,7 +309,13 @@ class _VirtualAsyncTimeoutContext:
                 remaining_cancels = uncancel() if uncancel is not None else self._cancelling
                 if self._scheduler._error is None:
                     await self._scheduler.wait_until_scheduled_after_block(self._task_id, "asyncio.timeout")
-                if exc_type is asyncio.CancelledError and (uncancel is None or remaining_cancels <= self._cancelling):
+                # issubclass, not `is`: real asyncio converts CancelledError
+                # *subclasses* raised out of the expired block too.
+                if (
+                    exc_type is not None
+                    and issubclass(exc_type, asyncio.CancelledError)
+                    and (uncancel is None or remaining_cancels <= self._cancelling)
+                ):
                     raise TimeoutError from exc
             return False
         finally:
@@ -274,7 +323,7 @@ class _VirtualAsyncTimeoutContext:
 
 
 async def _virtual_asyncio_wait_for(awaitable: Awaitable[Any], timeout: float | None) -> Any:
-    scheduler = _scheduler_var.get()
+    scheduler = _scheduler_for_current_thread()
     task_id = _task_id_var.get()
     clock = scheduler.virtual_clock if scheduler is not None else None
     internal = _in_frontrun_timer.get()
