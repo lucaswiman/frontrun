@@ -243,6 +243,7 @@ def _dpor_schedule_and_suppress_sync(
     # Suppress cooperative lock sync events during the actual DB call.
     # Internal psycopg2/driver locks are implementation details.
     suppress_sync_reporting()
+    acquired: list[str] = []
     try:
         # Block if another DPOR thread holds a conflicting row lock. This runs
         # after the scheduling boundary and, for DporScheduler, while the SQL
@@ -347,9 +348,7 @@ def _report_sql_access(
         connection = _connection_for_db_object(db_obj)
         owner = getattr(store, "_tx_connection", None)
         if getattr(store, "_in_transaction", False) and owner is not None and connection is not owner:
-            if access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK) and not (
-                access.read_tables or access.write_tables
-            ):
+            if access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK) and not (access.read_tables or access.write_tables):
                 # Ending an unrelated connection must not finalize the active
                 # connection's modeled transaction.
                 return True

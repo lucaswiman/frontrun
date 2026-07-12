@@ -266,7 +266,7 @@ class TraceExecutor:
         return self._sync.threads
 
     @property
-    def thread_errors(self) -> dict[str, Exception]:
+    def thread_errors(self) -> dict[str, BaseException]:
         return self._sync.thread_errors
 
     @property

@@ -235,7 +235,9 @@ def _handle_tx_op(reporter: Any, tx: Any, *, release_locks: bool = True) -> None
             savepoints.pop(tx.name, None)
 
 
-def _apply_tx_op_after_success(tx: Any, connection: Any = None) -> None:
+def _apply_tx_op_after_success(  # pyright: ignore[reportUnusedFunction]  # imported by SQL cursor modules
+    tx: Any, connection: Any = None
+) -> None:
     """Apply a deferred transaction-control operation after driver success."""
     if tx in (TxOp.COMMIT, TxOp.ROLLBACK):
         _finalize_tx_end(tx)
