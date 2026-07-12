@@ -10,6 +10,36 @@ import frontrun
 
 
 class TestReplayHarness:
+    def test_timed_out_replay_does_not_return_partial_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A replay timeout is inconclusive, not a completed counterexample.
+
+        Returning the partially mutated state lets the reproduction loop run
+        the invariant and falsely count a non-completing replay as a success.
+        """
+        from frontrun._dpor_runtime.replay import _run_dpor_schedule
+        from frontrun._dpor_runtime.runner import DporBytecodeRunner
+
+        class State:
+            mutated = False
+
+        def worker(state: State) -> None:
+            state.mutated = True
+
+        def time_out_after_partial_run(
+            self: DporBytecodeRunner,
+            funcs: list[object],
+            args: list[tuple[object, ...]] | None = None,
+            timeout: float = 10.0,
+        ) -> None:
+            del self, args, timeout
+            funcs[0]()  # type: ignore[operator]
+            raise TimeoutError("simulated replay timeout")
+
+        monkeypatch.setattr(DporBytecodeRunner, "run", time_out_after_partial_run)
+
+        with pytest.raises(TimeoutError, match="simulated replay timeout"):
+            _run_dpor_schedule([0], State, [worker], detect_io=False)
+
     def test_reproduction_uses_dpor_runner_not_bytecode_replay(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """DPOR counterexample replay should not depend on bytecode.run_with_schedule."""
         import frontrun.bytecode as bytecode
