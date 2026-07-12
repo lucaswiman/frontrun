@@ -24,9 +24,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
-from typing import Any
-
 from threading import get_ident
+from typing import Any
 
 from frontrun import _real_threading as _rt
 from frontrun._async_autopause import _in_scheduler_pause, _scheduler_var, _task_id_var

@@ -22,7 +22,6 @@ from typing import Any
 import pytest
 
 import frontrun
-from frontrun._cooperative import _real_time_sleep as _real_sleep
 from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
 from frontrun.bytecode import OpcodeScheduler, run_with_schedule
 from frontrun.common import InterleavingResult

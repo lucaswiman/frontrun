@@ -23,7 +23,6 @@ from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, ac
 from frontrun._dpor_runtime.xproc.proxy import SchedulerProxy
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher, _connect_and_serve
 
-
 # ---------------------------------------------------------------------------
 # Malformed frames must become structured worker errors, not uncaught KeyErrors
 # ---------------------------------------------------------------------------

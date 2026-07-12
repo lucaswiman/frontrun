@@ -71,6 +71,7 @@ _async_lock_owners: dict[int, int] = {}
 # Used to force-release locks when a task finishes without calling release().
 _async_task_held_locks: dict[int, set[Any]] = {}
 
+
 def _in_virtual_timed_wait(scheduler: Any, task_id: int) -> bool:
     """Whether *task_id* is guarded by a pending virtual timeout deadline.
 

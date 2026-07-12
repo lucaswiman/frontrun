@@ -461,7 +461,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 if deadline is None:
                     if duration is None or self.virtual_clock is None:
                         raise TypeError("sleep_until needs either deadline= or duration= (with a virtual clock)")
-                    deadline = self.virtual_clock.now() + duration
+                    deadline = float(self.virtual_clock.now()) + duration
                 if self._finished or self._error:
                     return
                 self._sleepers[task_id] = deadline
