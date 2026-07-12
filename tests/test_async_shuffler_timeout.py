@@ -18,7 +18,47 @@ from typing import Any
 
 import pytest
 
-from frontrun.async_shuffler import explore_async_random
+from frontrun.async_scheduler import SchedulerTimeoutError
+from frontrun.async_shuffler import explore_async_random, run_with_schedule
+
+
+def test_public_run_with_schedule_rejects_deadlocked_state() -> None:
+    """Exact replay must not return state after the scheduler aborted.
+
+    ``AsyncShuffler.run`` records a scheduler timeout on the runner so random
+    exploration can classify it, but the public exact-schedule helper must
+    surface that failure.  Returning the state after the abort presents the
+    scheduler's cleanup/free-run as if the requested schedule completed.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.lock_a = asyncio.Lock()
+            self.lock_b = asyncio.Lock()
+
+    async def task_ab(state: State) -> None:
+        async with state.lock_a:
+            await asyncio.sleep(0)
+            async with state.lock_b:
+                pass
+
+    async def task_ba(state: State) -> None:
+        async with state.lock_b:
+            await asyncio.sleep(0)
+            async with state.lock_a:
+                pass
+
+    async def replay() -> None:
+        with pytest.raises(SchedulerTimeoutError, match="[Dd]eadlock"):
+            await run_with_schedule(
+                [0, 1] * 20,
+                State,
+                [task_ab, task_ba],
+                timeout=1.0,
+                deadlock_timeout=0.05,
+            )
+
+    asyncio.run(replay())
 
 
 def test_deadlock_is_surfaced_not_false_invariant() -> None:
