@@ -72,7 +72,7 @@ class _ThreadTraceExecutor:
         self.coordinator = ThreadCoordinator(schedule, deadlock_timeout=deadlock_timeout)
         self.marker_registry = MarkerRegistry()
         self.threads: list[threading.Thread] = []
-        self.thread_errors: dict[str, Exception] = {}
+        self.thread_errors: dict[str, BaseException] = {}
 
     def _create_trace_function(self, execution_name: str) -> Callable[[Any, str, Any], Any]:  # type: ignore[return-value]
         return build_trace_function(

@@ -123,20 +123,25 @@ def run_traced_callable(
     coordinator: Any,
     execution_name: str,
     body: Callable[[], None],
-    error_sink: dict[str, Exception],
+    error_sink: dict[str, BaseException],
     trace_function: Callable[[Any, str, Any], Any] | None = None,
 ) -> None:
     """Run a callable with tracing enabled and guaranteed cleanup."""
-    error: Exception | None = None
+    error: BaseException | None = None
     try:
         coordinator._execution_lock.acquire()
         install_thread_line_trace(trace_function)
         body()
-    except Exception as exc:
+    except BaseException as exc:
         error = exc
         error_sink[execution_name] = exc
     finally:
         uninstall_thread_line_trace()
         _release_execution_lock_safely(coordinator)
         if error is not None:
-            coordinator.report_error(error)
+            if isinstance(error, Exception):
+                coordinator.report_error(error)
+            else:
+                coordinator.report_error(
+                    RuntimeError(f"marker worker {execution_name!r} terminated with {type(error).__name__}")
+                )

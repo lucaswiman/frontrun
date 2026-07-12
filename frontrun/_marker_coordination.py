@@ -28,7 +28,7 @@ def finalize_marker_executor_run(
     *,
     threads: list[threading.Thread],
     timeout: float | None,
-    task_errors: dict[str, Exception],
+    task_errors: dict[str, BaseException],
     coordinator: ThreadCoordinator,
     timeout_message: Callable[[list[threading.Thread]], str],
 ) -> None:
