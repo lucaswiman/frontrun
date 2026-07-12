@@ -133,8 +133,8 @@ def test_cooperative_timeout_zero_finds_lost_wakeup(lock_factory):
     assert result.reproduction_successes >= 8
 
 
-def test_trylock_success_branch_still_green_when_correct():
-    """A correct trylock consumer (retries until acquired) must stay green."""
+def test_trylock_retry_timeout_is_inconclusive_not_false_proof():
+    """A scheduler-starved busy retry must not be certified as a proof."""
 
     class State:
         def __init__(self):
@@ -156,4 +156,6 @@ def test_trylock_success_branch_still_green_when_correct():
         detect_io=False,
         reproduce_on_failure=10,
     )
-    assert result.property_holds, result.explanation
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "inconclusive" in result.explanation.lower()

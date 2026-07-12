@@ -133,7 +133,9 @@ def test_reuse_restarts_killable_workers_after_unclean_iteration(monkeypatch: py
     class UncleanFirstCoordinator(DporCrossProcessCoordinator):
         runs = 0
 
-        def _run_reused(self, _socks, _worker_set, _scheduler, _accesses, _worker_errors, unclean) -> None:
+        def _run_reused(
+            self, _socks, _worker_set, _scheduler, _accesses, _worker_errors, unclean, _total_deadline=None
+        ) -> None:
             self.runs += 1
             if self.runs == 1:
                 unclean.add(0)
