@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import weakref
+from collections.abc import Iterable
 
 from frontrun._cooperative import _purge_spin_schedulers
 from frontrun._dpor_core import ReplayEngine as _ReplayEngine
@@ -65,6 +66,7 @@ class DporScheduler:
         clock_mode: str = "real",
         clock_actor_id: int | None = None,
         clock_diagnostics: bool = False,
+        baseline_threads: Iterable[threading.Thread] | None = None,
     ) -> None:
         self.engine = engine
         self.execution = execution
@@ -129,8 +131,15 @@ class DporScheduler:
         # so a new external thread that reuses its id() cannot be misclassified
         # as baseline in _has_live_external_threads (id reuse would otherwise
         # wrongly re-enable exact-deadlock detection).
+        #
+        # Exploration drivers pass an explicit snapshot taken ONCE per
+        # explore() call: a helper thread spawned by a worker during execution
+        # N survives into execution N+1, and snapshotting here (per scheduler,
+        # i.e. per execution) would classify it as baseline — an "inert"
+        # thread — even though it services explored waiters, breaking every
+        # later execution's external-liveness reasoning.
         self._baseline_thread_keys: weakref.WeakSet[threading.Thread] = weakref.WeakSet(
-            t for t in threading.enumerate() if t.is_alive()
+            baseline_threads if baseline_threads is not None else (t for t in threading.enumerate() if t.is_alive())
         )
         self._worker_thread_keys: set[int] = set()
 
@@ -360,6 +369,17 @@ class DporScheduler:
             # it from every waiter set is equivalent to knowing the lock id.
             for waiters in self._lock_waiters.values():
                 waiters.discard(thread_id)
+            # An unmanaged wake (e.g. a worker-spawned service thread calling
+            # event.set()) can land while the turn is vacant: every managed
+            # thread had blocked, _schedule_next returned None, and the parked
+            # waiters only re-ask the engine in their wait-timeout arms.  The
+            # notify below would then just re-park them, costing a full
+            # deadlock_timeout of dead wall time per wake (and failing the run
+            # when the join budget is shorter).  Hand the turn out now.
+            if self._current_thread is None and self._error is None and not self._finished:
+                next_thread = self._schedule_next()
+                if next_thread is not None:
+                    self._current_thread = next_thread
             self._condition.notify_all()
 
     def give_up_timed_wait(self, thread_id: int) -> None:

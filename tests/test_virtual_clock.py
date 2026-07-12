@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 
 import frontrun
+from frontrun._cooperative import _real_time_sleep as _real_sleep
 from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
 from frontrun.bytecode import OpcodeScheduler, run_with_schedule
 from frontrun.common import InterleavingResult
@@ -70,6 +71,20 @@ def test_run_with_schedule_virtual_clock_requires_patch_sleep() -> None:
             threads=[lambda s: None],
             clock="virtual",
             patch_sleep=False,
+        )
+
+
+def test_explore_rejects_serializable_invariant_with_virtual_clock() -> None:
+    # The sequential baseline runs execute outside the scheduler, so their
+    # sleeps and clock reads would use real wall-clock time; the combination
+    # must be rejected up front, not silently produce a mixed-clock baseline.
+    with pytest.raises(ValueError, match="serializable_invariant"):
+        frontrun.explore(
+            setup=lambda: None,
+            workers=[lambda s: None],
+            invariant=lambda s: True,
+            clock="virtual",
+            serializable_invariant=True,
         )
 
 
@@ -1957,3 +1972,70 @@ def test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder() ->
     assert not result.property_holds, (
         f"the timeout branch (acquire_result=False) was never explored: {result.num_explored} interleavings"
     )
+
+
+def test_helper_thread_spawned_in_earlier_execution_does_not_arm_false_deadlock() -> None:
+    """A worker-spawned service thread must keep waking waiters in later executions.
+
+    Two coupled defects broke executions after the first:
+
+    1. The baseline-thread snapshot used by external-liveness reasoning was
+       taken per-execution (at scheduler construction), so a helper thread
+       spawned during execution 1 was classified as inert 'baseline' for
+       execution 2 even though it services explored waiters.  The snapshot
+       must cover the whole exploration.
+    2. When the helper's unmanaged ``event.set()`` landed while the turn was
+       vacant (every managed thread blocked, ``_schedule_next`` had returned
+       None), ``clear_engine_block`` only notified — nobody re-asked the
+       engine until a wait-timeout arm fired, costing a full deadlock_timeout
+       per wake and failing the run when the join budget is shorter.
+    """
+    from frontrun._cooperative import _real_time_sleep
+
+    requests: list[threading.Event] = []  # GIL-atomic append/pop
+    helper_state = {"started": False, "stop": False}
+    helper_box: list[threading.Thread] = []
+
+    def _serve() -> None:
+        while not helper_state["stop"]:
+            evt = requests.pop() if requests else None
+            if evt is None:
+                _real_time_sleep(0.005)
+                continue
+            _real_time_sleep(0.3)  # longer than the exact-deadlock confirm window
+            evt.set()
+
+    class _State:
+        def __init__(self) -> None:
+            self.counter = 0
+            self.ok: list[bool] = [False, False]
+
+    def _worker(index: int):
+        def w(s: _State) -> None:
+            # Shared-counter race so DPOR explores more than one execution.
+            value = s.counter
+            s.counter = value + 1
+            if not helper_state["started"]:
+                helper_state["started"] = True
+                helper = threading.Thread(target=_serve, daemon=True)
+                helper_box.append(helper)
+                helper.start()
+            evt = threading.Event()
+            requests.append(evt)
+            s.ok[index] = evt.wait()
+
+        return w
+
+    try:
+        result = frontrun.explore(
+            setup=_State,
+            workers=[_worker(0), _worker(1)],
+            invariant=lambda s: all(s.ok),
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+        assert result.property_holds, result.explanation
+    finally:
+        helper_state["stop"] = True
+        for helper in helper_box:
+            helper.join(timeout=5.0)
