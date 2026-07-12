@@ -110,7 +110,13 @@ class DporBytecodeRunner:
         def _on_opcode(code: Any, offset: int, frame: Any, tid: int) -> bool:
             if scheduler._clock_diagnostics:
                 warn_if_captured_time_reference(frame)
-            return process_opcode_with_coarsening(code, offset, frame, scheduler, tid, _detect_io)
+            yielded = process_opcode_with_coarsening(code, offset, frame, scheduler, tid, _detect_io)
+            # report_and_wait returns after a scheduler abort so the traced
+            # worker can unwind.  Do not let it resume user bytecode and
+            # mutate state outside the schedule.
+            if yielded and (scheduler._finished or scheduler._error is not None):
+                raise SchedulerAbort("scheduler aborted while waiting for an opcode turn")
+            return yielded
 
         self._opcode_handle = start_opcode_trace(
             get_thread_id=_get_tid,

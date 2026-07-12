@@ -458,7 +458,12 @@ class InterleavedLoop:
             if detect_external_deadlock:
                 await self._wait_watching_progress(gathered, timeout)
             else:
-                await frontrun_wait_for(gathered, timeout=timeout)
+                # Keep timeout cancellation under run_all's control.  On
+                # Python 3.10/3.11 wait_for cancels its target before raising,
+                # which otherwise reaches _run while
+                # cancelling_for_timeout is still false and is misreported as
+                # a worker cancelling itself.
+                await frontrun_wait_for(asyncio.shield(gathered), timeout=timeout)
         except asyncio.TimeoutError:
             cancelling_for_timeout = True
             for t in tasks:
@@ -531,13 +536,8 @@ class InterleavedLoop:
                         self._on_error_set()
                     self._condition.notify_all()
                 break
-        # Mirror asyncio.wait_for's contract on timeout: cancel the awaited
-        # future (which cancels the still-pending tasks) before raising.
-        gathered.cancel()
-        try:
-            await gathered
-        except asyncio.CancelledError:
-            pass
+        # run_all owns cancellation so it can mark the cancellation as
+        # scheduler cleanup before CancelledError reaches worker wrappers.
         raise asyncio.TimeoutError
 
     @property

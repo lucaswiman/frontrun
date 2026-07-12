@@ -711,21 +711,22 @@ def _record_uncaptured_insert(cursor: Any, table: str) -> None:
     record_insert(table, None, db_scope=db_scope)
 
 
-def _execute_with_retry(original_method: Any, cursor: Any, operation: Any, parameters: Any = None) -> Any:
-    """Execute a DB-API method, retrying transient SQLite lock errors."""
+def _execute_with_retry(execute: Callable[[], Any]) -> Any:
+    """Execute a scheduled DB operation, retrying transient SQLite locks.
+
+    Each retry must re-enter the scheduling envelope.  Retrying the raw driver
+    call while holding an exclusive sync turn prevents the lock owner from
+    running its COMMIT, creating a scheduler-induced SQLite deadlock.
+    """
     for i in range(50):
         try:
-            if parameters is not None:
-                return original_method(cursor, operation, parameters)
-            return original_method(cursor, operation)
+            return execute()
         except sqlite3.OperationalError as e:
             if "locked" not in str(e).lower():
                 raise
             time.sleep(0.01 * (i + 1))
 
-    if parameters is not None:
-        return original_method(cursor, operation, parameters)
-    return original_method(cursor, operation)
+    return execute()
 
 
 def _intercept_execute(
@@ -789,20 +790,25 @@ def _intercept_execute(
     deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
 
     def execute() -> Any:
-        result = _execute_with_retry(original_method, self, operation, parameters)
+        if parameters is not None:
+            result = original_method(self, operation, parameters)
+        else:
+            result = original_method(self, operation)
         if deferred_tx_op is not None:
             _apply_tx_op_after_success(deferred_tx_op, _connection_for_db_object(self))
         return result
 
     statement_row_locks: list[str] = []
-    result = _dpor_schedule_and_suppress_sync(
-        reported,
-        operation,
-        parameters,
-        paramstyle,
-        execute,
-        statement_row_locks,
-        release_row_locks_on_error=deferred_tx_op is None,
+    result = _execute_with_retry(
+        lambda: _dpor_schedule_and_suppress_sync(
+            reported,
+            operation,
+            parameters,
+            paramstyle,
+            execute,
+            statement_row_locks,
+            release_row_locks_on_error=deferred_tx_op is None,
+        )
     )
 
     # Defect #6 fix: release this statement's speculative row locks for

@@ -230,10 +230,9 @@ def _run_sync_dpor_envelope(
     if needs_scheduling_point:
         dpor_ctx = _get_dpor_context()
         if dpor_ctx is not None and dpor_ctx[0].before_io(dpor_ctx[1], resource_id) is False:
-            # An explicit False means the scheduler denied the boundary (the
-            # cross-process SchedulerProxy after an ABORT); running the command
-            # anyway would mutate real Redis outside any schedule.  The
-            # in-process DporScheduler returns None here, which is not a denial.
+            # An explicit False means the scheduler denied the boundary;
+            # running the command anyway would mutate real Redis outside any
+            # schedule.
             raise SchedulerAbort("scheduler aborted before Redis execution")
 
     try:

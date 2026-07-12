@@ -127,12 +127,6 @@ Unreleased
   database-wide conflict instead of relying on the unavailable preload fallback,
   while Redis replay no longer invents boundaries for empty/keyless pipelines.
 
-* **Release artifacts fail closed.** The release workflow no longer publishes
-  a source distribution that omits ``libfrontrun_io`` and silently weakens
-  C-extension I/O detection. Windows x86-64 wheels are built for the supported
-  DPOR/marker/bytecode subset; Linux and macOS wheels continue to include the
-  native preload library.
-
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
   dispatch on the subclass instead of always returning the patched base
