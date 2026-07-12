@@ -28,6 +28,7 @@ from frontrun._sql_cursor import (
     _RE_INSERT_TABLE,
     _RE_UPDATE_TABLE,
     _capture_insert_id,
+    _connection_for_db_object,
     _detect_autobegin,
     _is_postgresql_db_object,
     _record_uncaptured_insert,
@@ -113,15 +114,17 @@ async def _dpor_schedule_and_suppress_async(
         return await execute()
     except Exception:
         if release_locks_on_error:
-            _release_dpor_row_locks()
+            _release_dpor_row_locks(acquired)
         raise
 
 
-async def _execute_and_finalize_tx_end(execute: Callable[[], Awaitable[Any]], tx_op: Any | None) -> Any:
+async def _execute_and_finalize_tx_end(
+    execute: Callable[[], Awaitable[Any]], tx_op: Any | None, connection: Any = None
+) -> Any:
     """Finalize modeled transaction state only after physical async I/O succeeds."""
     result = await execute()
     if tx_op is not None:
-        _apply_tx_op_after_success(tx_op)
+        _apply_tx_op_after_success(tx_op, _connection_for_db_object(connection))
     return result
 
 
@@ -162,9 +165,9 @@ async def _intercept_execute_async(
     async def _execute() -> Any:
         if parameters is not None:
             return await _execute_and_finalize_tx_end(
-                lambda: original_method(self, operation, parameters), deferred_tx_op
+                lambda: original_method(self, operation, parameters), deferred_tx_op, self
             )
-        return await _execute_and_finalize_tx_end(lambda: original_method(self, operation), deferred_tx_op)
+        return await _execute_and_finalize_tx_end(lambda: original_method(self, operation), deferred_tx_op, self)
 
     statement_row_locks: list[str] = []
     result = await _dpor_schedule_and_suppress_async(
@@ -220,7 +223,9 @@ async def _intercept_asyncpg_execute(
     statement_row_locks: list[str] = []
     result = await _dpor_schedule_and_suppress_async(
         reported,
-        lambda: _execute_and_finalize_tx_end(lambda: original_method(self, operation, *args, **kwargs), deferred_tx_op),
+        lambda: _execute_and_finalize_tx_end(
+            lambda: original_method(self, operation, *args, **kwargs), deferred_tx_op, self
+        ),
         statement_row_locks,
         release_locks_on_error=deferred_tx_op is None,
     )
@@ -327,7 +332,7 @@ def _patch_psycopg_async() -> None:
             statement_row_locks: list[str] = []
             result = await _dpor_schedule_and_suppress_async(
                 reported,
-                lambda: _execute_and_finalize_tx_end(lambda: orig(self, query, params, **kwargs), deferred_tx_op),
+                lambda: _execute_and_finalize_tx_end(lambda: orig(self, query, params, **kwargs), deferred_tx_op, self),
                 statement_row_locks,
                 release_locks_on_error=deferred_tx_op is None,
             )
@@ -371,7 +376,9 @@ def _patch_aiomysql() -> None:
             deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
             return await _dpor_schedule_and_suppress_async(
                 reported,
-                lambda: _execute_and_finalize_tx_end(lambda: orig(self, query, args, *extra, **kwargs), deferred_tx_op),
+                lambda: _execute_and_finalize_tx_end(
+                    lambda: orig(self, query, args, *extra, **kwargs), deferred_tx_op, self
+                ),
                 release_locks_on_error=deferred_tx_op is None,
             )
 
@@ -422,7 +429,9 @@ def _patch_asyncpg() -> None:
             deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
             return await _dpor_schedule_and_suppress_async(
                 reported,
-                lambda: _execute_and_finalize_tx_end(lambda: orig_em(self, command, args, **kwargs), deferred_tx_op),
+                lambda: _execute_and_finalize_tx_end(
+                    lambda: orig_em(self, command, args, **kwargs), deferred_tx_op, self
+                ),
                 release_locks_on_error=deferred_tx_op is None,
             )
 

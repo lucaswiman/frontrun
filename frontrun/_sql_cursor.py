@@ -262,7 +262,7 @@ def _dpor_schedule_and_suppress_sync(
         # acquired by _acquire_pending_row_locks remain held until thread
         # exit, blocking other DPOR threads indefinitely.
         if release_row_locks_on_error:
-            _release_dpor_row_locks()
+            _release_dpor_row_locks(acquired)
         raise
     finally:
         unsuppress_sync_reporting()
@@ -284,6 +284,12 @@ def _is_postgresql_db_object(db_obj: Any) -> bool:
         return _detect_driver(connection) == "postgresql"
     except ValueError:
         return False
+
+
+def _connection_for_db_object(db_obj: Any) -> Any:
+    """Return the physical connection represented by a cursor/connection."""
+    connection = getattr(db_obj, "connection", None)
+    return db_obj if connection is None else connection
 
 
 def _sql_resource_id(
@@ -333,6 +339,21 @@ def _report_sql_access(
 
     if reporter is not None and isinstance(operation, str):
         access = parse_sql_access(operation)
+        store = tx_store()
+        connection = _connection_for_db_object(db_obj)
+        owner = getattr(store, "_tx_connection", None)
+        if getattr(store, "_in_transaction", False) and owner is not None and connection is not owner:
+            if access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK) and not (
+                access.read_tables or access.write_tables
+            ):
+                # Ending an unrelated connection must not finalize the active
+                # connection's modeled transaction.
+                return True
+            if access.tx_op is not None or access.read_tables or access.write_tables:
+                raise RuntimeError(
+                    "frontrun does not support overlapping SQL transactions on multiple connections in one worker; "
+                    "use one connection per worker or end the active transaction first"
+                )
 
         # 1. Handle Transaction Control Operations
         if access.tx_op is not None:
@@ -564,12 +585,15 @@ def _report_sql_access(
     return reported
 
 
-def _run_connection_tx_method(method: Callable[[], Any], operation: str) -> Any:
+def _run_connection_tx_method(method: Callable[[], Any], operation: str, connection: Any = None) -> Any:
     """Run a DB-API commit/rollback as one deterministic sync transition."""
     tx_op = TxOp.COMMIT if operation == "COMMIT" else TxOp.ROLLBACK
     handler = handle_connection_commit if operation == "COMMIT" else handle_connection_rollback
-    tx_active = bool(getattr(tx_store(), "_in_transaction", False))
-    handler(release_locks=False, finalize=False)
+    store = tx_store()
+    owner = getattr(store, "_tx_connection", None)
+    tx_active = bool(getattr(store, "_in_transaction", False)) and (owner is None or owner is connection)
+    if tx_active:
+        handler(release_locks=False, finalize=False)
 
     def execute() -> Any:
         result = method()
@@ -577,7 +601,7 @@ def _run_connection_tx_method(method: Callable[[], Any], operation: str) -> Any:
         # success, finalize before handing the scheduler turn to another worker.
         if tx_active:
             _finalize_tx_end(tx_op)
-        else:
+        elif owner is None:
             _release_dpor_row_locks()
         return result
 
@@ -589,6 +613,14 @@ def _run_connection_tx_method(method: Callable[[], Any], operation: str) -> Any:
         execute=execute,
         release_row_locks_on_error=False,
     )
+
+
+def _run_connection_close(method: Callable[[], Any], connection: Any) -> Any:
+    """Clear modeled state after the owning physical connection closes."""
+    result = method()
+    if getattr(tx_store(), "_tx_connection", None) is connection:
+        reset_connection_state()
+    return result
 
 
 def _wrap_connection_tx_methods(conn: Any) -> None:
@@ -604,16 +636,18 @@ def _wrap_connection_tx_methods(conn: Any) -> None:
     instance attribute assignment; in that case we leave the connection
     unwrapped (autobegin/textual-COMMIT paths still apply).
     """
-    for name in ("commit", "rollback"):
+    for name in ("commit", "rollback", "close"):
         orig = getattr(conn, name, None)
         if orig is None or getattr(orig, "_frontrun_tx_wrapped", False):
             continue
 
         def _make(orig_method: Any = orig, _name: str = name) -> Any:
             def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                if _name == "close":
+                    return _run_connection_close(lambda: orig_method(*args, **kwargs), conn)
                 operation = _name.upper()
                 suppress_sql_write(operation)
-                return _run_connection_tx_method(lambda: orig_method(*args, **kwargs), operation)
+                return _run_connection_tx_method(lambda: orig_method(*args, **kwargs), operation, conn)
 
             _wrapped._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
             return _wrapped
@@ -741,7 +775,7 @@ def _intercept_execute(
     def execute() -> Any:
         result = _execute_with_retry(original_method, self, operation, parameters)
         if deferred_tx_op is not None:
-            _apply_tx_op_after_success(deferred_tx_op)
+            _apply_tx_op_after_success(deferred_tx_op, _connection_for_db_object(self))
         return result
 
     statement_row_locks: list[str] = []
@@ -893,16 +927,20 @@ def _get_traced_connection_class(base_connection_cls: type, paramstyle: str) -> 
             return super().cursor(*args, **kwargs)
 
         def commit(self) -> None:
-            _run_connection_tx_method(super().commit, "COMMIT")
+            _run_connection_tx_method(super().commit, "COMMIT", self)
 
         def rollback(self) -> None:
-            _run_connection_tx_method(super().rollback, "ROLLBACK")
+            _run_connection_tx_method(super().rollback, "ROLLBACK", self)
+
+        def close(self) -> None:
+            _run_connection_close(super().close, self)
 
     TracedConnection.__name__ = f"Traced{base_connection_cls.__name__}"
     TracedConnection.__qualname__ = f"Traced{base_connection_cls.__qualname__}"
     TracedConnection._frontrun_traced_connection = True  # type: ignore[attr-defined]
     TracedConnection.commit._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
     TracedConnection.rollback._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
+    TracedConnection.close._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
     _TRACED_CONNECTION_CLASSES[key] = TracedConnection
     return TracedConnection
 
@@ -963,10 +1001,13 @@ def _make_traced_sqlite3_connection_class(base_cls: type = sqlite3.Connection) -
             # Drive the tx state machine before the driver call so the buffered
             # accesses are flushed even when COMMIT is issued via the connection
             # method rather than as SQL text (finding 3).
-            _run_connection_tx_method(super().commit, "COMMIT")
+            _run_connection_tx_method(super().commit, "COMMIT", self)
 
         def rollback(self) -> None:  # type: ignore[override]
-            _run_connection_tx_method(super().rollback, "ROLLBACK")
+            _run_connection_tx_method(super().rollback, "ROLLBACK", self)
+
+        def close(self) -> None:  # type: ignore[override]
+            _run_connection_close(super().close, self)
 
     TracedConnection.__name__ = f"Traced{base_cls.__name__}"
     TracedConnection.__qualname__ = f"Traced{base_cls.__qualname__}"

@@ -66,6 +66,8 @@ def _finalize_tx_end(tx: TxOp, *, release_locks: bool = True) -> None:
     store._is_autobegin = False
     store._tx_buffer = []
     store._tx_savepoints = {}
+    if hasattr(store, "_tx_connection"):
+        delattr(store, "_tx_connection")
     if release_locks:
         _release_dpor_row_locks()
 
@@ -192,6 +194,7 @@ def _detect_autobegin(cursor: Any) -> None:
         store._is_autobegin = True
         store._tx_buffer = []
         store._tx_savepoints = {}
+        store._tx_connection = conn
 
 
 def _handle_tx_op(reporter: Any, tx: Any, *, release_locks: bool = True) -> None:
@@ -232,7 +235,7 @@ def _handle_tx_op(reporter: Any, tx: Any, *, release_locks: bool = True) -> None
             savepoints.pop(tx.name, None)
 
 
-def _apply_tx_op_after_success(tx: Any) -> None:
+def _apply_tx_op_after_success(tx: Any, connection: Any = None) -> None:
     """Apply a deferred transaction-control operation after driver success."""
     if tx in (TxOp.COMMIT, TxOp.ROLLBACK):
         _finalize_tx_end(tx)
@@ -240,6 +243,8 @@ def _apply_tx_op_after_success(tx: Any) -> None:
     from frontrun._io_detection import get_io_reporter
 
     _handle_tx_op(get_io_reporter(), tx)
+    if tx is TxOp.BEGIN and connection is not None:
+        tx_store()._tx_connection = connection
 
 
 def handle_connection_commit(*, release_locks: bool = True, finalize: bool = True) -> None:
@@ -285,6 +290,8 @@ def reset_connection_state() -> None:
     transaction is active (it's a no-op in that case).
     """
     store = tx_store()
+    if getattr(store, "_held_row_locks", None):
+        _release_dpor_row_locks()
     for attr in (
         "_in_transaction",
         "_is_autobegin",
@@ -292,6 +299,7 @@ def reset_connection_state() -> None:
         "_tx_savepoints",
         "_pending_row_locks",
         "_held_row_locks",
+        "_tx_connection",
     ):
         if hasattr(store, attr):
             delattr(store, attr)
