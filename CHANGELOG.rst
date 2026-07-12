@@ -117,7 +117,21 @@ Unreleased
   keeps async work controlled when its sampled prefix ends. Async SQL row-lock
   contenders now park inside the scheduler (including replay) rather than
   entering a blocking database call, preserving cross-resource deadlock cycles
-  and replayability.
+  and replayability. A second audit now also rejects timed-out sync/async runs,
+  self-cancelled async workers, and ``SystemExit`` from sync workers instead of
+  treating partial state as a proof; makes ``Queue.join()`` cooperative; restores
+  nested async trace filters; and replays task-crash counterexamples. SQL
+  transaction state is tied to its owning connection, statement failures keep
+  earlier row locks, and failed transaction-control statements take effect only
+  after physical success. Cross-process opaque SQL uses a conservative
+  database-wide conflict instead of relying on the unavailable preload fallback,
+  while Redis replay no longer invents boundaries for empty/keyless pipelines.
+
+* **Release artifacts fail closed.** The release workflow no longer publishes
+  a source distribution that omits ``libfrontrun_io`` and silently weakens
+  C-extension I/O detection. Windows x86-64 wheels are built for the supported
+  DPOR/marker/bytecode subset; Linux and macOS wheels continue to include the
+  native preload library.
 
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
@@ -130,8 +144,9 @@ Unreleased
 * **Replay fixes.** Replaying a counterexample now reproduces exact deadlocks
   (a replayed schedule that ends in the discovered deadlock no longer aborts
   the replay machinery) and timed-wait expiries under IO-anchored replay, so
-  ``reproduce_on_failure`` statistics stay meaningful for deadlock- and
-  timeout-shaped counterexamples.
+  ``reproduce_on_failure`` statistics stay meaningful for deadlock-, timeout-,
+  and task-crash-shaped counterexamples. Timed-out replays never return partial
+  state for invariant evaluation.
 
 * **DPOR correctness.** Accesses after ``await`` are now attributed before
   scheduling successors, ``asyncio.Lock`` / event state races replay
