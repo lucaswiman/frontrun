@@ -128,6 +128,7 @@ from frontrun._sql_cursor import clear_sql_metadata, get_lock_timeout, set_lock_
 from frontrun._sql_insert_tracker import check_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope
 from frontrun._tracing import TraceFilter as _TraceFilter
+from frontrun._tracing import get_active_trace_filter as _get_active_trace_filter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._virtual_clock import (
     ClockConfig,
@@ -1320,13 +1321,21 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         serializable_invariant=serializable_invariant,
     )
     clock = clock_config.mode
+    previous_trace_filter = _get_active_trace_filter()
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 
-    # Compute serializable baseline if requested.
-    serial_valid_states, serial_hash_fn = await compute_serializable_baseline_async(
-        setup, tasks, serializable_invariant
-    )
+    try:
+        # Compute serializable baseline if requested. This runs after installing
+        # the per-exploration filter, so failures here must restore any filter
+        # owned by an outer/nested exploration just like failures in the main
+        # scheduling loop do.
+        serial_valid_states, serial_hash_fn = await compute_serializable_baseline_async(
+            setup, tasks, serializable_invariant
+        )
+    finally:
+        if trace_packages is not None:
+            _set_active_trace_filter(previous_trace_filter)
 
     num_tasks = len(tasks)
     # With a virtual clock the engine gets one extra thread — the clock actor
@@ -1397,6 +1406,8 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         # tell them apart from user timers (see _install_frontrun_timer_tagging).
         _user_timers_check, _untag_timers = _install_frontrun_timer_tagging(_loop)
 
+    if trace_packages is not None:
+        _set_active_trace_filter(_TraceFilter(trace_packages))
     try:
         with PatchScope() as patch_scope:
             patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
@@ -1553,7 +1564,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                                 return result
     finally:
         if trace_packages is not None:
-            _set_active_trace_filter(None)
+            _set_active_trace_filter(previous_trace_filter)
         set_lock_timeout(prev_lock_timeout)
         if _untag_timers is not None:
             _untag_timers()
