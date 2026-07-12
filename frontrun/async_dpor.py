@@ -289,6 +289,13 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._baseline_thread_keys: weakref.WeakSet[threading.Thread] = weakref.WeakSet(
             t for t in threading.enumerate() if t.is_alive()
         )
+        # Free-threaded CPython inherits contextvars into new Thread objects by
+        # default.  A worker-spawned external thread can therefore inherit this
+        # scheduler's task id/context even though async DPOR only owns the event
+        # loop thread.  sys.monitoring is interpreter-global, so reject such
+        # threads here or they can report opcodes into the PyO3 engine
+        # concurrently and trigger a mutable-borrow failure.
+        self._event_loop_thread_id = threading.get_ident()
         # Virtual clock (ideas/virtual_clock.md), mirroring the sync
         # DporScheduler: an extra engine thread (the clock actor) whose steps
         # advance the clock to the earliest pending deadline.  "virtual" =
@@ -844,7 +851,11 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._shadow_stacks.pop(frame_id, None)
 
     def _get_task_id(self) -> int | None:
-        if _task_id_var.get() is not None and _scheduler_var.get() is self:
+        if (
+            threading.get_ident() == self._event_loop_thread_id
+            and _task_id_var.get() is not None
+            and _scheduler_var.get() is self
+        ):
             return _task_id_var.get()
         return None
 
