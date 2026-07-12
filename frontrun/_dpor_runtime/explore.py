@@ -389,6 +389,20 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                 # must be skipped rather than scored as a normal completion.
                 scheduler_timed_out = isinstance(scheduler._error, TimeoutError)
                 _evaluate_invariant = _scheduler_run_evaluable(scheduler._error)
+                if scheduler_timed_out:
+                    # Python threads cannot be terminated safely. Once a run
+                    # times out, survivors may continue outside scheduler
+                    # control and no later execution is trustworthy. Stop the
+                    # search immediately and never turn an unevaluable partial
+                    # run into a passing proof.
+                    result.property_holds = False
+                    result.explanation = (
+                        f"DPOR execution {result.num_explored} timed out before all worker threads completed. "
+                        "The search is inconclusive because Python threads cannot be killed safely; increase "
+                        "timeout_per_run/deadlock_timeout or remove unmanaged blocking from explored workers."
+                    )
+                    clear_instr_cache()
+                    return result
                 if _deadlock_err is not None:
                     with engine_lock:
                         schedule = execution.schedule_trace
