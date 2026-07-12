@@ -87,8 +87,14 @@ def _run_dpor_schedule(
         try:
             runner.run(funcs, timeout=timeout)
         except TimeoutError:
-            pass
-        if isinstance(scheduler._error, DeadlockError):
+            # Exact deadlocks are represented by the scheduler error even
+            # when worker teardown surfaces as a timeout.  Preserve that
+            # stronger diagnosis, but never treat an ordinary timeout as a
+            # completed replay with a partially mutated state.
+            if isinstance(scheduler._error, DeadlockError):
+                raise scheduler._error
+            raise
+        if scheduler._error is not None:
             raise scheduler._error
     return state
 
