@@ -83,6 +83,15 @@ class SchedulerTimeoutError(TimeoutError):
     """Timeout raised by frontrun's scheduler machinery, not user code."""
 
 
+class WorkerCancelledError(asyncio.CancelledError, RuntimeError):
+    """A worker cancelled itself rather than scheduler cleanup cancelling it.
+
+    The dual inheritance preserves the public ``CancelledError`` contract for
+    exact replay while letting exploration's ordinary ``except Exception``
+    crash-classification path turn cancellation into a counterexample.
+    """
+
+
 async def frontrun_wait_for(awaitable: Coroutine[Any, Any, _T] | Awaitable[_T], timeout: float) -> _T:
     """``asyncio.wait_for`` whose timeout timer is tagged as frontrun-internal."""
     token = _in_frontrun_timer.set(True)
@@ -423,11 +432,18 @@ class InterleavedLoop:
 
         self._num_tasks = len(task_funcs)
         errors: dict[Any, Exception] = {}
+        cancelling_for_timeout = False
 
         async def _run(task_id: Any, func: Callable[..., Awaitable[None]]) -> None:
             try:
                 self._setup_task_context(task_id)
                 await func()
+            except asyncio.CancelledError as e:
+                if cancelling_for_timeout:
+                    raise
+                error = WorkerCancelledError(str(e) or f"worker {task_id!r} cancelled itself")
+                errors[task_id] = error
+                await self._report_error(error)
             except Exception as e:
                 errors[task_id] = e
                 await self._report_error(e)
@@ -442,8 +458,14 @@ class InterleavedLoop:
             if detect_external_deadlock:
                 await self._wait_watching_progress(gathered, timeout)
             else:
-                await frontrun_wait_for(gathered, timeout=timeout)
+                # Keep timeout cancellation under run_all's control.  On
+                # Python 3.10/3.11 wait_for cancels its target before raising,
+                # which otherwise reaches _run while
+                # cancelling_for_timeout is still false and is misreported as
+                # a worker cancelling itself.
+                await frontrun_wait_for(asyncio.shield(gathered), timeout=timeout)
         except asyncio.TimeoutError:
+            cancelling_for_timeout = True
             for t in tasks:
                 if not t.done():
                     t.cancel()
@@ -514,13 +536,8 @@ class InterleavedLoop:
                         self._on_error_set()
                     self._condition.notify_all()
                 break
-        # Mirror asyncio.wait_for's contract on timeout: cancel the awaited
-        # future (which cancels the still-pending tasks) before raising.
-        gathered.cancel()
-        try:
-            await gathered
-        except asyncio.CancelledError:
-            pass
+        # run_all owns cancellation so it can mark the cancellation as
+        # scheduler cleanup before CancelledError reaches worker wrappers.
         raise asyncio.TimeoutError
 
     @property

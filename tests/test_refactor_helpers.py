@@ -349,10 +349,9 @@ def test_random_round_robin_schedule_respects_max_ops_cap() -> None:
     from frontrun._random_schedules import random_round_robin_schedule
 
     rng = random.Random(123)
-    # With burst length 1 forced, max_ops // num_actors == 1 -> exactly one round.
-    schedule = random_round_robin_schedule(rng, num_actors=4, max_ops=4, max_burst=1, skew_max_burst=1)
-    assert len(schedule) == 4
-    assert sorted(schedule) == [0, 1, 2, 3]
+    schedule = random_round_robin_schedule(rng, num_actors=4, max_ops=4)
+    assert len(schedule) <= 4
+    assert set(schedule) == {0, 1, 2, 3}
 
 
 def test_fair_schedule_strategy_covers_every_actor_per_round() -> None:

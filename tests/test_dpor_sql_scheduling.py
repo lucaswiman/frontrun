@@ -143,6 +143,71 @@ class TestSqlSchedulerBoundaryPerOp:
             set_io_reporter(None)
         # If we got here without error, the guard worked correctly
 
+    @pytest.mark.parametrize("method_name", ["commit", "rollback"])
+    def test_connection_tx_end_holds_scheduler_turn_through_driver_call(self, method_name: str) -> None:
+        """A DB-API transaction end must stay scheduled until the driver returns.
+
+        Cross-process workers have no LD_PRELOAD fallback, so a bare
+        ``connection.commit()`` / ``rollback()`` is otherwise real I/O outside
+        the deterministic scheduler.  Modeled row locks must also remain held
+        until the physical transaction has ended.
+        """
+        from frontrun._io_detection import (
+            set_dpor_scheduler,
+            set_dpor_thread_id,
+            set_io_reporter,
+            tx_store,
+        )
+        from frontrun._sql_cursor import _get_traced_connection_class
+
+        calls: list[str] = []
+
+        class Scheduler:
+            def before_sync_retry(self, thread_id: int) -> bool:
+                calls.append("before")
+                return True
+
+            def after_sync_retry(self, thread_id: int) -> None:
+                calls.append("after")
+
+            def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
+                calls.append("release")
+
+        class BaseConnection:
+            def commit(self) -> None:
+                calls.append("driver")
+
+            def rollback(self) -> None:
+                calls.append("driver")
+
+        connection_type = _get_traced_connection_class(BaseConnection, "qmark")
+        store = tx_store()
+        store._in_transaction = True
+        store._is_autobegin = False
+        store._tx_buffer = [("sql:items", "write")]
+        store._tx_savepoints = {}
+        store._held_row_locks = {"sql:items:id=1"}
+        set_dpor_scheduler(Scheduler())
+        set_dpor_thread_id(0)
+        set_io_reporter(lambda _resource, _kind: None)
+        try:
+            getattr(connection_type(), method_name)()
+        finally:
+            set_io_reporter(None)
+            set_dpor_scheduler(None)
+            set_dpor_thread_id(None)
+            for attr in (
+                "_in_transaction",
+                "_is_autobegin",
+                "_tx_buffer",
+                "_tx_savepoints",
+                "_held_row_locks",
+            ):
+                if hasattr(store, attr):
+                    delattr(store, attr)
+
+        assert calls == ["before", "driver", "release", "after"]
+
     def test_row_lock_acquire_happens_after_scheduling_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """SQL row-lock arbitration must run after the DPOR scheduling boundary."""
         from frontrun import _sql_cursor

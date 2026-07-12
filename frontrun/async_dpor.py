@@ -128,6 +128,7 @@ from frontrun._sql_cursor import clear_sql_metadata, get_lock_timeout, set_lock_
 from frontrun._sql_insert_tracker import check_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope
 from frontrun._tracing import TraceFilter as _TraceFilter
+from frontrun._tracing import get_active_trace_filter as _get_active_trace_filter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._virtual_clock import (
     ClockConfig,
@@ -288,6 +289,13 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._baseline_thread_keys: weakref.WeakSet[threading.Thread] = weakref.WeakSet(
             t for t in threading.enumerate() if t.is_alive()
         )
+        # Free-threaded CPython inherits contextvars into new Thread objects by
+        # default.  A worker-spawned external thread can therefore inherit this
+        # scheduler's task id/context even though async DPOR only owns the event
+        # loop thread.  sys.monitoring is interpreter-global, so reject such
+        # threads here or they can report opcodes into the PyO3 engine
+        # concurrently and trigger a mutable-borrow failure.
+        self._event_loop_thread_id = threading.get_ident()
         # Virtual clock (ideas/virtual_clock.md), mirroring the sync
         # DporScheduler: an extra engine thread (the clock actor) whose steps
         # advance the clock to the earliest pending deadline.  "virtual" =
@@ -335,6 +343,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._active_row_locks: dict[str, int] = self._row_lock_registry._active_row_locks
         self._task_row_locks: dict[int, set[str]] = self._row_lock_registry._task_row_locks
         self._row_lock_ids: dict[str, int] = self._row_lock_registry._row_lock_ids
+        self._row_lock_waiters: dict[str, list[tuple[int, asyncio.Future[None]]]] = {}
 
         # The clock actor starts blocked; it becomes runnable only when a
         # deadline is pending (see _sync_clock_actor / _schedule_next).
@@ -688,6 +697,10 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         # _wait_watching_progress, sleep_until, and the exact-deadlock confirm —
         # goes through one mechanism.
         _wake_parked_async_primitive_waiters()
+        for waiters in getattr(self, "_row_lock_waiters", {}).values():
+            for _task_id, future in waiters:
+                if not future.done():
+                    future.set_result(None)
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         self._error = SchedulerTimeoutError(
@@ -838,7 +851,11 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._shadow_stacks.pop(frame_id, None)
 
     def _get_task_id(self) -> int | None:
-        if _task_id_var.get() is not None and _scheduler_var.get() is self:
+        if (
+            threading.get_ident() == self._event_loop_thread_id
+            and _task_id_var.get() is not None
+            and _scheduler_var.get() is self
+        ):
             return _task_id_var.get()
         return None
 
@@ -944,12 +961,79 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             # Record ownership and notify graph — shared logic via registry.
             self._row_lock_registry.record_acquire(thread_id, res_id, graph)
 
+    async def acquire_row_locks_async(self, task_id: int, resource_ids: list[str]) -> list[str]:
+        """Park on contended modeled row locks without entering the real DB call.
+
+        A wait edge must remain in the unified graph while parked: another task
+        can subsequently wait on an asyncio lock held by this task and close a
+        cross-resource cycle.  The old synchronous path removed the edge and
+        optimistically transferred ownership before awaiting the driver, which
+        hid that future cycle and let SQLite/PostgreSQL block outside the model.
+        """
+        graph = _async_cooperative._async_wait_graph
+        acquired: list[str] = []
+        self.engine.report_access(self.execution, task_id, _SHARED_SYNC_ACQUIRE_KEY, "write")
+        for res_id in resource_ids:
+            lock_int_id = self._row_lock_int_id(res_id)
+            while (holder := self._active_row_locks.get(res_id)) is not None and holder != task_id:
+                if graph is not None:
+                    cycle = graph.add_waiting(task_id, lock_int_id, kind="row_lock")
+                    if cycle is not None:
+                        graph.remove_waiting(task_id, lock_int_id, kind="row_lock")
+                        desc = format_cycle(cycle, self._row_lock_registry.id_to_resource())
+                        error = DeadlockError(f"Row-lock deadlock detected: {desc}", desc)
+                        await self._report_error(error)
+                        raise error
+
+                future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                waiters = self._row_lock_waiters.setdefault(res_id, [])
+                waiters.append((task_id, future))
+                self._event_blocked.add(task_id)
+                self._lock_blocked[task_id] = holder
+                self.execution.block_thread(task_id)
+                depth = _in_scheduler_pause.get()
+                _in_scheduler_pause.set(depth + 1)
+                unblocked = False
+                try:
+                    await self.kick_stalled_schedule(task_id)
+                    await future
+                    self.execution.unblock_thread(task_id)
+                    unblocked = True
+                    self._event_blocked.discard(task_id)
+                    self._lock_blocked.pop(task_id, None)
+                    if self._error is not None:
+                        raise self._error
+                    await self.wait_until_scheduled_after_block(task_id, "SQL row lock")
+                    if self._error is not None:
+                        raise self._error
+                finally:
+                    if graph is not None:
+                        graph.remove_waiting(task_id, lock_int_id, kind="row_lock")
+                    current_waiters = self._row_lock_waiters.get(res_id)
+                    if current_waiters is not None:
+                        current_waiters[:] = [entry for entry in current_waiters if entry[1] is not future]
+                        if not current_waiters:
+                            self._row_lock_waiters.pop(res_id, None)
+                    self._event_blocked.discard(task_id)
+                    self._lock_blocked.pop(task_id, None)
+                    if not unblocked:
+                        self.execution.unblock_thread(task_id)
+                    _in_scheduler_pause.set(depth)
+
+            self._row_lock_registry.record_acquire(task_id, res_id, graph)
+            acquired.append(res_id)
+        return acquired
+
     def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
         """Release selected row locks, or all locks on COMMIT/ROLLBACK."""
         graph = _async_cooperative._async_wait_graph
         # Shared release logic via registry (sync also uses pop; async skips
         # engine.report_sync because row-lock release is tracked at await points).
-        self._row_lock_registry.pop(thread_id, graph, resources)
+        released = self._row_lock_registry.pop(thread_id, graph, resources)
+        for res_id, _lock_id in released:
+            for _waiter, future in self._row_lock_waiters.get(res_id, []):
+                if not future.done():
+                    future.set_result(None)
 
     def _flush_pending_io(self, task_id: int) -> None:
         """Flush pending I/O accesses to the DPOR engine."""
@@ -1088,6 +1172,9 @@ async def _reproduce_async_counterexample(
     timeout_per_run: float,
     deadlock_timeout: float,
     clock: ClockMode = "real",
+    detect_sql: bool = False,
+    detect_redis: bool = False,
+    expected_task_error: tuple[type[Exception], str] | None = None,
 ) -> tuple[int, int]:
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
@@ -1103,6 +1190,8 @@ async def _reproduce_async_counterexample(
             deadlock_timeout=deadlock_timeout,
             virtual_clock=replay_clock,
             clock_actor_id=clock_config.actor_id(num_tasks),
+            detect_sql=detect_sql,
+            detect_redis=detect_redis,
         )
         # One clock_context owns the time.* patch across setup + tasks +
         # invariant for this replay attempt.
@@ -1129,14 +1218,23 @@ async def _reproduce_async_counterexample(
             except TimeoutError:
                 # Run didn't complete within the budget — a failed reproduction.
                 continue
-            except (AttributeError, TypeError, NameError):
+            except Exception as exc:
+                if expected_task_error is not None:
+                    expected_type, expected_message = expected_task_error
+                    if type(exc) is expected_type and str(exc) == expected_message:
+                        successes += 1
+                        continue
+                if isinstance(exc, (AttributeError, TypeError, NameError)):
+                    # Programming errors in our own replay plumbing (e.g. a
+                    # missing scheduler attribute) must not be hidden. A task
+                    # error of one of these types is accepted only when it
+                    # exactly matches the finding being replayed above.
+                    raise
                 # Programming errors in our own replay plumbing (e.g. a missing
-                # scheduler attribute) must NOT be silently scored as a failed
-                # reproduction; surface them instead of hiding the bug.
-                raise
-            except Exception:
-                # The user's task body raised: the run produced no usable state,
-                # so this attempt did not reproduce the counterexample.
+                # scheduler attribute) aside, a different user task failure is
+                # not a reproduction of this counterexample.
+                continue
+            if expected_task_error is not None:
                 continue
             inv_failed, _ = (
                 check_invariant(invariant, state) if (invariant is not None and not deadlocked) else (False, None)
@@ -1244,13 +1342,21 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         serializable_invariant=serializable_invariant,
     )
     clock = clock_config.mode
+    previous_trace_filter = _get_active_trace_filter()
     if trace_packages is not None:
         _set_active_trace_filter(_TraceFilter(trace_packages))
 
-    # Compute serializable baseline if requested.
-    serial_valid_states, serial_hash_fn = await compute_serializable_baseline_async(
-        setup, tasks, serializable_invariant
-    )
+    try:
+        # Compute serializable baseline if requested. This runs after installing
+        # the per-exploration filter, so failures here must restore any filter
+        # owned by an outer/nested exploration just like failures in the main
+        # scheduling loop do.
+        serial_valid_states, serial_hash_fn = await compute_serializable_baseline_async(
+            setup, tasks, serializable_invariant
+        )
+    finally:
+        if trace_packages is not None:
+            _set_active_trace_filter(previous_trace_filter)
 
     num_tasks = len(tasks)
     # With a virtual clock the engine gets one extra thread — the clock actor
@@ -1279,6 +1385,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     async def _record_reproduction(
         schedule_list: list[int],
         invariant_fn: Callable[[T], bool] | None,
+        task_error: Exception | None = None,
     ) -> None:
         if reproduce_on_failure <= 0 or result.reproduction_attempts != 0:
             return
@@ -1292,6 +1399,9 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             timeout_per_run=timeout_per_run,
             deadlock_timeout=deadlock_timeout,
             clock=clock,
+            detect_sql=detect_sql,
+            detect_redis=detect_redis,
+            expected_task_error=(type(task_error), str(task_error)) if task_error is not None else None,
         )
         result.reproduction_attempts = attempts
         result.reproduction_successes = successes
@@ -1319,6 +1429,8 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         # tell them apart from user timers (see _install_frontrun_timer_tagging).
         _user_timers_check, _untag_timers = _install_frontrun_timer_tagging(_loop)
 
+    if trace_packages is not None:
+        _set_active_trace_filter(_TraceFilter(trace_packages))
     try:
         with PatchScope() as patch_scope:
             patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
@@ -1421,11 +1533,12 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                             return result
                     elif task_error is not None:
                         exc_type = type(task_error).__name__
-                        record_dpor_failure(
+                        schedule_list = record_dpor_failure(
                             result,
                             list(execution.schedule_trace),
                             f"Task crash in execution {result.num_explored}: {exc_type}: {task_error}",
                         )
+                        await _record_reproduction(schedule_list, None, task_error)
                         if stop_on_first:
                             return result
 
@@ -1475,19 +1588,26 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                                 return result
     finally:
         if trace_packages is not None:
-            _set_active_trace_filter(None)
+            _set_active_trace_filter(previous_trace_filter)
         set_lock_timeout(prev_lock_timeout)
         if _untag_timers is not None:
             _untag_timers()
         if _restore_loop_time is not None:
             _restore_loop_time()
 
-    if result.property_holds and result.num_explored > 0 and decisive_executions == 0 and inconclusive_timeouts > 0:
+    if result.property_holds and result.num_explored > 0 and inconclusive_timeouts > 0:
         result.property_holds = False
-        result.explanation = (
-            f"Async DPOR checked no completed interleavings: all {inconclusive_timeouts} explored execution(s) "
-            "timed out before completion. This is inconclusive, not a deadlock counterexample; increase "
-            "timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
-        )
+        if decisive_executions == 0:
+            result.explanation = (
+                f"Async DPOR checked no completed interleavings: all {inconclusive_timeouts} explored execution(s) "
+                "timed out before completion. This is inconclusive, not a deadlock counterexample; increase "
+                "timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
+            )
+        else:
+            result.explanation = (
+                f"Async DPOR completed {decisive_executions} interleaving(s), but {inconclusive_timeouts} additional "
+                "execution(s) timed out before completion. The search is inconclusive and cannot prove the property; "
+                "increase timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
+            )
 
     return result

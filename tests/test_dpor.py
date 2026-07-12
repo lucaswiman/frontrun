@@ -489,6 +489,23 @@ class TestWakeupTreeEngine:
 
 
 class TestExploreDpor:
+    def test_worker_system_exit_is_not_silent_success(self) -> None:
+        """A worker that exits must not be marked done as a successful run."""
+
+        def exits(_state: object) -> None:
+            raise SystemExit(7)
+
+        with pytest.raises(SystemExit) as exc_info:
+            frontrun.explore(
+                setup=object,
+                workers=[exits],
+                invariant=lambda _state: True,
+                detect_io=False,
+                reproduce_on_failure=0,
+            )
+
+        assert exc_info.value.code == 7
+
     def test_lost_update_bug(self) -> None:
         """Two threads doing read-modify-write on a shared counter.
         DPOR should find the lost-update interleaving."""

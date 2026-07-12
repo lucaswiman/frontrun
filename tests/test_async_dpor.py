@@ -72,6 +72,53 @@ class TestAsyncDporBasic:
         assert result.property_holds, f"No race expected: {result.counterexample}"
         assert result.num_explored >= 1
 
+    def test_completed_and_timed_out_executions_are_inconclusive(self) -> None:
+        """One completed execution cannot turn an incomplete search into proof.
+
+        The setter-first order completes.  In the waiter-first order, the
+        waiter snapshots ``ready=False`` and later parks forever on an
+        unmanaged Future.  DPOR must not report ``property_holds=True`` merely
+        because at least one of the two explored orders completed.
+        """
+        require_active("test_async_dpor_mixed_timeout")
+
+        class State:
+            def __init__(self) -> None:
+                self.ready = False
+                self.future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+        async def setter(state: State) -> None:
+            state.ready = True
+            await asyncio.sleep(0)
+
+        async def waiter(state: State) -> None:
+            seen_ready = state.ready
+            await asyncio.sleep(0)
+            if seen_ready:
+                state.future.set_result(None)
+            await state.future
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[setter, waiter],
+                invariant=lambda _state: True,
+                strategy="dpor",
+                max_executions=20,
+                preemption_bound=None,
+                timeout_per_run=0.05,
+                deadlock_timeout=0.02,
+                reproduce_on_failure=0,
+                detect_io=False,
+                stop_on_first=False,
+            )
+        )
+
+        assert result.num_explored >= 2
+        assert not result.property_holds
+        assert result.explanation is not None
+        assert "inconclusive" in result.explanation.lower()
+
     def test_finds_read_modify_write_torn_read(self) -> None:
         """DPOR must explore the read-modify-write interleaving where a checker
         observes a value change across its own await (torn read).

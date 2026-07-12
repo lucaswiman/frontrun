@@ -171,7 +171,7 @@ callables, it spawns each worker as a real OS process running a
        assert result.failing_schedule is not None
 
 ``processes`` is a mapping of label → :class:`~frontrun.Subprocess` (labels are
-purely for readability) or a plain sequence. ``Subprocess(target, args)`` names a
+preserved in ``result.worker_labels``) or a plain sequence. ``Subprocess(target, args)`` names a
 ``"module:callable"`` and its positional ``args``; the args are passed to the
 child as **JSON through the environment**, so they must be JSON-serialisable
 **and survive a JSON round-trip**: a tuple arrives as a list and a dict with
@@ -180,6 +180,10 @@ string-keyed dicts --- or use ``frontrun.explore(execution="process")`` (which
 pickles) when you need richer argument types. Because the child imports the
 target by name, it must be importable in a fresh interpreter --- a module-level
 callable in an installed or on-path module.
+
+Targets must be synchronous callables. If a target is ``async def`` (or a
+plain callable that returns an awaitable), the worker reports a clear error;
+cross-process exploration has no asyncio scheduler in the child process.
 
 ``setup`` and ``invariant`` both run in the coordinator process. ``setup``
 resets the external state before each interleaving and returns a handle to it;
@@ -212,6 +216,10 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
        verified counterexample), or ``None``.
    * - ``failing_schedule``
      - The interleaving (a list of worker ids) that triggered the failure.
+   * - ``worker_labels``
+     - For mapping input, the ``{worker_id: label}`` mapping that translates
+       numeric ids in schedules and access traces back to the caller's labels;
+       otherwise an empty dict.
    * - ``failures``
      - Every failing execution as ``(execution_number, schedule)`` pairs,
        mirroring thread-mode ``InterleavingResult.failures``. Populated by
@@ -264,16 +272,18 @@ re-running the target in place instead of respawning for each interleaving. The
 verdict is identical; reuse trades startup cost for the target being run
 repeatedly in one process, so the target's process-global state must be safe to
 re-enter (frontrun resets its own per-connection SQL state between iterations).
-It is available on both entry points --- ``explore_processes(..., reuse_workers=True)``
-and ``frontrun.explore(..., execution="process", reuse_workers=True)``:
+It is available on both entry points with DPOR ---
+``explore_processes(..., reuse_workers=True)`` and
+``frontrun.explore(..., execution="process", reuse_workers=True)``. The
+lower-level exhaustive strategy rejects worker reuse.
 
-.. note::
-
-   Under ``reuse_workers=True`` the first iteration that ends unclean --- a
-   deadlock or an aborted worker --- leaves a poisoned persistent socket, so
-   the search ends early (reported honestly as ``exhausted=False``) rather than
-   re-spawning. For exhaustive multi-bug search over deadlock-bearing workloads
-   use the default respawn mode (``reuse_workers=False``).
+If a reused iteration deadlocks or aborts, frontrun kills and reaps the poisoned
+worker processes, then launches a fresh set before continuing the search. This
+loses process-global re-entry state at that boundary, but never feeds another
+schedule into a desynchronised protocol stream. Thread execution rejects
+``reuse_workers=True`` with ``ValueError`` because Python cannot safely kill an
+arbitrary stuck thread. Independently, detected thread deadlocks are returned
+as failed ``InterleavingResult`` values rather than raised directly.
 
 .. code-block:: python
 

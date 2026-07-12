@@ -293,7 +293,10 @@ class TestOrmRowLockDeadlock:
             invariant=_invariant,
             detect_io=True,
             deadlock_timeout=15.0,
+            lock_timeout=100,
+            reproduce_on_failure=0,
         )
+        engine.dispose()
 
         assert not result.property_holds, "DPOR should detect the row-lock deadlock as an invariant violation"
         assert result.explanation is not None
@@ -341,6 +344,7 @@ class TestOrmRowLockDeadlock:
             invariant=_invariant,
             detect_io=True,
             deadlock_timeout=15.0,
+            timeout_per_run=15.0,
         )
 
         assert result.property_holds, (

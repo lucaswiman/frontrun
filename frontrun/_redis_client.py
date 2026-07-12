@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import threading
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from typing import Any
 
 from frontrun import _real_threading as _rt
@@ -104,13 +104,9 @@ def _get_redis_db_scope(client: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _report_pipeline_commands(pipeline: Any) -> bool:
-    """Parse a redis Pipeline's command_stack and report all queued accesses.
-
-    Returns ``True`` if any command was reported to the I/O layer.
-    """
+def _iter_pipeline_commands(pipeline: Any) -> Iterator[tuple[str, tuple[Any, ...]]]:
+    """Yield ``(command_name, command_args)`` from a Redis pipeline."""
     command_stack = getattr(pipeline, "command_stack", [])
-    reported = False
     for cmd in command_stack:
         # redis-py Pipeline stores commands as PipelineCommand or tuples.
         if hasattr(cmd, "args"):
@@ -122,8 +118,18 @@ def _report_pipeline_commands(pipeline: Any) -> bool:
         if cmd_args_full:
             cmd_name = str(cmd_args_full[0])
             cmd_cmd_args = tuple(cmd_args_full[1:])
-            if _report_redis_access(cmd_name, cmd_cmd_args, client=pipeline):
-                reported = True
+            yield cmd_name, cmd_cmd_args
+
+
+def _report_pipeline_commands(pipeline: Any) -> bool:
+    """Parse a redis Pipeline's command_stack and report all queued accesses.
+
+    Returns ``True`` if any command was reported to the I/O layer.
+    """
+    reported = False
+    for cmd_name, cmd_args in _iter_pipeline_commands(pipeline):
+        if _report_redis_access(cmd_name, cmd_args, client=pipeline):
+            reported = True
     return reported
 
 
@@ -224,10 +230,9 @@ def _run_sync_dpor_envelope(
     if needs_scheduling_point:
         dpor_ctx = _get_dpor_context()
         if dpor_ctx is not None and dpor_ctx[0].before_io(dpor_ctx[1], resource_id) is False:
-            # An explicit False means the scheduler denied the boundary (the
-            # cross-process SchedulerProxy after an ABORT); running the command
-            # anyway would mutate real Redis outside any schedule.  The
-            # in-process DporScheduler returns None here, which is not a denial.
+            # An explicit False means the scheduler denied the boundary;
+            # running the command anyway would mutate real Redis outside any
+            # schedule.
             raise SchedulerAbort("scheduler aborted before Redis execution")
 
     try:
@@ -301,7 +306,12 @@ def _intercept_pipeline_execute(
     # commands (used by get_many/set_many in e.g. Flask-Caching @memoize)
     # silently skip their scheduling points during replay, causing the
     # schedule to misalign.  See defect #10.
-    needs_scheduling_point = reported or _redis_replay_mode
+    needs_scheduling_point = reported
+    if not needs_scheduling_point and _redis_replay_mode:
+        needs_scheduling_point = any(
+            _replay_needs_scheduling_point(parse_redis_access(cmd_name, cmd_args))
+            for cmd_name, cmd_args in _iter_pipeline_commands(self)
+        )
 
     return _run_sync_dpor_envelope(
         lambda: original_method(self, *args, **kwargs),

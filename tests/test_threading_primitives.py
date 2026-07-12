@@ -13,11 +13,52 @@ Some tests may timeout/deadlock, demonstrating the need for cooperative wrappers
 import queue
 import threading
 
+import pytest
+
 import frontrun
 
 # ---------------------------------------------------------------------------
 # Test: threading.RLock
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.intentionally_leaves_dangling_threads
+def test_dpor_queue_join_yields_to_consumer() -> None:
+    """Queue.join() must not retain the scheduler turn needed by task_done()."""
+    invariant_calls: list[bool] = []
+
+    class State:
+        def __init__(self) -> None:
+            self.queue: queue.Queue[int] = queue.Queue()
+            self.queue.put(1)
+            self.join_returned = False
+            self.consumed = False
+
+    def joiner(state: State) -> None:
+        state.queue.join()
+        state.join_returned = True
+
+    def consumer(state: State) -> None:
+        state.queue.get()
+        state.consumed = True
+        state.queue.task_done()
+
+    def invariant(state: State) -> bool:
+        invariant_calls.append(True)
+        return state.join_returned and state.consumed
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[joiner, consumer],
+        invariant=invariant,
+        detect_io=False,
+        timeout_per_run=0.05,
+        max_executions=1,
+        reproduce_on_failure=0,
+    )
+
+    assert invariant_calls == [True], "queue join wedged, so the completed-state invariant was never evaluated"
+    assert result.property_holds, result.explanation
 
 
 class RLockCounter:

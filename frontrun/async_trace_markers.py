@@ -104,7 +104,7 @@ class AsyncTraceExecutor:
         self.deadlock_timeout = deadlock_timeout
         self.coordinator = ThreadCoordinator(schedule, deadlock_timeout=deadlock_timeout)
         self.marker_registry = MarkerRegistry()
-        self.task_errors: dict[str, Exception] = {}
+        self.task_errors: dict[str, BaseException] = {}
 
     def _create_trace_function(self, execution_name: str) -> Callable[[Any, str, Any], Any]:
         return build_trace_function(

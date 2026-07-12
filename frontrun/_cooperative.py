@@ -1510,6 +1510,26 @@ class CooperativeQueue:
     def __init__(self, maxsize: int = 0) -> None:
         self._queue = self._queue_factory(maxsize)
         self._object_id = id(self)
+        self._engine_blocked_joiners: dict[int, Any] = {}
+
+    def is_set(self) -> bool:
+        """Internal event-style probe used by DPOR queue-join reporting."""
+        with self._queue.all_tasks_done:
+            return self._queue.unfinished_tasks == 0
+
+    def _report_join(self, event: str) -> bool:
+        if _in_dpor_machinery() or is_sync_suppressed():
+            return False
+        reporter = get_sync_reporter()
+        if reporter is None:
+            return False
+        previous = getattr(_scheduler_tls, "_in_dpor_machinery", False)
+        _scheduler_tls._in_dpor_machinery = True
+        try:
+            reporter(event, self._object_id, self)
+        finally:
+            _scheduler_tls._in_dpor_machinery = previous
+        return True
 
     def get(self, block: bool = True, timeout: float | None = None) -> Any:
 
@@ -1642,9 +1662,66 @@ class CooperativeQueue:
 
     def task_done(self) -> None:
         self._queue.task_done()
+        if self.is_set():
+            if not self._report_join("event_set"):
+                for thread_id, scheduler in list(self._engine_blocked_joiners.items()):
+                    clear = getattr(scheduler, "clear_engine_block", None)
+                    if clear is not None:
+                        clear(thread_id)
+        _note_spin_release(self._object_id)
 
     def join(self) -> None:
-        self._queue.join()
+        ctx = get_context()
+        if ctx is None:
+            self._queue.join()
+            return
+
+        scheduler, thread_id = ctx
+        before_sync_retry = getattr(scheduler, "before_sync_retry", None)
+        after_sync_retry = getattr(scheduler, "after_sync_retry", None)
+        if before_sync_retry is not None and get_sync_reporter() is not None:
+            assert after_sync_retry is not None
+            self._engine_blocked_joiners[thread_id] = scheduler
+            try:
+                while True:
+                    if scheduler._error:
+                        raise SchedulerAbort("scheduler aborted")
+                    if scheduler._finished or not before_sync_retry(thread_id):
+                        self._queue.join()
+                        return
+                    if self.is_set():
+                        self._report_join("event_wake")
+                        after_sync_retry(thread_id)
+                        return
+                    self._report_join("event_wait")
+                    after_sync_retry(thread_id)
+            finally:
+                self._engine_blocked_joiners.pop(thread_id, None)
+
+        # Random/marker schedulers have no engine-blocking sync protocol; keep
+        # their existing cooperative spin-yield behavior.
+        note_spin = _spin_hook_for_wait(scheduler, None, None)
+        try:
+            while True:
+                if scheduler._error:
+                    raise SchedulerAbort("scheduler aborted")
+                with self._queue.all_tasks_done:
+                    if self._queue.unfinished_tasks == 0:
+                        return
+                if scheduler._finished:
+                    # Scheduling is over, so let any already-running consumer
+                    # finish through the queue's native condition protocol.
+                    self._queue.join()
+                    return
+                if note_spin is not None:
+                    note_spin(thread_id, self._object_id, True)
+                    with self._queue.all_tasks_done:
+                        if self._queue.unfinished_tasks == 0:
+                            return
+                scheduler.wait_for_turn(thread_id)
+        finally:
+            if note_spin is not None:
+                note_spin(thread_id, self._object_id, False)
 
 
 class CooperativeLifoQueue(CooperativeQueue):
@@ -1737,8 +1814,10 @@ def unpatch_locks() -> None:
 # ---------------------------------------------------------------------------
 
 _real_time_sleep = time.sleep
+_saved_time_sleep = _real_time_sleep
 _sleep_patch_count = 0
 _sleep_patch_lock = real_lock()
+_sleep_patch_owners: dict[int, int] = {}
 
 
 def _cooperative_sleep(seconds: float) -> None:
@@ -1754,15 +1833,32 @@ def _cooperative_sleep(seconds: float) -> None:
     deadline and blocks until the scheduler advances the clock to it.
     ``time.sleep(0)`` stays a pure yield, matching real Python semantics.
     """
+    # Preserve time.sleep's input contract before any virtual/no-delay branch.
+    # Calling the pristine function only for invalid values gives us CPython's
+    # platform-specific exception types/messages without ever blocking here.
+    if seconds < 0 or not math.isfinite(seconds):
+        return _real_time_sleep(seconds)
+
     ctx = get_context()
     if ctx is None:
         # No scheduler turn (e.g. setup()/invariant under clock_scope): if a
         # virtual clock is active for this thread/context, age it by the sleep
         # so TTL-aging setup code isn't frozen.  The driver thread is the only
         # clock user at that moment, so advancing here stays deterministic.
-        # With no active clock this remains the historical pure no-op.
+        # An unrelated caller has no virtual clock: retain the behavior that
+        # surrounded the outermost frontrun patch scope.
         clock = _active_virtual_clock()
-        if clock is not None and seconds > 0:
+        if clock is None:
+            # A direct low-level patch_sleep() owner retains the historical
+            # cooperative/no-delay contract. The process-wide shim can also be
+            # observed by unrelated background threads; those must keep the
+            # surrounding real/third-party sleep behavior.
+            with _sleep_patch_lock:
+                owned_here = _sleep_patch_owners.get(threading.get_ident(), 0) > 0
+                sleep = _saved_time_sleep if _sleep_patch_count > 0 else _real_time_sleep
+            if not owned_here:
+                sleep(seconds)
+        elif seconds > 0:
             clock.advance_to(clock.now() + seconds)
         return
     scheduler, thread_id = ctx
@@ -1780,11 +1876,14 @@ def patch_sleep() -> None:
     Reference-counted like :func:`patch_locks` so multiple concurrent
     callers are safe.
     """
-    global _sleep_patch_count  # noqa: PLW0603
+    global _saved_time_sleep, _sleep_patch_count  # noqa: PLW0603
     with _sleep_patch_lock:
         _sleep_patch_count += 1
+        owner = threading.get_ident()
+        _sleep_patch_owners[owner] = _sleep_patch_owners.get(owner, 0) + 1
         if _sleep_patch_count > 1:
             return
+        _saved_time_sleep = time.sleep
         time.sleep = _cooperative_sleep  # type: ignore[assignment]
 
 
@@ -1799,6 +1898,12 @@ def unpatch_sleep() -> None:
         if _sleep_patch_count <= 0:
             return
         _sleep_patch_count -= 1
+        owner = threading.get_ident()
+        owner_count = _sleep_patch_owners.get(owner, 0)
+        if owner_count <= 1:
+            _sleep_patch_owners.pop(owner, None)
+        else:
+            _sleep_patch_owners[owner] = owner_count - 1
         if _sleep_patch_count > 0:
             return
-        time.sleep = _real_time_sleep  # type: ignore[assignment]
+        time.sleep = _saved_time_sleep  # type: ignore[assignment]

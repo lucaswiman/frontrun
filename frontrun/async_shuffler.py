@@ -55,7 +55,7 @@ from frontrun._async_autopause import (
     wrap_auto_paused_tasks,
 )
 from frontrun._async_cooperative import _real_asyncio_sleep
-from frontrun._random_schedules import fair_schedule_strategy, random_round_robin_schedule
+from frontrun._random_schedules import burst_round, fair_schedule_strategy, random_round_robin_schedule
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
     ClockConfig,
@@ -95,8 +95,8 @@ class AwaitScheduler(InterleavedLoop):
     """Controls async task execution at await-point granularity.
 
     The schedule is a list of task indices. Each entry means "let this
-    task resume from its next await point." When the schedule is
-    exhausted, all tasks run freely to completion.
+    task resume from its next await point." When the sampled prefix is
+    exhausted, it is extended deterministically so tasks remain controlled.
 
     Built on the shared InterleavedLoop abstraction, using index-based
     scheduling as its policy.
@@ -111,11 +111,18 @@ class AwaitScheduler(InterleavedLoop):
         detect_sql: bool = False,
         virtual_clock: VirtualClock | None = None,
         clock_mode: str = "real",
+        max_ops: int = 0,
+        extension_seed: int | None = None,
     ):
         super().__init__(deadlock_timeout=deadlock_timeout)
         self.schedule = schedule
         self.num_tasks = num_tasks
         self._index = 0
+        self._extend_enabled = max_ops > 0
+        self._max_ops = max_ops if max_ops > 0 else len(schedule) * 10 + 10_000
+        seed = extension_seed if extension_seed is not None else hash(tuple(schedule)) & 0xFFFFFFFF
+        self._extend_rng = random.Random(seed)
+        self._max_ops_exhausted = False
         self._detect_sql = detect_sql
         # Virtual clock (ideas/virtual_clock.md), mirroring the sync
         # OpcodeScheduler: schedule entries landing on a sleeping task are
@@ -134,6 +141,16 @@ class AwaitScheduler(InterleavedLoop):
         # Table/row accesses observed via SQL interception, in arrival order.
         # Exposed so callers can inspect cross-task table conflicts.
         self.sql_accesses: list[tuple[int, str, str]] = []
+
+    def _extend_schedule(self) -> bool:
+        """Append a deterministic burst round without exceeding max_ops."""
+        active = [task_id for task_id in range(self.num_tasks) if task_id not in self._tasks_done]
+        remaining = self._max_ops - len(self.schedule)
+        if not active or remaining <= 0:
+            self._max_ops_exhausted = bool(active)
+            return False
+        self.schedule.extend(burst_round(self._extend_rng, active)[:remaining])
+        return True
 
     # -- Virtual clock ---------------------------------------------------
 
@@ -352,8 +369,12 @@ class AwaitScheduler(InterleavedLoop):
             break
 
         if self._index >= len(self.schedule):
-            self._finished = True
-            return True
+            if not self._extend_enabled:
+                self._finished = True
+                return True
+            if not self._extend_schedule():
+                self._finished = True
+                return True
 
         return self.schedule[self._index] == task_id
 
@@ -577,9 +598,13 @@ async def run_with_schedule(
         The state object after execution.
     """
     with _patch_async_runtime(detect_sql=detect_sql):
-        state, _runner = await _run_with_schedule_status(
+        state, runner = await _run_with_schedule_status(
             schedule, setup, tasks, timeout=timeout, deadlock_timeout=deadlock_timeout, detect_sql=detect_sql
         )
+        if runner.scheduler._error is not None:
+            raise runner.scheduler._error
+        if runner.timed_out:
+            raise SchedulerTimeoutError("Async schedule replay timed out before all tasks completed")
         return state
 
 
@@ -735,6 +760,7 @@ async def explore_async_random(
                 detect_sql=detect_sql,
                 virtual_clock=attempt_clock,
                 clock_mode=clock,
+                max_ops=max_ops,
             )
             runner = AsyncShuffler(scheduler)
             # One clock_context owns the time.* patch for this attempt across
@@ -750,6 +776,10 @@ async def explore_async_random(
                 try:
                     await runner.run(funcs, timeout=timeout_per_run)
                 except Exception as task_err:  # noqa: BLE001
+                    if scheduler._max_ops_exhausted:
+                        result.num_explored += 1
+                        seen_schedule_hashes.add(hash(tuple(schedule)))
+                        continue
                     # A task raised under this interleaving.  That is a legitimate
                     # counterexample (IndexError/KeyError/AssertionError in the task
                     # body is a common way a race manifests), not a fatal error that
@@ -766,6 +796,9 @@ async def explore_async_random(
                     return result
                 result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))
+
+                if scheduler._max_ops_exhausted:
+                    continue
 
                 # A timeout/deadlock means tasks were cancelled mid-flight: the
                 # state is partial and does not describe any completed interleaving,

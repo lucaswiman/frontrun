@@ -11,6 +11,7 @@ tests and real subprocess runs.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import multiprocessing
 import os
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,29 +42,45 @@ class WorkerSerializationError(RuntimeError):
     """
 
 
-def _terminate_procs(procs: Sequence[Any]) -> None:
+class WorkerTerminationError(RuntimeError):
+    """Poisoned worker processes survived forced termination."""
+
+
+def _terminate_procs(procs: Sequence[Any], timeout: float = 1.0) -> None:
     """Terminate/kill and reap already-started multiprocessing children.
 
     Used to clean up after a partial launch so a spawn failure mid-loop never
-    orphans the children that did start. Best-effort: each step is guarded so one
-    unresponsive child cannot prevent reaping the rest.
+    orphans the children that did start. Every child is checked after SIGTERM
+    and SIGKILL: replacement workers must never overlap a surviving old child.
     """
     for proc in procs:
         try:
             proc.terminate()
         except Exception:  # noqa: BLE001 - best-effort teardown
             pass
+    deadline = time.monotonic() + max(0.0, timeout)
     for proc in procs:
         try:
-            proc.join(1.0)
+            proc.join(max(0.0, deadline - time.monotonic()))
         except Exception:  # noqa: BLE001 - best-effort teardown
-            continue
-        if proc.is_alive():
-            try:
-                proc.kill()
-                proc.join(1.0)
-            except Exception:  # noqa: BLE001 - best-effort teardown
-                pass
+            pass
+    survivors = [proc for proc in procs if proc.is_alive()]
+    for proc in survivors:
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001 - final liveness check is authoritative
+            pass
+    kill_deadline = time.monotonic() + max(0.0, timeout)
+    for proc in survivors:
+        try:
+            proc.join(max(0.0, kill_deadline - time.monotonic()))
+        except Exception:  # noqa: BLE001 - final liveness check is authoritative
+            pass
+    survivors = [proc for proc in survivors if proc.is_alive()]
+    if survivors:
+        raise WorkerTerminationError(
+            f"{len(survivors)} worker process(es) still alive after terminate/kill; refusing to relaunch"
+        )
 
 
 def _make_stderr_file(worker_id: int) -> str:
@@ -189,7 +207,14 @@ def _mp_worker_entry(
     worker_fn, state = dill.loads(payload)
 
     def run_target(proxy: Any) -> None:
-        worker_fn(state)
+        result = worker_fn(state)
+        if inspect.isawaitable(result):
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+            raise TypeError(
+                "process worker returned an awaitable; async workers are not supported with execution='process'"
+            )
 
     if reuse:
 
@@ -211,7 +236,7 @@ def _mp_worker_entry(
 
         def body(proxy: Any) -> None:
             _install_interception(proxy, worker_id)
-            worker_fn(state)
+            run_target(proxy)
 
         _connect_and_serve(socket_path, worker_id, body)
 
@@ -328,6 +353,12 @@ class MpLauncher:
                     proc.join(1.0)
         return alive
 
+    def terminate(self, handles: Any, timeout: float) -> None:
+        """Forcibly retire poisoned persistent children so they can be replaced."""
+        _terminate_procs(handles, timeout)
+        if handles is self._procs:
+            self._procs = None
+
     def any_exited(self, handles: Any) -> bool:
         """Non-destructive: has any worker process crashed (nonzero exit)?
 
@@ -387,8 +418,9 @@ class Subprocess:
     arrives as a list and a dict with non-string keys comes back string-keyed.
     Pass plain scalars / lists / string-keyed dicts, or use
     ``frontrun.explore(execution="process")`` (which pickles) for richer args.
-    The callable runs in the child with frontrun's SQL interception routed to
-    the coordinator.
+    The callable must be synchronous; async/awaitable targets are rejected.
+    It runs in the child with frontrun's SQL interception routed to the
+    coordinator.
     """
 
     target: str
@@ -457,6 +489,25 @@ class SubprocessLauncher:
                 except subprocess.TimeoutExpired:
                     pass
         return alive
+
+    def terminate(self, handles: Any, timeout: float) -> None:
+        """Forcibly retire poisoned persistent children so they can be replaced."""
+        for proc in handles:
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001 - final poll verifies death
+                pass
+        deadline = time.monotonic() + max(0.0, timeout)
+        for proc in handles:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except Exception:  # noqa: BLE001 - final poll verifies death
+                pass
+        survivors = [proc for proc in handles if proc.poll() is None]
+        if survivors:
+            raise WorkerTerminationError(
+                f"{len(survivors)} worker process(es) still alive after kill; refusing to relaunch"
+            )
 
     def any_exited(self, handles: Any) -> bool:
         """Non-destructive: has any worker process crashed (nonzero exit)?

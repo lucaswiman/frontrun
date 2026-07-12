@@ -268,7 +268,15 @@ class _CooperativeAsyncLock:
             if cycle is not None:
                 graph.remove_waiting(task_id, lock_id)
                 desc = format_cycle(cycle)
-                raise DeadlockError(f"Async lock deadlock detected: {desc}", desc)
+                error = DeadlockError(f"Async lock deadlock detected: {desc}", desc)
+                # Put the scheduler into abort mode before unwinding user
+                # context managers. Their cleanup awaits (for example an
+                # aiosqlite rollback/close) must free-run; continuing to
+                # schedule cleanup after the cycle is proven can strand a
+                # physical transaction and leave its worker thread blocked.
+                if scheduler is not None:
+                    await scheduler._report_error(error)
+                raise error
             # Mark this task as blocked in the DPOR execution so the engine
             # won't schedule it while it's waiting for the lock.  Also track
             # the lock holder so _schedule_next can redirect to the holder

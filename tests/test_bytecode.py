@@ -508,3 +508,50 @@ def test_timeout_counts_as_explored():
     assert result.unique_interleavings <= result.num_explored, (
         f"unique_interleavings ({result.unique_interleavings}) should not exceed num_explored ({result.num_explored})"
     )
+
+
+def test_explore_random_reports_worker_crash_as_counterexample() -> None:
+    """A race-induced worker exception must retain its triggering schedule."""
+
+    def crash(_state: object) -> None:
+        raise IndexError("race-shaped crash")
+
+    result = explore_random(
+        setup=object,
+        threads=[crash],
+        invariant=lambda _state: True,
+        max_attempts=1,
+        max_ops=10,
+        reproduce_on_failure=0,
+        seed=1,
+    )
+
+    assert not result.property_holds
+    assert result.counterexample is not None
+    assert result.explanation and "IndexError: race-shaped crash" in result.explanation
+
+
+def test_explore_random_records_dynamic_schedule_extension(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crash counterexample must include turns executed after its sampled prefix."""
+    monkeypatch.setattr("frontrun.bytecode.random_round_robin_schedule", lambda *_args, **_kwargs: [0, 1])
+
+    def crash_after_prefix(_state: object) -> None:
+        values = [1, 2, 3]
+        _ = sum(values)
+        raise IndexError("crash after extension")
+
+    result = explore_random(
+        setup=object,
+        threads=[crash_after_prefix, lambda _state: None],
+        invariant=lambda _state: True,
+        max_attempts=1,
+        max_ops=2,
+        reproduce_on_failure=0,
+        seed=1,
+    )
+
+    assert not result.property_holds
+    assert result.counterexample is not None
+    assert result.counterexample[:2] == [0, 1]
+    assert len(result.counterexample) > 2
+    assert result.explanation and "IndexError: crash after extension" in result.explanation

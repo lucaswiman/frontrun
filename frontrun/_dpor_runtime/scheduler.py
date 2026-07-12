@@ -836,7 +836,7 @@ class DporScheduler:
             finally:
                 _scheduler_tls._in_dpor_machinery = False
 
-    def before_io(self, thread_id: int, resource_id: str) -> None:
+    def before_io(self, thread_id: int, resource_id: str) -> bool:
         """Enter an explicit Python-level I/O boundary.
 
         Unlike wait_for_turn(), this does not release the scheduler turn
@@ -850,7 +850,7 @@ class DporScheduler:
             try:
                 while True:
                     if self._finished or self._error:
-                        return
+                        return False
 
                     if self._active_io_thread is not None and self._active_io_thread != thread_id:
                         pass
@@ -867,7 +867,7 @@ class DporScheduler:
                             self._active_io_thread = thread_id
                             self._next_thread_after_io = thread_id
                             self._condition.notify_all()
-                            return
+                            return True
 
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
@@ -879,7 +879,7 @@ class DporScheduler:
                         self._next_thread_after_io = next_thread
                         self._current_thread = thread_id
                         self._condition.notify_all()
-                        return
+                        return True
 
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         if self._reschedule_done_current_unlocked():
@@ -893,7 +893,7 @@ class DporScheduler:
                             f"current is {self._current_thread}"
                         )
                         self._condition.notify_all()
-                        return
+                        return False
             finally:
                 _scheduler_tls._in_dpor_machinery = False
 
@@ -1844,7 +1844,7 @@ class _IOAnchoredReplayScheduler(DporScheduler):
             _process_opcode(frame, self, thread_id)
         return self._wait_for_turn(thread_id)
 
-    def before_io(self, thread_id: int, resource_id: str) -> None:
+    def before_io(self, thread_id: int, resource_id: str) -> bool:
         from frontrun._cooperative import _scheduler_tls
 
         with self._condition:
@@ -1852,14 +1852,14 @@ class _IOAnchoredReplayScheduler(DporScheduler):
             try:
                 while True:
                     if self._finished or self._error:
-                        return
+                        return False
 
                     if self._current_thread in self._threads_done:
                         self._current_thread = self._schedule_next()
                         if self._current_thread is None and len(self._threads_done) >= self.num_threads:
                             self._finished = True
                             self._condition.notify_all()
-                            return
+                            return False
                         self._condition.notify_all()
                         continue
 
@@ -1872,7 +1872,7 @@ class _IOAnchoredReplayScheduler(DporScheduler):
                                 f"unexpected extra I/O anchor {(thread_id, resource_id)!r}"
                             )
                             self._condition.notify_all()
-                            return
+                            return False
 
                         expected_tid, expected_resource_id = self._io_schedule[self._io_index]
                         if expected_tid != thread_id or not self._anchors_match(expected_resource_id, resource_id):
@@ -1882,14 +1882,14 @@ class _IOAnchoredReplayScheduler(DporScheduler):
                                 f"got {(thread_id, resource_id)!r}"
                             )
                             self._condition.notify_all()
-                            return
+                            return False
 
                         self._io_index += 1
                         self._active_io_thread = thread_id
                         self._next_thread_after_io = self._schedule_next()
                         self._current_thread = thread_id
                         self._condition.notify_all()
-                        return
+                        return True
 
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         if self._current_thread in self._threads_done:
@@ -1904,7 +1904,7 @@ class _IOAnchoredReplayScheduler(DporScheduler):
                             f"io_index={self._io_index}"
                         )
                         self._condition.notify_all()
-                        return
+                        return False
             finally:
                 _scheduler_tls._in_dpor_machinery = False
 

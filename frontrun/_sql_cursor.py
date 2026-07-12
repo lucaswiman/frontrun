@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import Any
 
 from frontrun._deadlock import SchedulerAbort
-from frontrun._io_detection import _io_tls, get_io_reporter
+from frontrun._io_detection import _io_tls, get_io_reporter, tx_store
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._schema import _detect_driver, get_schema
@@ -55,13 +55,17 @@ from frontrun._sql_endpoint_suppression import (
 from frontrun._sql_insert_tracker import record_insert, resolve_alias
 from frontrun._sql_parsing import (
     LockIntent,
+    TxOp,
     parse_sql_access,
 )
 from frontrun._sql_patch_registry import CONNECT_FACTORY_TARGETS, PYTHON_CURSOR_TARGETS
 from frontrun._sql_row_locks import _acquire_pending_row_locks, _release_dpor_row_locks
 from frontrun._sql_transactions import (
+    _apply_tx_op_after_success,
     _detect_autobegin,
+    _finalize_tx_end,
     _handle_tx_op,
+    _prepare_tx_end,
     _report_or_buffer,
     handle_connection_commit,
     handle_connection_rollback,
@@ -181,6 +185,8 @@ def _dpor_schedule_and_suppress_sync(
     paramstyle: str,
     execute: Callable[[], Any],
     acquired_row_locks: list[str] | None = None,
+    *,
+    release_row_locks_on_error: bool = True,
 ) -> Any:
     """DPOR scheduling point + endpoint I/O suppression for sync SQL execution.
 
@@ -237,6 +243,7 @@ def _dpor_schedule_and_suppress_sync(
     # Suppress cooperative lock sync events during the actual DB call.
     # Internal psycopg2/driver locks are implementation details.
     suppress_sync_reporting()
+    acquired: list[str] = []
     try:
         # Block if another DPOR thread holds a conflicting row lock. This runs
         # after the scheduling boundary and, for DporScheduler, while the SQL
@@ -255,7 +262,8 @@ def _dpor_schedule_and_suppress_sync(
         # OperationalError from SQLite lock contention), any row locks
         # acquired by _acquire_pending_row_locks remain held until thread
         # exit, blocking other DPOR threads indefinitely.
-        _release_dpor_row_locks()
+        if release_row_locks_on_error:
+            _release_dpor_row_locks(acquired)
         raise
     finally:
         unsuppress_sync_reporting()
@@ -277,6 +285,12 @@ def _is_postgresql_db_object(db_obj: Any) -> bool:
         return _detect_driver(connection) == "postgresql"
     except ValueError:
         return False
+
+
+def _connection_for_db_object(db_obj: Any) -> Any:
+    """Return the physical connection represented by a cursor/connection."""
+    connection = getattr(db_obj, "connection", None)
+    return db_obj if connection is None else connection
 
 
 def _sql_resource_id(
@@ -303,6 +317,10 @@ def _sql_sequence_resource_id(table: str, *, db_scope: str | None = None) -> str
     return f"{_sql_resource_id(table, [], db_scope=db_scope)}:seq"
 
 
+def _sql_database_resource_id(*, db_scope: str | None = None) -> str:
+    return _sql_resource_id("__database__", [], db_scope=db_scope)
+
+
 def _report_sql_access(
     operation: Any,
     parameters: Any = None,
@@ -310,6 +328,8 @@ def _report_sql_access(
     db_obj: Any = None,
     is_executemany: bool = False,
     paramstyle: str = "format",
+    defer_tx_lock_release: bool = False,
+    deferred_tx_end: list[Any] | None = None,
 ) -> bool:
     """Parse SQL and report table accesses to the per-thread reporter.
 
@@ -324,17 +344,49 @@ def _report_sql_access(
 
     if reporter is not None and isinstance(operation, str):
         access = parse_sql_access(operation)
+        store = tx_store()
+        connection = _connection_for_db_object(db_obj)
+        owner = getattr(store, "_tx_connection", None)
+        if getattr(store, "_in_transaction", False) and owner is not None and connection is not owner:
+            if access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK) and not (access.read_tables or access.write_tables):
+                # Ending an unrelated connection must not finalize the active
+                # connection's modeled transaction.
+                return True
+            if access.tx_op is not None or access.read_tables or access.write_tables:
+                raise RuntimeError(
+                    "frontrun does not support overlapping SQL transactions on multiple connections in one worker; "
+                    "use one connection per worker or end the active transaction first"
+                )
+
+        dpor_ctx = _get_dpor_context()
+        semantic_fallback = bool(dpor_ctx is not None and getattr(dpor_ctx[0], "requires_semantic_io_fallback", False))
+        if semantic_fallback and access.tx_op is None:
+            has_parsed_access = bool(access.read_tables or access.write_tables)
+            _report_or_buffer(
+                reporter,
+                _sql_database_resource_id(db_scope=_get_connection_db_scope(db_obj)),
+                "read" if has_parsed_access else "write",
+                track_row_lock=False,
+            )
+            reported = True
+            if not has_parsed_access:
+                return True
 
         # 1. Handle Transaction Control Operations
         if access.tx_op is not None:
             reported = True  # Suppress endpoint I/O for TX control too
-            _handle_tx_op(reporter, access.tx_op)
+            if defer_tx_lock_release:
+                if access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK):
+                    _prepare_tx_end(reporter, access.tx_op)
+            else:
+                _handle_tx_op(reporter, access.tx_op)
+            if deferred_tx_end is not None and defer_tx_lock_release:
+                deferred_tx_end.append(access.tx_op)
 
         # 2. Handle Data Access Operations
         if access.read_tables or access.write_tables:
             reported = True
             all_tables = access.read_tables | access.write_tables
-            dpor_ctx = _get_dpor_context()
             db_scope = _get_connection_db_scope(db_obj)
 
             # Row-level predicate extraction (WHERE equality, IN-lists, and INSERT VALUES)
@@ -549,6 +601,66 @@ def _report_sql_access(
     return reported
 
 
+def _run_connection_tx_method(method: Callable[[], Any], operation: str, connection: Any = None) -> Any:
+    """Run a DB-API commit/rollback as one deterministic sync transition."""
+    tx_op = TxOp.COMMIT if operation == "COMMIT" else TxOp.ROLLBACK
+    handler = handle_connection_commit if operation == "COMMIT" else handle_connection_rollback
+    store = tx_store()
+    owner = getattr(store, "_tx_connection", None)
+    tx_active = bool(getattr(store, "_in_transaction", False)) and (owner is None or owner is connection)
+    if tx_active:
+        handler(release_locks=False, finalize=False)
+
+    # ROLLBACK is cleanup, not a user mutation.  Once the scheduler has
+    # aborted, asking it for another SQL turn is guaranteed to be denied;
+    # skipping the physical rollback would return an open transaction (and
+    # its database locks) to a connection pool, poisoning later executions.
+    # COMMIT remains scheduled/denied because it would make partial work
+    # durable outside the counterexample schedule.
+    dpor_ctx = _get_dpor_context()
+    if operation == "ROLLBACK" and dpor_ctx is not None:
+        scheduler = dpor_ctx[0]
+        scheduler_aborted = (
+            bool(getattr(scheduler, "_finished", False))
+            or getattr(scheduler, "_error", None) is not None
+            or bool(getattr(scheduler, "_aborted", False))
+        )
+        if scheduler_aborted:
+            result = method()
+            if tx_active:
+                _finalize_tx_end(tx_op)
+            elif owner is None:
+                _release_dpor_row_locks()
+            return result
+
+    def execute() -> Any:
+        result = method()
+        # Keep modeled state and locks intact if physical I/O raises. On
+        # success, finalize before handing the scheduler turn to another worker.
+        if tx_active:
+            _finalize_tx_end(tx_op)
+        elif owner is None:
+            _release_dpor_row_locks()
+        return result
+
+    return _dpor_schedule_and_suppress_sync(
+        reported=True,
+        operation=operation,
+        parameters=None,
+        paramstyle="format",
+        execute=execute,
+        release_row_locks_on_error=False,
+    )
+
+
+def _run_connection_close(method: Callable[[], Any], connection: Any) -> Any:
+    """Clear modeled state after the owning physical connection closes."""
+    result = method()
+    if getattr(tx_store(), "_tx_connection", None) is connection:
+        reset_connection_state()
+    return result
+
+
 def _wrap_connection_tx_methods(conn: Any) -> None:
     """Wrap a connection's ``commit`` / ``rollback`` to drive the tx state machine.
 
@@ -562,16 +674,18 @@ def _wrap_connection_tx_methods(conn: Any) -> None:
     instance attribute assignment; in that case we leave the connection
     unwrapped (autobegin/textual-COMMIT paths still apply).
     """
-    for name, handler in (("commit", handle_connection_commit), ("rollback", handle_connection_rollback)):
+    for name in ("commit", "rollback", "close"):
         orig = getattr(conn, name, None)
         if orig is None or getattr(orig, "_frontrun_tx_wrapped", False):
             continue
 
-        def _make(orig_method: Any = orig, _handler: Any = handler, _name: str = name) -> Any:
+        def _make(orig_method: Any = orig, _name: str = name) -> Any:
             def _wrapped(*args: Any, **kwargs: Any) -> Any:
-                _handler()
-                suppress_sql_write(_name.upper())
-                return orig_method(*args, **kwargs)
+                if _name == "close":
+                    return _run_connection_close(lambda: orig_method(*args, **kwargs), conn)
+                operation = _name.upper()
+                suppress_sql_write(operation)
+                return _run_connection_tx_method(lambda: orig_method(*args, **kwargs), operation, conn)
 
             _wrapped._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
             return _wrapped
@@ -619,21 +733,22 @@ def _record_uncaptured_insert(cursor: Any, table: str) -> None:
     record_insert(table, None, db_scope=db_scope)
 
 
-def _execute_with_retry(original_method: Any, cursor: Any, operation: Any, parameters: Any = None) -> Any:
-    """Execute a DB-API method, retrying transient SQLite lock errors."""
+def _execute_with_retry(execute: Callable[[], Any]) -> Any:
+    """Execute a scheduled DB operation, retrying transient SQLite locks.
+
+    Each retry must re-enter the scheduling envelope.  Retrying the raw driver
+    call while holding an exclusive sync turn prevents the lock owner from
+    running its COMMIT, creating a scheduler-induced SQLite deadlock.
+    """
     for i in range(50):
         try:
-            if parameters is not None:
-                return original_method(cursor, operation, parameters)
-            return original_method(cursor, operation)
+            return execute()
         except sqlite3.OperationalError as e:
             if "locked" not in str(e).lower():
                 raise
             time.sleep(0.01 * (i + 1))
 
-    if parameters is not None:
-        return original_method(cursor, operation, parameters)
-    return original_method(cursor, operation)
+    return execute()
 
 
 def _intercept_execute(
@@ -684,22 +799,38 @@ def _intercept_execute(
     # for endpoint-based suppression (which handles remote connections).
     suppress_tid_permanently()
 
+    deferred_tx_end: list[Any] = []
     reported = _report_sql_access(
         operation,
         parameters,
         db_obj=self,
         is_executemany=is_executemany,
         paramstyle=paramstyle,
+        defer_tx_lock_release=True,
+        deferred_tx_end=deferred_tx_end,
     )
+    deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
+
+    def execute() -> Any:
+        if parameters is not None:
+            result = original_method(self, operation, parameters)
+        else:
+            result = original_method(self, operation)
+        if deferred_tx_op is not None:
+            _apply_tx_op_after_success(deferred_tx_op, _connection_for_db_object(self))
+        return result
 
     statement_row_locks: list[str] = []
-    result = _dpor_schedule_and_suppress_sync(
-        reported,
-        operation,
-        parameters,
-        paramstyle,
-        lambda: _execute_with_retry(original_method, self, operation, parameters),
-        statement_row_locks,
+    result = _execute_with_retry(
+        lambda: _dpor_schedule_and_suppress_sync(
+            reported,
+            operation,
+            parameters,
+            paramstyle,
+            execute,
+            statement_row_locks,
+            release_row_locks_on_error=deferred_tx_op is None,
+        )
     )
 
     # Defect #6 fix: release this statement's speculative row locks for
@@ -840,16 +971,20 @@ def _get_traced_connection_class(base_connection_cls: type, paramstyle: str) -> 
             return super().cursor(*args, **kwargs)
 
         def commit(self) -> None:
-            handle_connection_commit()
-            super().commit()
+            _run_connection_tx_method(super().commit, "COMMIT", self)
 
         def rollback(self) -> None:
-            handle_connection_rollback()
-            super().rollback()
+            _run_connection_tx_method(super().rollback, "ROLLBACK", self)
+
+        def close(self) -> None:
+            _run_connection_close(super().close, self)
 
     TracedConnection.__name__ = f"Traced{base_connection_cls.__name__}"
     TracedConnection.__qualname__ = f"Traced{base_connection_cls.__qualname__}"
     TracedConnection._frontrun_traced_connection = True  # type: ignore[attr-defined]
+    TracedConnection.commit._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
+    TracedConnection.rollback._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
+    TracedConnection.close._frontrun_tx_wrapped = True  # type: ignore[attr-defined]
     _TRACED_CONNECTION_CLASSES[key] = TracedConnection
     return TracedConnection
 
@@ -910,12 +1045,13 @@ def _make_traced_sqlite3_connection_class(base_cls: type = sqlite3.Connection) -
             # Drive the tx state machine before the driver call so the buffered
             # accesses are flushed even when COMMIT is issued via the connection
             # method rather than as SQL text (finding 3).
-            handle_connection_commit()
-            super().commit()
+            _run_connection_tx_method(super().commit, "COMMIT", self)
 
         def rollback(self) -> None:  # type: ignore[override]
-            handle_connection_rollback()
-            super().rollback()
+            _run_connection_tx_method(super().rollback, "ROLLBACK", self)
+
+        def close(self) -> None:  # type: ignore[override]
+            _run_connection_close(super().close, self)
 
     TracedConnection.__name__ = f"Traced{base_cls.__name__}"
     TracedConnection.__qualname__ = f"Traced{base_cls.__qualname__}"

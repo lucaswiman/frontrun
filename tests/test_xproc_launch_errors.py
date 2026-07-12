@@ -10,6 +10,10 @@ work (not just module-level functions); only genuinely unserialisable captures
 from __future__ import annotations
 
 import socket
+import subprocess
+import sys
+import warnings
+from typing import Any
 
 import pytest
 
@@ -21,8 +25,11 @@ from frontrun._dpor_runtime.xproc.launch import (
     SubprocessLauncher,
     WorkerSerializationError,
     _dumps_worker,
+    _mp_worker_entry,
     _stderr_last_line,
+    _terminate_procs,
 )
+from frontrun._dpor_runtime.xproc.worker_main import _install_interception
 
 
 class _FakeWorkerSet:
@@ -37,6 +44,30 @@ class _FakeWorkerSet:
 
     def diagnose(self, handles) -> str | None:  # noqa: ARG002 - handles unused in fake
         return self._detail
+
+
+def test_xproc_sql_interception_fails_closed_without_sqlglot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing parser must abort the worker, never silently erase SQL accesses."""
+    import frontrun._sql_cursor as sql_cursor
+
+    class Proxy:
+        def io_report(self, _resource_id: str, _kind: str) -> None:
+            pass
+
+    sql_cursor.unpatch_sql()
+    monkeypatch.setitem(sys.modules, "sqlglot", None)
+    try:
+        with pytest.raises(RuntimeError, match="sqlglot|SQL parser"):
+            _install_interception(Proxy(), 0)  # type: ignore[arg-type]
+    finally:
+        from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
+        from frontrun._redis_client import unpatch_redis
+
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        unpatch_redis()
+        sql_cursor.unpatch_sql()
 
 
 def test_dumps_worker_handles_closures() -> None:
@@ -335,6 +366,42 @@ def test_mp_launcher_join_escalates_to_kill() -> None:
     assert proc.killed
 
 
+class _UnkillableMpProc:
+    def terminate(self) -> None:
+        pass
+
+    def kill(self) -> None:
+        pass
+
+    def join(self, timeout: float | None = None) -> None:  # noqa: ARG002 - fake
+        pass
+
+    def is_alive(self) -> bool:
+        return True
+
+
+def test_mp_termination_fails_loudly_if_worker_survives() -> None:
+    with pytest.raises(RuntimeError, match="still alive"):
+        _terminate_procs([_UnkillableMpProc()])
+
+
+class _UnkillablePopenProc:
+    def kill(self) -> None:
+        pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        raise subprocess.TimeoutExpired("worker", timeout)
+
+    def poll(self) -> None:
+        return None
+
+
+def test_subprocess_termination_fails_loudly_if_worker_survives() -> None:
+    launcher = SubprocessLauncher([Subprocess("pkg.mod:go")], reuse=True)
+    with pytest.raises(RuntimeError, match="still alive"):
+        launcher.terminate([_UnkillablePopenProc()], timeout=0.01)
+
+
 # --- stderr capture must not deadlock a chatty worker ----------------------
 
 
@@ -487,3 +554,51 @@ def test_exhaustive_connect_failure_surfaces_worker_set_diagnosis() -> None:
     assert result.failure_kind == "worker_error"
     assert "ModuleNotFoundError" in (result.failure or ""), result.failure
     assert "_WorkerLaunchError" not in (result.failure or "")
+
+
+def test_worker_main_rejects_async_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """String targets must not silently discard an async worker coroutine."""
+    from frontrun._dpor_runtime.xproc import worker_main
+
+    async def async_target() -> None:
+        pass
+
+    monkeypatch.setenv("FRONTRUN_XPROC_SOCKET", "unused.sock")
+    monkeypatch.setenv("FRONTRUN_XPROC_WORKER_ID", "0")
+    monkeypatch.setenv("FRONTRUN_XPROC_TARGET", "tests.fake:async_target")
+    monkeypatch.setattr(worker_main, "_resolve_target", lambda _target: async_target)
+    monkeypatch.setattr(worker_main, "_install_interception", lambda _proxy, _worker_id: None)
+
+    def run_inline(_socket_path: str, _worker_id: int, body: Any) -> None:
+        body(object())
+
+    monkeypatch.setattr(worker_main, "_connect_and_serve", run_inline)
+
+    with pytest.raises(TypeError, match="async"):
+        worker_main.main()
+
+
+def test_mp_worker_rejects_plain_callable_returning_awaitable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pickled process workers must not discard a dynamically returned coroutine.
+
+    ``explore()`` can reject an ``async def`` worker before launch, but a plain
+    callable returning an awaitable is indistinguishable until the child calls
+    it.  The multiprocessing path must fail closed there, matching string
+    :class:`Subprocess` targets.
+    """
+    from frontrun._dpor_runtime.xproc import worker, worker_main
+
+    async def awaitable_result() -> None:
+        pass
+
+    def returns_awaitable(_state: object) -> Any:
+        return awaitable_result()
+
+    monkeypatch.setattr(worker_main, "_install_interception", lambda _proxy, _worker_id: None)
+    monkeypatch.setattr(worker, "_connect_and_serve", lambda _socket_path, _worker_id, body: body(object()))
+
+    payload = _dumps_worker(returns_awaitable, object())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(TypeError, match="returned an awaitable"):
+            _mp_worker_entry("unused.sock", 0, payload)

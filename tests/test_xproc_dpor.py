@@ -521,6 +521,25 @@ class _TurnOrderScheduler:
         pass
 
 
+class _ControlledGrantScheduler(_TurnOrderScheduler):
+    """Grant worker 0 before worker 1, independent of ACCESS arrival order."""
+
+    def __init__(self, accesses: list[tuple[int, str, str]]) -> None:
+        super().__init__(accesses)
+        self.worker_one_waiting = threading.Event()
+        self.allow_worker_one = threading.Event()
+        self.errors: list[Exception] = []
+
+    def before_sync_retry(self, worker_id: int) -> bool:
+        if worker_id == 1:
+            self.worker_one_waiting.set()
+            assert self.allow_worker_one.wait(5.0)
+        return True
+
+    def report_error(self, error: Exception) -> None:
+        self.errors.append(error)
+
+
 def test_relay_appends_access_before_releasing_turn() -> None:
     # Regression (exactness): the relay released the sync turn (after_sync_retry)
     # BEFORE appending the worker's ACCESS frame to the shared accesses list, so
@@ -553,6 +572,78 @@ def test_relay_appends_access_before_releasing_turn() -> None:
     assert scheduler.accesses_at_release == [(0, "redis:k1", "write"), (0, "redis:k2", "read")], (
         f"turn released before the worker's access was recorded: {scheduler.accesses_at_release!r}"
     )
+
+
+def test_relay_access_trace_follows_grants_not_socket_arrival() -> None:
+    """Pre-declared ACCESS arrival races must not reorder the replay trace."""
+    accesses: list[tuple[int, str, str]] = []
+    scheduler = _ControlledGrantScheduler(accesses)
+    pairs = [socket.socketpair(), socket.socketpair()]
+    relays = [
+        threading.Thread(
+            target=_relay_loop,
+            args=(scheduler, wid, coord, accesses, threading.Lock(), {}, set()),
+            name=f"xproc-relay-grant-order-{wid}",
+            daemon=True,
+        )
+        for wid, (coord, _worker) in enumerate(pairs)
+    ]
+    for relay in relays:
+        relay.start()
+    try:
+        # Worker 1's declaration arrives first, but its scheduling request is
+        # held until worker 0 has been granted and completed.
+        proto.send_msg(pairs[1][1], {"t": proto.ACCESS, "w": 1, "rid": "sql:items:id=1", "kind": "write"})
+        proto.send_msg(pairs[1][1], {"t": proto.REPORT_AND_WAIT, "w": 1})
+        assert scheduler.worker_one_waiting.wait(5.0)
+
+        proto.send_msg(pairs[0][1], {"t": proto.ACCESS, "w": 0, "rid": "sql:items:id=1", "kind": "write"})
+        proto.send_msg(pairs[0][1], {"t": proto.REPORT_AND_WAIT, "w": 0})
+        assert proto.recv_msg(pairs[0][1]) == {"t": proto.GRANT}
+        proto.send_msg(pairs[0][1], {"t": proto.DONE, "w": 0})
+
+        scheduler.allow_worker_one.set()
+        assert proto.recv_msg(pairs[1][1]) == {"t": proto.GRANT}
+        proto.send_msg(pairs[1][1], {"t": proto.DONE, "w": 1})
+        for relay in relays:
+            relay.join(5.0)
+            assert not relay.is_alive()
+    finally:
+        scheduler.allow_worker_one.set()
+        for pair in pairs:
+            for sock in pair:
+                sock.close()
+
+    assert [worker_id for worker_id, _rid, _kind in accesses] == [0, 1]
+
+
+def test_relay_internal_exception_is_reported_instead_of_marked_successfully_done() -> None:
+    """A broken relay frame must become a worker error, never a false pass."""
+    accesses: list[tuple[int, str, str]] = []
+    scheduler = _ControlledGrantScheduler(accesses)
+    worker_errors: dict[int, str] = {}
+    unclean: set[int] = set()
+    coord_end, worker_end = socket.socketpair()
+    relay = threading.Thread(
+        target=_relay_loop,
+        args=(scheduler, 0, coord_end, accesses, threading.Lock(), worker_errors, unclean),
+        name="xproc-relay-invalid-frame",
+        daemon=True,
+    )
+    relay.start()
+    try:
+        # rid is required to be a string. Current code raises AttributeError at
+        # rid.startswith(), then its finally block marks the worker done.
+        proto.send_msg(worker_end, {"t": proto.ACCESS, "w": 0, "rid": 123, "kind": "write"})
+        relay.join(5.0)
+        assert not relay.is_alive()
+    finally:
+        worker_end.close()
+        coord_end.close()
+
+    assert 0 in worker_errors
+    assert scheduler.errors
+    assert unclean == {0}
 
 
 def test_dpor_no_race_when_safe() -> None:

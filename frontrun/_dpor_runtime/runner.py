@@ -47,7 +47,8 @@ class DporBytecodeRunner:
         self.detect_io = detect_io
         self._preload_bridge = preload_bridge
         self.threads: list[threading.Thread] = []
-        self.errors: dict[int, Exception] = {}
+        self.errors: dict[int, BaseException] = {}
+        self.timed_out = False
         self._lock_patched = False
         self._io_patched = False
         self._sleep_patched = False
@@ -472,9 +473,16 @@ class DporBytecodeRunner:
                 func(*args)
         except SchedulerAbort:
             pass  # scheduler already has the error; just exit cleanly
-        except Exception as e:
+        except BaseException as e:
             self.errors[thread_id] = e
-            self.scheduler.report_error(e)
+            if isinstance(e, Exception):
+                self.scheduler.report_error(e)
+            else:
+                # SystemExit/KeyboardInterrupt raised in a worker thread do not
+                # reach the caller automatically. Wake peer workers with an
+                # ordinary scheduler error; _raise_recorded_errors re-raises
+                # the original BaseException on the driver thread.
+                self.scheduler.report_error(RuntimeError(f"worker {thread_id} terminated with {type(e).__name__}"))
 
     def run(
         self,
@@ -484,6 +492,7 @@ class DporBytecodeRunner:
     ) -> None:
         if args is None:
             args = [() for _ in funcs]
+        self.timed_out = False
 
         self._start_opcode_trace()
         run_thread = self._run_thread
@@ -494,6 +503,7 @@ class DporBytecodeRunner:
         ]
 
         def on_timeout(alive: list[threading.Thread]) -> None:
+            self.timed_out = True
             notify_scheduler_timeout(self.scheduler, alive)
 
         worker_set = ThreadWorkerSet(name_prefix="dpor", thread_store=self.threads)

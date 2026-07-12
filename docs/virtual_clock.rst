@@ -188,6 +188,11 @@ Semantics and limitations
   heuristic advances the clock when nothing has progressed for a short
   interval.  Prefer ``strategy="dpor"`` for lock-heavy async code — it
   patches ``asyncio.Lock`` and needs no heuristic.
+* **Dynamically created child tasks are not separate explored actors.** An
+  explored async worker should not use ``asyncio.create_task()`` to introduce
+  additional concurrency: descendants inherit the worker's scheduler identity,
+  so overlapping virtual sleeps or waits can serialize unexpectedly. Pass each
+  concurrent coroutine as its own item in ``workers=`` instead.
 * **Broken-down and formatted wall-clock time is not patched.**
   ``time.localtime`` / ``time.gmtime`` / ``time.strftime`` (no-arg) /
   ``time.ctime`` / ``time.asctime`` / ``time.clock_gettime`` /
@@ -245,8 +250,8 @@ Semantics and limitations
   under an explored clock: another advance can be scheduled between them,
   so the woken waiter's ``time.monotonic()`` may already see a later
   deadline's value.  This mirrors real time passing between statements;
-  whether post-wake advances should be suppressed is an open question
-  tracked in ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
+  assert against deadline ordering rather than requiring the first clock read
+  after a wake to equal that waiter's exact deadline.
 * C-level clock reads and sleeps (including inside extension modules) are
   outside the virtual clock unless a frontrun integration explicitly models
   them.
@@ -293,10 +298,8 @@ pointing at the clock-domain mismatch**.
 ``asyncio.wait_for`` / ``asyncio.timeout`` / ``asyncio.timeout_at`` — these are
 virtualized.  Keep code that schedules raw ``loop.call_later`` / ``loop.call_at``
 timers, or that derives absolute deadlines from ``time.monotonic()``, *outside*
-explored task contexts.  A ``clock_diagnostics``-gated warning for an untagged
-loop timer whose ``when`` is implausibly far from ``loop.time()`` is tracked in
-``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md`` (raw
-loop-timer diagnostics).
+explored task contexts. ``clock_diagnostics`` does not currently detect this
+clock-domain mismatch.
 
 How it works
 ------------
@@ -324,6 +327,6 @@ deadline is actually due (the advance is a no-op and the actor
 re-blocks).  Replay cannot tell such a no-op entry apart from a real or
 positionally-drifted advance, so it may fire an owed advance at the next
 deadline registration and diverge from the explored run.  This is a
-replay-accounting limitation, not a false counterexample; the fix
-(recording the effective advance per actor step) is tracked in
-``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
+replay-accounting limitation, not a false counterexample. A reproduction count
+below 100% is the visible symptom; inspect the original counterexample schedule
+when it occurs.

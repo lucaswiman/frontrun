@@ -384,6 +384,36 @@ async def test_transaction_rollback_discards_reports() -> None:
         assert len(log.events) == 0
 
 
+@pytest.mark.parametrize("operation", ["COMMIT", "ROLLBACK"])
+@pytest.mark.asyncio
+async def test_failed_textual_tx_end_preserves_modeled_transaction(operation: str) -> None:
+    """An async driver failure must not finalize the modeled transaction."""
+    set_io_reporter(IOLog())
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._tx_buffer = [("sql:accounts", "write")]
+    _io_tls._tx_savepoints = {"before": 0}
+    _io_tls._held_row_locks = {"sql:accounts:id=1"}
+
+    async def fail(_cursor: object, _sql: str) -> None:
+        raise RuntimeError(f"physical async {operation.lower()} failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="physical async"):
+            await _intercept_execute_async(fail, object(), operation)
+
+        assert _io_tls._in_transaction is True
+        assert _io_tls._is_autobegin is True
+        assert _io_tls._tx_buffer == [("sql:accounts", "write")]
+        assert _io_tls._tx_savepoints == {"before": 0}
+        assert _io_tls._held_row_locks == {"sql:accounts:id=1"}
+    finally:
+        set_io_reporter(None)
+        for attr in ("_in_transaction", "_is_autobegin", "_tx_buffer", "_tx_savepoints", "_held_row_locks"):
+            if hasattr(_io_tls, attr):
+                delattr(_io_tls, attr)
+
+
 # ---------------------------------------------------------------------------
 # 5. Row-level predicate extraction
 # ---------------------------------------------------------------------------

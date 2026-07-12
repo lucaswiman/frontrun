@@ -16,15 +16,18 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from frontrun import _async_cooperative
 from frontrun._async_autopause import _in_scheduler_pause, _scheduler_var, _task_id_var
 from frontrun._async_cooperative import (
     _real_asyncio_condition,
     _real_asyncio_sleep,
     _release_task_async_locks,
 )
+from frontrun._deadlock import DeadlockError, format_cycle
 from frontrun._dpor_core import (
     ReplayEngine,
     ReplayExecution,
+    RowLockRegistry,
     advance_and_dispatch,
     advance_replay_index,
     extend_replay_schedule,
@@ -50,6 +53,8 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         deadlock_timeout: float = 5.0,
         virtual_clock: VirtualClock | None = None,
         clock_actor_id: int | None = None,
+        detect_sql: bool = False,
+        detect_redis: bool = False,
     ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
         self._condition = _real_asyncio_condition()
@@ -68,6 +73,11 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         # (drift): the owed advance is performed at the next registration.
         self._pending_clock_advances = 0
         self._event_blocked: set[int] = set()  # pyright: ignore[reportIncompatibleVariableOverride]
+        self._detect_sql = detect_sql
+        self._detect_redis = detect_redis
+        self._row_lock_registry = RowLockRegistry()
+        self._active_row_locks = self._row_lock_registry._active_row_locks
+        self._row_lock_waiters: dict[str, list[tuple[int, asyncio.Future[None]]]] = {}
         self._current_task: int | None = None
         self._current_task_consumed = False
         if schedule:
@@ -255,6 +265,73 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
             return True
         return False
 
+    def _on_error_set(self) -> None:
+        for waiters in self._row_lock_waiters.values():
+            for _task_id, future in waiters:
+                if not future.done():
+                    future.set_result(None)
+
+    async def acquire_row_locks_async(self, task_id: int, resource_ids: list[str]) -> list[str]:
+        graph = _async_cooperative._async_wait_graph
+        acquired: list[str] = []
+        for res_id in resource_ids:
+            lock_id = self._row_lock_registry._row_lock_int_id(res_id)
+            while (holder := self._active_row_locks.get(res_id)) is not None and holder != task_id:
+                if graph is not None:
+                    cycle = graph.add_waiting(task_id, lock_id, kind="row_lock")
+                    if cycle is not None:
+                        graph.remove_waiting(task_id, lock_id, kind="row_lock")
+                        desc = format_cycle(cycle, self._row_lock_registry.id_to_resource())
+                        error = DeadlockError(f"Row-lock deadlock detected: {desc}", desc)
+                        await self._report_error(error)
+                        raise error
+                future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                self._row_lock_waiters.setdefault(res_id, []).append((task_id, future))
+                self._event_blocked.add(task_id)
+                self._lock_blocked[task_id] = holder
+                depth = _in_scheduler_pause.get()
+                _in_scheduler_pause.set(depth + 1)
+                try:
+                    await self.kick_stalled_schedule(task_id)
+                    await future
+                    self._event_blocked.discard(task_id)
+                    self._lock_blocked.pop(task_id, None)
+                    if self._error is not None:
+                        raise self._error
+                    await self.wait_until_scheduled_after_block(task_id, "SQL row lock")
+                    if self._error is not None:
+                        raise self._error
+                finally:
+                    if graph is not None:
+                        graph.remove_waiting(task_id, lock_id, kind="row_lock")
+                    waiters = self._row_lock_waiters.get(res_id)
+                    if waiters is not None:
+                        waiters[:] = [entry for entry in waiters if entry[1] is not future]
+                        if not waiters:
+                            self._row_lock_waiters.pop(res_id, None)
+                    self._event_blocked.discard(task_id)
+                    self._lock_blocked.pop(task_id, None)
+                    _in_scheduler_pause.set(depth)
+            self._row_lock_registry.record_acquire(task_id, res_id, graph)
+            acquired.append(res_id)
+        return acquired
+
+    def release_row_locks(self, task_id: int, resources: list[str] | None = None) -> None:
+        graph = _async_cooperative._async_wait_graph
+        for res_id, _lock_id in self._row_lock_registry.pop(task_id, graph, resources):
+            for _waiter, future in self._row_lock_waiters.get(res_id, []):
+                if not future.done():
+                    future.set_result(None)
+
+    def report_and_wait(self, _frame: Any, _task_id: int) -> bool:
+        """Match the SQL interception scheduler port during replay.
+
+        Await-point scheduling already controls replay; this synchronous hook
+        exists so SQL interception can complete the same boundary handshake it
+        uses during exploration.
+        """
+        return True
+
     def on_proceed(self, task_id: Any, marker: Any = None) -> None:
         self._current_task_consumed = True
 
@@ -268,6 +345,22 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)
         _task_id_var.set(task_id)
+        if self._detect_sql or self._detect_redis:
+            from frontrun._io_detection import (
+                set_dpor_scheduler_task,
+                set_dpor_thread_id_task,
+                set_io_reporter,
+                set_tx_store_task,
+            )
+
+            set_dpor_scheduler_task(self)
+            set_dpor_thread_id_task(task_id)
+            set_io_reporter(lambda _resource_id, _kind: None)
+            store = set_tx_store_task()
+            store._in_transaction = False
+            store._is_autobegin = False
+            store._tx_buffer = []
+            store._tx_savepoints = {}
 
     def _cleanup_task_context(self, task_id: Any) -> None:
         # Release any asyncio.Lock objects still held by this task (e.g. the
@@ -275,8 +368,16 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         # stale holding edges / lock owners leak into later replay attempts
         # and cause spurious DeadlockError or phantom ownership.
         _release_task_async_locks(task_id)
+        self.release_row_locks(task_id)
         _scheduler_var.set(None)
         _task_id_var.set(None)
+        if self._detect_sql or self._detect_redis:
+            from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter
+
+            set_dpor_scheduler_task(None)
+            set_dpor_thread_id_task(None)
+            if len(self._tasks_done) + 1 >= self._num_replay_tasks:
+                set_io_reporter(None)
 
     def finish_task(self, task_id: int) -> None:
         self._tasks_done.add(task_id)

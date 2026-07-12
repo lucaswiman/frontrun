@@ -73,8 +73,10 @@ sql = [
 ]
 process = [
     # Cross-process exploration (execution="process") serialises worker callables
-    # with dill so closures/lambdas work, not just module-level functions.
+    # with dill and requires semantic SQL parsing because worker processes do
+    # not use the coordinator's LD_PRELOAD endpoint-level fallback.
     "dill>=0.3.6",
+    "sqlglot>=20.0",
 ]
 sql-async = [
     "aiosqlite>=0.17.0",

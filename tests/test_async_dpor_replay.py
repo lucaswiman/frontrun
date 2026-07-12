@@ -39,6 +39,35 @@ from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active
 
 
+def test_task_crash_counterexample_reproduces_same_exception() -> None:
+    """Task-crash findings must honor the generic replay contract."""
+    require_active("test_async_dpor_task_crash_replay")
+    import frontrun
+
+    async def crash(state: list[str]) -> None:
+        state.append("started")
+        await asyncio.sleep(0)
+        raise RuntimeError("deterministic worker crash")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=list,
+            workers=[crash],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            max_executions=1,
+            reproduce_on_failure=3,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "RuntimeError: deterministic worker crash" in result.explanation
+    assert result.reproduction_attempts == 3
+    assert result.reproduction_successes == 3
+
+
 def test_lock_counterexample_reproduces() -> None:
     """A counterexample whose tasks use asyncio.Lock must reproduce.
 

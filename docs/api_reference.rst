@@ -27,6 +27,12 @@ See :doc:`virtual_clock` for a guide. ``frontrun.explore(..., clock="virtual")``
 / ``clock="explored"`` control time as a scheduled quantity; there is no
 separate entry point.
 
+``frontrun.ClockMode`` is the public type alias
+``Literal["real", "virtual", "explored"]`` used by the ``clock=`` parameter.
+``frontrun.VIRTUAL_EPOCH`` is the deterministic starting timestamp used by
+each virtual-clock execution; application code normally should compare times
+within one execution rather than depend on its numeric value.
+
 
 Cross-Process Exploration
 -------------------------

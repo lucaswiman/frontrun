@@ -28,7 +28,7 @@ def finalize_marker_executor_run(
     *,
     threads: list[threading.Thread],
     timeout: float | None,
-    task_errors: dict[str, Exception],
+    task_errors: dict[str, BaseException],
     coordinator: ThreadCoordinator,
     timeout_message: Callable[[list[threading.Thread]], str],
 ) -> None:
@@ -63,7 +63,8 @@ def finalize_marker_executor_run(
     # the full schedule wasn't completed, it means the schedule references
     # markers that no worker reached. If zero steps were consumed, the
     # markers were simply never hit -- which could be a different issue
-    # (wrong file, exec'd code, etc.) and is not necessarily an error.
+    # (wrong file, exec'd code, etc.) and is not necessarily an error for the
+    # low-level executor. The exhaustive exploration API validates step zero.
     if (
         coordinator.current_step > 0
         and coordinator.current_step < len(coordinator.schedule.steps)

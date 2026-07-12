@@ -17,6 +17,8 @@ stubbed where a call would otherwise launch subprocesses):
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -26,6 +28,20 @@ import frontrun.cross_process
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessResult
 
 _TARGET = "tests.xproc_demo_counter:increment"
+
+
+def test_process_extra_installs_sql_parser_required_for_xproc_sql() -> None:
+    """The documented process extra must be sufficient for SQL exploration.
+
+    Cross-process workers deliberately drop the LD_PRELOAD fallback, so without
+    sqlglot ordinary SELECT/UPDATE statements produce no scheduling points and
+    a racy execution can be falsely reported as safe and exhausted.
+    """
+    pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    process_extra = re.search(r"(?ms)^process\s*=\s*\[(.*?)^\]", pyproject)
+
+    assert process_extra is not None
+    assert re.search(r"['\"]sqlglot(?:[^'\"]*)['\"]", process_extra.group(1))
 
 
 class _RecordingCoordinator:
@@ -38,6 +54,11 @@ class _RecordingCoordinator:
 
     def explore(self, **_kwargs: Any) -> CrossProcessResult:
         return CrossProcessResult(ok=True, iterations=0, exhausted=True)
+
+
+class _UnexpectedCoordinator:
+    def __init__(self, **_kwargs: Any) -> None:
+        pytest.fail("invalid public bounds must be rejected before coordinator construction")
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +118,37 @@ def test_explore_processes_rejects_exhaustive_step_limit_with_dpor() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("strategy", "kwargs", "option"),
+    [
+        ("dpor", {"deadlock_timeout": 0.0}, "deadlock_timeout"),
+        ("dpor", {"max_executions": 0}, "max_executions"),
+        ("dpor", {"max_branches": 0}, "max_branches"),
+        ("dpor", {"total_timeout": 0.0}, "total_timeout"),
+        ("dpor", {"preemption_bound": -1}, "preemption_bound"),
+        ("exhaustive", {"max_iterations": 0}, "max_iterations"),
+        ("exhaustive", {"max_steps_per_run": 0}, "max_steps_per_run"),
+    ],
+)
+def test_explore_processes_rejects_nonpositive_bounds_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    strategy: str,
+    kwargs: dict[str, Any],
+    option: str,
+) -> None:
+    monkeypatch.setattr(frontrun.cross_process, "DporCrossProcessCoordinator", _UnexpectedCoordinator)
+    monkeypatch.setattr(frontrun.cross_process, "CrossProcessCoordinator", _UnexpectedCoordinator)
+
+    with pytest.raises(ValueError, match=option):
+        frontrun.explore_processes(
+            frontrun.Subprocess(_TARGET, ("unused.db",)),
+            setup=lambda: None,
+            invariant=lambda _state: True,
+            strategy=strategy,  # type: ignore[arg-type]
+            **kwargs,
+        )
+
+
 # ---------------------------------------------------------------------------
 # DPOR knobs: wired through under strategy="dpor", rejected under exhaustive
 # ---------------------------------------------------------------------------
@@ -119,6 +171,19 @@ def test_explore_processes_wires_dpor_knobs_to_coordinator(monkeypatch: pytest.M
     assert captured["total_timeout"] == 2.5
     assert captured["search"] == "round-robin"
     assert captured["max_branches"] == 123
+
+
+def test_explore_processes_preserves_mapping_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(frontrun.cross_process, "DporCrossProcessCoordinator", _RecordingCoordinator)
+    result = frontrun.explore_processes(
+        {
+            "checkout": frontrun.Subprocess(_TARGET, ("unused.db",)),
+            "inventory": frontrun.Subprocess(_TARGET, ("unused.db",)),
+        },
+        setup=lambda: None,
+        invariant=lambda _state: True,
+    )
+    assert result.worker_labels == {0: "checkout", 1: "inventory"}
 
 
 @pytest.mark.parametrize(

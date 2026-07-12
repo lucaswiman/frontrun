@@ -7,7 +7,13 @@ import time
 import pytest
 
 from frontrun.common import Schedule, Step
-from frontrun.trace_markers import MarkerRegistry, ThreadCoordinator, TraceExecutor, frontrun
+from frontrun.trace_markers import (
+    MarkerRegistry,
+    ThreadCoordinator,
+    TraceExecutor,
+    explore_marker_interleavings,
+    frontrun,
+)
 
 
 class BankAccount:
@@ -20,6 +26,39 @@ class BankAccount:
         current = self.balance  # frontrun: read_balance
         new_balance = current + amount
         self.balance = new_balance  # frontrun: write_balance
+
+
+def test_frontrun_async_target_with_thread_args_is_awaited() -> None:
+    """Adding convenience-function args must not turn an async target sync."""
+    observed: list[str] = []
+
+    async def worker(value: str) -> None:
+        observed.append(value)  # frontrun: async_with_args
+
+    frontrun(
+        Schedule([Step("task", "async_with_args")]),
+        {"task": worker},
+        thread_args={"task": ("ran",)},
+        timeout=2.0,
+    )
+
+    assert observed == ["ran"], "async worker coroutine was returned and discarded instead of awaited"
+
+
+def test_marker_exploration_does_not_pass_when_declared_marker_is_absent() -> None:
+    """An unexecuted schedule cannot count as an exhaustively verified pass."""
+
+    def worker(_state: object) -> None:
+        return
+
+    result = explore_marker_interleavings(
+        setup=object,
+        threads={"worker": (worker, ["declared_but_absent"])},
+        invariant=lambda _state: True,
+    )
+
+    assert not result.property_holds
+    assert result.explanation and "declared_but_absent" in result.explanation
 
 
 def test_race_condition_buggy_schedule():
@@ -590,6 +629,21 @@ def test_dict_form_returns_none():
 
     assert result is None
     assert account.balance == 200
+
+
+def test_dict_form_worker_system_exit_is_not_silent_success() -> None:
+    """SystemExit in a marker worker must propagate to the caller."""
+
+    def exits() -> None:
+        reached_marker = True  # frontrun: before_system_exit
+        assert reached_marker
+        raise SystemExit(9)
+
+    executor = TraceExecutor(Schedule([Step("worker", "before_system_exit")]))
+    with pytest.raises(SystemExit) as exc_info:
+        executor.run({"worker": exits}, timeout=1.0)
+
+    assert exc_info.value.code == 9
 
 
 @pytest.mark.intentionally_leaves_dangling_threads

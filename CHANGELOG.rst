@@ -46,6 +46,13 @@ Unreleased
   connect timeout, hiding e.g. the child's ``ModuleNotFoundError``).
   See :doc:`cross_process`.
 
+  Invalid process bounds now fail before workers launch, and lower-level
+  ``Subprocess`` targets that return awaitables report an unsupported-async
+  worker error instead of silently succeeding with an unawaited coroutine.
+  Mapping-input labels are preserved in ``CrossProcessResult.worker_labels``;
+  poisoned reused processes are killed, reaped, and freshly launched before
+  exploration continues.
+
 * **explore() rejects options its strategy would ignore.** Thread-mode
   ``frontrun.explore(...)`` now raises ``ValueError`` for any explicitly-passed
   option the selected strategy does not support (e.g. ``seed=`` with
@@ -98,6 +105,28 @@ Unreleased
   ``max_steps_per_run`` (``failure_kind="step_limit"``) so a nonterminating
   worker cannot hang exploration forever.
 
+* **Release-blocking proof-integrity fixes.** The ``process`` extra now installs
+  the SQL parser required by cross-process workers, and process SQL
+  interception fails closed if that parser is unavailable instead of silently
+  certifying a run with no semantic accesses. Failed physical COMMIT/ROLLBACK
+  operations retain modeled transaction state and row locks. Marker exploration
+  no longer counts an unconsumed or timed-out schedule as an exhaustive pass;
+  async marker workers with arguments are awaited correctly. Random exploration
+  keeps sampled prefixes within ``max_ops``, returns sync worker crashes with
+  every deterministically extended turn in the structured counterexample, and
+  keeps async work controlled when its sampled prefix ends. Async SQL row-lock
+  contenders now park inside the scheduler (including replay) rather than
+  entering a blocking database call, preserving cross-resource deadlock cycles
+  and replayability. A second audit now also rejects timed-out sync/async runs,
+  self-cancelled async workers, and ``SystemExit`` from sync workers instead of
+  treating partial state as a proof; makes ``Queue.join()`` cooperative; restores
+  nested async trace filters; and replays task-crash counterexamples. SQL
+  transaction state is tied to its owning connection, statement failures keep
+  earlier row locks, and failed transaction-control statements take effect only
+  after physical success. Cross-process opaque SQL uses a conservative
+  database-wide conflict instead of relying on the unavailable preload fallback,
+  while Redis replay no longer invents boundaries for empty/keyless pipelines.
+
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
   dispatch on the subclass instead of always returning the patched base
@@ -109,8 +138,9 @@ Unreleased
 * **Replay fixes.** Replaying a counterexample now reproduces exact deadlocks
   (a replayed schedule that ends in the discovered deadlock no longer aborts
   the replay machinery) and timed-wait expiries under IO-anchored replay, so
-  ``reproduce_on_failure`` statistics stay meaningful for deadlock- and
-  timeout-shaped counterexamples.
+  ``reproduce_on_failure`` statistics stay meaningful for deadlock-, timeout-,
+  and task-crash-shaped counterexamples. Timed-out replays never return partial
+  state for invariant evaluation.
 
 * **DPOR correctness.** Accesses after ``await`` are now attributed before
   scheduling successors, ``asyncio.Lock`` / event state races replay

@@ -332,7 +332,7 @@ def test_counter_race(tmp_path):
 
 `execution="process"` accepts sync `strategy="dpor"` only; async workers and other strategies raise `ValueError`. SQLite needs nothing extra; Redis workers need the `redis` package and a running server.
 
-The lower-level `frontrun.explore_processes(...)` spawns `frontrun.Subprocess("module:callable", args)` targets as real OS processes (the target must be importable in a fresh interpreter) and returns a `CrossProcessResult` (`.ok`, `.failure`, `.failure_kind`, `.failing_schedule`, `.iterations`). `setup` returns a handle to the shared state that is passed to `invariant(state)` (matching `execution="process"`); both run in the coordinator and may reach the shared store directly:
+The lower-level `frontrun.explore_processes(...)` spawns `frontrun.Subprocess("module:callable", args)` targets as real OS processes (the target must be importable in a fresh interpreter) and returns a `CrossProcessResult` (`.ok`, `.failure`, `.failure_kind`, `.failing_schedule`, `.worker_labels`, `.iterations`). Mapping-input labels are preserved as `{worker_id: label}` so numeric schedules and access traces remain readable. `setup` returns a handle to the shared state that is passed to `invariant(state)` (matching `execution="process"`); both run in the coordinator and may reach the shared store directly:
 
 ```python
 import frontrun
@@ -346,13 +346,14 @@ result = frontrun.explore_processes(
     count=2,                                  # replicate the spec (or pass a dict/list of specs)
     setup=reset_inventory,                    # runs in the coordinator; resets the DB, returns a handle
     invariant=lambda state: stock_never_negative(state),  # receives setup()'s handle; returns True/False
+    strategy="exhaustive",
     max_iterations=50,
 )
 if not result.ok:
     raise AssertionError(result.failure)
 ```
 
-`strategy="dpor"` (default) prunes equivalent interleavings and detects deadlocks; `strategy="exhaustive"` brute-forces every interleaving as a reduction-free cross-check. `reuse_workers=True` keeps workers alive across iterations (available on both entry points). Cross-process tests spawn real processes and are marked with the pytest `e2e` marker — run them via `make test-e2e-3.14` or `pytest -m e2e`. (Cross-process mode installs its interception in Python, so it does not need the `frontrun` CLI wrapper.)
+`strategy="dpor"` (default) prunes equivalent interleavings and detects deadlocks; `strategy="exhaustive"` brute-forces every interleaving as a reduction-free cross-check. `reuse_workers=True` keeps workers alive across clean iterations (available on both entry points with DPOR; the lower-level exhaustive strategy rejects it). After a deadlock or aborted iteration, frontrun kills the poisoned processes and launches fresh ones before continuing. Thread execution rejects worker reuse because Python cannot safely terminate a stuck thread. Cross-process tests spawn real processes and are marked with the pytest `e2e` marker — run them via `make test-e2e-3.14` or `pytest -m e2e`. (Cross-process mode installs its interception in Python, so it does not need the `frontrun` CLI wrapper.)
 
 ### Virtual Clock: Timeout, Retry, and TTL Races
 

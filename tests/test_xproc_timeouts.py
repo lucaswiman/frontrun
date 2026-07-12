@@ -301,3 +301,21 @@ def test_exhaustive_step_cap_default_does_not_limit_normal_workloads() -> None:
         max_iterations=4,
     )
     assert result.ok, f"unexpected failure: {result.failure!r}"
+
+
+def test_exhaustive_step_cap_accepts_run_finishing_at_exact_limit() -> None:
+    """The cap bounds additional steps, not clean completion after the last one."""
+
+    def exactly_three_steps(proxy) -> None:
+        for _ in range(3):
+            assert proxy.report_and_wait(None, 0)
+
+    result = CrossProcessCoordinator(num_workers=1, deadlock_timeout=2.0, max_steps_per_run=3).explore(
+        worker_set=ThreadLauncher([exactly_three_steps]),
+        setup=lambda: None,
+        invariant=lambda: True,
+        max_iterations=1,
+    )
+
+    assert result.ok, f"finite run at the exact step limit was rejected: {result.failure!r}"
+    assert result.failure_kind is None

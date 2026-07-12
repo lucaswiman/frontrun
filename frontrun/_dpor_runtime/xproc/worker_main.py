@@ -12,6 +12,7 @@ a scheduling request to the coordinator over the socket.
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import os
 
@@ -27,6 +28,14 @@ def _install_interception(proxy: SchedulerProxy, worker_id: int) -> None:
     SQL cursor patching is global; Redis patching is installed only when the
     ``redis`` package is importable so SQL-only workers need no Redis dependency.
     """
+    try:
+        import sqlglot  # noqa: F401  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            "cross-process SQL interception requires the sqlglot SQL parser; "
+            "install it with `pip install frontrun[process]`"
+        ) from exc
+
     from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
     from frontrun._sql_cursor import patch_sql
 
@@ -76,7 +85,18 @@ def main() -> None:
     fn = _resolve_target(target)
 
     def run_target(proxy: SchedulerProxy) -> None:
-        fn(*args)  # type: ignore[operator]
+        result = fn(*args)  # type: ignore[operator]
+        if inspect.isawaitable(result):
+            # Avoid both the false-success verdict and an unawaited-coroutine
+            # warning. Cross-process scheduling is sync-only: there is no async
+            # scheduler in the child that could make this execution meaningful.
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+            raise TypeError(
+                f"explore_processes() target {target!r} returned an awaitable; "
+                "async workers are not supported with execution='process'"
+            )
 
     if reuse:
         # Install interception once (it is global and shares the persistent

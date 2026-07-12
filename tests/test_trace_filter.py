@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import os
 import threading
@@ -339,3 +340,60 @@ class TestTraceFilterCleanupOnException:
                 reproduce_on_failure=0,
             )
         assert get_active_trace_filter() == old_filter, "Trace filter leaked after exception in explore setup"
+
+    def test_async_dpor_restores_filter_on_baseline_setup_error(self) -> None:
+        """Async baseline failures must restore the surrounding trace filter."""
+        import frontrun
+
+        surrounding = TraceFilter(["surrounding.*"])
+
+        def bad_setup() -> object:
+            raise RuntimeError("async setup failed!")
+
+        async def worker(_state: object) -> None:
+            pass
+
+        old_filter = get_active_trace_filter()
+        set_active_trace_filter(surrounding)
+        try:
+            with pytest.raises(RuntimeError, match="async setup failed"):
+                asyncio.run(
+                    frontrun.explore(
+                        setup=bad_setup,
+                        workers=[worker],
+                        invariant=lambda _state: True,
+                        serializable_invariant=True,
+                        trace_packages=["inner.*"],
+                        reproduce_on_failure=0,
+                    )
+                )
+            assert get_active_trace_filter() is surrounding
+        finally:
+            set_active_trace_filter(old_filter)
+
+    def test_async_dpor_restores_filter_after_success(self) -> None:
+        """A normal async exploration must preserve an outer trace filter."""
+        import frontrun
+
+        surrounding = TraceFilter(["surrounding.*"])
+
+        async def worker(_state: object) -> None:
+            pass
+
+        old_filter = get_active_trace_filter()
+        set_active_trace_filter(surrounding)
+        try:
+            result = asyncio.run(
+                frontrun.explore(
+                    setup=object,
+                    workers=[worker],
+                    invariant=lambda _state: True,
+                    max_executions=1,
+                    trace_packages=["inner.*"],
+                    reproduce_on_failure=0,
+                )
+            )
+            assert result.property_holds
+            assert get_active_trace_filter() is surrounding
+        finally:
+            set_active_trace_filter(old_filter)

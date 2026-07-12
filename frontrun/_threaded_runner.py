@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Callable, Sequence
 from typing import Any
+
+from frontrun._virtual_clock import real_monotonic
 
 _POST_TIMEOUT_CLEANUP_JOIN_SECONDS = 0.5
 
@@ -51,10 +52,13 @@ def join_threads_with_deadline(
     timeout: float | None,
 ) -> list[threading.Thread]:
     """Join threads against a shared deadline and return any still alive."""
-    deadline = time.monotonic() + timeout if timeout is not None else None
+    # This deadline governs the runner itself, not explored code.  In virtual
+    # clock mode time.monotonic() is patched and may jump by seconds at zero
+    # wall cost, which must not consume the worker join budget.
+    deadline = real_monotonic() + timeout if timeout is not None else None
     for thread in threads:
         if deadline is not None:
-            remaining = max(0.0, deadline - time.monotonic())
+            remaining = max(0.0, deadline - real_monotonic())
             thread.join(timeout=remaining)
         else:
             thread.join()
