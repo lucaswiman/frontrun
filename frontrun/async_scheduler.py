@@ -342,6 +342,8 @@ class InterleavedLoop:
                     try:
                         await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                     except asyncio.TimeoutError:
+                        if self._rescue_stalled_pause():
+                            continue
                         self._handle_timeout(task_id, marker)
                         return
 
@@ -361,6 +363,19 @@ class InterleavedLoop:
         scheduler overrides it to wake tasks parked in cooperative primitives so
         they free-run to completion instead of hanging until ``timeout_per_run``.
         """
+
+    def _rescue_stalled_pause(self) -> bool:
+        """Last-chance transition before ``pause()`` declares a watchdog stall.
+
+        Called (holding ``_condition``) when a pause wait expired with no
+        progress.  Return True after performing a transition that can unstick
+        the run — the waiter then re-waits instead of erroring.  The random
+        scheduler overrides this to advance a pending *virtual* deadline: a
+        task suspended on an unpatched primitive inside ``asyncio.timeout`` /
+        ``wait_for`` is invisible to the schedule, and firing its virtual
+        timeout is exactly the recovery the real program would perform.
+        """
+        return False
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         """Handle a timeout in pause(). Sets the error and wakes everyone.

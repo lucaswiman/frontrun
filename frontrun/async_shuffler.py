@@ -389,6 +389,22 @@ class AwaitScheduler(InterleavedLoop):
         )
         self._condition.notify_all()
 
+    def _rescue_stalled_pause(self) -> bool:
+        """Advance a pending virtual deadline instead of declaring a stall.
+
+        The random runtime patches only sleep/timeouts/time — a task suspended
+        on a *stock* primitive (e.g. asyncio.Event) inside ``asyncio.timeout``
+        is invisible to the schedule, so the head stalls on it and every other
+        task lands in ``pause()``'s watchdog.  If a virtual deadline is
+        pending, firing it (cancelling the guarded wait) is exactly the
+        recovery the real program performs at that timeout; scoring the stall
+        as a deadlock/crash counterexample would be a false report.
+        """
+        if self._advance_virtual_deadline_for_idle():
+            self._condition.notify_all()
+            return True
+        return False
+
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)
         _task_id_var.set(task_id)

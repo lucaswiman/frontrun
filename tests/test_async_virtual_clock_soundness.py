@@ -245,3 +245,46 @@ def test_patched_async_sleep_ignores_scheduler_inherited_by_foreign_thread() -> 
     # Unmanaged semantics: the real delay is preserved (neither skipped as a
     # cooperative yield nor virtualised through the foreign scheduler).
     assert elapsed_box["elapsed"] >= 0.15
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
+def test_async_random_stock_primitive_under_timeout_is_not_scored_as_deadlock() -> None:
+    # The random runtime patches only sleep/timeouts/time — not asyncio.Event.
+    # A task suspended on a *stock* Event inside asyncio.timeout is invisible
+    # to the schedule (head stall); the other task then dies in pause()'s
+    # watchdog and the run was scored "Deadlock detected" — even though the
+    # real program provably recovers via the timeout at virtual t=0.05.
+    # A pending virtual deadline must be advanced before declaring the stall.
+    from frontrun import explore_async_random
+
+    class State:
+        def __init__(self) -> None:
+            self.stock_event = asyncio.Event()
+            self.timed_out = False
+
+    async def blocked_under_timeout(s: State) -> None:
+        try:
+            async with asyncio.timeout(0.05):
+                await s.stock_event.wait()
+        except TimeoutError:
+            s.timed_out = True
+
+    async def bystander(s: State) -> None:
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    async def _run() -> None:
+        result = await explore_async_random(
+            setup=State,
+            tasks=[blocked_under_timeout, bystander],
+            invariant=lambda s: s.timed_out,
+            max_attempts=5,
+            max_ops=40,
+            seed=7,
+            deadlock_timeout=2.0,
+            timeout_per_run=15.0,
+            clock="virtual",
+        )
+        assert result.property_holds, result.explanation
+
+    asyncio.run(_run())

@@ -462,6 +462,16 @@ class DporScheduler:
                 while self._current_thread != thread_id:
                     if self._finished or self._error:
                         return
+                    if self._replay_sleep_phase2_bypass():
+                        # Replay only: the positional walk is suspended because
+                        # other threads gate-wait on access anchors — they need
+                        # *our* post-sleep writes, and nothing else will ever
+                        # move _current_thread.  Proceed as _wait_for_turn does
+                        # for every other thread while gates are held;
+                        # otherwise each reproduction attempt burns a full
+                        # deadlock_timeout here (or fails outright when the
+                        # gate's own timeout loses the race).
+                        break
                     if self._reschedule_done_current_unlocked():
                         continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
@@ -1185,6 +1195,17 @@ class DporScheduler:
         """
         return False
 
+    def _replay_sleep_phase2_bypass(self) -> bool:
+        """Replay-only escape from ``sleep_until`` phase 2 (base: no-op).
+
+        During exploration a woken sleeper must genuinely wait to be
+        scheduled.  ``_ReplayDporScheduler`` overrides this to mirror
+        ``_wait_for_turn``'s gate suspension: while access-anchor waiters
+        hold the positional walk, the woken sleeper must be allowed to run
+        to its gated access.
+        """
+        return False
+
     def _wake_scheduled_sleeper(self) -> bool:
         """Advance the clock when replay schedules a *sleeping* thread.
 
@@ -1580,6 +1601,13 @@ class _ReplayDporScheduler(DporScheduler):
             self._condition.notify_all()
             return True
         return False
+
+    def _replay_sleep_phase2_bypass(self) -> bool:
+        # Mirror _wait_for_turn: while threads gate-wait on access anchors the
+        # positional walk is suspended, so a woken sleeper would otherwise
+        # never see _current_thread == itself (the gate waiters need *its*
+        # post-sleep writes to make anchor progress).
+        return self._gate_waiters > 0
 
     def _schedule_next(self) -> int | None:
         # Exact-deadlock detection: the positional walk keeps granting turns to
