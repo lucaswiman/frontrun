@@ -598,9 +598,13 @@ async def run_with_schedule(
         The state object after execution.
     """
     with _patch_async_runtime(detect_sql=detect_sql):
-        state, _runner = await _run_with_schedule_status(
+        state, runner = await _run_with_schedule_status(
             schedule, setup, tasks, timeout=timeout, deadlock_timeout=deadlock_timeout, detect_sql=detect_sql
         )
+        if runner.scheduler._error is not None:
+            raise runner.scheduler._error
+        if runner.timed_out:
+            raise SchedulerTimeoutError("Async schedule replay timed out before all tasks completed")
         return state
 
 
