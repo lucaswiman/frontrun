@@ -94,6 +94,12 @@ def _run_dpor_schedule(
             if isinstance(scheduler._error, DeadlockError):
                 raise scheduler._error
             raise
+        if runner.timed_out:
+            # Even if timeout notification let the workers unwind during the
+            # cleanup join, this replay exceeded its bound.  Its partial state
+            # is not a reproduction, and another in-process replay would be
+            # unsafe if any managed or unmanaged work survived.
+            raise TimeoutError("DPOR replay timed out before all worker threads completed")
         if scheduler._error is not None:
             raise scheduler._error
     return state
@@ -140,9 +146,11 @@ def _reproduce_dpor_counterexample(
     patch_redis()
     set_redis_replay_mode(True)
     successes = 0
+    attempts = 0
     clock_config = ClockConfig(mode=validate_clock(clock))
     try:
         for _ in range(reproduce_on_failure):
+            attempts += 1
             deadlocked = False
             inv_failed = False
             replay_clock = clock_config.new_clock()
@@ -171,8 +179,13 @@ def _reproduce_dpor_counterexample(
                         inv_failed, _ = check_invariant(invariant, replay_state)
             except DeadlockError:
                 deadlocked = True
+            except TimeoutError:
+                # Python threads cannot be killed safely.  A timed-out replay
+                # poisons the in-process harness, so never launch another
+                # attempt after it.
+                break
             except Exception:
-                continue  # timeout / crash during replay — not a reproduction
+                continue  # crash during replay — not a reproduction
             if is_reproduction_run(
                 deadlocked=deadlocked, has_invariant=invariant is not None, invariant_failed=inv_failed
             ):
@@ -183,7 +196,7 @@ def _reproduce_dpor_counterexample(
         unpatch_redis()
         unpatch_sql()
         set_lock_timeout(_prev_lt)
-    return reproduce_on_failure, successes
+    return attempts, successes
 
 
 # ---------------------------------------------------------------------------

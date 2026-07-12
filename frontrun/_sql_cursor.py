@@ -611,6 +611,28 @@ def _run_connection_tx_method(method: Callable[[], Any], operation: str, connect
     if tx_active:
         handler(release_locks=False, finalize=False)
 
+    # ROLLBACK is cleanup, not a user mutation.  Once the scheduler has
+    # aborted, asking it for another SQL turn is guaranteed to be denied;
+    # skipping the physical rollback would return an open transaction (and
+    # its database locks) to a connection pool, poisoning later executions.
+    # COMMIT remains scheduled/denied because it would make partial work
+    # durable outside the counterexample schedule.
+    dpor_ctx = _get_dpor_context()
+    if operation == "ROLLBACK" and dpor_ctx is not None:
+        scheduler = dpor_ctx[0]
+        scheduler_aborted = (
+            bool(getattr(scheduler, "_finished", False))
+            or getattr(scheduler, "_error", None) is not None
+            or bool(getattr(scheduler, "_aborted", False))
+        )
+        if scheduler_aborted:
+            result = method()
+            if tx_active:
+                _finalize_tx_end(tx_op)
+            elif owner is None:
+                _release_dpor_row_locks()
+            return result
+
     def execute() -> Any:
         result = method()
         # Keep modeled state and locks intact if physical I/O raises. On

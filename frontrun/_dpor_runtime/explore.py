@@ -414,7 +414,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                     )
 
                     # Replay the counterexample to measure reproducibility
-                    if reproduce_on_failure > 0 and result.reproduction_attempts == 0:
+                    if reproduce_on_failure > 0 and result.reproduction_attempts == 0 and not runner.timed_out:
                         attempts, successes = _reproduce_dpor_counterexample(
                             schedule_list=schedule_list,
                             setup=setup,

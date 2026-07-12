@@ -48,6 +48,7 @@ class DporBytecodeRunner:
         self._preload_bridge = preload_bridge
         self.threads: list[threading.Thread] = []
         self.errors: dict[int, BaseException] = {}
+        self.timed_out = False
         self._lock_patched = False
         self._io_patched = False
         self._sleep_patched = False
@@ -110,13 +111,7 @@ class DporBytecodeRunner:
         def _on_opcode(code: Any, offset: int, frame: Any, tid: int) -> bool:
             if scheduler._clock_diagnostics:
                 warn_if_captured_time_reference(frame)
-            yielded = process_opcode_with_coarsening(code, offset, frame, scheduler, tid, _detect_io)
-            # report_and_wait returns after a scheduler abort so the traced
-            # worker can unwind.  Do not let it resume user bytecode and
-            # mutate state outside the schedule.
-            if yielded and (scheduler._finished or scheduler._error is not None):
-                raise SchedulerAbort("scheduler aborted while waiting for an opcode turn")
-            return yielded
+            return process_opcode_with_coarsening(code, offset, frame, scheduler, tid, _detect_io)
 
         self._opcode_handle = start_opcode_trace(
             get_thread_id=_get_tid,
@@ -497,6 +492,7 @@ class DporBytecodeRunner:
     ) -> None:
         if args is None:
             args = [() for _ in funcs]
+        self.timed_out = False
 
         self._start_opcode_trace()
         run_thread = self._run_thread
@@ -507,6 +503,7 @@ class DporBytecodeRunner:
         ]
 
         def on_timeout(alive: list[threading.Thread]) -> None:
+            self.timed_out = True
             notify_scheduler_timeout(self.scheduler, alive)
 
         worker_set = ThreadWorkerSet(name_prefix="dpor", thread_store=self.threads)

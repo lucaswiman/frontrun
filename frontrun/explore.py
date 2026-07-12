@@ -301,11 +301,6 @@ def explore(
     if deadlock_timeout is None:
         deadlock_timeout = 15.0 if execution == "process" else 5.0
     all_kwargs["deadlock_timeout"] = deadlock_timeout
-    # If the caller lengthens the scheduler's no-progress budget but leaves the
-    # outer run timeout at its default, the runner must not abort first.  Keep
-    # explicitly smaller timeout_per_run values as intentional hard bounds.
-    if "timeout_per_run" not in explicit_options and timeout_per_run < deadlock_timeout:
-        all_kwargs["timeout_per_run"] = deadlock_timeout
 
     # Cross-process execution: each worker runs in its own Python process,
     # coordinating over a socket. Same call shape as threads/async; workers and
