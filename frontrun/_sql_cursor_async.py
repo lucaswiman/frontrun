@@ -35,8 +35,7 @@ from frontrun._sql_cursor import (
     _report_sql_access,
     _suppress_endpoint_io,
 )
-from frontrun._sql_parsing import TxOp
-from frontrun._sql_transactions import _finalize_tx_end
+from frontrun._sql_transactions import _apply_tx_op_after_success
 
 # ---------------------------------------------------------------------------
 # Shared async DPOR scheduling + endpoint suppression
@@ -118,11 +117,11 @@ async def _dpor_schedule_and_suppress_async(
         raise
 
 
-async def _execute_and_finalize_tx_end(execute: Callable[[], Awaitable[Any]], tx_op: TxOp | None) -> Any:
+async def _execute_and_finalize_tx_end(execute: Callable[[], Awaitable[Any]], tx_op: Any | None) -> Any:
     """Finalize modeled transaction state only after physical async I/O succeeds."""
     result = await execute()
     if tx_op is not None:
-        _finalize_tx_end(tx_op)
+        _apply_tx_op_after_success(tx_op)
     return result
 
 
@@ -148,7 +147,7 @@ async def _intercept_execute_async(
     insert_match = _RE_INSERT_TABLE.match(operation) if isinstance(operation, str) else None
     update_match = _RE_UPDATE_TABLE.match(operation) if isinstance(operation, str) else None
     _detect_autobegin(self)
-    deferred_tx_end: list[TxOp] = []
+    deferred_tx_end: list[Any] = []
     reported = _report_sql_access(
         operation,
         parameters,
@@ -207,7 +206,7 @@ async def _intercept_asyncpg_execute(
     resolution for asyncpg's binary protocol parameters).
     """
     update_match = _RE_UPDATE_TABLE.match(operation) if isinstance(operation, str) else None
-    deferred_tx_end: list[TxOp] = []
+    deferred_tx_end: list[Any] = []
     reported = _report_sql_access(
         operation,
         None,
@@ -314,7 +313,7 @@ def _patch_psycopg_async() -> None:
         # resolution) — F7.
         async def _patched(self: Any, query: Any, params: Any = None, **kwargs: Any) -> Any:
             update_match = _RE_UPDATE_TABLE.match(query) if isinstance(query, str) else None
-            deferred_tx_end: list[TxOp] = []
+            deferred_tx_end: list[Any] = []
             reported = _report_sql_access(
                 query,
                 params,
@@ -359,7 +358,7 @@ def _patch_aiomysql() -> None:
 
     def _make_patched(orig: Any, method_name: str) -> Any:
         async def _patched(self: Any, query: Any, args: Any = None, *extra: Any, **kwargs: Any) -> Any:
-            deferred_tx_end: list[TxOp] = []
+            deferred_tx_end: list[Any] = []
             reported = _report_sql_access(
                 query,
                 args,
@@ -410,7 +409,7 @@ def _patch_asyncpg() -> None:
     if orig_em is not None:
 
         async def _patched_executemany(self: Any, command: Any, args: Any, **kwargs: Any) -> Any:
-            deferred_tx_end: list[TxOp] = []
+            deferred_tx_end: list[Any] = []
             reported = _report_sql_access(
                 command,
                 None,

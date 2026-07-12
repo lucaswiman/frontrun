@@ -232,6 +232,16 @@ def _handle_tx_op(reporter: Any, tx: Any, *, release_locks: bool = True) -> None
             savepoints.pop(tx.name, None)
 
 
+def _apply_tx_op_after_success(tx: Any) -> None:
+    """Apply a deferred transaction-control operation after driver success."""
+    if tx in (TxOp.COMMIT, TxOp.ROLLBACK):
+        _finalize_tx_end(tx)
+        return
+    from frontrun._io_detection import get_io_reporter
+
+    _handle_tx_op(get_io_reporter(), tx)
+
+
 def handle_connection_commit(*, release_locks: bool = True, finalize: bool = True) -> None:
     """Drive the COMMIT state machine for a Python-level ``conn.commit()``.
 

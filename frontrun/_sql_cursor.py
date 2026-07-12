@@ -61,6 +61,7 @@ from frontrun._sql_parsing import (
 from frontrun._sql_patch_registry import CONNECT_FACTORY_TARGETS, PYTHON_CURSOR_TARGETS
 from frontrun._sql_row_locks import _acquire_pending_row_locks, _release_dpor_row_locks
 from frontrun._sql_transactions import (
+    _apply_tx_op_after_success,
     _detect_autobegin,
     _finalize_tx_end,
     _handle_tx_op,
@@ -317,7 +318,7 @@ def _report_sql_access(
     is_executemany: bool = False,
     paramstyle: str = "format",
     defer_tx_lock_release: bool = False,
-    deferred_tx_end: list[TxOp] | None = None,
+    deferred_tx_end: list[Any] | None = None,
 ) -> bool:
     """Parse SQL and report table accesses to the per-thread reporter.
 
@@ -336,19 +337,12 @@ def _report_sql_access(
         # 1. Handle Transaction Control Operations
         if access.tx_op is not None:
             reported = True  # Suppress endpoint I/O for TX control too
-            if defer_tx_lock_release and access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK):
-                _prepare_tx_end(reporter, access.tx_op)
+            if defer_tx_lock_release:
+                if access.tx_op in (TxOp.COMMIT, TxOp.ROLLBACK):
+                    _prepare_tx_end(reporter, access.tx_op)
             else:
-                _handle_tx_op(reporter, access.tx_op, release_locks=not defer_tx_lock_release)
-            if (
-                deferred_tx_end is not None
-                and isinstance(access.tx_op, TxOp)
-                and access.tx_op
-                in (
-                    TxOp.COMMIT,
-                    TxOp.ROLLBACK,
-                )
-            ):
+                _handle_tx_op(reporter, access.tx_op)
+            if deferred_tx_end is not None and defer_tx_lock_release:
                 deferred_tx_end.append(access.tx_op)
 
         # 2. Handle Data Access Operations
@@ -732,7 +726,7 @@ def _intercept_execute(
     # for endpoint-based suppression (which handles remote connections).
     suppress_tid_permanently()
 
-    deferred_tx_end: list[TxOp] = []
+    deferred_tx_end: list[Any] = []
     reported = _report_sql_access(
         operation,
         parameters,
@@ -747,7 +741,7 @@ def _intercept_execute(
     def execute() -> Any:
         result = _execute_with_retry(original_method, self, operation, parameters)
         if deferred_tx_op is not None:
-            _finalize_tx_end(deferred_tx_op)
+            _apply_tx_op_after_success(deferred_tx_op)
         return result
 
     statement_row_locks: list[str] = []
