@@ -11,6 +11,7 @@ tests and real subprocess runs.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import multiprocessing
 import os
@@ -206,7 +207,14 @@ def _mp_worker_entry(
     worker_fn, state = dill.loads(payload)
 
     def run_target(proxy: Any) -> None:
-        worker_fn(state)
+        result = worker_fn(state)
+        if inspect.isawaitable(result):
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+            raise TypeError(
+                "process worker returned an awaitable; async workers are not supported with execution='process'"
+            )
 
     if reuse:
 
@@ -228,7 +236,7 @@ def _mp_worker_entry(
 
         def body(proxy: Any) -> None:
             _install_interception(proxy, worker_id)
-            worker_fn(state)
+            run_target(proxy)
 
         _connect_and_serve(socket_path, worker_id, body)
 
