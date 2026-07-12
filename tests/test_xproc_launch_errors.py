@@ -12,6 +12,7 @@ from __future__ import annotations
 import socket
 import subprocess
 import sys
+import warnings
 from typing import Any
 
 import pytest
@@ -24,6 +25,7 @@ from frontrun._dpor_runtime.xproc.launch import (
     SubprocessLauncher,
     WorkerSerializationError,
     _dumps_worker,
+    _mp_worker_entry,
     _stderr_last_line,
     _terminate_procs,
 )
@@ -574,3 +576,29 @@ def test_worker_main_rejects_async_target(monkeypatch: pytest.MonkeyPatch) -> No
 
     with pytest.raises(TypeError, match="async"):
         worker_main.main()
+
+
+def test_mp_worker_rejects_plain_callable_returning_awaitable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pickled process workers must not discard a dynamically returned coroutine.
+
+    ``explore()`` can reject an ``async def`` worker before launch, but a plain
+    callable returning an awaitable is indistinguishable until the child calls
+    it.  The multiprocessing path must fail closed there, matching string
+    :class:`Subprocess` targets.
+    """
+    from frontrun._dpor_runtime.xproc import worker, worker_main
+
+    async def awaitable_result() -> None:
+        pass
+
+    def returns_awaitable(_state: object) -> Any:
+        return awaitable_result()
+
+    monkeypatch.setattr(worker_main, "_install_interception", lambda _proxy, _worker_id: None)
+    monkeypatch.setattr(worker, "_connect_and_serve", lambda _socket_path, _worker_id, body: body(object()))
+
+    payload = _dumps_worker(returns_awaitable, object())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(TypeError, match="returned an awaitable"):
+            _mp_worker_entry("unused.sock", 0, payload)
