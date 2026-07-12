@@ -1163,6 +1163,7 @@ async def _reproduce_async_counterexample(
     clock: ClockMode = "real",
     detect_sql: bool = False,
     detect_redis: bool = False,
+    expected_task_error: tuple[type[Exception], str] | None = None,
 ) -> tuple[int, int]:
     """Measure how often an async DPOR counterexample reproduces."""
     successes = 0
@@ -1206,14 +1207,23 @@ async def _reproduce_async_counterexample(
             except TimeoutError:
                 # Run didn't complete within the budget — a failed reproduction.
                 continue
-            except (AttributeError, TypeError, NameError):
+            except Exception as exc:
+                if expected_task_error is not None:
+                    expected_type, expected_message = expected_task_error
+                    if type(exc) is expected_type and str(exc) == expected_message:
+                        successes += 1
+                        continue
+                if isinstance(exc, (AttributeError, TypeError, NameError)):
+                    # Programming errors in our own replay plumbing (e.g. a
+                    # missing scheduler attribute) must not be hidden. A task
+                    # error of one of these types is accepted only when it
+                    # exactly matches the finding being replayed above.
+                    raise
                 # Programming errors in our own replay plumbing (e.g. a missing
-                # scheduler attribute) must NOT be silently scored as a failed
-                # reproduction; surface them instead of hiding the bug.
-                raise
-            except Exception:
-                # The user's task body raised: the run produced no usable state,
-                # so this attempt did not reproduce the counterexample.
+                # scheduler attribute) aside, a different user task failure is
+                # not a reproduction of this counterexample.
+                continue
+            if expected_task_error is not None:
                 continue
             inv_failed, _ = (
                 check_invariant(invariant, state) if (invariant is not None and not deadlocked) else (False, None)
@@ -1364,6 +1374,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     async def _record_reproduction(
         schedule_list: list[int],
         invariant_fn: Callable[[T], bool] | None,
+        task_error: Exception | None = None,
     ) -> None:
         if reproduce_on_failure <= 0 or result.reproduction_attempts != 0:
             return
@@ -1379,6 +1390,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             clock=clock,
             detect_sql=detect_sql,
             detect_redis=detect_redis,
+            expected_task_error=(type(task_error), str(task_error)) if task_error is not None else None,
         )
         result.reproduction_attempts = attempts
         result.reproduction_successes = successes
@@ -1510,11 +1522,12 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                             return result
                     elif task_error is not None:
                         exc_type = type(task_error).__name__
-                        record_dpor_failure(
+                        schedule_list = record_dpor_failure(
                             result,
                             list(execution.schedule_trace),
                             f"Task crash in execution {result.num_explored}: {exc_type}: {task_error}",
                         )
+                        await _record_reproduction(schedule_list, None, task_error)
                         if stop_on_first:
                             return result
 
