@@ -1564,6 +1564,77 @@ def test_zero_row_update_releases_only_current_statement_row_lock() -> None:
             del _io_tls._held_row_locks
 
 
+def test_failed_data_statement_keeps_row_locks_from_earlier_statements() -> None:
+    """A statement error may release its own speculative lock, never prior locks."""
+    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+    from frontrun._sql_cursor import _intercept_execute
+
+    class FakeConnection:
+        autocommit = False
+
+    FakeConnection.__module__ = "psycopg.connection"
+
+    class FakeCursor:
+        connection = FakeConnection()
+
+    class FakeScheduler:
+        def __init__(self, prior: str) -> None:
+            self.held = {prior}
+            self.acquired: list[str] = []
+            self.release_calls: list[list[str] | None] = []
+
+        def report_and_wait(self, _frame: object, _thread_id: int) -> bool:
+            return True
+
+        def acquire_row_locks(self, _thread_id: int, resources: list[str]) -> list[str]:
+            self.acquired.extend(resources)
+            self.held.update(resources)
+            return resources
+
+        def release_row_locks(self, _thread_id: int, resources: list[str] | None = None) -> None:
+            self.release_calls.append(resources)
+            if resources is None:
+                self.held.clear()
+            else:
+                self.held.difference_update(resources)
+
+    prior = "sql:accounts:(('id', '1'),)"
+    scheduler = FakeScheduler(prior)
+    log = IOLog()
+
+    def fail(_cursor: object, _operation: object, _parameters: object) -> None:
+        raise RuntimeError("physical update failed")
+
+    set_io_reporter(log)
+    set_dpor_scheduler(scheduler)
+    set_dpor_thread_id(0)
+    _io_tls._in_transaction = True
+    _io_tls._is_autobegin = True
+    _io_tls._held_row_locks = {prior}
+    _io_tls._pending_row_locks = []
+    try:
+        with pytest.raises(RuntimeError, match="physical update failed"):
+            _intercept_execute(
+                fail,
+                FakeCursor(),
+                "UPDATE accounts SET balance = %s WHERE id = %s",
+                (100, 2),
+                paramstyle="format",
+            )
+
+        assert len(scheduler.acquired) == 1
+        assert scheduler.release_calls == [scheduler.acquired]
+        assert scheduler.held == {prior}
+        assert _io_tls._held_row_locks == {prior}
+    finally:
+        set_dpor_scheduler(None)
+        set_dpor_thread_id(None)
+        set_io_reporter(None)
+        for attr in ("_in_transaction", "_is_autobegin", "_held_row_locks", "_pending_row_locks"):
+            if hasattr(_io_tls, attr):
+                delattr(_io_tls, attr)
+
+
 def test_zero_row_update_release_is_postgresql_only() -> None:
     """MySQL's zero changed-row count does not prove that no row matched or locked."""
     from frontrun._sql_cursor import _is_postgresql_db_object
@@ -1782,6 +1853,81 @@ def test_connection_rollback_clears_state() -> None:
     # Rolled-back writes must NOT be flushed.
     assert not any(k == "write" for r, k in log.events if r.startswith("sql:users"))
     conn.close()
+
+
+def test_commit_on_second_connection_does_not_finalize_first_connection_transaction() -> None:
+    """Transaction ownership follows the physical connection, not the worker TLS."""
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+    conn_a = sqlite3.connect(":memory:")
+    conn_b = sqlite3.connect(":memory:")
+    try:
+        conn_a.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance INTEGER)")
+        conn_a.commit()
+        conn_a.execute("BEGIN")
+        conn_a.execute("INSERT INTO accounts VALUES (1, 100)")
+        original_buffer = list(_io_tls._tx_buffer)
+        original_savepoints = dict(_io_tls._tx_savepoints)
+        original_locks = set(getattr(_io_tls, "_held_row_locks", set()))
+
+        conn_b.commit()
+
+        assert _io_tls._in_transaction is True
+        assert _io_tls._tx_buffer == original_buffer
+        assert _io_tls._tx_savepoints == original_savepoints
+        assert getattr(_io_tls, "_held_row_locks", set()) == original_locks
+    finally:
+        try:
+            conn_a.rollback()
+        except sqlite3.Error:
+            pass
+        conn_a.close()
+        conn_b.close()
+        set_io_reporter(None)
+        for attr in ("_in_transaction", "_is_autobegin", "_tx_buffer", "_tx_savepoints", "_held_row_locks"):
+            if hasattr(_io_tls, attr):
+                delattr(_io_tls, attr)
+
+
+def test_connection_close_clears_only_the_closed_connections_transaction() -> None:
+    """Closing B preserves A's transaction; closing A clears A's modeled state."""
+    log = IOLog()
+    set_io_reporter(log)
+    patch_sql()
+    conn_a = sqlite3.connect(":memory:")
+    conn_b = sqlite3.connect(":memory:")
+    try:
+        conn_a.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance INTEGER)")
+        conn_a.commit()
+        conn_a.execute("BEGIN")
+        conn_a.execute("INSERT INTO accounts VALUES (1, 100)")
+        original_buffer = list(_io_tls._tx_buffer)
+        _io_tls._held_row_locks = {"sql:accounts:id=1"}
+
+        conn_b.close()
+        assert _io_tls._in_transaction is True
+        assert _io_tls._tx_buffer == original_buffer
+        assert _io_tls._held_row_locks == {"sql:accounts:id=1"}
+
+        conn_a.close()  # physical implicit rollback
+        assert getattr(_io_tls, "_in_transaction", False) is False
+        assert not getattr(_io_tls, "_tx_buffer", [])
+        assert not getattr(_io_tls, "_tx_savepoints", {})
+        assert not getattr(_io_tls, "_held_row_locks", set())
+    finally:
+        try:
+            conn_a.close()
+        except sqlite3.Error:
+            pass
+        try:
+            conn_b.close()
+        except sqlite3.Error:
+            pass
+        set_io_reporter(None)
+        for attr in ("_in_transaction", "_is_autobegin", "_tx_buffer", "_tx_savepoints", "_held_row_locks"):
+            if hasattr(_io_tls, attr):
+                delattr(_io_tls, attr)
 
 
 @pytest.mark.parametrize("operation", ["COMMIT", "ROLLBACK"])
