@@ -15,13 +15,32 @@ import os
 import socket
 import struct
 import threading
+import time
 
 import pytest
 
+import frontrun
 from frontrun._dpor_runtime.xproc import protocol as proto
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, accept_hello
 from frontrun._dpor_runtime.xproc.proxy import SchedulerProxy
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher, _connect_and_serve
+
+
+def test_total_timeout_bounds_spawned_worker_cleanup() -> None:
+    """A total search deadline must not turn into a per-process join delay."""
+    started = time.monotonic()
+    result = frontrun.explore_processes(
+        frontrun.Subprocess("time:sleep", (60,)),
+        setup=lambda: None,
+        invariant=lambda _state: True,
+        total_timeout=0.2,
+        deadlock_timeout=1.0,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.ok
+    assert not result.exhausted
+    assert elapsed < 1.0, f"total_timeout=0.2 took {elapsed:.3f}s while cleaning up the worker"
 
 # ---------------------------------------------------------------------------
 # Malformed frames must become structured worker errors, not uncaught KeyErrors
