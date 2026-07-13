@@ -282,6 +282,7 @@ def test_proxy_rejects_concurrent_use_from_second_thread() -> None:
             proxy.report_and_wait(None, 0)
         with pytest.raises(RuntimeError, match="concurrent"):
             proxy.io_report("sql:t:k", "read")
+        assert "concurrent" in proxy.fatal_error
         release_grant.set()
         t1.join(timeout=5.0)
         assert results == [True]
