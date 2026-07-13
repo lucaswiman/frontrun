@@ -25,8 +25,11 @@ Redis (``before_io`` / ``after_io``) and async (``pause``) are Phase 2.
 from __future__ import annotations
 
 import socket
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 
+from frontrun import _real_threading as _rt
 from frontrun._deadlock import SchedulerAbort
 
 from . import protocol as proto
@@ -46,6 +49,29 @@ class SchedulerProxy:
         # peer failed). Further scheduling points then short-circuit instead of
         # sending into a socket the coordinator has stopped reading.
         self._aborted = False
+        # The proxy models ONE logical worker: its frames must form a single
+        # sequential stream, and GRANT replies carry no addressee, so two
+        # threads blocked in recv on the same socket would be woken
+        # arbitrarily — silent nondeterminism. Concurrent use is rejected
+        # loudly via this non-blocking guard; *sequential* cross-thread
+        # hand-off (spawn a thread for one statement, join it, continue)
+        # remains supported. A real lock, never a patched one: the guard runs
+        # inside interception machinery.
+        self._use_lock = _rt.lock()
+
+    @contextmanager
+    def _exclusive(self) -> Generator[None, None, None]:
+        if not self._use_lock.acquire(blocking=False):
+            raise RuntimeError(
+                "SchedulerProxy used concurrently from multiple threads: cross-process "
+                "workers must perform scheduled external accesses (SQL/Redis statements) "
+                "from one thread at a time — the coordinator schedules each worker "
+                "process as a single logical actor"
+            )
+        try:
+            yield
+        finally:
+            self._use_lock.release()
 
     def hello(self) -> None:
         """Announce this worker's id to the coordinator (first frame after connect)."""
@@ -61,7 +87,8 @@ class SchedulerProxy:
         """Report one external access. Fire-and-forget; never blocks the worker."""
         if self._aborted:
             return
-        proto.send_msg(self._sock, {"t": proto.ACCESS, "w": self._worker_id, "rid": resource_id, "kind": kind})
+        with self._exclusive():
+            proto.send_msg(self._sock, {"t": proto.ACCESS, "w": self._worker_id, "rid": resource_id, "kind": kind})
 
     # --- scheduler interface used by the SQL interception layer ---
 
@@ -73,15 +100,18 @@ class SchedulerProxy:
         """
         if self._aborted:
             return False
-        proto.send_msg(self._sock, {"t": proto.REPORT_AND_WAIT, "w": self._worker_id})
-        return self._await_grant()
+        with self._exclusive():
+            proto.send_msg(self._sock, {"t": proto.REPORT_AND_WAIT, "w": self._worker_id})
+            return self._await_grant()
 
     def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> None:
         """Block until *resource_ids* can be held. Raise ``SchedulerAbort`` if aborted."""
         if self._aborted:
             raise SchedulerAbort("cross-process scheduler aborted")
-        proto.send_msg(self._sock, {"t": proto.ACQUIRE_LOCKS, "w": self._worker_id, "res": list(resource_ids)})
-        if not self._await_grant():
+        with self._exclusive():
+            proto.send_msg(self._sock, {"t": proto.ACQUIRE_LOCKS, "w": self._worker_id, "res": list(resource_ids)})
+            granted = self._await_grant()
+        if not granted:
             raise SchedulerAbort("cross-process scheduler aborted while acquiring row locks")
 
     def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
@@ -91,7 +121,8 @@ class SchedulerProxy:
         msg: dict[str, Any] = {"t": proto.RELEASE_LOCKS, "w": self._worker_id}
         if resources is not None:
             msg["res"] = list(resources)
-        proto.send_msg(self._sock, msg)
+        with self._exclusive():
+            proto.send_msg(self._sock, msg)
 
     def before_io(self, thread_id: int, resource_id: str) -> bool:
         """Enter a two-phase IO boundary (Redis); block until granted the turn.
@@ -102,14 +133,16 @@ class SchedulerProxy:
         """
         if self._aborted:
             return False
-        proto.send_msg(self._sock, {"t": proto.BEFORE_IO, "w": self._worker_id, "rid": resource_id})
-        return self._await_grant()
+        with self._exclusive():
+            proto.send_msg(self._sock, {"t": proto.BEFORE_IO, "w": self._worker_id, "rid": resource_id})
+            return self._await_grant()
 
     def after_io(self, thread_id: int, resource_id: str) -> None:
         """Exit the IO boundary and release the turn. Fire-and-forget."""
         if self._aborted:
             return
-        proto.send_msg(self._sock, {"t": proto.AFTER_IO, "w": self._worker_id, "rid": resource_id})
+        with self._exclusive():
+            proto.send_msg(self._sock, {"t": proto.AFTER_IO, "w": self._worker_id, "rid": resource_id})
 
     # --- worker lifecycle (called by the worker bootstrap, not interception) ---
 
@@ -117,13 +150,15 @@ class SchedulerProxy:
         """Tell the coordinator this worker has finished."""
         if self._aborted:
             return
-        proto.send_msg(self._sock, {"t": proto.DONE, "w": self._worker_id})
+        with self._exclusive():
+            proto.send_msg(self._sock, {"t": proto.DONE, "w": self._worker_id})
 
     def report_error(self, message: str) -> None:
         """Tell the coordinator this worker raised an unhandled exception."""
         if self._aborted:
             return
-        proto.send_msg(self._sock, {"t": proto.ERROR, "w": self._worker_id, "msg": message})
+        with self._exclusive():
+            proto.send_msg(self._sock, {"t": proto.ERROR, "w": self._worker_id, "msg": message})
 
     def _await_grant(self) -> bool:
         """Block on the coordinator's reply. ``True`` only for GRANT.

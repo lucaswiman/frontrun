@@ -1,6 +1,6 @@
 # Virtual Clock Hardening Follow-Ups
 
-Last reviewed: 2026-07-09.
+Last reviewed: 2026-07-12.
 
 Status: open. These are scoped, non-blocking virtual-clock limitations and
 cleanup items. None is a missed-bug hazard; the costs are extra branches,
@@ -201,3 +201,63 @@ access by the actor to the contended lock's object id. Either changes
 engine-visible semantics of every timed wait, so it needs wakeup-tree /
 replay validation (and the TLA spec) — deferred rather than patched
 pre-release.
+
+## 11. Autojump races live unmanaged threads on timed waits (2026-07-12 audit)
+
+**Symptom.** Under `clock="virtual"`, a *timed* wait serviced only by an
+unmanaged thread (e.g. `event.wait(timeout=5)` where a worker-spawned helper
+calls `set()` after 0.2s of real work) always takes its timeout branch: the
+zero-wall-cost autojump fires the deadline before any real-time helper can
+act. Untimed waits are unaffected (no deadline → no jump → the unmanaged
+`set()` recovers the run via `clear_engine_block`).
+
+**Assessment.** This is MockClock semantics: unmanaged threads live on real
+time, outside the model, and racing them deterministically is arguably the
+point (the timeout branch *is* reachable in reality). Deferring the jump by a
+grace window would reintroduce host-speed-dependent exploration — the exact
+nondeterminism the tool exists to remove. Kept as documented semantics; note
+the asymmetry with `_check_exact_deadlock_locked`, which *does* decline while
+live externals exist (a false DeadlockError is fatal, a timeout branch is a
+legitimate outcome).
+
+## 12. Replay safety-net advances can fire the wrong deadline under drift (2026-07-12 audit)
+
+Extends item 1: `_wake_scheduled_sleeper` jumps directly to the *current*
+sleeper's deadline, firing earlier timed-wait deadlines at a later clock value
+than recorded; a recorded clock-actor entry consumed after such a net advance
+jumps to the next pending deadline and can force-expire a timed acquire that
+succeeded in the recording. Replay-fidelity only (exploration unaffected);
+these paths run only under drift, where replay is already best-effort. Fix
+belongs with the trace-format work in item 1.
+
+## 13. Exact-deadlock confirm poll can error spuriously if the candidate clears mid-window (2026-07-12 audit)
+
+The shortened `_condition_wait_timeout()` polls (1ms–100ms) can expire just as
+another poller clears `_exact_deadlock_candidate_at` and schedules a thread;
+the timeout arm then reaches the plain-`TimeoutError` branch after waiting only
+milliseconds. Reaching the armed→cleared transition requires an
+external-thread interference pattern; the primary variant (per-execution
+baseline snapshots) was fixed 2026-07-12 (exploration-wide snapshot +
+`clear_engine_block` vacant-turn hand-off). Cheap hardening if it ever bites:
+re-loop instead of erroring when the expired wait was shorter than
+`deadlock_timeout`.
+
+## 14. `patch_time` refcount does not re-install over interleaved third-party patchers (2026-07-12 audit)
+
+A freezegun/time-machine patch *started inside* a frontrun patch scope wins the
+`time.*` attributes until it exits (count>1 does not re-install the virtual
+functions), and a third-party patch that *exits* while frontrun is patched
+restores over the shim (ABA). Only strictly-nested orders are fully supported
+(and tested). Scheduler deadlines are unaffected (they use the `VirtualClock`
+object directly); the divergence is user-visible clock reads only.
+
+## 15. xproc relay teardown flush attribution (2026-07-12 audit)
+
+`_flush_relay_pending_io` reports a worker's *trailing* accesses (no
+subsequent scheduling boundary) from the relay's `finally`, after the turn was
+released and without the scheduler condition, while other relays still
+schedule. If the engine derives a happens-before edge from that late
+attribution, a reversal against another worker's conflicting access might not
+be seeded (missed interleaving). Unverified at the engine level
+(low-medium confidence); the alternative — dropping trailing accesses — is a
+known, worse failure mode. Revisit with an engine-level ordering harness.

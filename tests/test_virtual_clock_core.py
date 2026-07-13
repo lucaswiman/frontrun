@@ -786,3 +786,44 @@ def test_timed_acquire_state_refuses_wall_clock_fallback_under_virtual_clock() -
 
     with pytest.raises(RuntimeError, match="add_timed_wait"):
         _cooperative._timed_acquire_state(1.0, _ClockOnlyScheduler(), thread_id=0)
+
+
+def test_ns_time_functions_read_virtual_time() -> None:
+    """The ``*_ns`` variants must return virtual time, not just be restored.
+
+    Coverage previously only asserted that ``time_ns``/``monotonic_ns``/
+    ``perf_counter_ns`` are saved and restored around exploration; nothing
+    checked their *reads* reflect the virtual clock (the float variants were
+    checked, the ``_ns`` ones were not).
+    """
+    clock = VirtualClock()
+    with clock_scope(clock):
+        expected = round(clock.now() * 1e9)
+        assert time.time_ns() == expected
+        assert time.monotonic_ns() == expected
+        assert time.perf_counter_ns() == expected
+        clock.advance_to(clock.now() + 1.5)
+        expected = round(clock.now() * 1e9)
+        assert time.time_ns() == expected
+        assert time.monotonic_ns() == expected
+        assert time.perf_counter_ns() == expected
+
+
+def test_nested_clock_scope_restores_outer_virtual_clock() -> None:
+    """An inner ``clock_scope`` must resolve to *its* clock and, on exit,
+    restore the outer scope's clock (refcounted patch + contextvar stack),
+    not real time and not the inner clock."""
+    outer = VirtualClock(epoch=1_000_000.0)
+    inner = VirtualClock(epoch=2_000_000.0)
+    real_before = vc.real_monotonic()
+    with clock_scope(outer):
+        assert time.monotonic() == outer.now()
+        with clock_scope(inner):
+            assert time.monotonic() == inner.now()
+            inner.advance_to(inner.now() + 5.0)
+            assert time.monotonic() == inner.now()
+        # Inner exit: the outer virtual clock is active again (the patch must
+        # not have been torn down by the inner unpatch).
+        assert time.monotonic() == outer.now()
+    # Full exit: real time restored.
+    assert abs(time.monotonic() - real_before) < 60.0

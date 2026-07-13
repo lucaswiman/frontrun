@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import weakref
+from collections.abc import Iterable
 
 from frontrun._cooperative import _purge_spin_schedulers
 from frontrun._dpor_core import ReplayEngine as _ReplayEngine
@@ -65,6 +66,7 @@ class DporScheduler:
         clock_mode: str = "real",
         clock_actor_id: int | None = None,
         clock_diagnostics: bool = False,
+        baseline_threads: Iterable[threading.Thread] | None = None,
     ) -> None:
         self.engine = engine
         self.execution = execution
@@ -129,8 +131,15 @@ class DporScheduler:
         # so a new external thread that reuses its id() cannot be misclassified
         # as baseline in _has_live_external_threads (id reuse would otherwise
         # wrongly re-enable exact-deadlock detection).
+        #
+        # Exploration drivers pass an explicit snapshot taken ONCE per
+        # explore() call: a helper thread spawned by a worker during execution
+        # N survives into execution N+1, and snapshotting here (per scheduler,
+        # i.e. per execution) would classify it as baseline — an "inert"
+        # thread — even though it services explored waiters, breaking every
+        # later execution's external-liveness reasoning.
         self._baseline_thread_keys: weakref.WeakSet[threading.Thread] = weakref.WeakSet(
-            t for t in threading.enumerate() if t.is_alive()
+            baseline_threads if baseline_threads is not None else (t for t in threading.enumerate() if t.is_alive())
         )
         self._worker_thread_keys: set[int] = set()
 
@@ -339,9 +348,13 @@ class DporScheduler:
                     self._replay_advance_clock_to()
                     self._condition.notify_all()
 
-    def add_timed_wait(self, thread_id: int, deadline: float) -> None:
-        """Register a virtual deadline for a timed lock acquire."""
-        self._clock_port.add_timed_wait(thread_id, deadline)
+    def add_timed_wait(self, thread_id: int, deadline: float | None = None, *, timeout: float | None = None) -> float:
+        """Register a virtual deadline for a timed lock acquire.
+
+        With ``timeout=`` the deadline is computed under the scheduler's
+        serialising lock (see ``VirtualClockPort.add_timed_wait``); returns it.
+        """
+        return self._clock_port.add_timed_wait(thread_id, deadline, timeout=timeout, clock=self.virtual_clock)
 
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""
@@ -360,6 +373,17 @@ class DporScheduler:
             # it from every waiter set is equivalent to knowing the lock id.
             for waiters in self._lock_waiters.values():
                 waiters.discard(thread_id)
+            # An unmanaged wake (e.g. a worker-spawned service thread calling
+            # event.set()) can land while the turn is vacant: every managed
+            # thread had blocked, _schedule_next returned None, and the parked
+            # waiters only re-ask the engine in their wait-timeout arms.  The
+            # notify below would then just re-park them, costing a full
+            # deadlock_timeout of dead wall time per wake (and failing the run
+            # when the join budget is shorter).  Hand the turn out now.
+            if self._current_thread is None and self._error is None and not self._finished:
+                next_thread = self._schedule_next()
+                if next_thread is not None:
+                    self._current_thread = next_thread
             self._condition.notify_all()
 
     def give_up_timed_wait(self, thread_id: int) -> None:
@@ -381,8 +405,13 @@ class DporScheduler:
         """Wake spin waiters for a cooperative resource that changed state."""
         self._clock_port.note_spin_release(resource_id)
 
-    def sleep_until(self, thread_id: int, deadline: float) -> None:
+    def sleep_until(self, thread_id: int, deadline: float | None = None, *, duration: float | None = None) -> None:
         """Block *thread_id* until the virtual clock reaches *deadline*.
+
+        With ``duration=`` the deadline is computed under ``_condition`` +
+        ``_engine_lock`` (the locks every clock advance holds), so a
+        concurrent explored-mode actor step cannot land between the caller's
+        ``now()`` read and the registration and instantly expire the sleep.
 
         The thread registers its deadline, is marked blocked in the engine,
         and releases the scheduler turn.  It resumes only after (a) a clock
@@ -399,6 +428,10 @@ class DporScheduler:
                 if self._finished or self._error:
                     return
                 with self._engine_lock:
+                    if deadline is None:
+                        if duration is None or self.virtual_clock is None:
+                            raise TypeError("sleep_until needs either deadline= or duration= (with a virtual clock)")
+                        deadline = self.virtual_clock.now() + duration
                     self._deadlines.add_sleep(thread_id, deadline, wake_sync_id(thread_id))
                     self.execution.block_thread(thread_id)
                     self._sync_clock_actor_locked()
@@ -442,6 +475,16 @@ class DporScheduler:
                 while self._current_thread != thread_id:
                     if self._finished or self._error:
                         return
+                    if self._replay_sleep_phase2_bypass():
+                        # Replay only: the positional walk is suspended because
+                        # other threads gate-wait on access anchors — they need
+                        # *our* post-sleep writes, and nothing else will ever
+                        # move _current_thread.  Proceed as _wait_for_turn does
+                        # for every other thread while gates are held;
+                        # otherwise each reproduction attempt burns a full
+                        # deadlock_timeout here (or fails outright when the
+                        # gate's own timeout loses the race).
+                        break
                     if self._reschedule_done_current_unlocked():
                         continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
@@ -1165,6 +1208,17 @@ class DporScheduler:
         """
         return False
 
+    def _replay_sleep_phase2_bypass(self) -> bool:
+        """Replay-only escape from ``sleep_until`` phase 2 (base: no-op).
+
+        During exploration a woken sleeper must genuinely wait to be
+        scheduled.  ``_ReplayDporScheduler`` overrides this to mirror
+        ``_wait_for_turn``'s gate suspension: while access-anchor waiters
+        hold the positional walk, the woken sleeper must be allowed to run
+        to its gated access.
+        """
+        return False
+
     def _wake_scheduled_sleeper(self) -> bool:
         """Advance the clock when replay schedules a *sleeping* thread.
 
@@ -1560,6 +1614,13 @@ class _ReplayDporScheduler(DporScheduler):
             self._condition.notify_all()
             return True
         return False
+
+    def _replay_sleep_phase2_bypass(self) -> bool:
+        # Mirror _wait_for_turn: while threads gate-wait on access anchors the
+        # positional walk is suspended, so a woken sleeper would otherwise
+        # never see _current_thread == itself (the gate waiters need *its*
+        # post-sleep writes to make anchor progress).
+        return self._gate_waiters > 0
 
     def _schedule_next(self) -> int | None:
         # Exact-deadlock detection: the positional walk keeps granting turns to

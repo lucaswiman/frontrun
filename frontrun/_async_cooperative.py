@@ -71,6 +71,19 @@ _async_lock_owners: dict[int, int] = {}
 # Used to force-release locks when a task finishes without calling release().
 _async_task_held_locks: dict[int, set[Any]] = {}
 
+
+def _in_virtual_timed_wait(scheduler: Any, task_id: int) -> bool:
+    """Whether *task_id* is guarded by a pending virtual timeout deadline.
+
+    True while an enclosing ``asyncio.timeout`` / ``asyncio.wait_for`` has a
+    timeout-kind deadline registered with the scheduler's coordinator: the
+    clock actor will cancel the task at that virtual deadline, so a lock wait
+    it performs cannot be a *permanent* deadlock (timeout-based avoidance).
+    """
+    deadlines = getattr(scheduler, "_deadlines", None)
+    return deadlines is not None and bool(deadlines.in_timed_wait(task_id))
+
+
 # Cooperative primitives that currently have at least one task parked in a
 # blocking call.  When an abort (exact deadlock / watchdog timeout) fires,
 # these waiters must be woken so the tasks free-run to completion and the
@@ -263,20 +276,30 @@ class _CooperativeAsyncLock:
         lock_was_held = self._lock.locked()
         if task_id is not None and graph is not None and lock_was_held:
             lock_id = id(self)
-            # Register: this task is waiting for this lock
-            cycle = graph.add_waiting(task_id, lock_id)
-            if cycle is not None:
-                graph.remove_waiting(task_id, lock_id)
-                desc = format_cycle(cycle)
-                error = DeadlockError(f"Async lock deadlock detected: {desc}", desc)
-                # Put the scheduler into abort mode before unwinding user
-                # context managers. Their cleanup awaits (for example an
-                # aiosqlite rollback/close) must free-run; continuing to
-                # schedule cleanup after the cycle is proven can strand a
-                # physical transaction and leave its worker thread blocked.
-                if scheduler is not None:
-                    await scheduler._report_error(error)
-                raise error
+            # A waiter guarded by a *virtual* timeout (asyncio.timeout /
+            # wait_for registered a timeout-kind deadline for this task)
+            # cannot participate in a permanent deadlock: the clock actor
+            # cancels it at the deadline and its unwind releases whatever it
+            # holds — the classic timeout-based avoidance pattern.  It must
+            # therefore register no wait-for-graph edge (mirroring the sync
+            # rule in _cooperative._timed_acquire_state); an edge here scores
+            # a provably-recovering program as a DeadlockError counterexample.
+            timed_wait = _in_virtual_timed_wait(scheduler, task_id)
+            if not timed_wait:
+                # Register: this task is waiting for this lock
+                cycle = graph.add_waiting(task_id, lock_id)
+                if cycle is not None:
+                    graph.remove_waiting(task_id, lock_id)
+                    desc = format_cycle(cycle)
+                    error = DeadlockError(f"Async lock deadlock detected: {desc}", desc)
+                    # Put the scheduler into abort mode before unwinding user
+                    # context managers. Their cleanup awaits (for example an
+                    # aiosqlite rollback/close) must free-run; continuing to
+                    # schedule cleanup after the cycle is proven can strand a
+                    # physical transaction and leave its worker thread blocked.
+                    if scheduler is not None:
+                        await scheduler._report_error(error)
+                    raise error
             # Mark this task as blocked in the DPOR execution so the engine
             # won't schedule it while it's waiting for the lock.  Also track
             # the lock holder so _schedule_next can redirect to the holder
@@ -304,7 +327,8 @@ class _CooperativeAsyncLock:
                 result = await self._lock.acquire()
             finally:
                 _in_scheduler_pause.set(depth)
-                graph.remove_waiting(task_id, lock_id)
+                if not timed_wait:
+                    graph.remove_waiting(task_id, lock_id)
                 if scheduler is not None:
                     scheduler.execution.unblock_thread(task_id)
                     scheduler._lock_blocked.pop(task_id, None)

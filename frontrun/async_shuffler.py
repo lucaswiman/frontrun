@@ -246,14 +246,24 @@ class AwaitScheduler(InterleavedLoop):
         self._advance_clock_to(next_deadline)
         return True
 
-    async def sleep_until(self, task_id: int, deadline: float) -> None:
-        """Block *task_id* until the virtual clock reaches *deadline*."""
+    async def sleep_until(self, task_id: int, deadline: float | None = None, *, duration: float | None = None) -> None:
+        """Block *task_id* until the virtual clock reaches *deadline*.
+
+        With ``duration=`` the deadline is computed under ``_condition`` after
+        the fairness yield: the yield spans a full loop pass, during which
+        another task's step can advance the clock — a caller-side ``now()``
+        read would then register an already-stale deadline.
+        """
         depth = _in_scheduler_pause.get()
         _in_scheduler_pause.set(depth + 1)
         try:
             await _real_asyncio_sleep(0)
             self._progress += 1
             async with self._condition:
+                if deadline is None:
+                    if duration is None or self.virtual_clock is None:
+                        raise TypeError("sleep_until needs either deadline= or duration= (with a virtual clock)")
+                    deadline = float(self.virtual_clock.now()) + duration
                 if self._error:
                     return
                 if self._finished:
@@ -388,6 +398,22 @@ class AwaitScheduler(InterleavedLoop):
             f"Deadlock: schedule wants task {needed} at index {self._index}/{len(self.schedule)}"
         )
         self._condition.notify_all()
+
+    def _rescue_stalled_pause(self) -> bool:
+        """Advance a pending virtual deadline instead of declaring a stall.
+
+        The random runtime patches only sleep/timeouts/time — a task suspended
+        on a *stock* primitive (e.g. asyncio.Event) inside ``asyncio.timeout``
+        is invisible to the schedule, so the head stalls on it and every other
+        task lands in ``pause()``'s watchdog.  If a virtual deadline is
+        pending, firing it (cancelling the guarded wait) is exactly the
+        recovery the real program performs at that timeout; scoring the stall
+        as a deadlock/crash counterexample would be a false report.
+        """
+        if self._advance_virtual_deadline_for_idle():
+            self._condition.notify_all()
+            return True
+        return False
 
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)

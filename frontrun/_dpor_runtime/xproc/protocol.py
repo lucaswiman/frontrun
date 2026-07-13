@@ -38,6 +38,13 @@ SHUTDOWN = "shutdown"  # (reuse mode) exploration done; exit the worker loop
 
 _LEN = struct.Struct(">I")
 
+#: Upper bound on a single frame's payload.  Legitimate frames are tiny (the
+#: largest is an ITER_START carrying a base64 dill payload); a length prefix
+#: beyond this means the stream is corrupt or desynchronised, and reading it
+#: would buffer up to 4 GiB.  Raise OSError so every caller's existing
+#: disconnect handling turns it into a structured failure.
+MAX_FRAME_BYTES = 64 * 1024 * 1024
+
 
 def send_msg(sock: socket.socket, msg: dict[str, Any]) -> None:
     """Serialise *msg* as a length-prefixed JSON frame and send it whole."""
@@ -51,6 +58,11 @@ def recv_msg(sock: socket.socket) -> dict[str, Any] | None:
     if header is None:
         return None
     (length,) = _LEN.unpack(header)
+    if length > MAX_FRAME_BYTES:
+        raise OSError(
+            f"cross-process frame length {length} exceeds {MAX_FRAME_BYTES} bytes; "
+            "the coordination stream is corrupt or desynchronised"
+        )
     body = _recv_exactly(sock, length)
     if body is None:
         return None

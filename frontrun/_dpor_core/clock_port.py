@@ -86,16 +86,36 @@ class VirtualClockPort:
 
     # -- Cooperative-primitive-facing protocol (callers hold no scheduler lock) --
 
-    def add_timed_wait(self, actor_id: int, deadline: float) -> None:
-        """Register a virtual deadline for a timed lock acquire."""
+    def add_timed_wait(
+        self,
+        actor_id: int,
+        deadline: float | None = None,
+        *,
+        timeout: float | None = None,
+        clock: VirtualClock | None = None,
+    ) -> float:
+        """Register a virtual deadline for a timed lock acquire.
+
+        Prefer the relative form (``timeout=`` + ``clock=``): the deadline is
+        then computed *inside* the condition hold, so a concurrent explored-mode
+        clock advance landing between the caller's ``clock.now()`` read and the
+        registration cannot produce an already-expired deadline (a timed wait
+        observing more virtual time than its timeout, nondeterministically).
+        Returns the registered deadline.
+        """
         with self._condition:
             with self._engine_lock:
+                if deadline is None:
+                    if timeout is None or clock is None:
+                        raise TypeError("add_timed_wait needs either deadline= or (timeout= and clock=)")
+                    deadline = clock.now() + timeout
                 self.coordinator.add_timeout(actor_id, deadline, _TIMED_WAIT_TOKEN)
                 self._sync()
             self._condition.notify_all()
         # DPOR replay may owe an actor step that arrived before this
         # registration (schedule drift); perform it now.
         self._on_added()
+        return deadline
 
     def remove_timed_wait(self, actor_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""

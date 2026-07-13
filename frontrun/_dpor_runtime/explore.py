@@ -305,6 +305,13 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
         )
         generate_html_report(report, report_path)
 
+    # Baseline threads are snapshotted ONCE for the whole exploration, not per
+    # execution: a helper thread spawned by a worker during execution N (e.g. a
+    # lazily-warmed pool) survives into execution N+1 and must still count as a
+    # live *external* thread there — a per-execution snapshot would classify it
+    # as inert baseline and break external-liveness reasoning (false exact
+    # deadlocks / stalls under a virtual clock).
+    baseline_threads = [t for t in threading.enumerate() if t.is_alive()]
     try:
         for step in dpor_exploration_iter(
             engine=engine,
@@ -343,6 +350,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                 clock_mode=clock,
                 clock_actor_id=clock_actor_id,
                 clock_diagnostics=clock_diagnostics,
+                baseline_threads=baseline_threads,
             )
             runner = DporBytecodeRunner(scheduler, detect_io=detect_io, preload_bridge=preload_bridge)
 

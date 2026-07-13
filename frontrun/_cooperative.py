@@ -180,7 +180,6 @@ def _timed_acquire_state(
     if timeout >= 0:
         clock = getattr(scheduler, "virtual_clock", None) if scheduler is not None else None
         if clock is not None and thread_id is not None:
-            deadline = clock.now() + timeout
             add_timed_wait = getattr(scheduler, "add_timed_wait", None)
             if add_timed_wait is None:
                 # Degrading to a wall-clock deadline here would silently make
@@ -191,7 +190,11 @@ def _timed_acquire_state(
                     f"scheduler {type(scheduler).__name__} exposes virtual_clock but not add_timed_wait; "
                     "virtual timed waits need both"
                 )
-            add_timed_wait(thread_id, deadline)
+            # Relative registration: the scheduler computes now+timeout under
+            # its serialising lock, so a concurrent explored-mode clock
+            # advance landing between a caller-side now() read and the
+            # registration cannot hand back an already-expired deadline.
+            deadline = add_timed_wait(thread_id, timeout=timeout)
             return deadline, None, clock
         return _real_monotonic() + timeout, None, None
     return None, get_wait_for_graph(), None
@@ -861,12 +864,17 @@ class CooperativeSemaphore:
             self._lock.release()
 
     def _drain_until(self, deadline: float) -> bool:
-        """Spin on ``_try_acquire`` until *deadline*; report on success."""
+        """Spin on ``_try_acquire`` until *deadline*; report on success.
+
+        Must use the *real* sleep: this runs after the scheduler finished, when
+        the patched ``time.sleep`` is an instant no-op for managed threads —
+        the 1 s drain window would otherwise busy-spin a full CPU core.
+        """
         while _real_monotonic() < deadline:
             if self._try_acquire():
                 self._report("lock_acquire")
                 return True
-            time.sleep(0.001)
+            _real_time_sleep(0.001)
         return False
 
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
@@ -897,7 +905,10 @@ class CooperativeSemaphore:
                     return True
                 if _real_monotonic() >= deadline:
                     return False
-                time.sleep(0.001)
+                # Real sleep: the patched sleep is a no-op / clock-advance for
+                # the driver thread under clock_scope, which would make this
+                # poll a hot spin that also inflates the virtual clock.
+                _real_time_sleep(0.001)
 
         # Spin-yield loop for managed threads.  A timeout is honoured through
         # _timed_acquire_state below: under a virtual clock it registers a
@@ -1376,8 +1387,11 @@ class CooperativeCondition:
                         # to 1s.  We unify with a bounded poll loop.
                         now = clock.now() if clock is not None else _real_monotonic()
                         end = _real_monotonic() + min(1.0, max(0.0, deadline - now))
+                        # Real sleep, not the patched one: post-_finished the
+                        # patched sleep is an instant no-op for managed
+                        # threads, which would turn this poll into a hot spin.
                         while my_ticket >= self._served and _real_monotonic() < end:
-                            time.sleep(0.001)
+                            _real_time_sleep(0.001)
                         served = my_ticket < self._served
                         _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         return served
@@ -1865,7 +1879,10 @@ def _cooperative_sleep(seconds: float) -> None:
     clock = getattr(scheduler, "virtual_clock", None)
     sleep_until = getattr(scheduler, "sleep_until", None)
     if clock is not None and sleep_until is not None and seconds > 0:
-        sleep_until(thread_id, clock.now() + seconds)
+        # Relative form: the scheduler computes now+seconds under its
+        # serialising lock (see sleep_until), closing the concurrent-advance
+        # window between a caller-side now() read and the registration.
+        sleep_until(thread_id, duration=seconds)
         return
     scheduler.wait_for_turn(thread_id)
 

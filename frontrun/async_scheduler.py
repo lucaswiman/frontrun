@@ -342,6 +342,8 @@ class InterleavedLoop:
                     try:
                         await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                     except asyncio.TimeoutError:
+                        if self._rescue_stalled_pause():
+                            continue
                         self._handle_timeout(task_id, marker)
                         return
 
@@ -361,6 +363,19 @@ class InterleavedLoop:
         scheduler overrides it to wake tasks parked in cooperative primitives so
         they free-run to completion instead of hanging until ``timeout_per_run``.
         """
+
+    def _rescue_stalled_pause(self) -> bool:
+        """Last-chance transition before ``pause()`` declares a watchdog stall.
+
+        Called (holding ``_condition``) when a pause wait expired with no
+        progress.  Return True after performing a transition that can unstick
+        the run — the waiter then re-waits instead of erroring.  The random
+        scheduler overrides this to advance a pending *virtual* deadline: a
+        task suspended on an unpatched primitive inside ``asyncio.timeout`` /
+        ``wait_for`` is invisible to the schedule, and firing its virtual
+        timeout is exactly the recovery the real program would perform.
+        """
+        return False
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
         """Handle a timeout in pause(). Sets the error and wakes everyone.
@@ -613,20 +628,31 @@ class _AsyncSchedulerBase(InterleavedLoop):
 
     async def wait_until_scheduled_after_block(self, task_id: int, reason: str) -> None:
         """Wait for a physically-woken blocked task to be scheduled again."""
-        async with self._condition:
-            while not (self._finished or self._error) and self._current_task != task_id:
-                if self._recover_stalled_schedule():
-                    continue
-                try:
-                    await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                except asyncio.TimeoutError:
-                    self._error = SchedulerTimeoutError(
-                        f"{self._deadlock_prefix}: task {task_id} woke from {reason} but was never scheduled"
-                    )
-                    self._condition.notify_all()
-                    return
-            if not (self._finished or self._error):
-                self._on_scheduled_after_block(task_id)
+        # This coroutine is awaited from user-visible wrappers such as
+        # ``asyncio.timeout.__aexit__``.  Keep the scheduler-pause context set
+        # across every yield so ``_AutoPauseIterator`` does not wrap this
+        # internal condition wait in a second scheduling gate.  On 3.11 that
+        # extra gate can miss the notification that selects this task and
+        # leave the already-current task parked forever.
+        depth = _in_scheduler_pause.get()
+        _in_scheduler_pause.set(depth + 1)
+        try:
+            async with self._condition:
+                while not (self._finished or self._error) and self._current_task != task_id:
+                    if self._recover_stalled_schedule():
+                        continue
+                    try:
+                        await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
+                    except asyncio.TimeoutError:
+                        self._error = SchedulerTimeoutError(
+                            f"{self._deadlock_prefix}: task {task_id} woke from {reason} but was never scheduled"
+                        )
+                        self._condition.notify_all()
+                        return
+                if not (self._finished or self._error):
+                    self._on_scheduled_after_block(task_id)
+        finally:
+            _in_scheduler_pause.set(depth)
 
     async def pause(self, task_id: Any, marker: Any = None) -> None:
         """DPOR/replay-aware pause that ensures fair task wakeup.

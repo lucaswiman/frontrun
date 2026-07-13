@@ -96,7 +96,29 @@ class _AutoPauseIterator:
             self._pause_iter = None
 
     def throw(self, typ: Any, val: Any = None, tb: Any = None) -> Any:
-        self._close_pause_iter()
+        if self._pause_iter is not None:
+            # Deliver the exception INTO the suspended pause coroutine first:
+            # its real wait_for/timeout machinery owns the cancellation
+            # bookkeeping.  A pause-watchdog expiry arrives here as the
+            # CancelledError of the task-cancelling stdlib timeout — it must
+            # convert to TimeoutError *inside* pause (which may absorb it and
+            # keep waiting, e.g. the virtual-deadline rescue) rather than land
+            # in the user coroutine as a spurious "worker cancelled itself".
+            # The old close-and-forward behavior also skipped the timeout's
+            # __aexit__/uncancel bookkeeping, leaking an armed watchdog timer
+            # that cancelled the task later, mid-body.
+            try:
+                if val is None and tb is None:
+                    return self._pause_iter.throw(typ)
+                return self._pause_iter.throw(typ, val, tb)
+            except StopIteration:
+                return self._resume_inner()
+            except BaseException as exc:
+                # The pause did not absorb it (genuine cancellation or
+                # teardown): unwind the user coroutine with what actually
+                # escaped, exactly where an unwrapped await would raise.
+                self._pause_iter = None
+                return self._inner.throw(exc)
         if val is None and tb is None:
             return self._inner.throw(typ)
         return self._inner.throw(typ, val, tb)

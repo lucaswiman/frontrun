@@ -73,6 +73,20 @@ def test_run_with_schedule_virtual_clock_requires_patch_sleep() -> None:
         )
 
 
+def test_explore_rejects_serializable_invariant_with_virtual_clock() -> None:
+    # The sequential baseline runs execute outside the scheduler, so their
+    # sleeps and clock reads would use real wall-clock time; the combination
+    # must be rejected up front, not silently produce a mixed-clock baseline.
+    with pytest.raises(ValueError, match="serializable_invariant"):
+        frontrun.explore(
+            setup=lambda: None,
+            workers=[lambda s: None],
+            invariant=lambda s: True,
+            clock="virtual",
+            serializable_invariant=True,
+        )
+
+
 def test_process_execution_rejects_virtual_clock() -> None:
     with pytest.raises(ValueError, match="clock"):
         frontrun.explore(
@@ -1957,3 +1971,165 @@ def test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder() ->
     assert not result.property_holds, (
         f"the timeout branch (acquire_result=False) was never explored: {result.num_explored} interleavings"
     )
+
+
+def test_helper_thread_spawned_in_earlier_execution_does_not_arm_false_deadlock() -> None:
+    """A worker-spawned service thread must keep waking waiters in later executions.
+
+    Two coupled defects broke executions after the first:
+
+    1. The baseline-thread snapshot used by external-liveness reasoning was
+       taken per-execution (at scheduler construction), so a helper thread
+       spawned during execution 1 was classified as inert 'baseline' for
+       execution 2 even though it services explored waiters.  The snapshot
+       must cover the whole exploration.
+    2. When the helper's unmanaged ``event.set()`` landed while the turn was
+       vacant (every managed thread blocked, ``_schedule_next`` had returned
+       None), ``clear_engine_block`` only notified — nobody re-asked the
+       engine until a wait-timeout arm fired, costing a full deadlock_timeout
+       per wake and failing the run when the join budget is shorter.
+    """
+    from frontrun._cooperative import _real_time_sleep
+
+    requests: list[threading.Event] = []  # GIL-atomic append/pop
+    helper_state = {"started": False, "stop": False}
+    helper_box: list[threading.Thread] = []
+
+    def _serve() -> None:
+        while not helper_state["stop"]:
+            evt = requests.pop() if requests else None
+            if evt is None:
+                _real_time_sleep(0.005)
+                continue
+            _real_time_sleep(0.3)  # longer than the exact-deadlock confirm window
+            evt.set()
+
+    class _State:
+        def __init__(self) -> None:
+            self.counter = 0
+            self.ok: list[bool] = [False, False]
+
+    def _worker(index: int):
+        def w(s: _State) -> None:
+            # Shared-counter race so DPOR explores more than one execution.
+            value = s.counter
+            s.counter = value + 1
+            if not helper_state["started"]:
+                helper_state["started"] = True
+                helper = threading.Thread(target=_serve, daemon=True)
+                helper_box.append(helper)
+                helper.start()
+            evt = threading.Event()
+            requests.append(evt)
+            s.ok[index] = evt.wait()
+
+        return w
+
+    try:
+        result = frontrun.explore(
+            setup=_State,
+            workers=[_worker(0), _worker(1)],
+            invariant=lambda s: all(s.ok),
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+        assert result.property_holds, result.explanation
+    finally:
+        helper_state["stop"] = True
+        for helper in helper_box:
+            helper.join(timeout=5.0)
+
+
+def test_replay_sleep_until_phase2_bypasses_positional_gate_when_anchor_waiters_pend() -> None:
+    """A woken replay sleeper must not stall while access-gate waiters pend.
+
+    ``_wait_for_turn`` suspends positional gating for every thread while any
+    thread gate-waits on an access anchor (the anchor owner must be able to
+    reach its recorded access).  ``sleep_until`` phase 1 has the matching
+    escape (``_replay_sleep_self_wake``), but phase 2 previously insisted on
+    ``_current_thread == thread_id`` — which nothing can satisfy while gates
+    hold the walk — burning a full deadlock_timeout per reproduction attempt
+    (or failing the attempt when the gate's own timeout loses the race).
+    """
+    from frontrun._dpor_runtime.scheduler import _ReplayDporScheduler
+    from frontrun._virtual_clock import real_monotonic
+
+    sched = _ReplayDporScheduler(
+        schedule=[1] * 8,
+        num_threads=2,
+        deadlock_timeout=3.0,
+        access_schedule=[(0, "Thing.attr", "write")],
+        virtual_clock=VirtualClock(),
+        clock_mode="virtual",
+        clock_actor_id=2,
+    )
+    gate_done = threading.Event()
+
+    def _gate_waiter() -> None:
+        # Thread 1 waits for an anchor owned by thread 0 (arms _gate_waiters).
+        sched._gate_access((1, "Thing.attr", "read"))
+        gate_done.set()
+
+    gate_thread = threading.Thread(target=_gate_waiter, daemon=True)
+    gate_thread.start()
+    deadline = real_monotonic() + 3.0
+    while sched._gate_waiters == 0 and real_monotonic() < deadline:
+        time.sleep(0.005)
+    assert sched._gate_waiters == 1
+
+    try:
+        # The positional walk points elsewhere; only the gate bypass can move us.
+        with sched._condition:
+            sched._current_thread = 1
+        start = real_monotonic()
+        sched.sleep_until(0, VIRTUAL_EPOCH + 5.0)
+        elapsed = real_monotonic() - start
+        assert elapsed < 1.5, f"sleep_until stalled {elapsed:.2f}s behind the positional gate"
+        assert sched._error is None, sched._error
+    finally:
+        # Unstick the gate waiter and reap its thread.
+        with sched._condition:
+            sched._finished = True
+            sched._condition.notify_all()
+        gate_done.wait(timeout=5.0)
+        gate_thread.join(timeout=5.0)
+
+
+def test_timed_wait_deadline_computed_under_scheduler_lock_survives_concurrent_advance() -> None:
+    """A timed wait must never register an already-expired deadline.
+
+    ``_timed_acquire_state`` used to compute ``clock.now() + timeout`` in the
+    caller and pass the absolute deadline to ``add_timed_wait``.  Under
+    ``clock="explored"`` another thread's clock-actor step can land between
+    that read and the registration; the wait then observed (up to) the whole
+    advance as elapsed time and expired on its first probe — a timed acquire
+    seeing far more virtual time than its timeout, nondeterministically.  The
+    deadline is now computed inside the scheduler's serialising lock, which
+    every clock advance also holds.
+    """
+    from frontrun import _cooperative
+
+    clock = VirtualClock()
+    scheduler = OpcodeScheduler(
+        [0],
+        num_threads=1,
+        deadlock_timeout=0.2,
+        virtual_clock=clock,
+        clock_mode="explored",
+    )
+    original_add = scheduler.add_timed_wait
+
+    def racing_add(thread_id: int, deadline: float | None = None, *, timeout: float | None = None) -> float:
+        # Simulate the concurrent explored-mode advance landing just before
+        # the registration is serialised.
+        clock.advance_to(clock.now() + 100.0)
+        if deadline is not None:
+            return original_add(thread_id, deadline)
+        return original_add(thread_id, timeout=timeout)
+
+    scheduler.add_timed_wait = racing_add  # type: ignore[method-assign]
+    deadline, graph, got_clock = _cooperative._timed_acquire_state(5.0, scheduler, 0)
+    assert got_clock is clock
+    assert graph is None
+    assert deadline == pytest.approx(clock.now() + 5.0)
+    assert not _cooperative._timed_acquire_expired(deadline, clock)
