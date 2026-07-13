@@ -7,6 +7,7 @@ the test suite without shipping demo code in the runtime package.
 from __future__ import annotations
 
 import sqlite3
+import threading
 
 
 def setup(db_path: str) -> None:
@@ -28,6 +29,13 @@ def read(db_path: str) -> int | None:
         return row[0] if row else None
     finally:
         conn.close()
+
+
+def read_in_joined_thread(db_path: str) -> None:
+    """Exercise SQL from a sequentially joined child thread."""
+    thread = threading.Thread(target=read, args=(db_path,))
+    thread.start()
+    thread.join()
 
 
 def increment(db_path: str) -> None:

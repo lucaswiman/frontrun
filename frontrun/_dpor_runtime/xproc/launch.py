@@ -338,19 +338,16 @@ class MpLauncher:
         return {"t": proto.ITER_START, "payload": base64.b64encode(payload).decode("ascii")}
 
     def join(self, handles: Any, timeout: float) -> list[Any]:
+        deadline = time.monotonic() + max(0.0, timeout)
         alive: list[Any] = []
         for proc in handles:
-            proc.join(timeout)
+            proc.join(max(0.0, deadline - time.monotonic()))
             if proc.is_alive():
                 alive.append(proc)
-                proc.terminate()
-                proc.join(1.0)
-                if proc.is_alive():
-                    # Worker ignored SIGTERM; escalate to SIGKILL so
-                    # execution="process" cannot leave a runaway child, matching
-                    # SubprocessLauncher.join()'s .kill() escalation.
-                    proc.kill()
-                    proc.join(1.0)
+        if alive:
+            # Terminate the whole set concurrently, then reap against one
+            # shared deadline; cleanup must not scale as timeout * workers.
+            _terminate_procs(alive, min(max(0.0, timeout), 1.0))
         return alive
 
     def terminate(self, handles: Any, timeout: float) -> None:
@@ -477,17 +474,24 @@ class SubprocessLauncher:
                 pass
 
     def join(self, handles: Any, timeout: float) -> list[subprocess.Popen[bytes]]:
+        deadline = time.monotonic() + max(0.0, timeout)
         alive: list[subprocess.Popen[bytes]] = []
         for proc in handles:
             try:
-                proc.wait(timeout=timeout)
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 alive.append(proc)
+        for proc in alive:
+            try:
                 proc.kill()
-                try:
-                    proc.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    pass
+            except Exception:  # noqa: BLE001 - best-effort; poll below is authoritative
+                pass
+        reap_deadline = time.monotonic() + min(max(0.0, timeout), 2.0)
+        for proc in alive:
+            try:
+                proc.wait(timeout=max(0.0, reap_deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass
         return alive
 
     def terminate(self, handles: Any, timeout: float) -> None:

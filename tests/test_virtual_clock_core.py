@@ -35,6 +35,7 @@ from frontrun._virtual_clock import (
     validate_clock_options,
     warn_if_captured_time_reference,
 )
+from frontrun.async_scheduler import _install_frontrun_timer_tagging, _pin_loop_time
 
 
 def _reset_diag_caches() -> None:
@@ -152,6 +153,47 @@ def test_async_timeout_patch_preserves_preexisting_patch(monkeypatch: pytest.Mon
     finally:
         async_virtual_timeouts._unpatch_asyncio_timeouts()
     assert asyncio.wait_for is fake_wait_for
+
+
+@pytest.mark.asyncio
+async def test_overlapping_loop_time_pins_restore_out_of_order() -> None:
+    """An earlier owner may exit while a later same-loop exploration remains active."""
+    loop = asyncio.get_running_loop()
+    missing = object()
+    previous = getattr(loop, "__dict__", {}).get("time", missing)
+    restore_first = _pin_loop_time(loop)
+    restore_second = _pin_loop_time(loop)
+    try:
+        restore_first()
+        assert loop.time is vc.real_monotonic
+    finally:
+        restore_second()
+
+    current = getattr(loop, "__dict__", {}).get("time", missing)
+    assert current is previous
+
+
+@pytest.mark.asyncio
+async def test_overlapping_timer_taggers_restore_out_of_order() -> None:
+    """Timer tagging stays installed until the last same-loop owner exits."""
+    loop = asyncio.get_running_loop()
+    missing = object()
+    loop_dict = getattr(loop, "__dict__", {})
+    previous_at = loop_dict.get("call_at", missing)
+    previous_later = loop_dict.get("call_later", missing)
+    _check_first, uninstall_first = _install_frontrun_timer_tagging(loop)
+    _check_second, uninstall_second = _install_frontrun_timer_tagging(loop)
+    active_at = loop.call_at
+    active_later = loop.call_later
+    try:
+        uninstall_first()
+        assert loop.call_at is active_at
+        assert loop.call_later is active_later
+    finally:
+        uninstall_second()
+
+    assert getattr(loop, "__dict__", {}).get("call_at", missing) is previous_at
+    assert getattr(loop, "__dict__", {}).get("call_later", missing) is previous_later
 
 
 def test_unmanaged_sync_sleep_keeps_its_real_delay(monkeypatch: pytest.MonkeyPatch) -> None:

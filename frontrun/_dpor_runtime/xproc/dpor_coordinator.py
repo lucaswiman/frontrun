@@ -725,6 +725,7 @@ class DporCrossProcessCoordinator:
     ) -> None:
         handles = worker_set.launch(worker_targets(self.socket_path, list(range(self.num_workers))))
         socks_by_id: dict[int, socket.socket] = {}
+        reaped = False
         try:
             try:
                 for _ in range(self.num_workers):
@@ -736,14 +737,25 @@ class DporCrossProcessCoordinator:
                 # then surface the real cause instead of a bare connect timeout.
                 worker_set.join(handles, self.deadlock_timeout)
                 raise _launch_error(worker_set, handles, exc) from exc
-            self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline)
+            try:
+                self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline)
+            except _TotalTimeoutExpiredError:
+                # total_timeout is a wall-clock search bound, not permission to
+                # add deadlock_timeout once per child during teardown.  Process
+                # workers are killable: retire all of them together and reap
+                # against one short shared cleanup budget before returning.
+                if isinstance(worker_set, TerminableWorkerSet):
+                    worker_set.terminate(handles, min(self.deadlock_timeout, 1.0))
+                    reaped = True
+                raise
         finally:
             for s in socks_by_id.values():
                 try:
                     s.close()
                 except OSError:
                     pass
-            worker_set.join(handles, self.deadlock_timeout)
+            if not reaped:
+                worker_set.join(handles, self.deadlock_timeout)
 
     def _run_reused(
         self,

@@ -61,10 +61,31 @@ _dpor_thread_id_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor
 #   kind: "read" or "write"
 IOReporter = Callable[[str, str], None]
 
+# Cross-process workers are one logical DPOR actor even when user code hands
+# work to a joined child thread.  Their SQL/Redis patches are process-global,
+# so a TLS-only context would silently let those child-thread operations escape
+# scheduling.  Normal thread/async exploration never installs this fallback.
+_process_dpor_context: tuple[Any, int, IOReporter] | None = None
+
+
+def set_process_dpor_context(scheduler: Any, thread_id: int, reporter: IOReporter) -> None:
+    """Install the xproc worker context inherited by otherwise-unset threads."""
+    global _process_dpor_context
+    _process_dpor_context = (scheduler, thread_id, reporter)
+
+
+def clear_process_dpor_context() -> None:
+    """Clear the xproc-only process fallback (primarily for in-process tests)."""
+    global _process_dpor_context
+    _process_dpor_context = None
+
 
 def get_io_reporter() -> IOReporter | None:
     """Return the per-thread IO reporter, or ``None``."""
-    return getattr(_io_tls, "io_reporter", None)
+    reporter = getattr(_io_tls, "io_reporter", _UNSET)
+    if reporter is not _UNSET:
+        return reporter
+    return _process_dpor_context[2] if _process_dpor_context is not None else None
 
 
 def set_io_reporter(reporter: IOReporter | None) -> None:
@@ -81,7 +102,10 @@ def get_dpor_scheduler() -> Any:
     scheduler = _dpor_scheduler_var.get()
     if scheduler is not _UNSET:
         return scheduler
-    return getattr(_io_tls, "_dpor_scheduler", None)
+    scheduler = getattr(_io_tls, "_dpor_scheduler", _UNSET)
+    if scheduler is not _UNSET:
+        return scheduler
+    return _process_dpor_context[0] if _process_dpor_context is not None else None
 
 
 def set_dpor_scheduler(scheduler: Any) -> None:
@@ -104,7 +128,10 @@ def get_dpor_thread_id() -> int | None:
     thread_id = _dpor_thread_id_var.get()
     if thread_id is not _UNSET:
         return thread_id
-    return getattr(_io_tls, "_dpor_thread_id", None)
+    thread_id = getattr(_io_tls, "_dpor_thread_id", _UNSET)
+    if thread_id is not _UNSET:
+        return thread_id
+    return _process_dpor_context[1] if _process_dpor_context is not None else None
 
 
 def set_dpor_thread_id(thread_id: int | None) -> None:

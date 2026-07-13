@@ -26,6 +26,21 @@ pytestmark = pytest.mark.e2e
 
 _TARGET = "tests.xproc_demo_counter:increment"
 _ATOMIC_TARGET = "tests.xproc_demo_counter:increment_atomic"
+_THREADED_READ_TARGET = "tests.xproc_demo_counter:read_in_joined_thread"
+
+
+def test_joined_child_thread_sql_access_is_scheduled(tmp_path) -> None:
+    """Sequential cross-thread handoff must retain the process scheduler context."""
+    db = str(tmp_path / "counter.db")
+    result = frontrun.explore_processes(
+        frontrun.Subprocess(_THREADED_READ_TARGET, (db,)),
+        setup=lambda: xproc_demo_counter.setup(db),
+        invariant=lambda _state: False,
+    )
+
+    assert not result.ok
+    assert result.accesses, "the joined child thread's SQL access was invisible to xproc"
+    assert any(resource.startswith("sql:") for _worker, resource, _kind in result.accesses)
 
 
 def test_lost_update_race_found_across_processes(tmp_path) -> None:
