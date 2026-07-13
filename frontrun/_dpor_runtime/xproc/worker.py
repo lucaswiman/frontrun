@@ -58,7 +58,10 @@ def _run_iteration(proxy: SchedulerProxy, body: WorkerBody) -> None:
         message = f"{type(exc).__name__}: {exc}"
         _safe(lambda: proxy.report_error(message))
     else:
-        _safe(proxy.mark_done)
+        if proxy.fatal_error is not None:
+            _safe(lambda: proxy.report_error(f"RuntimeError: {proxy.fatal_error}"))
+        else:
+            _safe(proxy.mark_done)
 
 
 def _connect_and_serve(socket_path: str, worker_id: int, body: WorkerBody) -> None:

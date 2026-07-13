@@ -116,9 +116,44 @@ def _patch_loop_instance_attr(loop: Any, name: str, value: Any) -> Callable[[], 
     return restore
 
 
+class _LoopTimePatch:
+    def __init__(self, restore: Callable[[], None]) -> None:
+        self.restore = restore
+        self.owners = 0
+
+
+class _TimerTaggingPatch:
+    def __init__(self) -> None:
+        self.owners = 0
+        self.tagged: weakref.WeakSet[Any] = weakref.WeakSet()
+        self.restore_call_at: Callable[[], None] | None = None
+        self.restore_call_later: Callable[[], None] | None = None
+
+
+_loop_time_patches: weakref.WeakKeyDictionary[Any, _LoopTimePatch] = weakref.WeakKeyDictionary()
+_timer_tagging_patches: weakref.WeakKeyDictionary[Any, _TimerTaggingPatch] = weakref.WeakKeyDictionary()
+
+
 def _pin_loop_time(loop: Any) -> Callable[[], None]:
     """Pin the loop's own clock to real monotonic time; returns a restore callback."""
-    return _patch_loop_instance_attr(loop, "time", real_monotonic)
+    state = _loop_time_patches.get(loop)
+    if state is None:
+        state = _LoopTimePatch(_patch_loop_instance_attr(loop, "time", real_monotonic))
+        _loop_time_patches[loop] = state
+    state.owners += 1
+    released = False
+
+    def restore() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        state.owners -= 1
+        if state.owners == 0 and _loop_time_patches.get(loop) is state:
+            del _loop_time_patches[loop]
+            state.restore()
+
+    return restore
 
 
 def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Callable[[], None]]:
@@ -136,39 +171,53 @@ def _install_frontrun_timer_tagging(loop: Any) -> tuple[Callable[[], bool], Call
     non-standard loop without ``_scheduled``), it reports True so exact
     detection stays off and the wall-clock fallback applies.
     """
-    tagged: weakref.WeakSet[Any] = weakref.WeakSet()
-    orig_call_at = loop.call_at
-    orig_call_later = loop.call_later
+    state = _timer_tagging_patches.get(loop)
+    if state is None:
+        state = _TimerTaggingPatch()
+        orig_call_at = loop.call_at
+        orig_call_later = loop.call_later
 
-    def _tagging_call_at(when: float, callback: Any, *args: Any, context: Any = None) -> Any:
-        handle = orig_call_at(when, callback, *args, context=context)
-        if _in_frontrun_timer.get():
-            tagged.add(handle)
-        return handle
+        def _tagging_call_at(when: float, callback: Any, *args: Any, context: Any = None) -> Any:
+            handle = orig_call_at(when, callback, *args, context=context)
+            if _in_frontrun_timer.get():
+                state.tagged.add(handle)
+            return handle
 
-    def _tagging_call_later(delay: float, callback: Any, *args: Any, context: Any = None) -> Any:
-        handle = orig_call_later(delay, callback, *args, context=context)
-        if _in_frontrun_timer.get():
-            tagged.add(handle)
-        return handle
+        def _tagging_call_later(delay: float, callback: Any, *args: Any, context: Any = None) -> Any:
+            handle = orig_call_later(delay, callback, *args, context=context)
+            if _in_frontrun_timer.get():
+                state.tagged.add(handle)
+            return handle
 
-    restore_call_at = _patch_loop_instance_attr(loop, "call_at", _tagging_call_at)
-    restore_call_later = _patch_loop_instance_attr(loop, "call_later", _tagging_call_later)
+        state.restore_call_at = _patch_loop_instance_attr(loop, "call_at", _tagging_call_at)
+        state.restore_call_later = _patch_loop_instance_attr(loop, "call_later", _tagging_call_later)
+        _timer_tagging_patches[loop] = state
+    state.owners += 1
+    released = False
 
     def _user_timers_pending() -> bool:
         scheduled = getattr(loop, "_scheduled", None)
         ready = getattr(loop, "_ready", None)
         if scheduled is None:
             return True
-        if any(not handle.cancelled() and handle not in tagged for handle in scheduled):
+        if any(not handle.cancelled() and handle not in state.tagged for handle in scheduled):
             return True
         if ready is None:
             return True
         return any(not handle.cancelled() for handle in ready)
 
     def _uninstall() -> None:
-        restore_call_later()
-        restore_call_at()
+        nonlocal released
+        if released:
+            return
+        released = True
+        state.owners -= 1
+        if state.owners == 0 and _timer_tagging_patches.get(loop) is state:
+            del _timer_tagging_patches[loop]
+            if state.restore_call_later is not None:
+                state.restore_call_later()
+            if state.restore_call_at is not None:
+                state.restore_call_at()
 
     return _user_timers_pending, _uninstall
 

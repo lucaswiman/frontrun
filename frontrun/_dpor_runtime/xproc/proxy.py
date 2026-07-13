@@ -58,16 +58,22 @@ class SchedulerProxy:
         # remains supported. A real lock, never a patched one: the guard runs
         # inside interception machinery.
         self._use_lock = _rt.lock()
+        # Concurrent use is raised in the offending thread, which user code may
+        # join without propagating that exception.  Latch it so the bootstrap
+        # thread reports ERROR instead of a false DONE after the target returns.
+        self._fatal_error: str | None = None
 
     @contextmanager
-    def _exclusive(self) -> Generator[None, None, None]:
-        if not self._use_lock.acquire(blocking=False):
-            raise RuntimeError(
+    def _exclusive(self, *, blocking: bool = False) -> Generator[None, None, None]:
+        if not self._use_lock.acquire(blocking=blocking):
+            message = (
                 "SchedulerProxy used concurrently from multiple threads: cross-process "
                 "workers must perform scheduled external accesses (SQL/Redis statements) "
                 "from one thread at a time — the coordinator schedules each worker "
                 "process as a single logical actor"
             )
+            self._fatal_error = message
+            raise RuntimeError(message)
         try:
             yield
         finally:
@@ -80,6 +86,12 @@ class SchedulerProxy:
     def reset(self) -> None:
         """Clear the abort latch so a reused worker can run the next iteration."""
         self._aborted = False
+        self._fatal_error = None
+
+    @property
+    def fatal_error(self) -> str | None:
+        """Concurrent-use failure that must be reported by the bootstrap thread."""
+        return self._fatal_error
 
     # --- io-reporter callable: installed via set_io_reporter(proxy.io_report) ---
 
@@ -157,7 +169,10 @@ class SchedulerProxy:
         """Tell the coordinator this worker raised an unhandled exception."""
         if self._aborted:
             return
-        with self._exclusive():
+        # A child thread may still be unwinding the scheduling call that
+        # latched this error.  Wait for that real lock rather than losing the
+        # coordinator-visible ERROR to a second concurrent-use exception.
+        with self._exclusive(blocking=True):
             proto.send_msg(self._sock, {"t": proto.ERROR, "w": self._worker_id, "msg": message})
 
     def _await_grant(self) -> bool:

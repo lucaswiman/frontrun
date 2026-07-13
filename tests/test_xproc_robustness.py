@@ -23,7 +23,7 @@ import frontrun
 from frontrun._dpor_runtime.xproc import protocol as proto
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, accept_hello
 from frontrun._dpor_runtime.xproc.proxy import SchedulerProxy
-from frontrun._dpor_runtime.xproc.worker import ThreadLauncher, _connect_and_serve
+from frontrun._dpor_runtime.xproc.worker import ThreadLauncher, _connect_and_serve, _run_iteration
 
 
 def test_total_timeout_bounds_spawned_worker_cleanup() -> None:
@@ -41,6 +41,7 @@ def test_total_timeout_bounds_spawned_worker_cleanup() -> None:
     assert result.ok
     assert not result.exhausted
     assert elapsed < 1.0, f"total_timeout=0.2 took {elapsed:.3f}s while cleaning up the worker"
+
 
 # ---------------------------------------------------------------------------
 # Malformed frames must become structured worker errors, not uncaught KeyErrors
@@ -316,6 +317,33 @@ def test_proxy_sequential_cross_thread_use_still_works() -> None:
         assert results == [True, True]
     finally:
         coord_thread.join(timeout=5.0)
+        worker_sock.close()
+        coord_sock.close()
+
+
+def test_latched_proxy_misuse_is_reported_instead_of_done() -> None:
+    """A child-thread RuntimeError cannot be lost when the target joins it."""
+    worker_sock, coord_sock = socket.socketpair()
+    try:
+        proxy = SchedulerProxy(worker_sock, worker_id=0)
+
+        def target(p: SchedulerProxy) -> None:
+            # Model another thread owning the proxy while this thread's client
+            # wrapper encounters the concurrent-use guard, then swallowing its
+            # thread-local exception during join().
+            p._use_lock.acquire()
+            try:
+                with pytest.raises(RuntimeError, match="concurrent"):
+                    p.io_report("sql:t:k", "read")
+            finally:
+                p._use_lock.release()
+
+        _run_iteration(proxy, target)
+        message = proto.recv_msg(coord_sock)
+        assert message is not None
+        assert message["t"] == proto.ERROR
+        assert "concurrent" in message["msg"]
+    finally:
         worker_sock.close()
         coord_sock.close()
 

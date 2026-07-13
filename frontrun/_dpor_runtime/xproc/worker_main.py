@@ -36,7 +36,12 @@ def _install_interception(proxy: SchedulerProxy, worker_id: int) -> None:
             "install it with `pip install frontrun[process]`"
         ) from exc
 
-    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_io_reporter
+    from frontrun._io_detection import (
+        set_dpor_scheduler,
+        set_dpor_thread_id,
+        set_io_reporter,
+        set_process_dpor_context,
+    )
     from frontrun._sql_cursor import patch_sql
 
     patch_sql()  # global: every subsequent sqlite3/psycopg connection is traced
@@ -49,6 +54,7 @@ def _install_interception(proxy: SchedulerProxy, worker_id: int) -> None:
     set_dpor_scheduler(proxy)
     set_dpor_thread_id(worker_id)
     set_io_reporter(proxy.io_report)
+    set_process_dpor_context(proxy, worker_id, proxy.io_report)
 
 
 def _reset_iteration_state() -> None:
