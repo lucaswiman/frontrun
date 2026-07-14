@@ -1725,18 +1725,12 @@ def test_failed_data_statement_keeps_row_locks_from_earlier_statements() -> None
                 delattr(_io_tls, attr)
 
 
-def test_xproc_opaque_sql_conflicts_with_parsed_database_access() -> None:
-    """Process workers need a semantic fallback because LD_PRELOAD is scrubbed."""
-    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+def test_opaque_sql_conflicts_with_parsed_database_access_in_process() -> None:
+    """Endpoint suppression must not hide opaque SQL from in-process DPOR."""
     from frontrun._sql_cursor import _report_sql_access
-
-    class ProcessProxy:
-        requires_semantic_io_fallback = True
 
     log = IOLog()
     set_io_reporter(log)
-    set_dpor_scheduler(ProcessProxy())
-    set_dpor_thread_id(0)
     try:
         assert _report_sql_access("EXECUTE prepared_update(1)", db_obj=object())
         opaque = list(log.events)
@@ -1744,12 +1738,23 @@ def test_xproc_opaque_sql_conflicts_with_parsed_database_access() -> None:
         assert _report_sql_access("SELECT * FROM accounts", db_obj=object())
         parsed = list(log.events)
     finally:
-        set_dpor_scheduler(None)
-        set_dpor_thread_id(None)
         set_io_reporter(None)
 
     assert ("sql:__database__", "write") in opaque
     assert ("sql:__database__", "read") in parsed
+
+
+def test_non_string_sql_operation_uses_opaque_database_fallback() -> None:
+    from frontrun._sql_cursor import _report_sql_access
+
+    log = IOLog()
+    set_io_reporter(log)
+    try:
+        assert _report_sql_access(object(), db_obj=object())
+    finally:
+        set_io_reporter(None)
+
+    assert ("sql:__database__", "write") in log.events
 
 
 def test_zero_row_update_release_is_postgresql_only() -> None:
