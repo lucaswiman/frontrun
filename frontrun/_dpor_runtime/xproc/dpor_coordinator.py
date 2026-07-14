@@ -266,10 +266,11 @@ def _relay_loop(
                 # and the turn is released only when its next frame arrives.
                 granted = scheduler.before_sync_retry(worker_id)
                 _bump_progress()
+                if granted:
+                    publish_pending_accesses()
                 _reply(sock, granted)
                 if not granted:
                     break
-                publish_pending_accesses()
                 holding_sync_turn = True
             elif kind == proto.AFTER_SYNC:
                 # The holding-turn block above already released the turn.
@@ -313,10 +314,11 @@ def _relay_loop(
                 with scheduler._condition:
                     granted = scheduler._active_io_thread == worker_id
                 _bump_progress()
+                if granted:
+                    publish_pending_accesses()
                 _reply(sock, granted)
                 if not granted:
                     break
-                publish_pending_accesses()
             elif kind == proto.AFTER_IO:
                 scheduler.after_io(worker_id, msg["rid"])
             elif kind == proto.DONE:

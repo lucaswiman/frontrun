@@ -136,7 +136,9 @@ Unreleased
   state, tracks Redis ``WATCH`` operations, completes PyMySQL transaction
   teardown, limits SQL socket suppression to the database endpoint, and
   carries async Django's synchronous-driver reports across its worker-thread
-  bridge so DPOR can find ORM races instead of serializing them away.
+  bridge so DPOR can find ORM races instead of serializing them away. Process
+  relays publish access traces before the corresponding observable grant, so
+  OS socket-arrival races cannot reorder a replay trace.
 
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
