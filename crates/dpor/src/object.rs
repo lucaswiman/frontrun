@@ -13,25 +13,58 @@ use crate::access::{Access, AccessKind};
 /// Opaque integer ID for shared objects.
 pub type ObjectId = u64;
 
+/// Earliest and latest access of one kind by one thread.
+///
+/// Most recording modes keep a single access (first == last).  Synced-I/O
+/// recording keeps both: the earliest access gives the most useful wakeup
+/// tree insertion point for read-then-write patterns (e.g. between a SELECT
+/// and UPDATE in a transaction), while the latest access is required for
+/// soundness — a later read (e.g. a SELECT *after* an UPDATE on the same
+/// row) must still race with other threads' writes, otherwise the branch
+/// that interleaves between the two statements is silently never explored.
+#[derive(Clone, Debug)]
+struct AccessSpan {
+    first: Access,
+    last: Access,
+}
+
+impl AccessSpan {
+    fn new(access: Access) -> Self {
+        Self {
+            first: access.clone(),
+            last: access,
+        }
+    }
+
+    /// Iterate the distinct accesses in this span (one when first == last).
+    fn entries(&self) -> impl Iterator<Item = &Access> {
+        let dup = self.last.path_id == self.first.path_id;
+        std::iter::once(&self.first).chain((!dup).then_some(&self.last))
+    }
+
+    fn has_path_id(&self, path_id: usize) -> bool {
+        self.first.path_id == path_id || self.last.path_id == path_id
+    }
+}
+
 /// Tracks per-thread accesses to a shared object for DPOR.
 ///
-/// Maintains per-thread maps of the most recent read and the most recent
-/// write.  A **Write** by another thread depends on *both* the latest
-/// read and the latest write from each other thread, because the
-/// wakeup tree insertions differ: inserting at a read position allows the
-/// scheduler to interleave between a read and a subsequent write on the
-/// same object (TOCTOU bugs), while inserting at the write position
-/// only reorders complete read-write pairs.
+/// Maintains per-thread spans of read and write accesses.  A **Write** by
+/// another thread depends on *both* the reads and the writes from each
+/// other thread, because the wakeup tree insertions differ: inserting at a
+/// read position allows the scheduler to interleave between a read and a
+/// subsequent write on the same object (TOCTOU bugs), while inserting at
+/// the write position only reorders complete read-write pairs.
 #[derive(Clone, Debug)]
 pub struct ObjectState {
-    /// Per-thread most recent read access.
-    per_thread_read: HashMap<usize, Access>,
-    /// Per-thread most recent write access.
-    per_thread_write: HashMap<usize, Access>,
-    /// Per-thread most recent weak-write access.
-    per_thread_weak_write: HashMap<usize, Access>,
-    /// Per-thread most recent weak-read access.
-    per_thread_weak_read: HashMap<usize, Access>,
+    /// Per-thread read access span.
+    per_thread_read: HashMap<usize, AccessSpan>,
+    /// Per-thread write access span.
+    per_thread_write: HashMap<usize, AccessSpan>,
+    /// Per-thread weak-write access span.
+    per_thread_weak_write: HashMap<usize, AccessSpan>,
+    /// Per-thread weak-read access span.
+    per_thread_weak_read: HashMap<usize, AccessSpan>,
 }
 
 impl ObjectState {
@@ -44,6 +77,11 @@ impl ObjectState {
         }
     }
 
+    /// Whether *thread* has an access of the given map recorded at *path_id*.
+    fn map_has_path_id(map: &HashMap<usize, AccessSpan>, thread: usize, path_id: usize) -> bool {
+        map.get(&thread).is_some_and(|span| span.has_path_id(path_id))
+    }
+
     /// Returns all accesses that the given `kind` by `current_thread` depends on.
     ///
     /// Paper: dependency is defined in JACM'17 Section 3.3 (p.13-14). Two events
@@ -54,126 +92,124 @@ impl ObjectState {
     ///   Returning both ensures DPOR inserts into wakeup trees at read
     ///   positions (for TOCTOU detection) and write positions (for
     ///   write-write ordering).
+    ///
+    /// Accesses that share a path position with a stronger access by the same
+    /// thread (e.g. the read and write halves of a single UPDATE statement)
+    /// are *dominated* and skipped so a single statement does not produce
+    /// duplicate wakeup insertions.
     pub fn dependent_accesses(&self, kind: AccessKind, current_thread: usize) -> Vec<&Access> {
+        let mut result: Vec<&Access> = Vec::new();
         match kind {
             AccessKind::Read => {
                 // Read depends on Write and WeakWrite from other threads.
-                let mut result: Vec<&Access> = Vec::new();
-                for (tid, access) in &self.per_thread_write {
+                for (tid, span) in &self.per_thread_write {
                     if *tid != current_thread {
-                        result.push(access);
+                        result.extend(span.entries());
                     }
                 }
-                for (tid, access) in &self.per_thread_weak_write {
+                for (tid, span) in &self.per_thread_weak_write {
                     if *tid != current_thread {
-                        let dominated = self.per_thread_write.get(tid).is_some_and(|w| {
-                            w.path_id == access.path_id
-                        });
-                        if !dominated {
-                            result.push(access);
+                        for access in span.entries() {
+                            let dominated =
+                                Self::map_has_path_id(&self.per_thread_write, *tid, access.path_id);
+                            if !dominated {
+                                result.push(access);
+                            }
                         }
                     }
                 }
-                result
             }
             AccessKind::Write => {
                 // Write depends on Read, Write, WeakWrite, and WeakRead.
-                let mut result: Vec<&Access> = Vec::new();
-                for (tid, access) in &self.per_thread_read {
+                for (tid, span) in &self.per_thread_read {
                     if *tid != current_thread {
-                        result.push(access);
+                        result.extend(span.entries());
                     }
                 }
-                for (tid, access) in &self.per_thread_write {
+                for (tid, span) in &self.per_thread_write {
                     if *tid != current_thread {
-                        let dominated = self.per_thread_read.get(tid).is_some_and(|r| {
-                            r.path_id == access.path_id
-                        });
-                        if !dominated {
-                            result.push(access);
+                        for access in span.entries() {
+                            let dominated =
+                                Self::map_has_path_id(&self.per_thread_read, *tid, access.path_id);
+                            if !dominated {
+                                result.push(access);
+                            }
                         }
                     }
                 }
-                for (tid, access) in &self.per_thread_weak_write {
+                for (tid, span) in &self.per_thread_weak_write {
                     if *tid != current_thread {
-                        let dominated_by_read = self.per_thread_read.get(tid).is_some_and(|r| {
-                            r.path_id == access.path_id
-                        });
-                        let dominated_by_write = self.per_thread_write.get(tid).is_some_and(|w| {
-                            w.path_id == access.path_id
-                        });
-                        if !dominated_by_read && !dominated_by_write {
-                            result.push(access);
+                        for access in span.entries() {
+                            let dominated =
+                                Self::map_has_path_id(&self.per_thread_read, *tid, access.path_id)
+                                    || Self::map_has_path_id(&self.per_thread_write, *tid, access.path_id);
+                            if !dominated {
+                                result.push(access);
+                            }
                         }
                     }
                 }
-                for (tid, access) in &self.per_thread_weak_read {
+                for (tid, span) in &self.per_thread_weak_read {
                     if *tid != current_thread {
-                        let dominated_by_read = self.per_thread_read.get(tid).is_some_and(|r| {
-                            r.path_id == access.path_id
-                        });
-                        let dominated_by_write = self.per_thread_write.get(tid).is_some_and(|w| {
-                            w.path_id == access.path_id
-                        });
-                        let dominated_by_ww = self.per_thread_weak_write.get(tid).is_some_and(|w| {
-                            w.path_id == access.path_id
-                        });
-                        if !dominated_by_read && !dominated_by_write && !dominated_by_ww {
-                            result.push(access);
+                        for access in span.entries() {
+                            let dominated =
+                                Self::map_has_path_id(&self.per_thread_read, *tid, access.path_id)
+                                    || Self::map_has_path_id(&self.per_thread_write, *tid, access.path_id)
+                                    || Self::map_has_path_id(&self.per_thread_weak_write, *tid, access.path_id);
+                            if !dominated {
+                                result.push(access);
+                            }
                         }
                     }
                 }
-                result
             }
             AccessKind::WeakWrite => {
                 // WeakWrite depends on Read and Write, but NOT WeakWrite
                 // or WeakRead.
-                let mut result: Vec<&Access> = Vec::new();
-                for (tid, access) in &self.per_thread_read {
+                for (tid, span) in &self.per_thread_read {
                     if *tid != current_thread {
-                        result.push(access);
+                        result.extend(span.entries());
                     }
                 }
-                for (tid, access) in &self.per_thread_write {
+                for (tid, span) in &self.per_thread_write {
                     if *tid != current_thread {
-                        let dominated = self.per_thread_read.get(tid).is_some_and(|r| {
-                            r.path_id == access.path_id
-                        });
-                        if !dominated {
-                            result.push(access);
+                        for access in span.entries() {
+                            let dominated =
+                                Self::map_has_path_id(&self.per_thread_read, *tid, access.path_id);
+                            if !dominated {
+                                result.push(access);
+                            }
                         }
                     }
                 }
-                result
             }
             AccessKind::WeakRead => {
                 // WeakRead depends only on Write (not Read, WeakWrite, or
                 // other WeakRead).
-                self.per_thread_write
-                    .iter()
-                    .filter(|(tid, _)| **tid != current_thread)
-                    .map(|(_, access)| access)
-                    .collect()
+                for (tid, span) in &self.per_thread_write {
+                    if *tid != current_thread {
+                        result.extend(span.entries());
+                    }
+                }
             }
+        }
+        result
+    }
+
+    fn map_for(&mut self, kind: AccessKind) -> &mut HashMap<usize, AccessSpan> {
+        match kind {
+            AccessKind::Read => &mut self.per_thread_read,
+            AccessKind::Write => &mut self.per_thread_write,
+            AccessKind::WeakWrite => &mut self.per_thread_weak_write,
+            AccessKind::WeakRead => &mut self.per_thread_weak_read,
         }
     }
 
+    /// Record the **latest** access per thread (single-entry semantics):
+    /// each new access replaces the previous one.
     pub fn record_access(&mut self, access: Access, kind: AccessKind) {
         let thread_id = access.thread_id;
-        match kind {
-            AccessKind::Read => {
-                self.per_thread_read.insert(thread_id, access);
-            }
-            AccessKind::Write => {
-                self.per_thread_write.insert(thread_id, access);
-            }
-            AccessKind::WeakWrite => {
-                self.per_thread_weak_write.insert(thread_id, access);
-            }
-            AccessKind::WeakRead => {
-                self.per_thread_weak_read.insert(thread_id, access);
-            }
-        }
+        self.map_for(kind).insert(thread_id, AccessSpan::new(access));
     }
 
     /// Like [`record_access`] but keeps the **first** (earliest) access for
@@ -183,18 +219,26 @@ impl ObjectState {
     /// transaction).
     pub fn record_io_access(&mut self, access: Access, kind: AccessKind) {
         let thread_id = access.thread_id;
-        match kind {
-            AccessKind::Read => {
-                self.per_thread_read.entry(thread_id).or_insert(access);
+        self.map_for(kind)
+            .entry(thread_id)
+            .or_insert_with(|| AccessSpan::new(access));
+    }
+
+    /// Like [`record_io_access`] but *also* tracks the latest access per
+    /// thread.  Keeping only the first access is unsound for synced I/O
+    /// (SQL/Redis): a thread that writes a row and later reads it back
+    /// (UPDATE ... ; SELECT ...) would drop the later read, so the race
+    /// between that read and another thread's write is never detected and
+    /// DPOR reports exhaustion without exploring the interleaving where
+    /// the other thread's write lands between the two statements.
+    pub fn record_synced_io_access(&mut self, access: Access, kind: AccessKind) {
+        let thread_id = access.thread_id;
+        match self.map_for(kind).entry(thread_id) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().last = access;
             }
-            AccessKind::Write => {
-                self.per_thread_write.entry(thread_id).or_insert(access);
-            }
-            AccessKind::WeakWrite => {
-                self.per_thread_weak_write.entry(thread_id).or_insert(access);
-            }
-            AccessKind::WeakRead => {
-                self.per_thread_weak_read.entry(thread_id).or_insert(access);
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(AccessSpan::new(access));
             }
         }
     }
