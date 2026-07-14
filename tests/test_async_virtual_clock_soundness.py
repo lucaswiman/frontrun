@@ -30,6 +30,74 @@ class _WaitForState:
         self.elapsed: float | None = None
 
 
+class _BareFutureTimeoutState:
+    def __init__(self) -> None:
+        self.timed_out = False
+        self.elapsed: float | None = None
+
+
+def test_async_wait_for_coroutine_awaiting_bare_future_autojumps() -> None:
+    async def worker(state: _BareFutureTimeoutState) -> None:
+        future = asyncio.get_running_loop().create_future()
+
+        async def inner() -> None:
+            await future
+
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(inner(), 1.0)
+        except TimeoutError:
+            state.timed_out = True
+            state.elapsed = time.monotonic() - started
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_BareFutureTimeoutState,
+            workers=[worker],
+            invariant=lambda state: state.timed_out and state.elapsed == pytest.approx(1.0),
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            timeout_per_run=0.5,
+            deadlock_timeout=0.1,
+            reproduce_on_failure=0,
+            detect_io=False,
+        )
+    )
+
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
+def test_async_timeout_around_bare_future_autojumps() -> None:
+    async def worker(state: _BareFutureTimeoutState) -> None:
+        future = asyncio.get_running_loop().create_future()
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(1.0):
+                await future
+        except TimeoutError:
+            state.timed_out = True
+            state.elapsed = time.monotonic() - started
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_BareFutureTimeoutState,
+            workers=[worker],
+            invariant=lambda state: state.timed_out and state.elapsed == pytest.approx(1.0),
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            timeout_per_run=0.5,
+            deadlock_timeout=0.1,
+            reproduce_on_failure=0,
+            detect_io=False,
+        )
+    )
+
+    assert result.property_holds, result.explanation
+
+
 def test_async_wait_for_success_does_not_autojump_to_full_timeout() -> None:
     # The waiter parks (engine-blocked) in wait_for on a bare future; the
     # setter resolves it and finishes. The waiter's wake callback is then

@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Generator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, call
 
@@ -24,6 +25,7 @@ from frontrun._sql_cursor import (
     patch_sql,
     unpatch_sql,
 )
+from frontrun._sql_endpoint_suppression import clear_permanent_suppressions
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -101,8 +103,10 @@ def _make_fresh_db() -> sqlite3.Connection:
 @pytest.fixture(autouse=True)
 def _cleanup_sql_patch() -> Generator[None, None, None]:
     """Ensure SQL patching is cleaned up between tests."""
+    clear_permanent_suppressions()
     yield
     unpatch_sql()
+    clear_permanent_suppressions()
     _ORIGINAL_METHODS.clear()
     _PATCHES.clear()
     _suppress_tids.clear()
@@ -126,6 +130,83 @@ def test_patch_patches_sqlite3_connect() -> None:
     orig_connect = sqlite3.connect
     patch_sql()
     assert sqlite3.connect is not orig_connect
+
+
+def test_patch_wraps_pymysql_connection_transaction_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A physical PyMySQL commit/rollback/close must update modeled state."""
+
+    class Cursor:
+        def execute(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def executemany(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    class Connection:
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    originals = (Connection.commit, Connection.rollback, Connection.close)
+
+    def fake_import(name: str) -> Any:
+        if name == "pymysql.cursors":
+            return SimpleNamespace(Cursor=Cursor)
+        if name == "pymysql":
+            return SimpleNamespace(paramstyle="pyformat")
+        if name == "pymysql.connections":
+            return SimpleNamespace(Connection=Connection)
+        raise ImportError(name)
+
+    monkeypatch.setattr(sql_cursor_mod.importlib, "import_module", fake_import)
+    patch_sql()
+
+    assert Connection.commit is not originals[0]
+    assert Connection.rollback is not originals[1]
+    assert Connection.close is not originals[2]
+
+    unpatch_sql()
+    assert (Connection.commit, Connection.rollback, Connection.close) == originals
+
+
+def test_failed_patched_connect_does_not_hide_later_socket_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Connect-time TID suppression must be unwound even when the driver fails."""
+
+    class Cursor:
+        def execute(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def executemany(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    class Connection:
+        pass
+
+    def fail_connect(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("database unavailable")
+
+    driver = SimpleNamespace(connect=fail_connect)
+    extensions = SimpleNamespace(cursor=Cursor, connection=Connection)
+
+    def fake_import(name: str) -> Any:
+        if name == "psycopg2":
+            return driver
+        if name == "psycopg2.extensions":
+            return extensions
+        raise ImportError(name)
+
+    monkeypatch.setattr(sql_cursor_mod.importlib, "import_module", fake_import)
+    patch_sql()
+
+    with pytest.raises(OSError, match="database unavailable"):
+        driver.connect()
+
+    assert not is_tid_suppressed(threading.get_native_id())
 
 
 def test_patch_produces_traced_connection() -> None:
@@ -512,6 +593,7 @@ def test_suppress_tid_removed_after_execute() -> None:
     current_tid = threading.get_native_id()
     with _suppress_lock:
         assert current_tid not in _suppress_tids
+    assert not is_tid_suppressed(current_tid), "SQL must not hide later unrelated socket I/O on this worker"
 
 
 def test_is_tid_suppressed_false_for_unknown_tid() -> None:

@@ -158,7 +158,7 @@ def test_lock_deadlock_with_no_task_in_pause_is_detected() -> None:
     assert "deadlock" in str(runner.scheduler._error).lower()
 
 
-def test_slow_but_correct_run_is_inconclusive_not_deadlock() -> None:
+def test_slow_but_correct_run_cannot_return_passing_proof() -> None:
     """A slow-but-correct run that merely exceeds timeout_per_run must NOT be
     reported as a deadlock counterexample.
 
@@ -196,7 +196,62 @@ def test_slow_but_correct_run_is_inconclusive_not_deadlock() -> None:
         )
     )
 
+    assert not result.property_holds
+    assert result.counterexample is None
+    assert result.explanation is not None
+    assert "inconclusive" in result.explanation.lower()
+    assert "deadlock" not in result.explanation.lower()
+
+
+def test_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
+    """No-progress polling cannot prove an ordinary wall timer is deadlocked."""
+
+    async def worker(state: dict[str, bool]) -> None:
+        await asyncio.sleep(0.05)
+        state["done"] = True
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=lambda: {"done": False},
+            tasks=[worker],
+            invariant=lambda state: state["done"],
+            max_attempts=1,
+            max_ops=10,
+            timeout_per_run=0.2,
+            deadlock_timeout=0.01,
+            patch_sleep=False,
+            seed=1,
+        )
+    )
+
     assert result.property_holds, result.explanation
+
+
+def test_max_ops_truncation_cannot_return_passing_proof() -> None:
+    """If every sampled schedule is truncated, no invariant was checked."""
+
+    async def long_task(_state: object) -> None:
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=object,
+            tasks=[long_task],
+            invariant=lambda _state: True,
+            max_attempts=2,
+            max_ops=1,
+            timeout_per_run=1.0,
+            deadlock_timeout=1.0,
+            seed=1,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.counterexample is None
+    assert result.explanation is not None
+    assert "inconclusive" in result.explanation.lower()
+    assert "max_ops" in result.explanation
 
 
 def test_uncaught_wait_for_timeout_is_task_crash_not_deadlock() -> None:

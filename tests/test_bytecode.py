@@ -483,6 +483,27 @@ class TestExploreRandomDeadlockHandling:
         )
 
 
+def test_explore_random_worker_system_exit_is_not_silent_success() -> None:
+    """Random exploration must match DPOR and propagate worker BaseExceptions."""
+
+    def exits(_state: object) -> None:
+        raise SystemExit(7)
+
+    with pytest.raises(SystemExit) as exc_info:
+        explore_random(
+            setup=object,
+            threads=[exits],
+            invariant=lambda _state: True,
+            max_attempts=1,
+            max_ops=10,
+            detect_io=False,
+            reproduce_on_failure=0,
+            seed=1,
+        )
+
+    assert exc_info.value.code == 7
+
+
 def test_timeout_counts_as_explored():
     """Timed-out schedules must be counted in both num_explored and unique_interleavings.
 
@@ -508,6 +529,36 @@ def test_timeout_counts_as_explored():
     assert result.unique_interleavings <= result.num_explored, (
         f"unique_interleavings ({result.unique_interleavings}) should not exceed num_explored ({result.num_explored})"
     )
+
+
+def test_timeout_cannot_return_passing_proof() -> None:
+    """A partial run is inconclusive and leaves unsafe worker threads alive."""
+    release_worker = threading.Event()
+
+    def blocked_worker(_state: object) -> None:
+        release_worker.wait()
+
+    try:
+        result = explore_random(
+            setup=object,
+            threads=[blocked_worker],
+            invariant=lambda _state: True,
+            max_attempts=3,
+            max_ops=10,
+            timeout_per_run=0.01,
+            deadlock_timeout=1.0,
+            detect_io=False,
+            reproduce_on_failure=0,
+            seed=1,
+        )
+    finally:
+        release_worker.set()
+
+    assert not result.property_holds
+    assert result.counterexample is None
+    assert result.num_explored == 1, "unsafe surviving threads must abort further exploration"
+    assert result.explanation is not None
+    assert "inconclusive" in result.explanation.lower()
 
 
 def test_explore_random_reports_worker_crash_as_counterexample() -> None:

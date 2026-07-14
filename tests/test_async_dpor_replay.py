@@ -15,13 +15,16 @@ DeadlockError or phantom ownership in later replays.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
+import frontrun._async_cooperative as async_cooperative
 from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
-from frontrun._deadlock import DeadlockError
+from frontrun._deadlock import DeadlockError, WaitForGraph
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
+from frontrun._virtual_clock import VirtualClock
 from frontrun.async_dpor import (
     AsyncDporScheduler,
     _async_parked_conditions,
@@ -37,6 +40,43 @@ from frontrun.async_dpor import (
 )
 from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active
+
+
+def test_replay_timeout_guarded_row_lock_wait_is_not_a_deadlock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replay must mirror exploration's timeout-aware wait-for graph."""
+
+    async def run() -> None:
+        graph = WaitForGraph()
+        monkeypatch.setattr(async_cooperative, "_async_wait_graph", graph)
+        clock = VirtualClock()
+        scheduler = _ReplayAsyncScheduler([1, 0, 1], 2, virtual_clock=clock, clock_actor_id=2)
+
+        async def no_op(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(scheduler, "kick_stalled_schedule", no_op)
+        monkeypatch.setattr(scheduler, "wait_until_scheduled_after_block", no_op)
+
+        scheduler._row_lock_registry.record_acquire(0, "A", graph)
+        scheduler._row_lock_registry.record_acquire(1, "B", graph)
+        lock_b = scheduler._row_lock_registry._row_lock_int_id("B")
+        assert graph.add_waiting(0, lock_b, kind="row_lock") is None
+        scheduler.add_timeout_deadline(1, clock.now() + 1.0, object())
+
+        acquire = asyncio.create_task(scheduler.acquire_row_locks_async(1, ["A"]))
+        try:
+            await asyncio.sleep(0)
+            assert not acquire.done(), "the pending timeout makes this wait recoverable"
+
+            scheduler.release_row_locks(0, ["A"])
+            assert await acquire == ["A"]
+        finally:
+            if not acquire.done():
+                acquire.cancel()
+            with contextlib.suppress(asyncio.CancelledError, DeadlockError):
+                await acquire
+
+    asyncio.run(run())
 
 
 def test_task_crash_counterexample_reproduces_same_exception() -> None:
