@@ -144,6 +144,40 @@ def test_task_crash_replay_wakes_peer_parked_on_event() -> None:
     assert result.reproduction_successes == 2
 
 
+def test_task_crash_survives_peer_suppressing_cleanup_cancellation() -> None:
+    """A stubborn peer reaching the run timeout must not replace the first worker crash."""
+    require_active("test_async_dpor_task_crash_with_stubborn_peer")
+    import frontrun
+
+    async def stubborn_peer(_state: object) -> None:
+        try:
+            await asyncio.get_running_loop().create_future()
+        except asyncio.CancelledError:
+            await asyncio.get_running_loop().create_future()
+
+    async def crash(_state: object) -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("boom before stubborn cleanup")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=object,
+            workers=[stubborn_peer, crash],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            max_executions=1,
+            deadlock_timeout=0.02,
+            timeout_per_run=0.15,
+            reproduce_on_failure=0,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "RuntimeError: boom before stubborn cleanup" in result.explanation
+
+
 def test_cooperative_event_deadlock_replays() -> None:
     """Schedule exhaustion must reproduce an exact cooperative deadlock."""
     require_active("test_async_dpor_cooperative_event_deadlock_replay")
@@ -160,6 +194,46 @@ def test_cooperative_event_deadlock_replays() -> None:
         frontrun.explore(
             setup=State,
             workers=[wait_forever],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            deadlock_timeout=0.1,
+            timeout_per_run=0.5,
+            reproduce_on_failure=2,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Deadlock" in result.explanation
+    assert result.reproduction_attempts == 2
+    assert result.reproduction_successes == 2
+
+
+def test_mixed_event_and_lock_deadlock_replays() -> None:
+    """Exact replay must count tasks blocked on both Events and Locks."""
+    require_active("test_async_dpor_mixed_event_lock_deadlock_replay")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.lock = asyncio.Lock()
+
+    async def holder(state: State) -> None:
+        async with state.lock:
+            await state.event.wait()
+
+    async def notifier(state: State) -> None:
+        async with state.lock:
+            state.event.set()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[holder, notifier],
             invariant=lambda _state: True,
             strategy="dpor",
             clock="virtual",

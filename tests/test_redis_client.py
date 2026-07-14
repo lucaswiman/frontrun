@@ -78,6 +78,87 @@ def test_pubsub_channels_are_scoped_to_server_not_database() -> None:
     assert db0_writes & db1_writes
 
 
+def test_bytes_flushall_command_reports_server_scope() -> None:
+    """redis-py may pass command tokens as bytes; scope semantics must survive normalization."""
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0})
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        parsed = _redis_client._parse_and_report_execute_command((b"FLUSHALL",), client)
+    finally:
+        set_io_reporter(None)
+
+    assert parsed is not None
+    assert ("redis:server-keyspace:server=redis:source:6379", "write") in events
+
+
+def test_bytes_pipeline_move_command_reports_destination_scope() -> None:
+    """Pipeline byte command tokens must retain cross-database destination dependencies."""
+    events: list[tuple[str, str]] = []
+    pipeline = SimpleNamespace(
+        command_stack=[((b"MOVE", b"k", 1), {})],
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        assert _redis_client._report_pipeline_commands(pipeline)
+    finally:
+        set_io_reporter(None)
+
+    assert ("redis:k:db=redis:source:6379/1", "write") in events
+
+
+def test_pattern_subscription_conflicts_with_matching_publish() -> None:
+    """Pattern subscriptions overlap dynamically named matching channels."""
+    pattern = _capture_accesses("PSUBSCRIBE", ("events:*",))
+    publish = _capture_accesses("PUBLISH", ("events:created", "payload"))
+
+    pattern_reads = {resource for resource, kind in pattern if kind == "read"}
+    publish_writes = {resource for resource, kind in publish if kind == "write"}
+    assert pattern_reads & publish_writes
+
+
+def test_sync_pubsub_execute_command_is_intercepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """redis-py subscriptions execute on PubSub rather than Redis itself."""
+
+    class PubSub:
+        connection_pool = SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0})
+
+        def execute_command(self, *args: Any, **_kwargs: Any) -> tuple[Any, ...]:
+            return args
+
+    def fake_import(name: str) -> Any:
+        if name == "redis.client":
+            return SimpleNamespace(PubSub=PubSub)
+        raise ImportError(name)
+
+    events: list[tuple[str, str]] = []
+    _redis_client.unpatch_redis()
+    monkeypatch.setattr(_redis_client.importlib, "import_module", fake_import)
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        _redis_client.patch_redis()
+        result = PubSub().execute_command("SUBSCRIBE", "events")
+    finally:
+        _redis_client.unpatch_redis()
+        set_io_reporter(None)
+
+    assert result == ("SUBSCRIBE", "events")
+    assert any(resource.startswith("redis:channel:events") and kind == "read" for resource, kind in events)
+
+
+def test_memoryview_key_matches_equivalent_bytes_key() -> None:
+    """redis-py accepts memoryview values and sends their bytes unchanged."""
+    write = _capture_accesses("SET", (memoryview(b"shared"), "value"))
+    read = _capture_accesses("GET", (b"shared",))
+
+    write_resources = {resource for resource, kind in write if kind == "write"}
+    read_resources = {resource for resource, kind in read if kind == "read"}
+    assert write_resources & read_resources
+
+
 def test_sync_pipeline_watch_immediate_command_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     """redis-py WATCH bypasses Pipeline.execute and must be intercepted directly."""
 
