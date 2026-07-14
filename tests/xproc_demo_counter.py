@@ -55,3 +55,37 @@ def increment_atomic(db_path: str) -> None:
         conn.execute("UPDATE counter SET val = val + 1 WHERE id = 1")
     finally:
         conn.close()
+
+
+def setup_snapshot(db_path: str) -> None:
+    """(Re)create the account + per-worker snapshot tables."""
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS acct (id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS snap (wid INTEGER PRIMARY KEY, seen INTEGER)")
+        conn.execute("DELETE FROM acct")
+        conn.execute("DELETE FROM snap")
+        conn.execute("INSERT INTO acct VALUES (1, 0)")
+        conn.execute("INSERT INTO snap VALUES (0, -1), (1, -1)")
+    finally:
+        conn.close()
+
+
+def snapshot_values(db_path: str) -> list[int]:
+    """Return the per-worker snapshot values ordered by worker id."""
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        return [row[0] for row in conn.execute("SELECT seen FROM snap ORDER BY wid")]
+    finally:
+        conn.close()
+
+
+def update_then_snapshot(db_path: str, wid: int) -> None:
+    """Write-then-read-back: increment, read own write, record what was seen."""
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        conn.execute("UPDATE acct SET v = v + 1 WHERE id = 1")
+        seen = conn.execute("SELECT v FROM acct WHERE id = 1").fetchone()[0]
+        conn.execute("UPDATE snap SET seen = ? WHERE wid = ?", (seen, wid))
+    finally:
+        conn.close()

@@ -130,6 +130,55 @@ def test_async_wait_for_success_does_not_autojump_to_full_timeout() -> None:
     assert result.property_holds, result.explanation
 
 
+class _SequentialTimedWaitState:
+    def __init__(self) -> None:
+        self.fut1: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self.timed_out = False
+
+
+def test_async_second_timed_wait_after_completed_wait_for_autojumps() -> None:
+    # The waiter's first wait_for is resolved by the setter, which then
+    # finishes: nothing is engine-runnable while the 5s deadline is still
+    # registered, so a deferred autojump is armed. The waiter's recovered
+    # wake takes a real turn (invalidating that jump) and re-parks in a
+    # *second* timed wait without yielding to the loop. The stale jump must
+    # hand the owed clock advance to a fresh one for the 1s deadline —
+    # dropping it stalls a correct program to timeout_per_run wall time and
+    # reports an inconclusive failure.
+    async def waiter(s: _SequentialTimedWaitState) -> None:
+        try:
+            await asyncio.wait_for(s.fut1, timeout=5.0)
+        except TimeoutError:
+            pass
+        try:
+            await asyncio.wait_for(asyncio.get_running_loop().create_future(), timeout=1.0)
+        except TimeoutError:
+            s.timed_out = True
+
+    async def setter(s: _SequentialTimedWaitState) -> None:
+        if not s.fut1.done():
+            s.fut1.set_result(None)
+
+    started = time.monotonic()
+    result = asyncio.run(
+        frontrun.explore(
+            setup=_SequentialTimedWaitState,
+            workers=[waiter, setter],
+            invariant=lambda s: s.timed_out,
+            strategy="dpor",
+            clock="virtual",
+            timeout_per_run=5.0,
+            deadlock_timeout=1.0,
+            reproduce_on_failure=0,
+        )
+    )
+    elapsed = time.monotonic() - started
+    assert result.property_holds, result.explanation
+    # Both timed waits resolve in virtual time; the stalled-schedule shape of
+    # this regression burned timeout_per_run wall seconds per execution.
+    assert elapsed < 4.0
+
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_guarded_abba_lock_cycle_is_not_a_deadlock() -> None:
     # Classic timeout-based deadlock avoidance: both tasks guard their inner
@@ -200,6 +249,40 @@ def test_async_timeout_reschedule_when_is_a_noop_after_virtual_sleep() -> None:
             setup=State,
             workers=[worker],
             invariant=lambda s: s.elapsed is not None and 9.5 <= s.elapsed <= 10.5,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout_at requires 3.11+")
+def test_async_timeout_at_from_cm_when_preserves_exact_virtual_deadline() -> None:
+    # asyncio.timeout_at(cm.when()) hands the loop-time value straight to the
+    # patched timeout_at.  The loop clock stays real while the block consumes
+    # virtual time, so round-tripping that value through loop.time() smears
+    # nondeterministic wall drift into the virtual deadline; the exact
+    # provenance carried by cm.when() must be recovered instead, as
+    # Timeout.reschedule() already does.
+    class State:
+        def __init__(self) -> None:
+            self.elapsed: float | None = None
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        async with asyncio.timeout(1.0) as cm:
+            pass
+        try:
+            async with asyncio.timeout_at(cm.when()):
+                await asyncio.get_running_loop().create_future()
+        except TimeoutError:
+            s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.elapsed == 1.0,
             clock="virtual",
             reproduce_on_failure=0,
         )

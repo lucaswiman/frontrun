@@ -368,7 +368,7 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_dpor_vv, thread_id, AccessOrigin::IoDirect);
-        object_state.record_io_access(access, kind);
+        object_state.record_synced_io_access(access, kind);
 
         self.path.record_access(current_path_id, object_id, kind, AccessOrigin::IoDirect);
     }

@@ -611,6 +611,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._deadlock_confirm_task = asyncio.get_running_loop().create_task(self._confirm_exact_deadlock())
 
     async def _confirm_exact_deadlock(self) -> None:
+        handed_off = False
         try:
             snapshot = self._deadlock_confirm_progress
             while True:
@@ -620,6 +621,14 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                     if self._error is not None or self._finished:
                         return
                     if snapshot is not None and self._progress != snapshot:
+                        # The run made progress after this check was armed. A
+                        # new idle state created in that window could not arm
+                        # its own watcher; transfer to a fresh one (see
+                        # _rearm_idle_watchers).
+                        self._deadlock_confirm_pending = False
+                        self._deadlock_confirm_progress = None
+                        handed_off = True
+                        self._rearm_idle_watchers()
                         return
                     if len(self._tasks_done) >= self._num_engine_tasks:
                         return
@@ -651,8 +660,9 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                         return
                 await _real_asyncio_sleep(min(0.01, max(0.001, self.deadlock_timeout / 10.0)))
         finally:
-            self._deadlock_confirm_pending = False
-            self._deadlock_confirm_progress = None
+            if not handed_off:
+                self._deadlock_confirm_pending = False
+                self._deadlock_confirm_progress = None
 
     def _maybe_deferred_autojump(self) -> None:
         """Arm a deferred autojump (virtual clock, nothing engine-runnable).
@@ -665,6 +675,30 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._autojump_pending = True
         self._autojump_seq_at_arm = self._schedule_seq
         self._autojump_task = asyncio.get_running_loop().create_task(self._deferred_autojump())
+
+    def _rearm_idle_watchers(self) -> None:
+        """Re-arm the idle-state watcher matching the *current* run state.
+
+        Called under ``self._condition`` when a stale deferred autojump (or
+        exact-deadlock confirm) aborts because a real turn was handed out
+        after it was armed.  A new "nothing runnable" state created in that
+        window could not arm its own watcher — the pending flag was still
+        held by the stale task — so the owed clock advance or deadlock check
+        would otherwise be dropped and a correct program would stall until
+        ``timeout_per_run``.  The caller must have cleared its own pending
+        flag (and must not clobber it afterwards: the flag now belongs to the
+        freshly armed task).
+        """
+        if self._error is not None or self._finished:
+            return
+        if self.execution.runnable_threads():
+            # Someone is genuinely runnable; the normal _schedule_next path
+            # re-arms when the run next goes idle.
+            return
+        if can_autojump(self.virtual_clock, self._clock_actor_id, self._has_pending_deadlines()):
+            self._maybe_deferred_autojump()
+        else:
+            self._maybe_confirm_exact_deadlock()
 
     async def _deferred_autojump(self) -> None:
         """Advance the clock once in-flight wakes have had a chance to land.
@@ -687,7 +721,12 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                         # Someone else was handed a real turn since this jump
                         # was armed (note: _current_task alone is not a valid
                         # signal — it retains the *stale* previous holder, e.g.
-                        # the parked sleeper whose registration armed us).
+                        # the parked sleeper whose registration armed us).  If
+                        # that turn already re-parked the run idle again, the
+                        # owed advance transfers to a fresh watcher.
+                        self._autojump_pending = False
+                        handed_off = True
+                        self._rearm_idle_watchers()
                         return
                     if self.execution.runnable_threads():
                         break
@@ -695,6 +734,9 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 if self._error is not None or self._finished:
                     return
                 if self._schedule_seq != self._autojump_seq_at_arm:
+                    self._autojump_pending = False
+                    handed_off = True
+                    self._rearm_idle_watchers()
                     return
                 if not self.execution.runnable_threads():
                     if not can_autojump(self.virtual_clock, self._clock_actor_id, self._has_pending_deadlines()):
