@@ -106,7 +106,8 @@ class TestAsyncDporDjango:
         executed_sql: list[str] = []
         cursor_exit_called = False
         conn = connections["default"]
-        original_cursor = conn.cursor
+        connection_cls = type(conn)
+        original_cursor = connection_cls.cursor
 
         class CursorProxy:
             def __init__(self, cursor):
@@ -131,10 +132,13 @@ class TestAsyncDporDjango:
                 target = self._entered_cursor or self._cursor
                 return getattr(target, name)
 
-        def cursor_wrapper(*args, **kwargs):
-            return CursorProxy(original_cursor(*args, **kwargs))
+        def cursor_wrapper(self, *args, **kwargs):
+            return CursorProxy(original_cursor(self, *args, **kwargs))
 
-        monkeypatch.setattr(conn, "cursor", cursor_wrapper)
+        # Django's connection storage is async-context-local.  Patch the
+        # wrapper class so this observes the fresh connection created inside
+        # the explored task, not only this synchronous context's instance.
+        monkeypatch.setattr(connection_cls, "cursor", cursor_wrapper)
 
         class _State:
             pass
@@ -157,7 +161,6 @@ class TestAsyncDporDjango:
         assert "SET lock_timeout = '500ms'" in executed_sql
         assert cursor_exit_called
 
-    @pytest.mark.intentionally_leaves_dangling_threads
     def test_activation_race(self, _pg_available) -> None:
         """Async DPOR should detect a double-activation race using Django async ORM."""
 
@@ -170,12 +173,12 @@ class TestAsyncDporDjango:
         async def activate(state: _State, idx: int) -> None:
             from asgiref.sync import sync_to_async
 
-            user = await sync_to_async(User.objects.get)(username="async_testuser")
+            user = await sync_to_async(User.objects.get, thread_sensitive=False)(username="async_testuser")
             is_active = user.is_active
             await await_point()
             if not is_active:
                 user.is_active = True
-                await sync_to_async(user.save)()
+                await sync_to_async(user.save, thread_sensitive=False)()
                 state.results[idx] = "activated"
             else:
                 state.results[idx] = "already_active"
@@ -215,7 +218,7 @@ class TestAsyncDporDjango:
         async def read_only(state: _State) -> None:
             from asgiref.sync import sync_to_async
 
-            await sync_to_async(User.objects.get)(username="async_testuser2")
+            await sync_to_async(User.objects.get, thread_sensitive=False)(username="async_testuser2")
             await await_point()
 
         async def run_test():

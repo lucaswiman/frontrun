@@ -82,6 +82,11 @@ async def _make_async_db() -> aiosqlite.Connection:
 def _cleanup_async_sql_patch() -> Generator[None, None, None]:
     """Ensure async SQL patching is cleaned up between tests."""
     yield
+    # aiosqlite 0.22 resolves close() after queuing its worker stop.  Join
+    # already-closing non-daemon workers before the global leak check runs.
+    for thread in threading.enumerate():
+        if "_connection_worker_thread" in thread.name:
+            thread.join(timeout=1.0)
     unpatch_sql_async()
     _ASYNC_ORIGINAL_METHODS.clear()
     _ASYNC_PATCHES.clear()

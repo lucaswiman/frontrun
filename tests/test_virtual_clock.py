@@ -784,11 +784,8 @@ def _burn_budget_then_sleep(s: _ExhaustedSleeper) -> None:
 
 
 @pytest.mark.parametrize("clock", ["virtual", "explored"])
-def test_random_max_ops_exhaustion_still_advances_virtual_sleep(clock: str) -> None:
-    """Random strategy: a virtual sleep reached after the schedule/op budget
-    is exhausted must still advance the clock to its deadline.  Returning
-    instantly with the clock frozen silently truncates the sleep and reports
-    a phantom TTL counterexample."""
+def test_random_max_ops_exhaustion_is_inconclusive_after_virtual_sleep(clock: str) -> None:
+    """A completed virtual sleep after schedule exhaustion is not a proof."""
     result = frontrun.explore(
         setup=_ExhaustedSleeper,
         workers=[_burn_budget_then_sleep],
@@ -801,7 +798,9 @@ def test_random_max_ops_exhaustion_still_advances_virtual_sleep(clock: str) -> N
         detect_io=False,
         reproduce_on_failure=0,
     )
-    assert result.property_holds, result.explanation
+    assert not result.property_holds
+    assert result.counterexample is None
+    assert "max_ops" in str(result.explanation)
 
 
 class _ExhaustedTimedWait:
@@ -819,7 +818,7 @@ def _burn_budget_then_timed_wait(s: _ExhaustedTimedWait) -> None:
     s.elapsed = time.monotonic() - start
 
 
-def test_random_max_ops_exhaustion_event_wait_times_out_virtually() -> None:
+def test_random_max_ops_exhaustion_event_wait_is_inconclusive() -> None:
     """Random strategy: a timed Event.wait reached after budget exhaustion
     must resolve on the virtual clock (observe its own 10s deadline), not
     degrade to a real 1-second wait with the clock frozen."""
@@ -837,7 +836,9 @@ def test_random_max_ops_exhaustion_event_wait_times_out_virtually() -> None:
         reproduce_on_failure=0,
     )
     wall_elapsed = time.monotonic() - wall_start
-    assert result.property_holds, result.explanation
+    assert not result.property_holds
+    assert result.counterexample is None
+    assert "max_ops" in str(result.explanation)
     assert wall_elapsed < 4.0, f"exhausted timed wait burned wall time ({wall_elapsed:.1f}s)"
 
 

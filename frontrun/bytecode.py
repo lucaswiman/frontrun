@@ -108,6 +108,10 @@ class _WorkerExecutionError(Exception):
         self.cause = cause
 
 
+class _MaxOpsExhaustedError(TimeoutError):
+    """The scheduler cap was reached before the worker trace completed."""
+
+
 class OpcodeScheduler:
     """Controls thread execution at bytecode instruction granularity.
 
@@ -866,7 +870,7 @@ def run_with_schedule(
             raise
         except Exception as exc:
             if scheduler._max_ops_exhausted:
-                raise TimeoutError("run_with_schedule exhausted max_ops before workers completed") from exc
+                raise _MaxOpsExhaustedError("run_with_schedule exhausted max_ops before workers completed") from exc
             if _worker_errors_as_findings and runner.errors:
                 raise _WorkerExecutionError(exc) from exc
             raise
@@ -882,7 +886,9 @@ def run_with_schedule(
         # threads may still be mutating.  Evaluating an invariant on such a
         # half-finished racing state is meaningless (finding 9d).  Callers in
         # exploration loops catch this and skip the schedule as inconclusive.
-        if timed_out or isinstance(scheduler._error, TimeoutError) or scheduler._max_ops_exhausted:
+        if scheduler._max_ops_exhausted:
+            raise _MaxOpsExhaustedError("run_with_schedule exhausted max_ops before workers completed")
+        if timed_out or isinstance(scheduler._error, TimeoutError):
             raise TimeoutError(f"run_with_schedule timed out after {timeout}s; worker threads did not complete")
     return state
 
@@ -1032,6 +1038,17 @@ def explore_random(
                 result.unique_interleavings = len(seen_schedule_hashes)
                 result.explanation = (
                     f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{dl_err.cycle_description}"
+                )
+                return result
+            except _MaxOpsExhaustedError:
+                result.num_explored += 1
+                seen_schedule_hashes.add(hash(tuple(schedule)))
+                result.property_holds = False
+                result.unique_interleavings = len(seen_schedule_hashes)
+                result.explanation = (
+                    f"Random exploration exhausted max_ops={max_ops} on attempt {result.num_explored}. "
+                    "The completed run is inconclusive because scheduling control ended before the worker trace; "
+                    "increase max_ops to claim a passing exploration."
                 )
                 return result
             except TimeoutError:

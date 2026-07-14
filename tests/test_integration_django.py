@@ -88,11 +88,7 @@ class TestDjangoIntegration:
     """Integration tests for Django and DPOR."""
 
     def test_dpor_activation_race(self, _pg_available) -> None:
-        """Verify that DPOR can run a Django user activation flow without deadlocking.
-
-        This serves as a regression test for a deadlock between the pytest
-        plugin and DPOR's LD_PRELOAD event processing.
-        """
+        """Verify that DPOR finds a Django user activation race without deadlocking."""
         require_active("test_dpor_activation_race")
 
         class _State:
@@ -127,9 +123,5 @@ class TestDjangoIntegration:
             timeout_per_run=30.0,
         )
 
-        # The key verification is that we reached this point (no deadlock).
-        # We don't necessarily expect the race to be found in this specific
-        # setup without more granular predicates or specific interleaving triggers,
-        # but we must not deadlock.
-        assert result.property_holds, f"Race condition: both threads activated the same user.\n{result.explanation}"
+        assert not result.property_holds, "DPOR should find the double-activation race"
         assert result.num_explored > 0

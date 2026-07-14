@@ -167,10 +167,17 @@ except ModuleNotFoundError as _err:
 # Lazy import for async SQL patching (avoid hard dependency)
 _sql_async_available = False
 try:
+    from frontrun._sql_cursor import patch_sql, unpatch_sql
     from frontrun._sql_cursor_async import patch_sql_async, unpatch_sql_async
 
     _sql_async_available = True
 except ImportError:
+
+    def patch_sql() -> None:  # type: ignore[misc]
+        pass
+
+    def unpatch_sql() -> None:  # type: ignore[misc]
+        pass
 
     def patch_sql_async() -> None:  # type: ignore[misc]
         pass
@@ -311,7 +318,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._clock_actor_id = clock_actor_id
         self._clock_diagnostics = clock_diagnostics
         self._deadlines = DeadlineCoordinator()
-        self._naturally_timeout_blocked: set[int] = set()
+        self._naturally_blocked: set[int] = set()
         self._last_scheduled_path_id: int | None = None
         self._current_path_id: int | None = None
         self._current_task_consumed = False
@@ -331,6 +338,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._stable_ids = stable_ids if stable_ids is not None else StableObjectIds()
         # Pending I/O accesses per task (from SQL interception)
         self._pending_io: dict[int, list[tuple[int, str, bool]]] = {i: [] for i in range(num_tasks)}
+        self._pending_io_lock = threading.Lock()
 
         # Track tasks blocked on asyncio.Lock: task_id → lock-holder task_id.
         # When DPOR schedules a blocked task, override to run the holder.
@@ -385,13 +393,15 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             self._schedule_seq += 1
 
     def on_task_suspended(self, task_id: int) -> None:
-        if self._deadlines.in_timed_wait(task_id):
-            self._naturally_timeout_blocked.add(task_id)
+        bridged_external_io = (self._detect_sql or self._detect_redis) and self._has_live_external_threads()
+        if self._deadlines.in_timed_wait(task_id) or bridged_external_io:
+            self._naturally_blocked.add(task_id)
             self.execution.block_thread(task_id)
+            asyncio.get_running_loop().create_task(self.kick_stalled_schedule(task_id))
 
     def on_task_resumed(self, task_id: int) -> None:
-        if task_id in self._naturally_timeout_blocked:
-            self._naturally_timeout_blocked.discard(task_id)
+        if task_id in self._naturally_blocked:
+            self._naturally_blocked.discard(task_id)
             self.execution.unblock_thread(task_id)
 
     def _activate_current_task_path(self, task_id: int) -> None:
@@ -427,7 +437,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         fire = getattr(event.token, "fire", None)
         if fire is not None:
             fire()
-        self._naturally_timeout_blocked.discard(tid)
+        self._naturally_blocked.discard(tid)
         self._lock_blocked.pop(tid, None)
         self._event_blocked.discard(tid)
         self.execution.unblock_thread(tid)
@@ -824,7 +834,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         from frontrun._io_detection import (
             set_dpor_scheduler_task,
             set_dpor_thread_id_task,
-            set_io_reporter,
+            set_io_reporter_task,
             set_tx_store_task,
         )
 
@@ -842,9 +852,10 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 if current_task is None:
                     current_task = task_id
                 object_key = _make_object_key(hash(resource_id), resource_id)
-                self._pending_io.setdefault(current_task, []).append((object_key, kind, True))
+                with self._pending_io_lock:
+                    self._pending_io.setdefault(current_task, []).append((object_key, kind, True))
 
-            set_io_reporter(_io_reporter)
+            set_io_reporter_task(_io_reporter)
 
         # Reset transaction state for this task in a fresh per-task store.
         store = set_tx_store_task()
@@ -928,13 +939,19 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
 
         _scheduler_var.set(None)
         _task_id_var.set(None)
-        from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter
+        from frontrun._io_detection import (
+            set_dpor_scheduler_task,
+            set_dpor_thread_id_task,
+            set_io_reporter,
+            set_io_reporter_task,
+        )
 
         # Clear this task's task-aware DPOR context.  These contextvars are
         # per-task (they die with the task), but clearing keeps any further
         # interception in this context from resolving a stale scheduler.
         set_dpor_scheduler_task(None)
         set_dpor_thread_id_task(None)
+        set_io_reporter_task(None)
 
         # The IO reporter is per-OS-thread (shared by all tasks on the event
         # loop), so only clear it when ALL tasks are done — clearing it when
@@ -1146,14 +1163,15 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
 
     def _flush_pending_io(self, task_id: int) -> None:
         """Flush pending I/O accesses to the DPOR engine."""
-        pending = self._pending_io.get(task_id)
+        with self._pending_io_lock:
+            pending = self._pending_io.get(task_id, [])
+            self._pending_io[task_id] = []
         if pending:
             for obj_key, kind, synced in pending:
                 if synced:
                     self.engine.report_synced_io_access(self.execution, task_id, obj_key, kind)
                 else:
                     self.engine.report_io_access(self.execution, task_id, obj_key, kind)
-            pending.clear()
 
     def report_and_wait_sync(self, task_id: int) -> None:
         """Synchronous report-and-wait for use from SQL cursor interception.
@@ -1166,7 +1184,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         We just flush pending I/O here; the actual scheduling happens
         at the next ``await_point()``.
         """
-        self._flush_pending_io(task_id)
+        if threading.get_ident() == self._event_loop_thread_id:
+            self._flush_pending_io(task_id)
 
     def report_and_wait(self, frame: Any, thread_id: int) -> bool:
         """Compatibility method for SQL cursor interception.
@@ -1177,7 +1196,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         flush pending I/O but the actual scheduling happens at await
         points.  Returns True to indicate the task should continue.
         """
-        self._flush_pending_io(thread_id)
+        if threading.get_ident() == self._event_loop_thread_id:
+            self._flush_pending_io(thread_id)
         return True
 
     def finish_task(self, task_id: int) -> None:
@@ -1543,6 +1563,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         _set_active_trace_filter(_TraceFilter(trace_packages))
     try:
         with PatchScope() as patch_scope:
+            patch_scope.add(patch_sql, unpatch_sql, enabled=detect_sql and _sql_async_available)
             patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
             patch_scope.add(patch_redis_async, unpatch_redis_async, enabled=detect_redis and _redis_async_available)
             patch_scope.add(_patch_asyncio_lock, _unpatch_asyncio_lock)

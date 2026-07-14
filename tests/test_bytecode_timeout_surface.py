@@ -43,8 +43,8 @@ def test_run_with_schedule_raises_on_timeout():
         )
 
 
-def test_explore_random_skips_invariant_on_timeout():
-    """explore_random must not flag a violation purely from a timed-out run."""
+def test_explore_random_reports_timeout_as_inconclusive():
+    """A partial run is neither a counterexample nor a passing proof."""
     result = frontrun.explore_random(
         setup=_State,
         threads=[_slow_blocker],
@@ -56,6 +56,8 @@ def test_explore_random_skips_invariant_on_timeout():
         patch_sleep=False,
         seed=1,
     )
-    # The run timed out, so the invariant was inconclusive — it must NOT be
-    # reported as a violation discovered from a half-finished state.
-    assert result.property_holds, f"timed-out run was scored as a property violation: {result.explanation}"
+    assert not result.property_holds
+    assert result.counterexample is None
+    assert result.num_explored == 1
+    assert result.explanation is not None
+    assert "inconclusive" in result.explanation.lower()

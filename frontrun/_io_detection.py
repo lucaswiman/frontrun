@@ -54,6 +54,7 @@ _io_tls = threading.local()
 
 _UNSET: Any = object()
 
+_io_reporter_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_io_reporter_var", default=_UNSET)
 _dpor_scheduler_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor_scheduler_var", default=_UNSET)
 _dpor_thread_id_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor_thread_id_var", default=_UNSET)
 
@@ -82,7 +83,10 @@ def clear_process_dpor_context() -> None:
 
 
 def get_io_reporter() -> IOReporter | None:
-    """Return the per-thread IO reporter, or ``None``."""
+    """Return the task-aware or per-thread I/O reporter, or ``None``."""
+    reporter = _io_reporter_var.get()
+    if reporter is not _UNSET:
+        return reporter
     reporter = getattr(_io_tls, "io_reporter", _UNSET)
     if reporter is not _UNSET:
         return reporter
@@ -92,6 +96,16 @@ def get_io_reporter() -> IOReporter | None:
 def set_io_reporter(reporter: IOReporter | None) -> None:
     """Install a per-thread IO reporter (or clear with ``None``)."""
     _io_tls.io_reporter = reporter
+
+
+def set_io_reporter_task(reporter: IOReporter | None) -> None:
+    """Install a task-aware reporter that follows copied async contexts."""
+    _io_reporter_var.set(reporter)
+
+
+def clear_io_reporter_task() -> None:
+    """Remove the task override so reporter lookup falls back to thread state."""
+    _io_reporter_var.set(_UNSET)
 
 
 def get_dpor_scheduler() -> Any:
