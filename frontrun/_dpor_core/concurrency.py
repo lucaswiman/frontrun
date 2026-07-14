@@ -161,7 +161,7 @@ def dpor_exploration_iter(
     """
     index = 0
     while True:
-        if total_deadline is not None and time.monotonic() > total_deadline:
+        if index > 0 and total_deadline is not None and time.monotonic() > total_deadline:
             return
         reset_execution_state(stable_ids)
         with engine_lock:

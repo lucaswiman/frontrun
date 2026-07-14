@@ -139,6 +139,10 @@ _RE_INSERT_TABLE = re.compile(
     r"^\s*INSERT\s+(?:OR\s+\w+\s+|IGNORE\s+)?INTO\s+(?:[`\"\[]?\w+[`\"\]]?\s*\.\s*)?[`\"\[]?(\w+)", re.I
 )
 _RE_UPDATE_TABLE = re.compile(r"^\s*UPDATE\s+(?:[`\"\[]?\w+[`\"\]]?\s*\.\s*)?[`\"\[]?(\w+)", re.I)
+_RE_SESSION_LOCAL_LOCK_TIMEOUT = re.compile(
+    r'^\s*SET\s+(?:(?:LOCAL|SESSION)\s+)?(?:"LOCK_TIMEOUT"|LOCK_TIMEOUT)\s*(?:=|TO\b)',
+    re.I,
+)
 
 
 def _warm_sql_parsers() -> None:
@@ -343,8 +347,26 @@ def _report_sql_access(
     reporter = get_io_reporter()
     reported = False
 
+    if reporter is not None and not isinstance(operation, str):
+        store = tx_store()
+        connection = _connection_for_db_object(db_obj)
+        owner = getattr(store, "_tx_connection", None)
+        if getattr(store, "_in_transaction", False) and owner is not None and connection is not owner:
+            raise RuntimeError(
+                "frontrun does not support overlapping SQL transactions on multiple connections in one worker; "
+                "use one connection per worker or end the active transaction first"
+            )
+        _report_or_buffer(
+            reporter,
+            _sql_database_resource_id(db_scope=_get_connection_db_scope(db_obj)),
+            "write",
+            track_row_lock=False,
+        )
+        return True
+
     if reporter is not None and isinstance(operation, str):
         access = parse_sql_access(operation)
+        dpor_ctx = _get_dpor_context()
         store = tx_store()
         connection = _connection_for_db_object(db_obj)
         owner = getattr(store, "_tx_connection", None)
@@ -359,9 +381,14 @@ def _report_sql_access(
                     "use one connection per worker or end the active transaction first"
                 )
 
-        dpor_ctx = _get_dpor_context()
-        semantic_fallback = bool(dpor_ctx is not None and getattr(dpor_ctx[0], "requires_semantic_io_fallback", False))
-        if semantic_fallback and access.tx_op is None:
+        # PostgreSQL lock_timeout is scoped to this connection (or its current
+        # transaction with SET LOCAL). frontrun injects it to bound physical
+        # row-lock waits; treating it as an opaque shared database write creates
+        # false dependencies against every real statement.
+        if _RE_SESSION_LOCAL_LOCK_TIMEOUT.match(operation):
+            return True
+
+        if access.tx_op is None:
             has_parsed_access = bool(access.read_tables or access.write_tables)
             _report_or_buffer(
                 reporter,

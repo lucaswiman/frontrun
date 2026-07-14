@@ -221,6 +221,8 @@ Known limitations
   object) may still produce additional backtrack points beyond those from Redis
   keys alone.
 - **coredis async client**: supported but less tested than ``redis.asyncio``.
+  Subscription setup through coredis' private Pub/Sub transport is not
+  intercepted; use redis-py when exploring publish-vs-subscribe ordering.
 
 See also
 --------

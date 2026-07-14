@@ -22,6 +22,8 @@ def make_dpor_engine(
     max_executions: int | None,
     search: str | None = None,
 ) -> Any:
+    if max_executions is not None and max_executions <= 0:
+        raise ValueError("max_executions must be positive or None")
     return PyDporEngine(
         num_threads=num_threads,
         preemption_bound=preemption_bound,

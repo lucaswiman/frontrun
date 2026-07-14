@@ -86,16 +86,56 @@ def _redis_keyspace_resource_id(db_scope: str | None = None) -> str:
     return _redis_resource_id("keyspace", db_scope=db_scope)
 
 
+def _redis_server_keyspace_resource_id(server_scope: str) -> str:
+    """Build the server-wide intent resource used to model ``FLUSHALL``."""
+    return f"redis:server-keyspace:server={server_scope}"
+
+
+def _redis_server_pubsub_resource_id(server_scope: str) -> str:
+    """Build a server-wide intent resource for overlapping Pub/Sub operations."""
+    return f"redis:pubsub:server={server_scope}"
+
+
+def _redis_arg_text(value: object) -> str:
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "surrogateescape")
+    return str(value)
+
+
+def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
+    """Extract ``(host, port, database)`` strings from a Redis client."""
+    pool = getattr(client, "connection_pool", None)
+    if pool is None:
+        return None
+    kwargs = getattr(pool, "connection_kwargs", {})
+    host = _redis_arg_text(kwargs.get("host", "localhost"))
+    port = _redis_arg_text(kwargs.get("port", 6379))
+    db = _redis_arg_text(kwargs.get("db", 0))
+    return host, port, db
+
+
+def _format_redis_db_scope(host: object, port: object, db: object) -> str:
+    return f"redis:{_redis_arg_text(host)}:{_redis_arg_text(port)}/{_redis_arg_text(db)}"
+
+
+def _format_redis_server_scope(host: object, port: object) -> str:
+    return f"redis:{_redis_arg_text(host)}:{_redis_arg_text(port)}"
+
+
 def _get_redis_db_scope(client: Any) -> str | None:
     """Extract a stable database scope from a Redis client object."""
-    # redis-py exposes connection_pool.connection_kwargs
-    pool = getattr(client, "connection_pool", None)
-    if pool is not None:
-        kwargs = getattr(pool, "connection_kwargs", {})
-        host = kwargs.get("host", "localhost")
-        port = kwargs.get("port", 6379)
-        db = kwargs.get("db", 0)
-        return f"redis:{host}:{port}/{db}"
+    parts = _get_redis_scope_parts(client)
+    return _format_redis_db_scope(*parts) if parts is not None else None
+
+
+def _find_redis_option(cmd_args: tuple[object, ...], option: str) -> object | None:
+    """Return a COPY option value after its required source/destination keys."""
+    for index, arg in enumerate(cmd_args[2:-1], start=2):
+        value = _redis_arg_text(arg)
+        if value.upper() == option:
+            return cmd_args[index + 1]
     return None
 
 
@@ -116,7 +156,7 @@ def _iter_pipeline_commands(pipeline: Any) -> Iterator[tuple[str, tuple[Any, ...
         else:
             continue
         if cmd_args_full:
-            cmd_name = str(cmd_args_full[0])
+            cmd_name = _redis_arg_text(cmd_args_full[0])
             cmd_cmd_args = tuple(cmd_args_full[1:])
             yield cmd_name, cmd_cmd_args
 
@@ -153,30 +193,104 @@ def _report_redis_access(
     if reporter is None:
         return False
 
+    upper = cmd_name.upper().split(" ", 1)[0]
+    pubsub_commands = {
+        "PUBLISH",
+        "SPUBLISH",
+        "SUBSCRIBE",
+        "PSUBSCRIBE",
+        "SSUBSCRIBE",
+        "UNSUBSCRIBE",
+        "PUNSUBSCRIBE",
+        "SUNSUBSCRIBE",
+    }
     access = parse_redis_access(cmd_name, cmd_args)
 
     # Transaction control — no key-level reporting needed.
     if access.is_transaction_control and not access.read_keys and not access.write_keys:
         return True  # Still suppress endpoint I/O for protocol overhead.
 
-    if not access.read_keys and not access.write_keys and access.keyspace is None:
+    if (
+        not access.read_keys
+        and not access.write_keys
+        and access.keyspace is None
+        and upper not in pubsub_commands
+        and upper != "PUBSUB"
+    ):
         return False
 
-    db_scope = _get_redis_db_scope(client) if client is not None else None
+    scope_parts = _get_redis_scope_parts(client) if client is not None else None
+    db_scope = _format_redis_db_scope(*scope_parts) if scope_parts is not None else None
 
-    for key in access.read_keys:
-        res_id = _redis_resource_id(key, db_scope=db_scope)
-        reporter(res_id, "read")
+    key_accesses: list[tuple[str, str, str | None]] = []
+    keyspace_accesses: set[tuple[str | None, str]] = set()
 
-    for key in access.write_keys:
-        res_id = _redis_resource_id(key, db_scope=db_scope)
-        reporter(res_id, "write")
+    if upper == "COPY" and len(cmd_args) >= 2:
+        destination_scope = db_scope
+        destination_db = _find_redis_option(cmd_args, "DB")
+        if scope_parts is not None and destination_db is not None:
+            destination_scope = _format_redis_db_scope(scope_parts[0], scope_parts[1], destination_db)
+        key_accesses.append((access.read_keys[0], "read", db_scope))
+        key_accesses.append((access.write_keys[0], "write", destination_scope))
+    elif upper == "MOVE" and len(cmd_args) >= 2:
+        destination_scope = db_scope
+        if scope_parts is not None:
+            destination_scope = _format_redis_db_scope(scope_parts[0], scope_parts[1], cmd_args[1])
+        key = access.write_keys[0]
+        key_accesses.extend(((key, "read", db_scope), (key, "write", db_scope), (key, "write", destination_scope)))
+    elif upper == "MIGRATE" and len(cmd_args) >= 4:
+        key_accesses.extend((key, "read", db_scope) for key in access.read_keys)
+        key_accesses.extend((key, "write", db_scope) for key in access.write_keys)
+        destination_scope = _format_redis_db_scope(cmd_args[0], cmd_args[1], cmd_args[3])
+        key_accesses.extend((key, "write", destination_scope) for key in access.write_keys)
+    elif upper in pubsub_commands:
+        channel_scope = _format_redis_server_scope(scope_parts[0], scope_parts[1]) if scope_parts is not None else None
+        key_accesses.extend((key, "read", channel_scope) for key in access.read_keys)
+        key_accesses.extend((key, "write", channel_scope) for key in access.write_keys)
+        if channel_scope is not None:
+            # Pattern subscriptions overlap dynamically named channels, and
+            # zero-argument unsubscribe affects an unknown set. Keep exact
+            # channel resources, plus this conservative server-wide intent.
+            pubsub_kind = "write" if upper in {"PUBLISH", "SPUBLISH"} else "read"
+            reporter(_redis_server_pubsub_resource_id(channel_scope), pubsub_kind)
+    elif upper == "PUBSUB":
+        if scope_parts is not None:
+            reporter(
+                _redis_server_pubsub_resource_id(_format_redis_server_scope(scope_parts[0], scope_parts[1])),
+                "write",
+            )
+    elif upper == "SWAPDB":
+        if len(cmd_args) >= 2 and scope_parts is not None:
+            keyspace_accesses.add((_format_redis_db_scope(scope_parts[0], scope_parts[1], cmd_args[0]), "write"))
+            keyspace_accesses.add((_format_redis_db_scope(scope_parts[0], scope_parts[1], cmd_args[1]), "write"))
+        else:
+            keyspace_accesses.add((db_scope, "write"))
+    else:
+        key_accesses.extend((key, "read", db_scope) for key in access.read_keys)
+        key_accesses.extend((key, "write", db_scope) for key in access.write_keys)
+        if access.keyspace is not None:
+            keyspace_accesses.add((db_scope, access.keyspace))
 
-    # Database-wide keyspace intent-lock: FLUSHDB/FLUSHALL write the whole
-    # keyspace, while per-key commands and keyspace scans read it.  This lets
-    # DPOR explore FLUSH*-vs-key races without over-serializing key traffic.
-    if access.keyspace is not None:
-        reporter(_redis_keyspace_resource_id(db_scope=db_scope), access.keyspace)
+    for key, kind, scope in key_accesses:
+        reporter(_redis_resource_id(key, db_scope=scope), kind)
+        if access.keyspace is not None:
+            keyspace_accesses.add((scope, "read"))
+
+    for scope, kind in sorted(keyspace_accesses, key=lambda item: (item[0] or "", item[1])):
+        reporter(_redis_keyspace_resource_id(db_scope=scope), kind)
+
+    # FLUSHALL mutates every database on a server.  A server-wide intent
+    # resource keeps ordinary traffic read-read while making FLUSHALL conflict
+    # with accesses from clients selected into any database on that server.
+    server_scopes: set[str] = set()
+    for scope, _kind in keyspace_accesses:
+        if scope is not None:
+            server_scopes.add(scope.rsplit("/", 1)[0])
+    if upper == "MIGRATE" and len(cmd_args) >= 2:
+        server_scopes.add(_format_redis_server_scope(cmd_args[0], cmd_args[1]))
+    server_kind = "write" if upper == "FLUSHALL" else "read"
+    for server_scope in sorted(server_scopes):
+        reporter(_redis_server_keyspace_resource_id(server_scope), server_kind)
 
     return True
 
@@ -207,7 +321,7 @@ def _parse_and_report_execute_command(
     """
     if not args:
         return None
-    cmd_name = str(args[0])
+    cmd_name = _redis_arg_text(args[0])
     cmd_args = args[1:]
     reported = _report_redis_access(cmd_name, cmd_args, client=client)
     return cmd_name, cmd_args, reported
@@ -292,7 +406,7 @@ def _intercept_execute_command_scoped(
     resource_id = ""
     if needs_scheduling_point:
         db_scope = _get_redis_db_scope(self) or ""
-        first_key = str(cmd_args[0]) if cmd_args else ""
+        first_key = _redis_arg_text(cmd_args[0]) if cmd_args else ""
         resource_id = "\x1f".join(("redis", cmd_name, first_key, db_scope))
 
     return _run_sync_dpor_envelope(

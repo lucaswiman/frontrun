@@ -754,16 +754,13 @@ def test_explore_all_plain_awaitable_workers_fail_closed() -> None:
     def returns_awaitable(c: AsyncCounter):
         return c.increment()
 
-    result = frontrun.explore(
-        setup=AsyncCounter,
-        workers=[returns_awaitable],
-        invariant=lambda c: c.value == 1,
-        reproduce_on_failure=0,
-    )
-
-    assert not result.property_holds
-    assert result.explanation is not None
-    assert "returned an awaitable" in result.explanation
+    with pytest.raises(TypeError, match="returned an awaitable"):
+        frontrun.explore(
+            setup=AsyncCounter,
+            workers=[returns_awaitable],
+            invariant=lambda c: c.value == 1,
+            reproduce_on_failure=0,
+        )
 
 
 @pytest.mark.parametrize("strategy", ["dpor", "random"])

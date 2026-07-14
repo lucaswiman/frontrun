@@ -80,7 +80,9 @@ def test_dpor_row_lock_prevents_lost_update() -> None:
         setup=db.reset,
         invariant=lambda: db.balance == 200,
     )
-    assert result.ok, f"unexpected failure {result.failure!r} at {result.failing_schedule!r}"
+    assert not result.ok
+    assert result.failure_kind == "nondeterministic"
+    assert result.exhausted is False
 
 
 def test_dpor_reports_worker_error() -> None:
@@ -216,8 +218,10 @@ def test_dpor_flushes_pending_io_before_row_lock_acquire() -> None:
             setup=db.reset,
             invariant=lambda: db.balance == 200,
         )
-        assert not result.ok, "DPOR missed the lost update (pre-lock write attributed inside the lock)"
-        assert result.failure_kind == "invariant"
+        assert not result.ok, "DPOR incorrectly certified a row-lock-redirected execution"
+        assert result.failure_kind in {"invariant", "nondeterministic"}
+        if result.failure_kind == "nondeterministic":
+            assert result.exhausted is False
 
 
 def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
@@ -295,7 +299,7 @@ def test_dpor_deadlock_does_not_claim_exhausted() -> None:
     assert control_result.iterations > 1
 
 
-def test_dpor_lock_first_workers_explore_deterministically() -> None:
+def test_dpor_lock_first_workers_fail_closed_on_contention() -> None:
     # Regression: acquire_row_locks is not gated on the engine's scheduling
     # turn, so when two workers' first frames are both ACQUIRE_LOCKS the relay
     # threads race: whichever wins reports lock_acquire (and its subsequent
@@ -313,9 +317,9 @@ def test_dpor_lock_first_workers_explore_deterministically() -> None:
         proxy.report_and_wait(None, 0)
         proxy.release_row_locks(0)
 
-    # Two same-lock workers with conflicting writes have exactly two
-    # Mazurkiewicz classes (the two acquisition orders). Pre-fix the race made
-    # this 1-or-2 nondeterministically; it must be 2 every time.
+    # Until ACQUIRE_LOCKS is an engine-visible blocking transition, contention
+    # cannot return a constructive schedule whose steps are guaranteed to match
+    # physical statement order. It must fail closed every time.
     for attempt in range(8):
         coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
         result = coord.explore(
@@ -323,11 +327,9 @@ def test_dpor_lock_first_workers_explore_deterministically() -> None:
             setup=lambda: None,
             invariant=lambda: True,
         )
-        assert result.ok
-        assert result.iterations == 2, (
-            f"attempt {attempt}: expected both lock-acquisition orders explored, "
-            f"got iterations={result.iterations} (exhausted={result.exhausted})"
-        )
+        assert not result.ok, f"attempt {attempt}: row-lock contention was incorrectly certified"
+        assert result.failure_kind == "nondeterministic"
+        assert result.exhausted is False
 
 
 def test_dpor_row_lock_redirect_fails_closed_until_trace_is_exact() -> None:

@@ -597,7 +597,9 @@ class DporCrossProcessCoordinator:
                         failures.append((num_explored, list(result.failing_schedule)))
                     if self.stop_on_first:
                         return replace(result, failures=failures)
-                    if first_failure is None:
+                    if first_failure is None or (
+                        first_failure.failure_kind == "nondeterministic" and result.failure_kind != "nondeterministic"
+                    ):
                         first_failure = result
                     # An aborted execution (deadlock or worker error) unwinds its
                     # workers via SchedulerAbort before their remaining accesses
@@ -608,7 +610,13 @@ class DporCrossProcessCoordinator:
                     # with exhausted=False; an invariant failure completes fully so
                     # it does NOT demote). Only max_executions/total_timeout were
                     # previously handled, in the for..else below.
-                    if result.failure_kind in ("deadlock", "worker_error", "timeout", "branch_limit"):
+                    if result.failure_kind in (
+                        "deadlock",
+                        "worker_error",
+                        "timeout",
+                        "branch_limit",
+                        "nondeterministic",
+                    ):
                         exhausted = False
 
                 # A worker aborted mid-iteration leaves its persistent stream
@@ -881,6 +889,13 @@ class DporCrossProcessCoordinator:
                 "max_branches if the workload legitimately needs more steps per execution, or "
                 "check for a nonterminating worker.",
                 "branch_limit",
+            )
+        if scheduler._row_lock_redirected:
+            return _fail(
+                "cross-process row-lock contention redirected physical execution after the DPOR engine had already "
+                "committed the waiter step; this run cannot provide an exact replay schedule, so frontrun is failing "
+                "closed instead of certifying the result",
+                "nondeterministic",
             )
         if worker_errors:
             wid = min(worker_errors)

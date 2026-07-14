@@ -56,6 +56,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         detect_sql: bool = False,
         detect_redis: bool = False,
         bridge_sync_io: bool = False,
+        expected_deadlock: bool = False,
     ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
         self._condition = _real_asyncio_condition()
@@ -78,9 +79,11 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         self._event_blocked: set[int] = set()  # pyright: ignore[reportIncompatibleVariableOverride]
         self._detect_sql = detect_sql
         self._detect_redis = detect_redis
+        self._expected_deadlock = expected_deadlock
         self._row_lock_registry = RowLockRegistry()
         self._active_row_locks = self._row_lock_registry._active_row_locks
         self._row_lock_waiters: dict[str, list[tuple[int, asyncio.Future[None]]]] = {}
+        self._lock_blocked: dict[int, int] = {}
         self._current_task: int | None = None
         self._current_task_consumed = False
         if schedule:
@@ -97,11 +100,13 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                 self._current_task = first
         # Stubs so the patched cooperative asyncio.Lock can call
         # engine.report_sync / execution.block_thread without crashing during
-        # replay. _lock_blocked mirrors the DPOR scheduler's attribute so the
-        # same lock-acquire code path works unmodified.
+        # replay using the same lock-acquire code path.
         self.engine: Any = ReplayEngine()
         self.execution: Any = ReplayExecution()
-        self._lock_blocked: dict[int, int] = {}
+
+    def _blocked_tasks(self) -> set[int]:
+        """Tasks unavailable on cooperative primitives during replay."""
+        return self._event_blocked | self._lock_blocked.keys()
 
     def _extend_schedule(self) -> bool:
         return extend_replay_schedule(
@@ -109,7 +114,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
             self._replay_index,
             self._replay_max_ops,
             self._num_replay_tasks,
-            self._tasks_done | self._event_blocked,
+            self._tasks_done | self._blocked_tasks(),
         )
 
     def _on_clock_sleep(self, event: WakeEvent) -> None:
@@ -164,7 +169,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                 self._replay_schedule,
                 self._replay_index,
                 self._extend_schedule,
-                self._tasks_done | self._event_blocked,
+                self._tasks_done | self._blocked_tasks(),
             )
             if next_actor is not None and self._clock_actor_id is not None and next_actor == self._clock_actor_id:
                 # Recorded clock-actor step: advance the clock and keep going.
@@ -179,7 +184,18 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         self._current_task = next_actor
         self._current_task_consumed = False
         if next_actor is None:
-            self._finished = True
+            blocked = self._blocked_tasks() - self._tasks_done
+            if (
+                self._expected_deadlock
+                and blocked
+                and len(self._tasks_done | blocked) == self._num_replay_tasks
+                and not self._deadlines.has_pending()
+            ):
+                description = "all unfinished replay tasks are blocked on modeled cooperative primitives"
+                self._error = DeadlockError(f"Replay deadlock: {description}", description)
+                self._on_error_set()
+            else:
+                self._finished = True
 
     async def sleep_until(self, task_id: int, deadline: float | None = None, *, duration: float | None = None) -> None:
         """Replay counterpart of ``AsyncDporScheduler.sleep_until``."""
@@ -292,6 +308,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         return False
 
     def _on_error_set(self) -> None:
+        _async_cooperative._wake_parked_async_primitive_waiters()
         for waiters in self._row_lock_waiters.values():
             for _task_id, future in waiters:
                 if not future.done():

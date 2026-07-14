@@ -672,7 +672,7 @@ def test_mp_worker_rejects_generator_results(monkeypatch: pytest.MonkeyPatch, as
     monkeypatch.setattr(worker, "_connect_and_serve", lambda _socket_path, _worker_id, body: body(object()))
 
     payload = _dumps_worker(target, object())
-    with pytest.raises(TypeError, match="returned (?:an async )?generator"):
+    with pytest.raises(TypeError, match="returned (?:an async generator|a generator)"):
         _mp_worker_entry("unused.sock", 0, payload)
 
 

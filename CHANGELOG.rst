@@ -84,7 +84,11 @@ Unreleased
   indistinguishable from a sync one, so the mix cannot be rejected up front;
   instead the first execution now fails with a ``TypeError`` naming the sync
   worker and stating the fix (make every worker ``async def`` or a callable
-  returning an awaitable, or every worker a plain ``def``).
+  returning an awaitable, or every worker a plain ``def``). A plain callable
+  returning an awaitable remains supported when another ``async def`` worker
+  establishes the async execution model; an all-plain list is ambiguous, so a
+  returned awaitable now fails closed instead of being discarded by the sync
+  engine and falsely certified.
 
 * **Structured process-mode results.** ``CrossProcessResult`` is now exported
   at the top level (``frontrun.CrossProcessResult``) and carries a
@@ -126,8 +130,9 @@ Unreleased
   nested async trace filters; and replays task-crash counterexamples. SQL
   transaction state is tied to its owning connection, statement failures keep
   earlier row locks, and failed transaction-control statements take effect only
-  after physical success. Cross-process opaque SQL uses a conservative
-  database-wide conflict instead of relying on the unavailable preload fallback,
+  after physical success. Opaque and non-string SQL uses a conservative
+  database-wide conflict in every execution mode instead of relying on an
+  endpoint-level preload fallback,
   while Redis replay no longer invents boundaries for empty/keyless pipelines.
   The final release audit also prevents random exploration from certifying
   timed-out or ``max_ops``-truncated executions, propagates worker
@@ -140,7 +145,18 @@ Unreleased
   relays publish access traces before the corresponding observable grant, so
   OS socket-arrival races cannot reorder a replay trace. SQL endpoint identity
   now matches preload reporting for IPv6 peers, and generic async SQL avoids
-  double-intercepting synchronous driver work on free-threaded Python.
+  double-intercepting synchronous driver work on free-threaded Python. Redis
+  ``MOVE``, ``COPY ... DB``, ``MIGRATE``, and ``SWAPDB`` now report destination
+  database/server dependencies; ``FLUSHALL`` conflicts across all databases on
+  its server; byte and ``memoryview`` command/key values retain stable semantic
+  identity; and redis-py Pub/Sub subscriptions, patterns, unsubscriptions, and
+  server introspection use a conservative server scope. Worker failures cancel
+  parked async peers without masking the original error, cooperative exact
+  and mixed Event/Lock deadlocks replay, non-cancellation ``BaseException``
+  subclasses and user-raised ``TimeoutError`` propagate without being mistaken
+  for harness timeouts,
+  positive total budgets always run at least one execution, invalid zero limits
+  are rejected, and process workers cannot silently return unexecuted generators.
 
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
@@ -159,15 +175,18 @@ Unreleased
   (a replayed schedule that ends in the discovered deadlock no longer aborts
   the replay machinery) and timed-wait expiries under IO-anchored replay, so
   ``reproduce_on_failure`` statistics stay meaningful for deadlock-, timeout-,
-  and task-crash-shaped counterexamples. Timed-out replays never return partial
-  state for invariant evaluation.
+  and task-crash-shaped counterexamples, including peers parked on cooperative
+  Event/Queue/Condition primitives. Timed-out replays never return partial state
+  for invariant evaluation.
 
 * **DPOR correctness.** Accesses after ``await`` are now attributed before
   scheduling successors, ``asyncio.Lock`` / event state races replay
   consistently, async Redis commands create post-command scheduling boundaries
-  for TOCTOU races, SQL row-lock schedules stay exact without hiding row data
-  races, and pure-lock deadlocks are found reliably across supported Python
-  versions. The engine now tracks both the earliest and latest synced-I/O
+  for TOCTOU races, and pure-lock deadlocks are found reliably across supported
+  Python versions. Cross-process modeled row-lock contention now fails closed as
+  ``failure_kind="nondeterministic"`` instead of returning an engine schedule
+  that may differ from physical statement order; exact protocol support remains
+  deferred. The engine now tracks both the earliest and latest synced-I/O
   access per (thread, object, kind): previously only the first access
   survived, so a worker that wrote a row and read it back
   (``UPDATE ...; SELECT ...``) lost the read-back from race detection and

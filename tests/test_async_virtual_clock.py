@@ -747,6 +747,7 @@ def test_async_timeout_contexts_share_exact_virtual_deadline() -> None:
 @pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
 def test_task_crash_is_not_masked_by_peer_in_virtual_wait_for() -> None:
     """The first worker error must abort peers parked in managed virtual waits."""
+
     async def wait_forever(_state: dict[str, object]) -> None:
         pending = asyncio.get_running_loop().create_future()
         await asyncio.wait_for(pending, timeout=10.0)
@@ -777,6 +778,7 @@ def test_task_crash_is_not_masked_by_peer_in_virtual_wait_for() -> None:
     assert result.reproduction_successes == 2
 
 
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
 def test_async_timeout_expiry_order_counterexample_replays_deterministically() -> None:
     """A counterexample that depends on the relative resume order of two
     identical ``asyncio.timeout(1.0)`` expiries must replay: exact virtual

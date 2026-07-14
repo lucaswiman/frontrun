@@ -34,6 +34,30 @@ def any_async(fns: Iterable[Any]) -> bool:
     return any(_is_async_callable(fn) for fn in fns if callable(fn))
 
 
+def _reject_deferred_sync_result(  # pyright: ignore[reportUnusedFunction]  # imported by sync strategy runners
+    result: Any, worker: Any
+) -> None:
+    """Fail closed when a sync worker returns code that was never executed."""
+    if inspect.isawaitable(result):
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+        kind = "an awaitable"
+    elif inspect.isasyncgen(result):
+        kind = "an async generator"
+    elif inspect.isgenerator(result):
+        result.close()
+        kind = "a generator"
+    else:
+        return
+    name = getattr(worker, "__qualname__", None) or repr(worker)
+    raise TypeError(
+        f"explore(): sync worker {name} returned {kind}; its deferred body was not executed. "
+        "Use an `async def` worker with execution='thread' for awaitables, and execute generator bodies inside the "
+        "worker before returning."
+    )
+
+
 def check_invariant(invariant: Callable[[Any], Any], state: Any) -> tuple[bool, str | None]:
     """Evaluate *invariant* on *state*, tolerating ``AssertionError``.
 

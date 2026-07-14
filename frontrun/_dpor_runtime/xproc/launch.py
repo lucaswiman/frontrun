@@ -11,7 +11,6 @@ tests and real subprocess runs.
 from __future__ import annotations
 
 import base64
-import inspect
 import json
 import multiprocessing
 import os
@@ -202,7 +201,7 @@ def _mp_worker_entry(
     import dill
 
     from .worker import _connect_and_serve, _serve_persistent
-    from .worker_main import _install_interception, _reset_iteration_state
+    from .worker_main import _install_interception, _reject_deferred_worker_result, _reset_iteration_state
 
     worker_fn: Callable[[Any], Any] | None = None
     state: Any = None
@@ -211,13 +210,7 @@ def _mp_worker_entry(
         if worker_fn is None:
             raise RuntimeError("worker payload was not loaded for this iteration")
         result = worker_fn(state)
-        if inspect.isawaitable(result):
-            close = getattr(result, "close", None)
-            if callable(close):
-                close()
-            raise TypeError(
-                "process worker returned an awaitable; async workers are not supported with execution='process'"
-            )
+        _reject_deferred_worker_result(result, repr(worker_fn))
 
     if reuse:
 

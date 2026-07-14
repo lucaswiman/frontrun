@@ -19,6 +19,7 @@ SYNC_REDIS_TARGETS: tuple[RedisTarget, ...] = (
     RedisTarget("redis", "StrictRedis", "execute_command"),
     RedisTarget("redis.client", "Pipeline", "immediate_execute_command"),
     RedisTarget("redis.client", "Pipeline", "execute"),
+    RedisTarget("redis.client", "PubSub", "execute_command"),
 )
 
 ASYNC_REDIS_TARGETS: tuple[RedisTarget, ...] = (
@@ -27,5 +28,6 @@ ASYNC_REDIS_TARGETS: tuple[RedisTarget, ...] = (
     RedisTarget("redis.asyncio", "Pipeline", "execute"),
     RedisTarget("redis.asyncio.client", "Pipeline", "immediate_execute_command"),
     RedisTarget("redis.asyncio.client", "Pipeline", "execute"),
+    RedisTarget("redis.asyncio.client", "PubSub", "execute_command"),
     RedisTarget("coredis", "Redis", "execute_command"),
 )

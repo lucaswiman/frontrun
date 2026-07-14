@@ -651,6 +651,8 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             return
         await scheduler.pause(task_id, ("queue_put", id(self)))
         while self.full():
+            if scheduler._error is not None:
+                raise SchedulerTimeoutError("queue put aborted by scheduler")
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._frontrun_put_waiters.append((task_id, fut))
 
@@ -718,6 +720,8 @@ class _CooperativeAsyncCondition:
         scheduler = _scheduler_var.get()
         if scheduler is None or task_id is None:
             return await self._real_condition.wait()
+        if scheduler._error is not None:
+            return True
         fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._waiters.append((task_id, fut))
         # Release before parking so a notifier can take the lock; re-acquired on

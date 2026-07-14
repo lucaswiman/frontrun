@@ -502,22 +502,38 @@ class InterleavedLoop:
             task_funcs = dict(enumerate(task_funcs))
 
         self._num_tasks = len(task_funcs)
-        errors: dict[Any, Exception] = {}
+        errors: dict[Any, BaseException] = {}
         cancelling_for_timeout = False
+        cleanup_cancellations: set[asyncio.Task[Any]] = set()
+        tasks: list[asyncio.Task[None]] = []
+
+        def _cancel_error_peers() -> None:
+            current = asyncio.current_task()
+            for task in tasks:
+                if task is not current and not task.done():
+                    cleanup_cancellations.add(task)
+                    task.cancel()
 
         async def _run(task_id: Any, func: Callable[..., Awaitable[None]]) -> None:
             try:
                 self._setup_task_context(task_id)
                 await func()
             except asyncio.CancelledError as e:
-                if cancelling_for_timeout:
+                current = asyncio.current_task()
+                if cancelling_for_timeout or current in cleanup_cancellations:
                     raise
                 error = WorkerCancelledError(str(e) or f"worker {task_id!r} cancelled itself")
                 errors[task_id] = error
                 await self._report_error(error)
+                _cancel_error_peers()
             except Exception as e:
                 errors[task_id] = e
                 await self._report_error(e)
+                _cancel_error_peers()
+            except BaseException as e:
+                errors[task_id] = e
+                await self._report_error(RuntimeError(f"worker {task_id!r} terminated with {type(e).__name__}"))
+                _cancel_error_peers()
             finally:
                 self._cleanup_task_context(task_id)
                 await self._mark_done(task_id)
@@ -541,6 +557,8 @@ class InterleavedLoop:
                 if not t.done():
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if errors:
+                raise next(iter(errors.values()))
             raise SchedulerTimeoutError("Tasks did not complete within timeout. Check for deadlocks in your schedule.")
 
         if errors:

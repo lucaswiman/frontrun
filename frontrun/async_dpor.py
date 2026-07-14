@@ -1367,6 +1367,7 @@ async def _reproduce_async_counterexample(
             detect_sql=detect_sql,
             detect_redis=detect_redis,
             bridge_sync_io=bridge_sync_io,
+            expected_deadlock=invariant is None and expected_task_error is None,
         )
         # One clock_context owns the time.* patch across setup + tasks +
         # invariant for this replay attempt.

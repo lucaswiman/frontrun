@@ -514,6 +514,7 @@ class BytecodeShuffler:
         self.detect_io = detect_io
         self.threads: list[threading.Thread] = []
         self.errors: dict[int, BaseException] = {}
+        self.worker_originated_errors: dict[int, BaseException] = {}
         self._lock_patched = False
         self._io_patched = False
         self._sleep_patched = False
@@ -700,6 +701,8 @@ class BytecodeShuffler:
         except SchedulerAbort:
             pass  # scheduler already has the error; just exit cleanly
         except BaseException as e:  # noqa: BLE001
+            if getattr(self.scheduler, "_error", None) is not e:
+                self.worker_originated_errors[thread_id] = e
             self.errors[thread_id] = e
             if isinstance(e, Exception):
                 self.scheduler.report_error(e)
@@ -852,9 +855,12 @@ def run_with_schedule(
     with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
         state = setup()
 
+        from frontrun.common import _reject_deferred_sync_result
+
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:
-                thread_func(thread_state)
+                result = thread_func(thread_state)
+                _reject_deferred_sync_result(result, thread_func)
 
             return thread_wrapper
 
@@ -862,7 +868,11 @@ def run_with_schedule(
         timed_out = False
         try:
             runner.run(funcs, timeout=timeout)
-        except TimeoutError:
+        except TimeoutError as exc:
+            if runner.worker_originated_errors:
+                if _worker_errors_as_findings:
+                    raise _WorkerExecutionError(exc) from exc
+                raise
             if debug:
                 print(f"Timed out with {timeout=} on {schedule=}", flush=True)
             timed_out = True
@@ -983,6 +993,8 @@ def explore_random(
         providing a lower bound on exploration coverage.
     """
     _require_frontrun_env("explore_random")
+    if max_attempts <= 0:
+        raise ValueError("max_attempts must be positive")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
     clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
@@ -1003,8 +1015,8 @@ def explore_random(
         seen_schedule_hashes: set[int] = set()
         total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
-        for _ in range(max_attempts):
-            if total_deadline is not None and time.monotonic() > total_deadline:
+        for attempt in range(max_attempts):
+            if attempt > 0 and total_deadline is not None and time.monotonic() > total_deadline:
                 break
             schedule = random_round_robin_schedule(rng, num_threads, max_ops)
 

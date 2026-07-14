@@ -750,6 +750,8 @@ async def explore_async_random(
         InterleavingResult with the outcome.  The ``unique_interleavings``
         field reports how many distinct schedule orderings were observed.
     """
+    if max_attempts <= 0:
+        raise ValueError("max_attempts must be positive")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
     clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
@@ -790,8 +792,8 @@ async def explore_async_random(
         max_ops_truncations = 0
         total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
-        for _ in range(max_attempts):
-            if total_deadline is not None and time.monotonic() > total_deadline:
+        for attempt in range(max_attempts):
+            if attempt > 0 and total_deadline is not None and time.monotonic() > total_deadline:
                 break
             schedule = random_round_robin_schedule(rng, num_tasks, max_ops)
 

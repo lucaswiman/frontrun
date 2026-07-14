@@ -48,6 +48,7 @@ class DporBytecodeRunner:
         self._preload_bridge = preload_bridge
         self.threads: list[threading.Thread] = []
         self.errors: dict[int, BaseException] = {}
+        self.worker_originated_errors: dict[int, BaseException] = {}
         self.timed_out = False
         self._lock_patched = False
         self._io_patched = False
@@ -474,6 +475,8 @@ class DporBytecodeRunner:
         except SchedulerAbort:
             pass  # scheduler already has the error; just exit cleanly
         except BaseException as e:
+            if getattr(self.scheduler, "_error", None) is not e:
+                self.worker_originated_errors[thread_id] = e
             self.errors[thread_id] = e
             if isinstance(e, Exception):
                 self.scheduler.report_error(e)
@@ -529,6 +532,9 @@ class DporBytecodeRunner:
         for error in self.errors.values():
             if not isinstance(error, TimeoutError):
                 raise error
+        worker_originated = getattr(self, "worker_originated_errors", None)
+        if worker_originated:
+            raise next(iter(worker_originated.values()))
 
 
 # ---------------------------------------------------------------------------

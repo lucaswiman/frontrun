@@ -149,19 +149,22 @@ def test_task_crash_survives_peer_suppressing_cleanup_cancellation() -> None:
     require_active("test_async_dpor_task_crash_with_stubborn_peer")
     import frontrun
 
-    async def stubborn_peer(_state: object) -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def stubborn_peer(state: State) -> None:
         try:
-            await asyncio.get_running_loop().create_future()
+            await state.event.wait()
         except asyncio.CancelledError:
             await asyncio.get_running_loop().create_future()
 
-    async def crash(_state: object) -> None:
-        await asyncio.sleep(0)
+    async def crash(_state: State) -> None:
         raise RuntimeError("boom before stubborn cleanup")
 
     result = asyncio.run(
         frontrun.explore(
-            setup=object,
+            setup=State,
             workers=[stubborn_peer, crash],
             invariant=lambda _state: True,
             strategy="dpor",

@@ -120,6 +120,17 @@ def test_pattern_subscription_conflicts_with_matching_publish() -> None:
     assert pattern_reads & publish_writes
 
 
+@pytest.mark.parametrize("command", ["UNSUBSCRIBE", "PUNSUBSCRIBE", "SUNSUBSCRIBE", "PUBSUB"])
+def test_pubsub_state_commands_conflict_with_publish(command: str) -> None:
+    """Unknown subscription sets and server introspection need conservative scope."""
+    state_access = _capture_accesses(command, ())
+    publish = _capture_accesses("PUBLISH", ("events", "payload"))
+
+    state_resources = {resource for resource, _kind in state_access}
+    publish_resources = {resource for resource, _kind in publish}
+    assert state_resources & publish_resources
+
+
 def test_sync_pubsub_execute_command_is_intercepted(monkeypatch: pytest.MonkeyPatch) -> None:
     """redis-py subscriptions execute on PubSub rather than Redis itself."""
 
@@ -147,6 +158,40 @@ def test_sync_pubsub_execute_command_is_intercepted(monkeypatch: pytest.MonkeyPa
 
     assert result == ("SUBSCRIBE", "events")
     assert any(resource.startswith("redis:channel:events") and kind == "read" for resource, kind in events)
+
+
+def test_async_pubsub_execute_command_is_intercepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """async redis-py subscriptions also execute on a dedicated PubSub class."""
+
+    class PubSub:
+        connection_pool = SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0})
+
+        async def execute_command(self, *args: Any, **_kwargs: Any) -> tuple[Any, ...]:
+            return args
+
+    def fake_import(name: str) -> Any:
+        if name == "redis.asyncio.client":
+            return SimpleNamespace(PubSub=PubSub)
+        raise ImportError(name)
+
+    async def run() -> tuple[Any, ...]:
+        _redis_client_async.unpatch_redis_async()
+        monkeypatch.setattr(_redis_client_async.importlib, "import_module", fake_import)
+        _redis_client_async.patch_redis_async()
+        try:
+            return await PubSub().execute_command("PSUBSCRIBE", "events:*")
+        finally:
+            _redis_client_async.unpatch_redis_async()
+
+    events: list[tuple[str, str]] = []
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        result = asyncio.run(run())
+    finally:
+        set_io_reporter(None)
+
+    assert result == ("PSUBSCRIBE", "events:*")
+    assert any(resource.startswith("redis:pubsub:server=") and kind == "read" for resource, kind in events)
 
 
 def test_memoryview_key_matches_equivalent_bytes_key() -> None:
