@@ -148,7 +148,12 @@ Unreleased
   class). Async ``asyncio.timeout`` deadlines fire at exact virtual times,
   ``asyncio.wait_for`` on a bare future is a schedulable wait, and
   ``Condition.wait_for`` timeouts behave consistently across supported Python
-  versions.
+  versions. A task that re-entered a timed wait immediately after a completed
+  ``wait_for`` no longer loses the deferred clock advance owed to its new
+  deadline (previously a correct program could stall for ``timeout_per_run``
+  wall seconds and be reported as an inconclusive failure), and
+  ``asyncio.timeout_at(cm.when())`` recovers the exact virtual deadline
+  instead of smearing real wall-clock drift into it.
 
 * **Replay fixes.** Replaying a counterexample now reproduces exact deadlocks
   (a replayed schedule that ends in the discovered deadlock no longer aborts
@@ -162,7 +167,14 @@ Unreleased
   consistently, async Redis commands create post-command scheduling boundaries
   for TOCTOU races, SQL row-lock schedules stay exact without hiding row data
   races, and pure-lock deadlocks are found reliably across supported Python
-  versions.
+  versions. The engine now tracks both the earliest and latest synced-I/O
+  access per (thread, object, kind): previously only the first access
+  survived, so a worker that wrote a row and read it back
+  (``UPDATE ...; SELECT ...``) lost the read-back from race detection and
+  DPOR could certify a false pass — with ``exhausted=True`` — on the common
+  write-then-read-back shape whose "both writes land before either read-back"
+  interleaving violates the invariant (thread and process modes alike; the
+  exhaustive strategy already found it).
 
 0.6.0 (2026-06-30)
 ------------------
