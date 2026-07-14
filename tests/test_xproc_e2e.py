@@ -27,6 +27,7 @@ pytestmark = pytest.mark.e2e
 _TARGET = "tests.xproc_demo_counter:increment"
 _ATOMIC_TARGET = "tests.xproc_demo_counter:increment_atomic"
 _THREADED_READ_TARGET = "tests.xproc_demo_counter:read_in_joined_thread"
+_SNAPSHOT_TARGET = "tests.xproc_demo_counter:update_then_snapshot"
 
 
 def test_joined_child_thread_sql_access_is_scheduled(tmp_path) -> None:
@@ -59,6 +60,28 @@ def test_lost_update_race_found_across_processes(tmp_path) -> None:
     # The read/write accesses of both workers must have reached the coordinator.
     assert result.accesses is not None
     assert any(kind == "write" for _wid, _rid, kind in result.accesses)
+
+
+def test_write_then_read_back_race_found_with_dpor(tmp_path) -> None:
+    # Regression: each worker's read-back SELECT follows its own UPDATE on the
+    # same row. The engine used to keep only the first access per (worker,
+    # kind) per object, dropping the SELECT from race detection — DPOR then
+    # explored just the two serial orders and certified a false pass with
+    # exhausted=True under preemption_bound=None, while strategy="exhaustive"
+    # found the "both UPDATEs, then both SELECTs" violation.
+    db = str(tmp_path / "snapshot.db")
+    result = frontrun.explore_processes(
+        {
+            "w0": frontrun.Subprocess(_SNAPSHOT_TARGET, (db, 0)),
+            "w1": frontrun.Subprocess(_SNAPSHOT_TARGET, (db, 1)),
+        },
+        setup=lambda: xproc_demo_counter.setup_snapshot(db),
+        invariant=lambda _state: xproc_demo_counter.snapshot_values(db) != [2, 2],
+        preemption_bound=None,
+    )
+    assert not result.ok, "expected the write-then-read-back interleaving to be found"
+    assert result.failure_kind == "invariant"
+    assert result.exhausted is False
 
 
 def test_lost_update_found_with_exhaustive_strategy(tmp_path) -> None:
