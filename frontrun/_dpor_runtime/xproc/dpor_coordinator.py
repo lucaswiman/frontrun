@@ -366,6 +366,31 @@ class _TotalTimeoutExpiredError(Exception):
     """
 
 
+def _accept_hello_before_total_deadline(
+    listener: socket.socket,
+    worker_set: WorkerSet,
+    handles: Any,
+    connect_budget: float,
+    total_deadline: float | None,
+    total_timeout: float | None,
+) -> tuple[socket.socket, int]:
+    """Accept one worker without letting startup overrun ``total_timeout``."""
+    budget = connect_budget
+    if total_deadline is not None:
+        remaining = total_deadline - time.monotonic()
+        if remaining <= 0:
+            raise _TotalTimeoutExpiredError(f"total_timeout={total_timeout}s expired during worker startup")
+        budget = min(budget, remaining)
+    try:
+        return accept_hello_live(listener, worker_set, handles, budget)
+    except TimeoutError:
+        if total_deadline is not None and time.monotonic() >= total_deadline:
+            raise _TotalTimeoutExpiredError(
+                f"total_timeout={total_timeout}s expired during worker startup"
+            ) from None
+        raise
+
+
 def _serialization_failure(exc: Exception, iterations: int) -> CrossProcessResult:
     """A worker/state couldn't be serialised for a subprocess: report cleanly.
 
@@ -496,12 +521,20 @@ class DporCrossProcessCoordinator:
                         return replace(_serialization_failure(exc, num_explored), failures=failures)
                     try:
                         for _ in range(self.num_workers):
-                            sock, wid = accept_hello_live(
-                                listener, worker_set, persistent_handles, self._connect_budget
+                            sock, wid = _accept_hello_before_total_deadline(
+                                listener,
+                                worker_set,
+                                persistent_handles,
+                                self._connect_budget,
+                                deadline,
+                                self.total_timeout,
                             )
                             check_worker_id(wid, self.num_workers, persistent_socks, sock)
                             persistent_socks[wid] = sock
                         persistent_poisoned = False
+                    except _TotalTimeoutExpiredError:
+                        exhausted = False
+                        break
                     except (TimeoutError, OSError) as exc:
                         return replace(
                             _connection_failure(_launch_error(worker_set, persistent_handles, exc), num_explored),
@@ -729,9 +762,26 @@ class DporCrossProcessCoordinator:
         try:
             try:
                 for _ in range(self.num_workers):
-                    sock, wid = accept_hello_live(listener, worker_set, handles, self._connect_budget)
+                    sock, wid = _accept_hello_before_total_deadline(
+                        listener,
+                        worker_set,
+                        handles,
+                        self._connect_budget,
+                        total_deadline,
+                        self.total_timeout,
+                    )
                     check_worker_id(wid, self.num_workers, socks_by_id, sock)
                     socks_by_id[wid] = sock
+            except _TotalTimeoutExpiredError:
+                # Startup is part of the total search budget.  Retire partial
+                # workers promptly and report clean truncation, not a worker
+                # connection failure.
+                if isinstance(worker_set, TerminableWorkerSet):
+                    worker_set.terminate(handles, min(self.deadlock_timeout, 1.0))
+                else:
+                    worker_set.join(handles, self.deadlock_timeout)
+                reaped = True
+                raise
             except (TimeoutError, OSError) as exc:
                 # Reap dead children so the WorkerSet can read their exit/stderr,
                 # then surface the real cause instead of a bare connect timeout.
