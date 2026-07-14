@@ -213,14 +213,14 @@ def external_operation_scope() -> Generator[None, None, None]:
     ctx = get_dpor_context()
     begin = getattr(ctx[0], "begin_external_operation", None) if ctx is not None else None
     end = getattr(ctx[0], "end_external_operation", None) if ctx is not None else None
-    active = callable(begin) and callable(end)
-    if active:
-        begin()
+    if not callable(begin) or not callable(end):
+        yield
+        return
+    begin()
     try:
         yield
     finally:
-        if active:
-            end()
+        end()
 
 
 # ---------------------------------------------------------------------------

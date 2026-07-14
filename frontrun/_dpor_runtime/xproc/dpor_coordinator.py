@@ -390,9 +390,7 @@ def _accept_hello_before_total_deadline(
         return accept_hello_live(listener, worker_set, handles, budget)
     except TimeoutError:
         if total_deadline is not None and time.monotonic() >= total_deadline:
-            raise _TotalTimeoutExpiredError(
-                f"total_timeout={total_timeout}s expired during worker startup"
-            ) from None
+            raise _TotalTimeoutExpiredError(f"total_timeout={total_timeout}s expired during worker startup") from None
         raise
 
 
