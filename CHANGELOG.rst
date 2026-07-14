@@ -6,6 +6,9 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+0.7.0 (2026-07-14)
+------------------
+
 * **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
   now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
   workers with DPOR and random strategies. Explored code reads scheduler time,
@@ -126,6 +129,14 @@ Unreleased
   after physical success. Cross-process opaque SQL uses a conservative
   database-wide conflict instead of relying on the unavailable preload fallback,
   while Redis replay no longer invents boundaries for empty/keyless pipelines.
+  The final release audit also prevents random exploration from certifying
+  timed-out or ``max_ops``-truncated executions, propagates worker
+  ``SystemExit``, keeps async virtual timeouts live across bare-future awaits,
+  rejects overlapping async explorations before they can corrupt global patch
+  state, tracks Redis ``WATCH`` operations, completes PyMySQL transaction
+  teardown, limits SQL socket suppression to the database endpoint, and
+  carries async Django's synchronous-driver reports across its worker-thread
+  bridge so DPOR can find ORM races instead of serializing them away.
 
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
