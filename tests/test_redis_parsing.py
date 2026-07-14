@@ -482,10 +482,10 @@ class TestSpecialCommands:
 
     def test_eval_is_atomic(self) -> None:
         # EVAL/EVALSHA are atomic (Lua scripts execute without interleaving).
-        # They are treated as transaction control with no key-level accesses.
+        # Declared keys still form one command-level dependency.
         result = parse_redis_access("EVAL", ("script", 2, "key1", "key2", "arg1"))
         assert result.read_keys == []
-        assert result.write_keys == []
+        assert result.write_keys == ["key1", "key2"]
         assert result.is_transaction_control
 
     def test_pfadd_is_write(self) -> None:
@@ -611,9 +611,9 @@ class TestKeyspaceIntentLock:
         assert parse_redis_access("MULTI", ()).keyspace is None
         assert parse_redis_access("EXEC", ()).keyspace is None
 
-    def test_eval_no_keyspace(self) -> None:
-        # EVAL is atomic (tx control); it must not add a keyspace access.
-        assert parse_redis_access("EVAL", ("script", "1", "k")).keyspace is None
+    def test_eval_declared_key_reads_keyspace(self) -> None:
+        # The script remains atomic, but must conflict with FLUSHDB/FLUSHALL.
+        assert parse_redis_access("EVAL", ("script", "1", "k")).keyspace == "read"
 
     def test_publish_no_keyspace(self) -> None:
         # Pub/sub channels are not keyspace operations.

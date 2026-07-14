@@ -242,7 +242,12 @@ class OpcodeScheduler:
                         # just-woken waiter could be granted a single turn to
                         # observe its own timeout.
                         sleep_deadline = self._deadlines.sleep_deadline(scheduled_tid)
-                        assert sleep_deadline is not None
+                        if sleep_deadline is None:
+                            # A perpetual sleep is blocked but cannot advance
+                            # virtual time. Skip this unusable schedule slot.
+                            self._index += 1
+                            self._condition.notify_all()
+                            continue
                         next_deadline = self._deadlines.next_deadline()
                         assert next_deadline is not None  # sleep_deadline is pending
                         self._advance_clock_to(min(next_deadline, sleep_deadline))
@@ -357,7 +362,14 @@ class OpcodeScheduler:
                         # order — instead of returning with the clock frozen,
                         # which would silently truncate the sleep and report a
                         # phantom TTL/timeout counterexample.
-                        self._advance_clock_to(deadline)
+                        sleep_deadline = self._deadlines.sleep_deadline(thread_id)
+                        if sleep_deadline is None:
+                            self._error = TimeoutError(
+                                f"Deadlock: thread {thread_id} is blocked on a perpetual virtual sleep"
+                            )
+                            self._condition.notify_all()
+                            return
+                        self._advance_clock_to(sleep_deadline)
                         self._condition.notify_all()
                         return
                     alive = [t for t in range(self.num_threads) if t not in self._threads_done]
@@ -369,8 +381,8 @@ class OpcodeScheduler:
                         next_deadline = self._deadlines.next_deadline()
                         if next_deadline is not None:
                             self._advance_clock_to(next_deadline)
-                        self._condition.notify_all()
-                        continue
+                            self._condition.notify_all()
+                            continue
                     if not self._condition.wait(timeout=self.deadlock_timeout):
                         if self._finished or self._error:
                             continue  # dispatch via the loop-top checks

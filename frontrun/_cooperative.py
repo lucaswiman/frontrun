@@ -156,6 +156,14 @@ def _check_lock_cycle(graph: Any, thread_id: int, object_id: int, scheduler: Any
         raise SchedulerAbort(desc)
 
 
+def _validate_lock_timeout(timeout: float) -> None:
+    """Preserve CPython's non-finite Lock/RLock timeout errors."""
+    if math.isnan(timeout):
+        raise ValueError("Invalid value NaN (not a number)")
+    if math.isinf(timeout):
+        raise OverflowError("timestamp out of range for platform time_t")
+
+
 def _timed_acquire_state(
     timeout: float, scheduler: Any = None, thread_id: int | None = None
 ) -> tuple[float | None, Any, Any]:
@@ -177,6 +185,10 @@ def _timed_acquire_state(
     """
     from frontrun._deadlock import get_wait_for_graph
 
+    if timeout == math.inf:
+        raise OverflowError("timestamp out of range for platform time_t")
+    if timeout == -math.inf:
+        return -math.inf, None, None
     if timeout >= 0:
         clock = getattr(scheduler, "virtual_clock", None) if scheduler is not None else None
         if clock is not None and thread_id is not None:
@@ -400,6 +412,7 @@ class CooperativeLock:
         self._owner_thread_id: int | None = None  # frontrun thread_id, not OS tid
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        _validate_lock_timeout(timeout)
         # Reentrancy guard: if we're already inside DPOR machinery (e.g.,
         # _sync_reporter or _process_opcode), GC-triggered __del__ chains
         # must not re-enter the scheduler.  Fall back to real blocking.
@@ -610,6 +623,7 @@ class CooperativeRLock:
         self._acquired_during_dpor_machinery = False
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        _validate_lock_timeout(timeout)
         me = threading.get_ident()
         if self._owner == me:
             self._count += 1
@@ -1094,6 +1108,9 @@ class CooperativeEvent:
                 self._yield_after_state_access()
             return True
 
+        if timeout is not None and math.isnan(timeout):
+            timeout = -1.0
+
         # timeout == 0 is a pure probe (matches threading.Event.wait(0)): the
         # event is not set, so return False now rather than registering a
         # zero-length virtual deadline (a pointless schedulable clock step).
@@ -1328,6 +1345,9 @@ class CooperativeCondition:
 
     def wait(self, timeout: float | None = None) -> bool:
 
+        if timeout is not None and math.isnan(timeout):
+            timeout = -1.0
+
         # _waiters and ticket assignment are written while we hold
         # self._lock (the caller must hold it per the Condition API).
         self._waiters += 1
@@ -1547,6 +1567,9 @@ class CooperativeQueue:
 
     def get(self, block: bool = True, timeout: float | None = None) -> Any:
 
+        if timeout is not None and math.isnan(timeout):
+            timeout = None
+
         try:
             item = self._queue.get(block=False)
             _note_spin_release(self._object_id)
@@ -1600,6 +1623,9 @@ class CooperativeQueue:
                 note_spin(thread_id, self._object_id, False)
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
+
+        if timeout is not None and math.isnan(timeout):
+            timeout = None
 
         try:
             self._queue.put(item, block=False)

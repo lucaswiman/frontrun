@@ -27,7 +27,7 @@ from typing import Any
 
 from frontrun import _real_threading as _rt
 from frontrun._deadlock import SchedulerAbort
-from frontrun._io_detection import _io_tls, get_io_reporter
+from frontrun._io_detection import _io_tls, external_operation_scope, get_io_reporter
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._redis_parsing import parse_redis_access
@@ -252,6 +252,18 @@ def _intercept_execute_command(
     *args: Any,
     **kwargs: Any,
 ) -> Any:
+    if not args:
+        return original_method(self, *args, **kwargs)
+    with external_operation_scope():
+        return _intercept_execute_command_scoped(original_method, self, *args, **kwargs)
+
+
+def _intercept_execute_command_scoped(
+    original_method: Any,
+    self: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
     """Intercept redis.Redis.execute_command to report key-level accesses."""
     parsed = _parse_and_report_execute_command(args, self)
     if parsed is None:
@@ -292,6 +304,16 @@ def _intercept_execute_command(
 
 
 def _intercept_pipeline_execute(
+    original_method: Any,
+    self: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    with external_operation_scope():
+        return _intercept_pipeline_execute_scoped(original_method, self, *args, **kwargs)
+
+
+def _intercept_pipeline_execute_scoped(
     original_method: Any,
     self: Any,
     *args: Any,

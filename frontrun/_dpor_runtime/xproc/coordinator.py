@@ -106,8 +106,13 @@ def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket
     Shared by the exhaustive and DPOR coordinators so accept order is decoupled
     from worker ids.
     """
+    deadline = time.monotonic() + timeout
     sock, _addr = listener.accept()
-    sock.settimeout(timeout)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        sock.close()
+        raise TimeoutError("worker connected after the HELLO deadline")
+    sock.settimeout(remaining)
     # A worker can connect and then die (crash/OOM/os._exit) or send garbage
     # before its HELLO.  Treat that as a *connection* failure (OSError, which
     # accept_hello_live and the coordinators already catch and route through
@@ -167,14 +172,16 @@ def accept_hello_live(
     """
     deadline = time.monotonic() + connect_budget
     prev = listener.gettimeout()
-    listener.settimeout(min(0.5, connect_budget))
     try:
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("workers did not connect within the deadlock timeout")
+            listener.settimeout(min(0.5, remaining))
             try:
-                return accept_hello(listener, connect_budget)
+                return accept_hello(listener, remaining)
             except (TimeoutError, OSError):
-                # accept() timed out with no connection yet (the accepted socket
-                # keeps the full connect_budget, so this is not a slow HELLO).
+                # accept() or the remaining shared HELLO budget timed out.
                 # any_exited / all_exited are non-destructive; the stderr-reading
                 # diagnose() is left for the failure path so it is not consumed
                 # here.
@@ -572,6 +579,13 @@ class CrossProcessCoordinator:
             elif kind == proto.REPORT_AND_WAIT:
                 conn.pending = msg
                 return
+            elif kind == proto.AFTER_SYNC:
+                # The exhaustive scheduler grants one worker at a time and
+                # reads that worker until its next blocking request.  The
+                # explicit completion frame is therefore only a boundary
+                # marker here; unlike DPOR, there is no held engine turn to
+                # release.
+                continue
             elif kind == proto.DONE:
                 conn.done = True
                 conn.pending = None

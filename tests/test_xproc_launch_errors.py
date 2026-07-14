@@ -3,8 +3,8 @@
 ``execution="process"`` serialises workers with dill, so closures and lambdas
 work (not just module-level functions); only genuinely unserialisable captures
 (open sockets, ...) fail, and then with a clear frontrun-level message. A bad
-``module:callable`` subprocess target surfaces the child's real error via
-``diagnose()`` instead of a misleading ``TimeoutError``.
+``module:callable`` subprocess target surfaces the child's real error over the
+connected worker protocol instead of a misleading ``TimeoutError``.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from frontrun._dpor_core.worker import IterationCustomizer, LivenessProbe, WorkerTarget
+from frontrun._dpor_runtime.xproc import protocol as proto
 from frontrun._dpor_runtime.xproc.dpor_coordinator import _connection_failure, _launch_error
 from frontrun._dpor_runtime.xproc.launch import (
     MpLauncher,
@@ -113,17 +114,29 @@ def test_stderr_last_line_falls_back_to_last_nonblank_line(tmp_path) -> None:
     assert _stderr_last_line(str(path)) == "final words before dying"
 
 
-def test_subprocess_launcher_diagnoses_bad_target(tmp_path) -> None:
-    # A target in a module that does not exist makes the child exit immediately
-    # with ModuleNotFoundError. diagnose() must recover that real cause from the
-    # child's stderr rather than leaving the coordinator to guess "timeout".
+def test_subprocess_worker_reports_bad_target_after_connect(tmp_path) -> None:
+    # Target resolution happens only after interception is installed, so an
+    # import failure is now a connected worker ERROR rather than a pre-HELLO
+    # stderr diagnosis.
+    socket_path = str(tmp_path / "s.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(socket_path)
+    listener.listen(1)
+    listener.settimeout(10.0)
     worker_set = SubprocessLauncher([Subprocess("frontrun_no_such_module:go")])
-    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(str(tmp_path / "s.sock"),))])
-    for proc in handles:
-        proc.wait(timeout=10)
-    detail = worker_set.diagnose(handles)
-    assert detail is not None
-    assert "No module named" in detail or "ModuleNotFoundError" in detail
+    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(socket_path,))])
+    conn, _addr = listener.accept()
+    try:
+        assert proto.recv_msg(conn) == {"t": proto.HELLO, "w": 0}
+        error = proto.recv_msg(conn)
+        assert error is not None
+        assert error["t"] == proto.ERROR
+        assert "No module named" in error["msg"] or "ModuleNotFoundError" in error["msg"]
+        for proc in handles:
+            proc.wait(timeout=10)
+    finally:
+        conn.close()
+        listener.close()
 
 
 class _FakeProc:
@@ -412,13 +425,24 @@ def test_subprocess_worker_flooding_stderr_still_exits(tmp_path) -> None:
     # and the run misreports a hang. Capture must therefore go to a file. The
     # flood target writes 256 KiB then exits 3, so diagnose() must also recover
     # its final line from the capture.
+    socket_path = str(tmp_path / "s.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(socket_path)
+    listener.listen(1)
+    listener.settimeout(10.0)
     worker_set = SubprocessLauncher([Subprocess("tests.xproc_stderr_flood:main")])
-    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(str(tmp_path / "s.sock"),))])
-    alive = worker_set.join(handles, timeout=8.0)
-    assert alive == [], "child blocked writing stderr: capture is deadlock-prone"
-    detail = worker_set.diagnose(handles)
-    assert detail is not None
-    assert "flooded stderr with 256 KiB" in detail
+    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(socket_path,))])
+    conn, _addr = listener.accept()
+    try:
+        assert proto.recv_msg(conn) == {"t": proto.HELLO, "w": 0}
+        alive = worker_set.join(handles, timeout=8.0)
+        assert alive == [], "child blocked writing stderr: capture is deadlock-prone"
+        detail = worker_set.diagnose(handles)
+        assert detail is not None
+        assert "flooded stderr with 256 KiB" in detail
+    finally:
+        conn.close()
+        listener.close()
 
 
 # --- final launch's stderr capture files must not leak ----------------------
@@ -578,6 +602,34 @@ def test_worker_main_rejects_async_target(monkeypatch: pytest.MonkeyPatch) -> No
         worker_main.main()
 
 
+def test_worker_main_installs_interception_before_importing_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Import-time database work must run inside the connected scheduler context."""
+    from frontrun._dpor_runtime.xproc import worker_main
+
+    installed = False
+
+    def install(_proxy: object, _worker_id: int) -> None:
+        nonlocal installed
+        installed = True
+
+    def resolve(_target: str):
+        assert installed, "target module imported before xproc interception was installed"
+        return lambda: None
+
+    def run_inline(_socket_path: str, _worker_id: int, body: Any) -> None:
+        body(object())
+
+    monkeypatch.setenv("FRONTRUN_XPROC_SOCKET", "unused.sock")
+    monkeypatch.setenv("FRONTRUN_XPROC_WORKER_ID", "0")
+    monkeypatch.setenv("FRONTRUN_XPROC_TARGET", "tests.fake:target")
+    monkeypatch.setattr(worker_main, "_install_interception", install)
+    monkeypatch.setattr(worker_main, "_resolve_target", resolve)
+    monkeypatch.setattr(worker_main, "_connect_and_serve", run_inline)
+
+    worker_main.main()
+    assert installed
+
+
 def test_mp_worker_rejects_plain_callable_returning_awaitable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pickled process workers must not discard a dynamically returned coroutine.
 
@@ -602,3 +654,68 @@ def test_mp_worker_rejects_plain_callable_returning_awaitable(monkeypatch: pytes
         warnings.simplefilter("error", RuntimeWarning)
         with pytest.raises(TypeError, match="returned an awaitable"):
             _mp_worker_entry("unused.sock", 0, payload)
+
+
+def test_mp_worker_installs_interception_before_deserializing_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child-side reducers must not perform external I/O before scheduling is active."""
+    import dill
+
+    from frontrun._dpor_runtime.xproc import worker, worker_main
+
+    installed = False
+
+    def install(_proxy: object, _worker_id: int) -> None:
+        nonlocal installed
+        installed = True
+
+    def loads(_payload: bytes):
+        assert installed, "worker payload deserialized before xproc interception was installed"
+        return (lambda _state: None), None
+
+    monkeypatch.setattr(worker_main, "_install_interception", install)
+    monkeypatch.setattr(dill, "loads", loads)
+    monkeypatch.setattr(worker, "_connect_and_serve", lambda _socket_path, _worker_id, body: body(object()))
+
+    _mp_worker_entry("unused.sock", 0, b"payload")
+    assert installed
+
+
+def test_reused_mp_worker_resets_state_before_deserializing_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reducer-side SQL/Redis state must survive into the reused iteration."""
+    import dill
+
+    from frontrun._dpor_runtime.xproc import worker, worker_main
+
+    events: list[str] = []
+
+    def install(_proxy: object, _worker_id: int) -> None:
+        events.append("install")
+
+    def reset() -> None:
+        events.append("reset")
+
+    def loads(_payload: bytes):
+        events.append("loads")
+        assert events == ["install", "reset", "loads"]
+        return (lambda _state: events.append("target")), None
+
+    def serve(
+        _socket_path: str,
+        _worker_id: int,
+        body: Any,
+        *,
+        on_connect: Any,
+        before_iteration: Any,
+    ) -> None:
+        proxy = object()
+        on_connect(proxy)
+        before_iteration({"t": proto.ITER_START, "payload": "cGF5bG9hZA=="})
+        body(proxy)
+
+    monkeypatch.setattr(worker_main, "_install_interception", install)
+    monkeypatch.setattr(worker_main, "_reset_iteration_state", reset)
+    monkeypatch.setattr(dill, "loads", loads)
+    monkeypatch.setattr(worker, "_serve_persistent", serve)
+
+    _mp_worker_entry("unused.sock", 0, b"initial", reuse=True)
+    assert events == ["install", "reset", "loads", "target"]

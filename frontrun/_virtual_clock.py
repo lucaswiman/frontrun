@@ -28,6 +28,7 @@ machinery, unrelated code) always see real time:
 from __future__ import annotations
 
 import datetime as _datetime
+import math
 import time
 import warnings
 from collections.abc import Callable, Generator
@@ -202,6 +203,10 @@ class VirtualClock:
 
     def advance_to(self, deadline: float) -> None:
         """Jump the clock forward to *deadline* (never backwards)."""
+        if math.isnan(deadline):
+            raise ValueError("virtual clock deadline cannot be NaN")
+        if deadline == math.inf:
+            return
         with self._lock:
             if deadline > self._now:
                 self._now = deadline
@@ -309,6 +314,8 @@ class DeadlineCoordinator:
 
     def _new_deadline(self, actor_id: int, deadline: float, token: object, kind: str, wake_id: int | None) -> WakeEvent:
         """Allocate a deadline with the next order token.  Caller holds ``_lock``."""
+        if math.isnan(deadline):
+            raise ValueError("virtual deadline cannot be NaN")
         self._next_order += 1
         return WakeEvent(
             actor_id=actor_id, deadline=deadline, token=token, kind=kind, wake_id=wake_id, order=self._next_order
@@ -334,8 +341,14 @@ class DeadlineCoordinator:
         self.cancel(actor_id, _SLEEP_TOKEN)
 
     def has_pending(self) -> bool:
+        """Whether a deadline can advance the clock.
+
+        Positive infinity represents a perpetual, cancellable wait.  It stays
+        registered for ``is_sleeping`` and cancellation bookkeeping but can
+        never make the clock actor runnable or turn virtual time non-finite.
+        """
         with self._lock:
-            return bool(self._deadlines)
+            return any(entry.deadline < math.inf for entry in self._deadlines.values())
 
     def is_sleeping(self, actor_id: int) -> bool:
         """Whether *actor_id* has a pending ``sleep``-kind deadline."""
@@ -348,15 +361,27 @@ class DeadlineCoordinator:
             return any(e.actor_id == actor_id and e.kind == "timeout" for e in self._deadlines.values())
 
     def sleep_deadline(self, actor_id: int) -> float | None:
-        """The earliest ``sleep``-kind deadline for *actor_id* (``None`` if none)."""
+        """Earliest advanceable sleep deadline for *actor_id* (``None`` if none).
+
+        A positive-infinity sleep is still registered and visible through
+        :meth:`is_sleeping`, but cannot be advanced or self-woken.
+        """
         with self._lock:
-            deadlines = [e.deadline for e in self._deadlines.values() if e.actor_id == actor_id and e.kind == "sleep"]
+            deadlines = [
+                e.deadline
+                for e in self._deadlines.values()
+                if e.actor_id == actor_id and e.kind == "sleep" and e.deadline < math.inf
+            ]
             return min(deadlines) if deadlines else None
 
     def timed_wait_deadline(self, actor_id: int) -> float | None:
-        """The earliest ``timeout``-kind deadline for *actor_id* (``None`` if none)."""
+        """Earliest advanceable timeout deadline for *actor_id* (``None`` if none)."""
         with self._lock:
-            deadlines = [e.deadline for e in self._deadlines.values() if e.actor_id == actor_id and e.kind == "timeout"]
+            deadlines = [
+                e.deadline
+                for e in self._deadlines.values()
+                if e.actor_id == actor_id and e.kind == "timeout" and e.deadline < math.inf
+            ]
             return min(deadlines) if deadlines else None
 
     def sleeping_actors(self) -> list[int]:
@@ -366,22 +391,25 @@ class DeadlineCoordinator:
 
     def next_deadline(self) -> float | None:
         with self._lock:
-            if not self._deadlines:
-                return None
-            return min(entry.deadline for entry in self._deadlines.values())
+            advanceable = [entry.deadline for entry in self._deadlines.values() if entry.deadline < math.inf]
+            return min(advanceable) if advanceable else None
 
     def advance_to_next(self, clock: VirtualClock) -> list[WakeEvent]:
         with self._lock:
-            if not self._deadlines:
+            advanceable = [entry.deadline for entry in self._deadlines.values() if entry.deadline < math.inf]
+            if not advanceable:
                 return []
-            deadline = min(entry.deadline for entry in self._deadlines.values())
-            return self._advance_to_locked(clock, deadline)
+            return self._advance_to_locked(clock, min(advanceable))
 
     def advance_to(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
         with self._lock:
             return self._advance_to_locked(clock, deadline)
 
     def _advance_to_locked(self, clock: VirtualClock, deadline: float) -> list[WakeEvent]:
+        if math.isnan(deadline):
+            raise ValueError("virtual deadline cannot be NaN")
+        if deadline == math.inf:
+            return []
         clock.advance_to(deadline)
         now = clock.now()
         due = [entry for entry in self._deadlines.values() if entry.deadline <= now]

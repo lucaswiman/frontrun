@@ -204,3 +204,56 @@ def test_release_selected_row_locks_carries_resources() -> None:
     finally:
         worker.close()
         coord.close()
+
+
+def test_external_operation_rejects_second_thread_until_sql_completion() -> None:
+    # The one-process/one-actor protocol must own the proxy from semantic
+    # ACCESS reporting through the physical driver call and its explicit
+    # completion. Releasing the guard as soon as GRANT arrives lets a second
+    # user thread run a concurrent SQL/Redis operation under the same actor id.
+    worker, coord = _pair()
+    frames: list[dict] = []
+
+    def coordinator() -> None:
+        frames.append(proto.recv_msg(coord))  # type: ignore[arg-type]
+        frames.append(proto.recv_msg(coord))  # type: ignore[arg-type]
+        proto.send_msg(coord, {"t": proto.GRANT})
+        frames.append(proto.recv_msg(coord))  # type: ignore[arg-type]
+
+    t = threading.Thread(target=coordinator)
+    t.start()
+    try:
+        proxy = SchedulerProxy(worker, worker_id=7)
+        proxy.begin_external_operation()
+        proxy.io_report("sql:accounts:id=1", "write")
+        assert proxy.before_sync_retry(7)
+
+        errors: list[BaseException] = []
+
+        def concurrent_access() -> None:
+            try:
+                proxy.io_report("sql:accounts:id=2", "write")
+            except BaseException as exc:  # noqa: BLE001 - assert the cross-thread rejection
+                errors.append(exc)
+
+        contender = threading.Thread(target=concurrent_access)
+        contender.start()
+        contender.join(timeout=2.0)
+        assert not contender.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], RuntimeError)
+        assert "concurrently" in str(errors[0])
+        assert proxy.fatal_error is not None
+
+        proxy.after_sync_retry(7)
+        proxy.end_external_operation()
+        t.join(timeout=2.0)
+        assert frames == [
+            {"t": proto.ACCESS, "w": 7, "rid": "sql:accounts:id=1", "kind": "write"},
+            {"t": proto.REPORT_AND_WAIT, "w": 7},
+            {"t": proto.AFTER_SYNC, "w": 7},
+        ]
+    finally:
+        t.join(timeout=2.0)
+        worker.close()
+        coord.close()

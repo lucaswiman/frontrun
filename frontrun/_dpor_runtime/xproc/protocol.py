@@ -23,6 +23,7 @@ from typing import Any
 HELLO = "hello"  # first frame on connect; announces this worker's id
 ACCESS = "access"  # an io-reporter (resource_id, kind) access report
 REPORT_AND_WAIT = "report_and_wait"  # request a scheduling turn; expects GRANT/ABORT
+AFTER_SYNC = "after_sync"  # explicit completion of a granted SQL/sync operation
 ACQUIRE_LOCKS = "acquire_locks"  # block until row locks are held; expects GRANT/ABORT
 RELEASE_LOCKS = "release_locks"  # drop selected locks ("res") or all locks (fire-and-forget)
 BEFORE_IO = "before_io"  # enter a two-phase IO boundary (Redis); expects GRANT/ABORT

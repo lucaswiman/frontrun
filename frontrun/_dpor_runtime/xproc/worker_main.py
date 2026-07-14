@@ -88,9 +88,15 @@ def main() -> None:
     args = tuple(json.loads(os.environ.get("FRONTRUN_XPROC_ARGS", "[]")))
     reuse = os.environ.get("FRONTRUN_XPROC_REUSE") == "1"
 
-    fn = _resolve_target(target)
+    fn: object | None = None
 
     def run_target(proxy: SchedulerProxy) -> None:
+        nonlocal fn
+        # Import only after HELLO + interception installation. Module-level
+        # SQL/Redis work and aliases captured during import must see the same
+        # scheduler context as the target call itself.
+        if fn is None:
+            fn = _resolve_target(target)
         result = fn(*args)  # type: ignore[operator]
         if inspect.isawaitable(result):
             # Avoid both the false-success verdict and an unawaited-coroutine

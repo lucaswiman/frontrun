@@ -1881,6 +1881,8 @@ class _IOAnchoredReplayScheduler(DporScheduler):
             if thread_id != cur
         ):
             return False
+        if self._deadlines.next_deadline() is None:
+            return False
         self._replay_advance_clock_to()
         self._condition.notify_all()
         return True

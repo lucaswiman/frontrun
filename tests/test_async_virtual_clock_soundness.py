@@ -12,6 +12,7 @@ patched wrappers following a scheduler into a foreign thread's event loop.
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 import threading
 import time
@@ -162,6 +163,87 @@ def test_async_timeout_reschedule_extension_uses_virtual_deadline() -> None:
             setup=State,
             workers=[worker],
             invariant=lambda s: s.elapsed is not None and 14.5 <= s.elapsed <= 15.5,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
+def test_async_timeout_reschedule_from_fresh_loop_time_uses_current_virtual_time() -> None:
+    # An application commonly enables a disabled timeout with
+    # loop.time() + delay. After virtual time has elapsed, that expression is
+    # relative to *now*, not to the context's entry instant.
+    class State:
+        def __init__(self) -> None:
+            self.elapsed: float | None = None
+            self.reached_halfway = False
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        try:
+            async with asyncio.timeout(None) as cm:
+                await asyncio.sleep(5.0)
+                cm.reschedule(asyncio.get_running_loop().time() + 1.0)
+                await asyncio.sleep(0.5)
+                s.reached_halfway = True
+                await asyncio.sleep(1.0)
+        except TimeoutError:
+            s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.reached_halfway and s.elapsed is not None and 5.9 <= s.elapsed <= 6.1,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_sleep_nan_matches_asyncio_value_error() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.error: BaseException | None = None
+
+    async def worker(s: State) -> None:
+        try:
+            await asyncio.sleep(math.nan)
+        except BaseException as exc:  # noqa: BLE001 - compare the public exception contract
+            s.error = exc
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: isinstance(s.error, ValueError) and "NaN" in str(s.error),
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_async_sleep_infinity_stays_cancellable_by_finite_timeout() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.elapsed: float | None = None
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(asyncio.sleep(math.inf), timeout=1.0)
+        except TimeoutError:
+            s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.elapsed is not None and s.elapsed == pytest.approx(1.0),
             clock="virtual",
             reproduce_on_failure=0,
         )

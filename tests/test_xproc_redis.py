@@ -130,3 +130,51 @@ def test_dpor_redis_atomic_incr_has_no_race() -> None:
     )
     assert result.ok, f"unexpected {result.failure_kind}: {result.failure!r}"
     assert result.exhausted
+
+
+def test_dpor_explores_conflicting_atomic_scripts_on_declared_key() -> None:
+    # Redis scripts/functions run atomically, but atomic does not mean
+    # independent: two scripts that declare the same key can produce different
+    # results in opposite orders.  EVAL previously reported no key access, so
+    # DPOR pruned the reverse order and falsely claimed exhaustive success.
+    from frontrun._io_detection import set_io_reporter
+    from frontrun._redis_client import _report_redis_access
+
+    store = _Store()
+
+    def script_worker(operation):
+        def worker(proxy) -> None:
+            set_io_reporter(proxy.io_report)
+            try:
+                reported = _report_redis_access("EVAL", ("return 1", 1, "counter"))
+                assert reported
+                assert proxy.before_io(0, "redis:EVAL:counter")
+                operation(store)
+                proxy.after_io(0, "redis:EVAL:counter")
+            finally:
+                set_io_reporter(None)
+
+        return worker
+
+    def multiply_by_two(state: _Store) -> None:
+        state.value *= 2
+
+    def add_three(state: _Store) -> None:
+        state.value += 3
+
+    def setup() -> None:
+        store.value = 1
+
+    coord = DporCrossProcessCoordinator(
+        num_workers=2,
+        deadlock_timeout=5.0,
+        preemption_bound=None,
+    )
+    result = coord.explore(
+        worker_set=ThreadLauncher([script_worker(multiply_by_two), script_worker(add_three)]),
+        setup=setup,
+        invariant=lambda: store.value == 5,
+    )
+
+    assert not result.ok, "DPOR pruned the conflicting reverse script order"
+    assert result.failure_kind == "invariant"

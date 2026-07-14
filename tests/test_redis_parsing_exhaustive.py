@@ -276,12 +276,12 @@ _EXHAUSTIVE_CASES: list[tuple[str, str, tuple[object, ...], list[str], list[str]
     ("UNWATCH", "UNWATCH", (), [], [], True),
     ("WATCH", "WATCH", ("k1", "k2"), ["k1", "k2"], [], True),
     # ── Lua scripts (DPOR override — treated as atomic/tx control) ──────
-    ("EVAL", "EVAL", ("script", "2", "key1", "key2", "arg1"), [], [], True),
-    ("EVALSHA", "EVALSHA", ("sha1", "2", "key1", "key2"), [], [], True),
-    ("EVAL_RO", "EVAL_RO", ("script", "1", "key1"), [], [], True),
-    ("EVALSHA_RO", "EVALSHA_RO", ("sha1", "1", "key1"), [], [], True),
-    ("FCALL", "FCALL", ("func", "2", "key1", "key2"), [], [], True),
-    ("FCALL_RO", "FCALL_RO", ("func", "1", "key1"), [], [], True),
+    ("EVAL", "EVAL", ("script", "2", "key1", "key2", "arg1"), [], ["key1", "key2"], True),
+    ("EVALSHA", "EVALSHA", ("sha1", "2", "key1", "key2"), [], ["key1", "key2"], True),
+    ("EVAL_RO", "EVAL_RO", ("script", "1", "key1"), ["key1"], [], True),
+    ("EVALSHA_RO", "EVALSHA_RO", ("sha1", "1", "key1"), ["key1"], [], True),
+    ("FCALL", "FCALL", ("func", "2", "key1", "key2"), [], ["key1", "key2"], True),
+    ("FCALL_RO", "FCALL_RO", ("func", "1", "key1"), ["key1"], [], True),
     # ── Pub/Sub (DPOR override — channel prefix) ────────────────────────
     ("PUBLISH", "PUBLISH", ("mychan", "msg"), [], ["channel:mychan"], False),
     ("SUBSCRIBE", "SUBSCRIBE", ("ch1", "ch2"), ["channel:ch1", "channel:ch2"], [], False),

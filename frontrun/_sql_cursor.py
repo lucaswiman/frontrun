@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import Any
 
 from frontrun._deadlock import SchedulerAbort
-from frontrun._io_detection import _io_tls, get_io_reporter, tx_store
+from frontrun._io_detection import _io_tls, external_operation_scope, get_io_reporter, tx_store
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._schema import _detect_driver, get_schema
@@ -602,6 +602,11 @@ def _report_sql_access(
 
 
 def _run_connection_tx_method(method: Callable[[], Any], operation: str, connection: Any = None) -> Any:
+    with external_operation_scope():
+        return _run_connection_tx_method_scoped(method, operation, connection)
+
+
+def _run_connection_tx_method_scoped(method: Callable[[], Any], operation: str, connection: Any = None) -> Any:
     """Run a DB-API commit/rollback as one deterministic sync transition."""
     tx_op = TxOp.COMMIT if operation == "COMMIT" else TxOp.ROLLBACK
     handler = handle_connection_commit if operation == "COMMIT" else handle_connection_rollback
@@ -752,6 +757,26 @@ def _execute_with_retry(execute: Callable[[], Any]) -> Any:
 
 
 def _intercept_execute(
+    original_method: Any,
+    self: Any,
+    operation: Any,
+    parameters: Any = None,
+    *,
+    is_executemany: bool = False,
+    paramstyle: str = "format",
+) -> Any:
+    with external_operation_scope():
+        return _intercept_execute_scoped(
+            original_method,
+            self,
+            operation,
+            parameters,
+            is_executemany=is_executemany,
+            paramstyle=paramstyle,
+        )
+
+
+def _intercept_execute_scoped(
     original_method: Any,
     self: Any,
     operation: Any,

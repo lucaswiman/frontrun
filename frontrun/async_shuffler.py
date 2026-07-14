@@ -40,6 +40,7 @@ an additional checkpoint.
 """
 
 import asyncio
+import math
 import random
 import warnings
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -271,6 +272,12 @@ class AwaitScheduler(InterleavedLoop):
                     # resolve virtually — advance to its deadline (firing
                     # earlier due deadlines in order) instead of returning
                     # with the clock frozen (a silently truncated sleep).
+                    if deadline == math.inf:
+                        self._error = SchedulerTimeoutError(
+                            f"Deadlock: task {task_id} is blocked on a perpetual virtual sleep"
+                        )
+                        self._condition.notify_all()
+                        return
                     self._advance_clock_to(deadline)
                     self._condition.notify_all()
                     return
@@ -284,7 +291,14 @@ class AwaitScheduler(InterleavedLoop):
                             return
                         if self._finished:
                             # See the pre-registration check above.
-                            self._advance_clock_to(deadline)
+                            sleep_deadline = self._deadlines.sleep_deadline(task_id)
+                            if sleep_deadline is None:
+                                self._error = SchedulerTimeoutError(
+                                    f"Deadlock: task {task_id} is blocked on a perpetual virtual sleep"
+                                )
+                                self._condition.notify_all()
+                                return
+                            self._advance_clock_to(sleep_deadline)
                             self._condition.notify_all()
                             return
                         alive = [t for t in range(self.num_tasks) if t not in self._tasks_done]
@@ -292,7 +306,7 @@ class AwaitScheduler(InterleavedLoop):
                             # Every live task is asleep or parked in a timed
                             # wait: only time can move.
                             next_deadline = self._deadlines.next_deadline()
-                            if next_deadline is None or not self._advance_clock_to(next_deadline):
+                            if next_deadline is not None and not self._advance_clock_to(next_deadline):
                                 self._condition.notify_all()
                                 continue
                             # A timeout fired at this hop.  Do NOT advance
@@ -320,8 +334,8 @@ class AwaitScheduler(InterleavedLoop):
                                 next_deadline = self._deadlines.next_deadline()
                                 if next_deadline is not None:
                                     self._advance_clock_to(next_deadline)
-                                self._condition.notify_all()
-                                continue
+                                    self._condition.notify_all()
+                                    continue
                             if _real_monotonic() - wait_started > self.deadlock_timeout:
                                 self._error = SchedulerTimeoutError(
                                     f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
@@ -358,7 +372,7 @@ class AwaitScheduler(InterleavedLoop):
                     # deadline is reached.  A timed-parked entry has no
                     # _sleepers deadline; its own timeout is pending in the
                     # coordinator, so the earliest-deadline clamp is the hop.
-                    target = self._sleepers.get(entry)
+                    target = self._deadlines.sleep_deadline(entry) if entry in self._sleepers else None
                     next_deadline = self._deadlines.next_deadline()
                     if target is None:
                         target = next_deadline

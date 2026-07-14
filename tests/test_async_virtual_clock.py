@@ -9,6 +9,7 @@ choice for the async DPOR engine.
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 import time
 
@@ -31,6 +32,22 @@ class _SleepObserver:
     def __init__(self) -> None:
         self.start = 0.0
         self.end = 0.0
+
+
+@pytest.mark.asyncio
+async def test_async_random_finished_schedule_does_not_complete_infinite_sleep() -> None:
+    from frontrun._virtual_clock import VirtualClock
+    from frontrun.async_scheduler import SchedulerTimeoutError
+    from frontrun.async_shuffler import AwaitScheduler
+
+    scheduler = AwaitScheduler([], num_tasks=1, virtual_clock=VirtualClock(), clock_mode="virtual")
+    scheduler._finished = True
+
+    await scheduler.sleep_until(0, deadline=math.inf)
+
+    assert isinstance(scheduler._error, SchedulerTimeoutError)
+    assert scheduler.virtual_clock is not None
+    assert math.isfinite(scheduler.virtual_clock.now())
 
 
 def test_async_sleep_advances_virtual_clock_zero_wall_time() -> None:

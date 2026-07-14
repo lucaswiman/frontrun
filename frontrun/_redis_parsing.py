@@ -228,9 +228,11 @@ def _keyspace_kind(upper: str, result: RedisAccessResult) -> str | None:
     traffic stays read-read (no new conflicts); only FLUSH* takes a write,
     so it conflicts with every concurrent key access.
     """
-    if result.is_transaction_control:
-        # MULTI/EXEC/DISCARD/UNWATCH/WATCH and Lua scripts (atomic) — the
-        # keyspace lock would only add spurious serialization here.
+    if result.is_transaction_control and upper not in _EVAL_CMDS:
+        # MULTI/EXEC/DISCARD/UNWATCH/WATCH do not execute a keyspace mutation.
+        # Atomic scripts/functions are different: their declared KEYS still
+        # need a command-level dependency (including against FLUSH*), even
+        # though the command itself remains one indivisible I/O envelope.
         return None
     if upper in _KEYSPACE_WRITE_CMDS:
         return "write"
@@ -287,9 +289,23 @@ def _parse_redis_access_keys(upper: str, cmd_args: tuple[object, ...]) -> RedisA
         keys = [str(a) for a in cmd_args]
         return RedisAccessResult(read_keys=keys, write_keys=[], is_transaction_control=True)
 
-    # EVAL/EVALSHA/FCALL — atomic scripts, treated as transaction control (defect #8).
+    # EVAL/EVALSHA/FCALL execute as one atomic Redis command, but opposite
+    # orders of two scripts touching the same declared KEYS can still produce
+    # different results.  Keep the transaction-control marker (the command is
+    # indivisible) while reporting declared keys as one command-level access so
+    # DPOR explores those orderings.  Read-only variants are known reads;
+    # general scripts/functions may write, so classify them conservatively.
     if upper in _EVAL_CMDS:
-        return RedisAccessResult(read_keys=[], write_keys=[], is_transaction_control=True)
+        keys: list[str] = []
+        if len(cmd_args) >= 2:
+            try:
+                numkeys = max(0, int(str(cmd_args[1])))
+            except (TypeError, ValueError):
+                numkeys = 0
+            keys = [str(key) for key in cmd_args[2 : 2 + numkeys]]
+        if upper.endswith("_RO"):
+            return RedisAccessResult(read_keys=keys, write_keys=[], is_transaction_control=True)
+        return RedisAccessResult(read_keys=[], write_keys=keys, is_transaction_control=True)
 
     # Pub/Sub — channels, not keys.  Prefix with "channel:" to distinguish.
     # Includes sharded pub/sub (SPUBLISH, SSUBSCRIBE, SUNSUBSCRIBE).
