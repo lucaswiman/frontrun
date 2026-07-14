@@ -745,6 +745,38 @@ def test_async_timeout_contexts_share_exact_virtual_deadline() -> None:
 
 
 @pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_task_crash_is_not_masked_by_peer_in_virtual_wait_for() -> None:
+    """The first worker error must abort peers parked in managed virtual waits."""
+    async def wait_forever(_state: dict[str, object]) -> None:
+        pending = asyncio.get_running_loop().create_future()
+        await asyncio.wait_for(pending, timeout=10.0)
+
+    async def crash(_state: dict[str, object]) -> None:
+        raise RuntimeError("boom beside virtual timeout")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=dict,
+            workers=[wait_forever, crash],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            deadlock_timeout=0.1,
+            timeout_per_run=0.5,
+            reproduce_on_failure=2,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.counterexample == [0, 1]
+    assert result.explanation is not None
+    assert "RuntimeError: boom beside virtual timeout" in result.explanation
+    assert result.reproduction_attempts == 2
+    assert result.reproduction_successes == 2
+
+
 def test_async_timeout_expiry_order_counterexample_replays_deterministically() -> None:
     """A counterexample that depends on the relative resume order of two
     identical ``asyncio.timeout(1.0)`` expiries must replay: exact virtual
