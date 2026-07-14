@@ -20,11 +20,18 @@ matching the other xproc functional tests.
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 
+import pytest
+
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator
-from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
+from frontrun._dpor_runtime.xproc.dpor_coordinator import (
+    DporCrossProcessCoordinator,
+    _accept_hello_before_total_deadline,
+    _TotalTimeoutExpiredError,
+)
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
 
 
@@ -32,6 +39,46 @@ def _join_worker_threads() -> None:
     for thread in threading.enumerate():
         if thread.name.startswith("xproc-worker-"):
             thread.join(timeout=10.0)
+
+
+def test_total_timeout_shares_budget_between_connect_and_hello(tmp_path) -> None:
+    socket_path = str(tmp_path / "xproc.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(socket_path)
+    listener.listen(1)
+    listener.settimeout(1.0)
+    release = threading.Event()
+
+    def connect_without_hello() -> None:
+        time.sleep(0.2)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(socket_path)
+        try:
+            release.wait(1.0)
+        finally:
+            client.close()
+
+    client_thread = threading.Thread(target=connect_without_hello)
+    client_thread.start()
+    start = time.monotonic()
+    total_timeout = 0.3
+    try:
+        with pytest.raises(_TotalTimeoutExpiredError):
+            _accept_hello_before_total_deadline(
+                listener,
+                object(),  # type: ignore[arg-type] - liveness is irrelevant to this socket-level regression
+                [],
+                connect_budget=1.0,
+                total_deadline=start + total_timeout,
+                total_timeout=total_timeout,
+            )
+    finally:
+        release.set()
+        client_thread.join(timeout=2.0)
+        listener.close()
+
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.42, f"connect + HELLO consumed separate timeout budgets ({elapsed:.3f}s)"
 
 
 # ---------------------------------------------------------------------------

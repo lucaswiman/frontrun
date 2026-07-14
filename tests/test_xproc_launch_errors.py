@@ -678,3 +678,44 @@ def test_mp_worker_installs_interception_before_deserializing_payload(monkeypatc
 
     _mp_worker_entry("unused.sock", 0, b"payload")
     assert installed
+
+
+def test_reused_mp_worker_resets_state_before_deserializing_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reducer-side SQL/Redis state must survive into the reused iteration."""
+    import dill
+
+    from frontrun._dpor_runtime.xproc import worker, worker_main
+
+    events: list[str] = []
+
+    def install(_proxy: object, _worker_id: int) -> None:
+        events.append("install")
+
+    def reset() -> None:
+        events.append("reset")
+
+    def loads(_payload: bytes):
+        events.append("loads")
+        assert events == ["install", "reset", "loads"]
+        return (lambda _state: events.append("target")), None
+
+    def serve(
+        _socket_path: str,
+        _worker_id: int,
+        body: Any,
+        *,
+        on_connect: Any,
+        before_iteration: Any,
+    ) -> None:
+        proxy = object()
+        on_connect(proxy)
+        before_iteration({"t": proto.ITER_START, "payload": "cGF5bG9hZA=="})
+        body(proxy)
+
+    monkeypatch.setattr(worker_main, "_install_interception", install)
+    monkeypatch.setattr(worker_main, "_reset_iteration_state", reset)
+    monkeypatch.setattr(dill, "loads", loads)
+    monkeypatch.setattr(worker, "_serve_persistent", serve)
+
+    _mp_worker_entry("unused.sock", 0, b"initial", reuse=True)
+    assert events == ["install", "reset", "loads", "target"]

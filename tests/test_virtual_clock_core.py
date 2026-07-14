@@ -156,6 +156,37 @@ def test_async_timeout_patch_preserves_preexisting_patch(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_virtual_timeout_reschedule_same_when_ignores_real_loop_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reschedule(cm.when()) is an exact no-op even if only loop time moves."""
+
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.virtual_clock = VirtualClock(epoch=0.0)
+            self.deadlines: dict[object, float] = {}
+
+        def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:  # noqa: ARG002
+            self.deadlines[token] = deadline
+
+        def remove_timeout_deadline(self, task_id: int, token: object) -> None:  # noqa: ARG002
+            self.deadlines.pop(token, None)
+
+    loop = asyncio.get_running_loop()
+    loop_now = 100.0
+    monkeypatch.setattr(loop, "time", lambda: loop_now)
+    scheduler = FakeScheduler()
+    timeout = async_virtual_timeouts._VirtualAsyncTimeoutContext(scheduler, 0, 110.0, deadline=10.0)
+
+    async with timeout:
+        exposed = timeout.when()
+        assert exposed == 110.0
+        loop_now = 100.25
+        timeout.reschedule(exposed)
+        assert list(scheduler.deadlines.values()) == [10.0]
+
+
+@pytest.mark.asyncio
 async def test_overlapping_loop_time_pins_restore_out_of_order() -> None:
     """An earlier owner may exit while a later same-loop exploration remains active."""
     loop = asyncio.get_running_loop()
