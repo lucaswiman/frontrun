@@ -1569,7 +1569,11 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         _set_active_trace_filter(_TraceFilter(trace_packages))
     try:
         with PatchScope() as patch_scope:
-            patch_scope.add(patch_sql, unpatch_sql, enabled=detect_sql and _sql_async_available)
+            patch_scope.add(
+                patch_sql,
+                unpatch_sql,
+                enabled=detect_sql and _bridge_sync_io and _sql_async_available,
+            )
             patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
             patch_scope.add(patch_redis_async, unpatch_redis_async, enabled=detect_redis and _redis_async_available)
             patch_scope.add(_patch_asyncio_lock, _unpatch_asyncio_lock)

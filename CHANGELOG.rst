@@ -138,7 +138,9 @@ Unreleased
   carries async Django's synchronous-driver reports across its worker-thread
   bridge so DPOR can find ORM races instead of serializing them away. Process
   relays publish access traces before the corresponding observable grant, so
-  OS socket-arrival races cannot reorder a replay trace.
+  OS socket-arrival races cannot reorder a replay trace. SQL endpoint identity
+  now matches preload reporting for IPv6 peers, and generic async SQL avoids
+  double-intercepting synchronous driver work on free-threaded Python.
 
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now

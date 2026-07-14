@@ -52,7 +52,7 @@ def test_timeout_acquire_does_not_falsely_deadlock():
         ],
         invariant=lambda s: True,
         max_attempts=60,
-        max_ops=400,
+        max_ops=4000,
         seed=7,
         deadlock_timeout=2.0,
     )

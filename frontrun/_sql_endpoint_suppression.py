@@ -25,6 +25,7 @@ context for socket I/O it does NOT suppress.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import os
 import sys
 import threading
@@ -148,6 +149,28 @@ def is_tid_suppressed(tid: int) -> bool:
         return tid in _suppress_tids or tid in _permanently_suppressed_tids
 
 
+def _socket_resource_id_from_peer(peer: object) -> str | None:
+    """Return the resource identity emitted by the preload socket interceptor."""
+    if isinstance(peer, str):
+        # Unix domain socket — peer is a path string.
+        return f"socket:unix:{peer}" if peer else None
+    if not isinstance(peer, tuple) or len(peer) < 2:
+        return None
+
+    host, port = peer[:2]
+    if not isinstance(host, str):
+        return None
+    if ":" in host:
+        # Rust formats the raw 16 IPv6 address bytes as eight zero-padded,
+        # lowercase groups.  getpeername() normally compresses them (``::1``),
+        # so canonicalize here to keep persistent endpoint suppression exact.
+        try:
+            host = f"[{ipaddress.IPv6Address(host.split('%', 1)[0]).exploded}]"
+        except ipaddress.AddressValueError:
+            return None
+    return f"socket:{host}:{port}"
+
+
 def _socket_resource_id_from_fd(fd: int) -> str | None:
     """Derive the LD_PRELOAD-style resource_id from a socket file descriptor.
 
@@ -170,12 +193,7 @@ def _socket_resource_id_from_fd(fd: int) -> str | None:
             sock.detach()  # detach so sock.__del__ doesn't close dup_fd
     finally:
         os.close(dup_fd)
-    if isinstance(peer, str):
-        # Unix domain socket — peer is a path string
-        return f"socket:unix:{peer}" if peer else None
-    if isinstance(peer, tuple) and len(peer) >= 2:
-        return f"socket:{peer[0]}:{peer[1]}"
-    return None
+    return _socket_resource_id_from_peer(peer)
 
 
 def _resource_id_from_connection(conn: Any) -> str | None:

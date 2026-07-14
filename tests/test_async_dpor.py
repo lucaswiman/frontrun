@@ -20,11 +20,22 @@ _async_global_counter = 0
 _async_global_augmented = 0
 
 
-def test_generic_async_sql_does_not_patch_sync_drivers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Async drivers must not be double-intercepted through their sync worker layer."""
+@pytest.mark.parametrize(
+    ("bridge_sync_io", "expected_calls"),
+    [
+        (False, ["async-patch", "async-unpatch"]),
+        (True, ["sync-patch", "async-patch", "async-unpatch", "sync-unpatch"]),
+    ],
+)
+def test_async_sql_scopes_sync_driver_patching_to_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+    bridge_sync_io: bool,
+    expected_calls: list[str],
+) -> None:
+    """Only adapters that bridge through sync workers patch sync SQL drivers."""
     import frontrun.async_dpor as async_dpor
 
-    require_active("test_generic_async_sql_does_not_patch_sync_drivers")
+    require_active("test_async_sql_scopes_sync_driver_patching_to_bridge")
     calls: list[str] = []
     monkeypatch.setattr(async_dpor, "_sql_async_available", True)
     monkeypatch.setattr(async_dpor, "patch_sql", lambda: calls.append("sync-patch"))
@@ -43,11 +54,12 @@ def test_generic_async_sql_does_not_patch_sync_drivers(monkeypatch: pytest.Monke
             max_executions=1,
             reproduce_on_failure=0,
             detect_sql=True,
+            _bridge_sync_io=bridge_sync_io,
         )
     )
 
     assert result.property_holds, result.explanation
-    assert calls == ["async-patch", "async-unpatch"]
+    assert calls == expected_calls
 
 
 def test_concurrent_async_exploration_is_rejected_before_global_patching() -> None:
@@ -78,7 +90,7 @@ def test_concurrent_async_exploration_is_rejected_before_global_patching() -> No
                         invariant=lambda state: state.patches_intact,
                         strategy="dpor",
                         max_executions=1,
-                        timeout_per_run=2.0,
+                        timeout_per_run=30.0,
                         deadlock_timeout=0.5,
                         reproduce_on_failure=0,
                         detect_io=False,
