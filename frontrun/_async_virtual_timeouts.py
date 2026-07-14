@@ -110,6 +110,36 @@ class _VirtualAsyncTimeoutToken:
             self._on_fire()
 
 
+class _VirtualLoopDeadline(float):
+    """Loop-time value carrying its exact virtual deadline through arithmetic."""
+
+    virtual_deadline: float
+    clock: object
+
+    def __new__(cls, value: float, virtual_deadline: float, clock: object) -> _VirtualLoopDeadline:
+        instance = super().__new__(cls, value)
+        instance.virtual_deadline = virtual_deadline
+        instance.clock = clock
+        return instance
+
+    def __add__(self, other: object) -> Any:
+        if isinstance(other, (int, float)):
+            delta = float(other)
+            return type(self)(float(self) + delta, self.virtual_deadline + delta, self.clock)
+        return NotImplemented
+
+    def __radd__(self, other: object) -> Any:
+        return self.__add__(other)
+
+    def __sub__(self, other: object) -> Any:
+        if isinstance(other, _VirtualLoopDeadline):
+            return float(self) - float(other)
+        if isinstance(other, (int, float)):
+            delta = float(other)
+            return type(self)(float(self) - delta, self.virtual_deadline - delta, self.clock)
+        return NotImplemented
+
+
 async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # noqa: ANN401
     """No-delay replacement for ``asyncio.sleep`` during exploration.
 
@@ -243,13 +273,16 @@ class _VirtualAsyncTimeoutContext:
             # asyncio.Timeout exposes the exact absolute value just passed to
             # reschedule(). Preserve that precision until virtual time moves;
             # subsequent reads need the current-time projection below.
-            return self._when
+            assert self._when is not None
+            value = float(self._when)
+            return _VirtualLoopDeadline(value, self._virtual_deadline, clock)
         # The event loop clock deliberately remains real while explored code
         # consumes virtual time.  Project the remaining virtual duration onto
         # the loop's current coordinate so all documented reschedule forms
         # retain their meaning: cm.when(), cm.when() + delta, and a fresh
         # loop.time() + delta.
-        return asyncio.get_running_loop().time() + (self._virtual_deadline - clock.now())
+        value = asyncio.get_running_loop().time() + (self._virtual_deadline - clock.now())
+        return _VirtualLoopDeadline(value, self._virtual_deadline, clock)
 
     def expired(self) -> bool:
         return self._token.expired if self._token is not None else False
@@ -260,6 +293,8 @@ class _VirtualAsyncTimeoutContext:
         clock = self._scheduler.virtual_clock
         if clock is None:
             return None
+        if isinstance(when, _VirtualLoopDeadline) and when.clock is clock:
+            return when.virtual_deadline
         loop_now = asyncio.get_running_loop().time()
         return clock.now() + (when - loop_now)
 

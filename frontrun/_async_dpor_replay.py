@@ -194,9 +194,11 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                         alive = [t for t in range(self._num_replay_tasks) if t not in self._tasks_done]
                         if alive and all(t in self._sleepers for t in alive):
                             # Every live task is asleep: only time can move.
-                            self._replay_advance_clock()
-                            self._condition.notify_all()
-                            continue
+                            next_deadline = self._deadlines.next_deadline()
+                            if next_deadline is not None:
+                                self._replay_advance_clock(next_deadline)
+                                self._condition.notify_all()
+                                continue
                         try:
                             await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
                         except asyncio.TimeoutError:
@@ -235,8 +237,10 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
             self._condition.notify_all()
             cur = self._current_task
         if cur is not None and self.virtual_clock is not None and cur in self._sleepers:
-            self._replay_advance_clock(self._sleepers[cur])
-            self._condition.notify_all()
+            deadline = self._deadlines.sleep_deadline(cur)
+            if deadline is not None:
+                self._replay_advance_clock(deadline)
+                self._condition.notify_all()
         if self._current_task is None:
             self._finished = True
             return True

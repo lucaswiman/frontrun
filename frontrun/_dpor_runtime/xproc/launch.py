@@ -223,10 +223,10 @@ def _mp_worker_entry(
 
         def refresh_iteration(iter_msg: dict[str, Any]) -> None:
             nonlocal worker_fn, state
+            _reset_iteration_state()
             encoded = iter_msg.get("payload")
             if isinstance(encoded, str):
                 worker_fn, state = dill.loads(base64.b64decode(encoded.encode("ascii")))
-            _reset_iteration_state()
 
         _serve_persistent(
             socket_path,

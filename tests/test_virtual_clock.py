@@ -1313,6 +1313,17 @@ def test_queue_nan_timeout_remains_blocking_until_an_item_arrives() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_random_finished_schedule_does_not_complete_infinite_sleep() -> None:
+    scheduler = OpcodeScheduler([], num_threads=1, virtual_clock=VirtualClock(), clock_mode="virtual")
+    scheduler._finished = True
+
+    scheduler.sleep_until(0, math.inf)
+
+    assert isinstance(scheduler._error, TimeoutError)
+    assert scheduler.virtual_clock is not None
+    assert math.isfinite(scheduler.virtual_clock.now())
+
+
 # ---------------------------------------------------------------------------
 # Timed lock acquires
 # ---------------------------------------------------------------------------

@@ -104,6 +104,7 @@ def test_deadline_coordinator_rejects_nan_and_never_autojumps_to_infinity() -> N
 
     deadlines.add_sleep(1, math.inf, wake_id=1)
     assert deadlines.is_sleeping(1)
+    assert deadlines.sleep_deadline(1) is None
     assert not deadlines.has_pending()
     assert deadlines.next_deadline() is None
     assert deadlines.advance_to_next(clock) == []

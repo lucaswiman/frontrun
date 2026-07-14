@@ -185,6 +185,15 @@ async def test_virtual_timeout_reschedule_same_when_ignores_real_loop_drift(
         timeout.reschedule(exposed)
         assert list(scheduler.deadlines.values()) == [10.0]
 
+        exposed = timeout.when()
+        assert exposed is not None
+        loop_now = 100.5
+        timeout.reschedule(exposed + 2.0)
+        assert list(scheduler.deadlines.values()) == [12.0]
+
+        timeout.reschedule(loop.time() + 1.0)
+        assert list(scheduler.deadlines.values()) == [1.0]
+
 
 @pytest.mark.asyncio
 async def test_overlapping_loop_time_pins_restore_out_of_order() -> None:

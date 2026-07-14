@@ -361,15 +361,27 @@ class DeadlineCoordinator:
             return any(e.actor_id == actor_id and e.kind == "timeout" for e in self._deadlines.values())
 
     def sleep_deadline(self, actor_id: int) -> float | None:
-        """The earliest ``sleep``-kind deadline for *actor_id* (``None`` if none)."""
+        """Earliest advanceable sleep deadline for *actor_id* (``None`` if none).
+
+        A positive-infinity sleep is still registered and visible through
+        :meth:`is_sleeping`, but cannot be advanced or self-woken.
+        """
         with self._lock:
-            deadlines = [e.deadline for e in self._deadlines.values() if e.actor_id == actor_id and e.kind == "sleep"]
+            deadlines = [
+                e.deadline
+                for e in self._deadlines.values()
+                if e.actor_id == actor_id and e.kind == "sleep" and e.deadline < math.inf
+            ]
             return min(deadlines) if deadlines else None
 
     def timed_wait_deadline(self, actor_id: int) -> float | None:
-        """The earliest ``timeout``-kind deadline for *actor_id* (``None`` if none)."""
+        """Earliest advanceable timeout deadline for *actor_id* (``None`` if none)."""
         with self._lock:
-            deadlines = [e.deadline for e in self._deadlines.values() if e.actor_id == actor_id and e.kind == "timeout"]
+            deadlines = [
+                e.deadline
+                for e in self._deadlines.values()
+                if e.actor_id == actor_id and e.kind == "timeout" and e.deadline < math.inf
+            ]
             return min(deadlines) if deadlines else None
 
     def sleeping_actors(self) -> list[int]:
