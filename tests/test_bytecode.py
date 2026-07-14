@@ -504,6 +504,29 @@ def test_explore_random_worker_system_exit_is_not_silent_success() -> None:
     assert exc_info.value.code == 7
 
 
+def test_explore_random_worker_timeout_error_is_a_crash() -> None:
+    """A user TimeoutError must not masquerade as a harness timeout."""
+
+    def fails(_state: object) -> None:
+        raise TimeoutError("user timeout failure")
+
+    result = explore_random(
+        setup=object,
+        threads=[fails],
+        invariant=lambda _state: True,
+        max_attempts=1,
+        max_ops=10,
+        detect_io=False,
+        reproduce_on_failure=0,
+        seed=1,
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Worker crash" in result.explanation
+    assert "TimeoutError: user timeout failure" in result.explanation
+
+
 def test_timeout_counts_as_explored():
     """Timed-out schedules must be counted in both num_explored and unique_interleavings.
 
