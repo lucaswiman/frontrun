@@ -1256,6 +1256,63 @@ def test_event_wait_nan_matches_threading_immediate_false() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_nonfinite_threading_timeouts_match_cpython() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = threading.Event()
+            self.condition = threading.Condition()
+            self.event_result: bool | None = None
+            self.condition_result: bool | None = None
+            self.lock_errors: list[type[BaseException]] = []
+
+    def worker(s: State) -> None:
+        s.event_result = s.event.wait(timeout=math.nan)
+        with s.condition:
+            s.condition_result = s.condition.wait(timeout=math.nan)
+        for factory in (threading.Lock, threading.RLock):
+            for timeout in (math.nan, math.inf, -math.inf):
+                lock = factory()
+                try:
+                    lock.acquire(timeout=timeout)
+                except BaseException as exc:  # noqa: BLE001 - compare the public exception contract
+                    s.lock_errors.append(type(exc))
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=lambda s: (
+            s.event_result is False
+            and s.condition_result is False
+            and s.lock_errors == [ValueError, OverflowError, OverflowError] * 2
+        ),
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_queue_nan_timeout_remains_blocking_until_an_item_arrives() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.queue: queue.Queue[str] = queue.Queue()
+            self.item: str | None = None
+
+    def getter(s: State) -> None:
+        s.item = s.queue.get(timeout=math.nan)
+
+    def putter(s: State) -> None:
+        s.queue.put("ready")
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[getter, putter],
+        invariant=lambda s: s.item == "ready",
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
 # ---------------------------------------------------------------------------
 # Timed lock acquires
 # ---------------------------------------------------------------------------

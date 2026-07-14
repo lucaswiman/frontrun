@@ -227,6 +227,30 @@ def test_async_sleep_nan_matches_asyncio_value_error() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_async_sleep_infinity_stays_cancellable_by_finite_timeout() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.elapsed: float | None = None
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(asyncio.sleep(math.inf), timeout=1.0)
+        except TimeoutError:
+            s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.elapsed is not None and s.elapsed == pytest.approx(1.0),
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_expiry_converts_cancelled_error_subclasses() -> None:
     # Real asyncio.Timeout.__aexit__ converts any CancelledError *subclass*

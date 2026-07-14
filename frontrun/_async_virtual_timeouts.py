@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 from collections.abc import Awaitable, Callable
 from threading import get_ident
 from typing import Any
@@ -128,6 +129,8 @@ async def _cooperative_async_sleep(delay: float, result: Any = None) -> Any:  # 
         # the outermost frontrun scope.
         sleep = _saved_asyncio_sleep if _async_sleep_patch_count > 0 else _real_asyncio_sleep
         return await sleep(delay, result)
+    if math.isnan(delay):
+        raise ValueError("Invalid delay: NaN (not a number)")
     if delay and delay > 0:
         clock = scheduler.virtual_clock
         sleep_until = getattr(scheduler, "sleep_until", None)
@@ -211,22 +214,14 @@ class _VirtualAsyncTimeoutContext:
         self._initial_when = when
         self._initial_deadline = deadline
         self._when = when
+        self._virtual_deadline = deadline
+        self._exact_when_virtual: float | None = None
         self._token: _VirtualAsyncTimeoutToken | None = None
         self._task: asyncio.Task[Any] | None = None
         self._cancelling = 0
         self._immediate_handle: asyncio.Handle | None = None
         self._entered = False
         self._exited = False
-        # Loop-time ↔ virtual-time anchor, recorded at __aenter__.  The loop
-        # clock stays on *real* time while the guarded block consumes
-        # *virtual* time, so translating a rescheduled `when` via
-        # "remaining = when - loop.time()" would re-add every virtual second
-        # already spent inside the block (reschedule(cm.when()) — a no-op per
-        # asyncio semantics — would push the deadline back by exactly the
-        # virtual time elapsed so far).  Anchoring at entry keeps `when()`
-        # arithmetic (`cm.reschedule(cm.when() + 5)`) exact.
-        self._loop_entry: float | None = None
-        self._virtual_entry: float | None = None
 
     async def __aenter__(self) -> _VirtualAsyncTimeoutContext:
         if self._entered:
@@ -235,15 +230,26 @@ class _VirtualAsyncTimeoutContext:
         self._task = asyncio.current_task()
         if self._task is not None:
             self._cancelling = self._task.cancelling()
-        clock = self._scheduler.virtual_clock
-        if clock is not None:
-            self._loop_entry = asyncio.get_running_loop().time()
-            self._virtual_entry = clock.now()
         self._reschedule(self._initial_when, deadline=self._initial_deadline)
         return self
 
     def when(self) -> float | None:
-        return self._when
+        if not self._entered or self._virtual_deadline is None:
+            return self._when
+        clock = self._scheduler.virtual_clock
+        if clock is None:
+            return self._when
+        if self._exact_when_virtual == clock.now():
+            # asyncio.Timeout exposes the exact absolute value just passed to
+            # reschedule(). Preserve that precision until virtual time moves;
+            # subsequent reads need the current-time projection below.
+            return self._when
+        # The event loop clock deliberately remains real while explored code
+        # consumes virtual time.  Project the remaining virtual duration onto
+        # the loop's current coordinate so all documented reschedule forms
+        # retain their meaning: cm.when(), cm.when() + delta, and a fresh
+        # loop.time() + delta.
+        return asyncio.get_running_loop().time() + (self._virtual_deadline - clock.now())
 
     def expired(self) -> bool:
         return self._token.expired if self._token is not None else False
@@ -254,14 +260,8 @@ class _VirtualAsyncTimeoutContext:
         clock = self._scheduler.virtual_clock
         if clock is None:
             return None
-        if self._loop_entry is not None and self._virtual_entry is not None:
-            # Translate through the entry anchor (see __init__): loop-time
-            # offsets from entry are virtual-time offsets from entry.  A
-            # deadline the virtual clock has already passed fires immediately
-            # via the call_soon path in _reschedule.
-            return self._virtual_entry + (when - self._loop_entry)
         loop_now = asyncio.get_running_loop().time()
-        return clock.now() + max(0.0, when - loop_now)
+        return clock.now() + (when - loop_now)
 
     def reschedule(self, when: float | None) -> None:
         self._reschedule(when, translate=True)
@@ -282,6 +282,9 @@ class _VirtualAsyncTimeoutContext:
         self._when = when
         if translate:
             deadline = self._to_virtual_deadline(when)
+        self._virtual_deadline = deadline
+        clock = self._scheduler.virtual_clock
+        self._exact_when_virtual = clock.now() if translate and deadline is not None and clock is not None else None
         if deadline is None or self._task is None:
             return
 
