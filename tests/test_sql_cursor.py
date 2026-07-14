@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, call
 import pytest
 
 import frontrun._sql_cursor as sql_cursor_mod
+import frontrun._sql_endpoint_suppression as endpoint_suppression
 from frontrun._io_detection import _io_tls, set_io_reporter
 from frontrun._sql_cursor import (
     _ORIGINAL_METHODS,
@@ -76,6 +77,13 @@ def _make_db() -> sqlite3.Connection:
     orig_execute(cur, "INSERT INTO orders VALUES (1, 1, 99.99)")
     conn.commit()
     return conn
+
+
+def test_ipv6_peer_resource_id_matches_preload_format() -> None:
+    """Python endpoint suppression must use the Rust preload IPv6 identity."""
+    assert endpoint_suppression._socket_resource_id_from_peer(("::1", 5432, 0, 0)) == (
+        "socket:[0000:0000:0000:0000:0000:0000:0000:0001]:5432"
+    )
 
 
 def _make_fresh_db() -> sqlite3.Connection:

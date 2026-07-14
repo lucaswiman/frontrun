@@ -20,6 +20,36 @@ _async_global_counter = 0
 _async_global_augmented = 0
 
 
+def test_generic_async_sql_does_not_patch_sync_drivers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Async drivers must not be double-intercepted through their sync worker layer."""
+    import frontrun.async_dpor as async_dpor
+
+    require_active("test_generic_async_sql_does_not_patch_sync_drivers")
+    calls: list[str] = []
+    monkeypatch.setattr(async_dpor, "_sql_async_available", True)
+    monkeypatch.setattr(async_dpor, "patch_sql", lambda: calls.append("sync-patch"))
+    monkeypatch.setattr(async_dpor, "unpatch_sql", lambda: calls.append("sync-unpatch"))
+    monkeypatch.setattr(async_dpor, "patch_sql_async", lambda: calls.append("async-patch"))
+    monkeypatch.setattr(async_dpor, "unpatch_sql_async", lambda: calls.append("async-unpatch"))
+
+    async def worker(_state: object) -> None:
+        return None
+
+    result = asyncio.run(
+        async_dpor._explore_async_dpor(
+            setup=object,
+            tasks=[worker],
+            invariant=lambda _state: True,
+            max_executions=1,
+            reproduce_on_failure=0,
+            detect_sql=True,
+        )
+    )
+
+    assert result.property_holds, result.explanation
+    assert calls == ["async-patch", "async-unpatch"]
+
+
 def test_concurrent_async_exploration_is_rejected_before_global_patching() -> None:
     """A losing concurrent run must not unpatch the active run's primitives."""
     from frontrun._async_cooperative import _CooperativeAsyncEvent, _CooperativeAsyncLock
