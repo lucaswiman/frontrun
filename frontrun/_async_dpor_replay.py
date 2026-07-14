@@ -55,6 +55,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         clock_actor_id: int | None = None,
         detect_sql: bool = False,
         detect_redis: bool = False,
+        bridge_sync_io: bool = False,
     ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
         self._condition = _real_asyncio_condition()
@@ -69,6 +70,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         self._clock_actor_id = clock_actor_id
         self._deadlines = DeadlineCoordinator()
         self._naturally_timeout_blocked: set[int] = set()
+        self._bridge_sync_io = bridge_sync_io
         self._sleepers: dict[int, float] = {}
         # Recorded actor entries reached before any deadline was registered
         # (drift): the owed advance is performed at the next registration.
@@ -118,8 +120,12 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         if self._deadlines.in_timed_wait(task_id):
             self._naturally_timeout_blocked.add(task_id)
             self.execution.block_thread(task_id)
+        elif self._bridge_sync_io:
+            self._event_blocked.add(task_id)
+            self._notify_waiters_soon()
 
     def on_task_resumed(self, task_id: int) -> None:
+        self._event_blocked.discard(task_id)
         if task_id in self._naturally_timeout_blocked:
             self._naturally_timeout_blocked.discard(task_id)
             self.execution.unblock_thread(task_id)

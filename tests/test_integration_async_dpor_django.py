@@ -44,7 +44,6 @@ if not settings.configured:
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.db import connection, connections  # noqa: E402
 
-import frontrun  # noqa: E402
 from frontrun.async_dpor import await_point  # noqa: E402
 from frontrun.contrib.django import async_django_dpor  # noqa: E402
 
@@ -173,12 +172,12 @@ class TestAsyncDporDjango:
         async def activate(state: _State, idx: int) -> None:
             from asgiref.sync import sync_to_async
 
-            user = await sync_to_async(User.objects.get, thread_sensitive=False)(username="async_testuser")
+            user = await sync_to_async(User.objects.get)(username="async_testuser")
             is_active = user.is_active
             await await_point()
             if not is_active:
                 user.is_active = True
-                await sync_to_async(user.save, thread_sensitive=False)()
+                await sync_to_async(user.save)()
                 state.results[idx] = "activated"
             else:
                 state.results[idx] = "already_active"
@@ -193,19 +192,24 @@ class TestAsyncDporDjango:
             return not (state.results[0] == "activated" and state.results[1] == "activated")
 
         async def run_test():
-            return await frontrun.explore(
-                setup=_State,
-                workers=[make_task(0), make_task(1)],
-                invariant=invariant,
-                detect_io=True,
-                deadlock_timeout=10.0,
-                timeout_per_run=15.0,
-            )
+            from asgiref.sync import ThreadSensitiveContext
+
+            async with ThreadSensitiveContext():
+                return await async_django_dpor(
+                    setup=_State,
+                    tasks=[make_task(0), make_task(1)],
+                    invariant=invariant,
+                    detect_sql=True,
+                    deadlock_timeout=10.0,
+                    timeout_per_run=15.0,
+                )
 
         result = asyncio.run(run_test())
         assert not result.property_holds, (
             f"Async DPOR should detect the double-activation race. Explored {result.num_explored} interleavings."
         )
+        assert result.reproduction_attempts == 10
+        assert result.reproduction_successes == 10
 
     def test_exploration_completes(self, _pg_available) -> None:
         """Verify exploration completes without deadlock with Django async."""
@@ -218,17 +222,20 @@ class TestAsyncDporDjango:
         async def read_only(state: _State) -> None:
             from asgiref.sync import sync_to_async
 
-            await sync_to_async(User.objects.get, thread_sensitive=False)(username="async_testuser2")
+            await sync_to_async(User.objects.get)(username="async_testuser2")
             await await_point()
 
         async def run_test():
-            return await frontrun.explore(
-                setup=_State,
-                workers=[read_only, read_only],
-                invariant=lambda s: True,
-                detect_io=True,
-                deadlock_timeout=10.0,
-            )
+            from asgiref.sync import ThreadSensitiveContext
+
+            async with ThreadSensitiveContext():
+                return await async_django_dpor(
+                    setup=_State,
+                    tasks=[read_only, read_only],
+                    invariant=lambda s: True,
+                    detect_sql=True,
+                    deadlock_timeout=10.0,
+                )
 
         result = asyncio.run(run_test())
         assert result.property_holds

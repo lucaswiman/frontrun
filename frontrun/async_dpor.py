@@ -268,6 +268,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         deadlock_timeout: float = 5.0,
         detect_sql: bool = False,
         detect_redis: bool = False,
+        bridge_sync_io: bool = False,
         stable_ids: StableObjectIds | None = None,
         virtual_clock: VirtualClock | None = None,
         clock_mode: str = "real",
@@ -330,6 +331,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._current_task: int | None = None
         self._detect_sql = detect_sql
         self._detect_redis = detect_redis
+        self._bridge_sync_io = bridge_sync_io
         self._engine_lock = NoOpLock()
         self.trace_recorder = None
         self._iter_to_container: dict[int, Any] = {}
@@ -393,8 +395,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             self._schedule_seq += 1
 
     def on_task_suspended(self, task_id: int) -> None:
-        bridged_external_io = (self._detect_sql or self._detect_redis) and self._has_live_external_threads()
-        if self._deadlines.in_timed_wait(task_id) or bridged_external_io:
+        if self._deadlines.in_timed_wait(task_id) or self._bridge_sync_io:
             self._naturally_blocked.add(task_id)
             self.execution.block_thread(task_id)
             asyncio.get_running_loop().create_task(self.kick_stalled_schedule(task_id))
@@ -1219,6 +1220,7 @@ async def run_with_schedule_dpor(
     deadlock_timeout: float = 5.0,
     detect_sql: bool = False,
     detect_redis: bool = False,
+    bridge_sync_io: bool = False,
 ) -> Any:
     """Run one async DPOR execution and return the state object.
 
@@ -1303,6 +1305,7 @@ async def _reproduce_async_counterexample(
     clock: ClockMode = "real",
     detect_sql: bool = False,
     detect_redis: bool = False,
+    bridge_sync_io: bool = False,
     expected_task_error: tuple[type[Exception], str] | None = None,
 ) -> tuple[int, int]:
     """Measure how often an async DPOR counterexample reproduces."""
@@ -1321,6 +1324,7 @@ async def _reproduce_async_counterexample(
             clock_actor_id=clock_config.actor_id(num_tasks),
             detect_sql=detect_sql,
             detect_redis=detect_redis,
+            bridge_sync_io=bridge_sync_io,
         )
         # One clock_context owns the time.* patch across setup + tasks +
         # invariant for this replay attempt.
@@ -1396,6 +1400,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     error_on_any_race: bool = False,
     clock: ClockMode = "real",
     clock_diagnostics: bool = False,
+    _bridge_sync_io: bool = False,
 ) -> InterleavingResult:
     """Systematically explore async interleavings using DPOR.
 
@@ -1531,6 +1536,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             clock=clock,
             detect_sql=detect_sql,
             detect_redis=detect_redis,
+            bridge_sync_io=_bridge_sync_io,
             expected_task_error=(type(task_error), str(task_error)) if task_error is not None else None,
         )
         result.reproduction_attempts = attempts
@@ -1594,6 +1600,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                     deadlock_timeout=deadlock_timeout,
                     detect_sql=detect_sql,
                     detect_redis=detect_redis,
+                    bridge_sync_io=_bridge_sync_io,
                     stable_ids=stable_ids,
                     virtual_clock=virtual_clock,
                     clock_mode=clock,
