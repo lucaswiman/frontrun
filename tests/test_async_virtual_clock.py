@@ -259,12 +259,15 @@ def test_async_random_schedule_exhaustion_still_advances_virtual_sleep(clock: st
     is exhausted must still advance the clock to its deadline (mirrors the
     sync max_ops regression) instead of returning with the clock frozen."""
 
+    observed_elapsed: list[float] = []
+
     async def worker(s: _SleepObserver) -> None:
         for _ in range(300):
             await asyncio.sleep(0)  # burn the schedule (max_ops=10)
         s.start = time.monotonic()
         await asyncio.sleep(120.0)
         s.end = time.monotonic()
+        observed_elapsed.append(s.end - s.start)
 
     result = asyncio.run(
         frontrun.explore(
@@ -279,7 +282,10 @@ def test_async_random_schedule_exhaustion_still_advances_virtual_sleep(clock: st
             timeout_per_run=2.0,
         )
     )
-    assert result.property_holds, result.explanation
+    assert observed_elapsed == [pytest.approx(120.0)]
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "max_ops" in result.explanation
 
 
 def test_async_random_explored_clock_can_fire_timer_early() -> None:

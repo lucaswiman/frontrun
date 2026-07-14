@@ -21,9 +21,11 @@ scheduler.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from typing import Any
+import functools
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, ParamSpec, TypeVar
 
+from frontrun import _real_threading as _rt
 from frontrun._async_autopause import _in_scheduler_pause, _scheduler_var, _task_id_var
 from frontrun._deadlock import DeadlockError, WaitForGraph, format_cycle
 from frontrun._dpor_core import event_wake_sync_id
@@ -40,6 +42,7 @@ __all__ = [
     "_async_parked_queues",
     "_async_task_held_locks",
     "_async_wake_sync_id",
+    "_guard_async_exploration",
     "_patch_asyncio_event",
     "_patch_asyncio_lock",
     "_patch_asyncio_queue_condition",
@@ -53,6 +56,28 @@ __all__ = [
     "_wake_parked_async_event_waiters",
     "_wake_parked_async_primitive_waiters",
 ]
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_async_exploration_lock = _rt.lock()
+
+
+def _guard_async_exploration(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Coroutine[Any, Any, _R]]:
+    """Reject overlapping async explorations before global patching begins."""
+
+    @functools.wraps(func)
+    async def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if not _async_exploration_lock.acquire(blocking=False):
+            raise RuntimeError(
+                "concurrent async exploration is unsupported because asyncio patches and scheduler state are process-wide"
+            )
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            _async_exploration_lock.release()
+
+    return guarded
+
 
 # Saved originals, captured before any patching runs.
 _real_asyncio_lock = asyncio.Lock

@@ -156,7 +156,7 @@ def _patch_async_redis_targets() -> None:
         def _make_patched(
             orig: Any, *, _method_name: str = target.method_name, _class_name: str = target.class_name
         ) -> Any:
-            if _class_name == "Pipeline":
+            if _class_name == "Pipeline" and _method_name == "execute":
 
                 async def _patched(self: Any, *args: Any, **kwargs: Any) -> Any:
                     return await _intercept_pipeline_execute_async(orig, self, *args, **kwargs)

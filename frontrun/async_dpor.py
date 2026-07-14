@@ -73,6 +73,7 @@ from frontrun._async_cooperative import (
     _CooperativeAsyncEvent,  # noqa: F401  # re-exported for tests
     _CooperativeAsyncLock,  # noqa: F401  # re-exported for tests
     _CooperativeAsyncQueue,  # noqa: F401  # re-exported for tests
+    _guard_async_exploration,
     _patch_asyncio_event,
     _patch_asyncio_lock,
     _patch_asyncio_queue_condition,
@@ -310,6 +311,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._clock_actor_id = clock_actor_id
         self._clock_diagnostics = clock_diagnostics
         self._deadlines = DeadlineCoordinator()
+        self._naturally_timeout_blocked: set[int] = set()
         self._last_scheduled_path_id: int | None = None
         self._current_path_id: int | None = None
         self._current_task_consumed = False
@@ -382,6 +384,16 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             # it to tell whether the jump it was armed for is still owed.
             self._schedule_seq += 1
 
+    def on_task_suspended(self, task_id: int) -> None:
+        if self._deadlines.in_timed_wait(task_id):
+            self._naturally_timeout_blocked.add(task_id)
+            self.execution.block_thread(task_id)
+
+    def on_task_resumed(self, task_id: int) -> None:
+        if task_id in self._naturally_timeout_blocked:
+            self._naturally_timeout_blocked.discard(task_id)
+            self.execution.unblock_thread(task_id)
+
     def _activate_current_task_path(self, task_id: int) -> None:
         if self._current_task == task_id and self._current_path_id is not None:
             self._active_path_ids[task_id] = self._current_path_id
@@ -415,6 +427,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         fire = getattr(event.token, "fire", None)
         if fire is not None:
             fire()
+        self._naturally_timeout_blocked.discard(tid)
         self._lock_blocked.pop(tid, None)
         self._event_blocked.discard(tid)
         self.execution.unblock_thread(tid)
@@ -1340,6 +1353,7 @@ async def _reproduce_async_counterexample(
     return reproduce_on_failure, successes
 
 
+@_guard_async_exploration
 async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-module by frontrun._strategy and contrib helpers
     setup: Callable[[], T],
     tasks: list[Callable[[T], Coroutine[Any, Any, None]]],

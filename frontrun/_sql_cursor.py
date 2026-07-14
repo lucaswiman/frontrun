@@ -51,6 +51,7 @@ from frontrun._sql_endpoint_suppression import (
     suppress_sql_endpoint,
     suppress_sql_write,
     suppress_tid_permanently,
+    unsuppress_tid_permanently,
 )
 from frontrun._sql_insert_tracker import record_insert, resolve_alias
 from frontrun._sql_parsing import (
@@ -58,7 +59,7 @@ from frontrun._sql_parsing import (
     TxOp,
     parse_sql_access,
 )
-from frontrun._sql_patch_registry import CONNECT_FACTORY_TARGETS, PYTHON_CURSOR_TARGETS
+from frontrun._sql_patch_registry import CONNECT_FACTORY_TARGETS, PYTHON_CONNECTION_TARGETS, PYTHON_CURSOR_TARGETS
 from frontrun._sql_row_locks import _acquire_pending_row_locks, _release_dpor_row_locks
 from frontrun._sql_transactions import (
     _apply_tx_op_after_success,
@@ -816,13 +817,11 @@ def _intercept_execute_scoped(
     # already seen an explicit BEGIN.
     _detect_autobegin(self)
 
-    # Permanently suppress LD_PRELOAD *socket* events for this thread.
-    # SQL-level reporting (table/row granularity) supersedes socket-level
-    # I/O.  The listener only applies tid suppression to socket events,
-    # so non-SQL file I/O from this thread passes through.
-    # The patched connect() also registers the connection's socket endpoint
-    # for endpoint-based suppression (which handles remote connections).
-    suppress_tid_permanently()
+    # Register the concrete database endpoint for delayed LD_PRELOAD events.
+    # On-stack events are covered by _suppress_endpoint_io below. Suppressing
+    # the entire native thread beyond this call would hide later C-extension
+    # socket I/O to unrelated endpoints.
+    suppress_sql_endpoint(_connection_for_db_object(self))
 
     deferred_tx_end: list[Any] = []
     reported = _report_sql_access(
@@ -1192,14 +1191,35 @@ def _patch_class_methods(cls: type, paramstyle: str) -> None:
         )
 
 
+def _patch_python_connection_methods(cls: type) -> None:
+    """Patch transaction completion on a mutable pure-Python connection class."""
+    for method_name in ("commit", "rollback", "close"):
+
+        def _make_patched(orig: Any, *, _method_name: str = method_name) -> Any:
+            def _patched(self: Any, *args: Any, **kwargs: Any) -> Any:
+                def call() -> Any:
+                    return orig(self, *args, **kwargs)
+
+                if _method_name == "close":
+                    return _run_connection_close(call, self)
+                operation = _method_name.upper()
+                suppress_sql_write(operation)
+                return _run_connection_tx_method(call, operation, self)
+
+            return wrap_method_metadata(_patched, orig, name=_method_name)
+
+        patch_method(
+            cls,
+            method_name,
+            originals=_ORIGINAL_METHODS,
+            patches=_PATCHES,
+            make_wrapper=_make_patched,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-# Drivers to attempt patching via direct class method replacement (pure Python)
-_PYTHON_CURSOR_TARGETS: list[tuple[str, str, str]] = [
-    ("pymysql.cursors", "Cursor", "pymysql"),
-]
 
 
 def patch_sql() -> None:
@@ -1223,6 +1243,13 @@ def patch_sql() -> None:
             _patch_class_methods(cls, paramstyle)
         except (ImportError, AttributeError):
             pass  # driver not installed — skip silently
+
+    for target in PYTHON_CONNECTION_TARGETS:
+        try:
+            module = importlib.import_module(target.module_path)
+            _patch_python_connection_methods(getattr(module, target.class_name))
+        except (ImportError, AttributeError):
+            pass
 
     def _make_patched_connect(
         orig: Any,
@@ -1251,16 +1278,16 @@ def patch_sql() -> None:
             suppress_tid_permanently()
             _ssr()
             try:
-                conn = orig(*args, **kwargs)
+                try:
+                    conn = orig(*args, **kwargs)
+                    # Establish endpoint identity before releasing the
+                    # connect-time TID suppression so delayed DB events remain
+                    # filtered without hiding unrelated future sockets.
+                    suppress_sql_endpoint(conn)
+                finally:
+                    unsuppress_tid_permanently()
             finally:
                 _usr()
-            # Now that the connection is established, register its socket
-            # endpoint for permanent suppression.  The thread-level tid
-            # suppression remains as a belt-and-suspenders fallback for
-            # any socket events that raced through the pipe before the
-            # endpoint was registered.  The listener only uses tid
-            # suppression for *socket* events, so file I/O passes through.
-            suppress_sql_endpoint(conn)
             _wrap_connection_tx_methods(conn)
             _wrap_connection_cursor(conn, paramstyle)
             identity = _normalize_db_identity("connection", conn)

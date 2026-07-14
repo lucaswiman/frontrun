@@ -68,6 +68,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         self.virtual_clock = virtual_clock
         self._clock_actor_id = clock_actor_id
         self._deadlines = DeadlineCoordinator()
+        self._naturally_timeout_blocked: set[int] = set()
         self._sleepers: dict[int, float] = {}
         # Recorded actor entries reached before any deadline was registered
         # (drift): the owed advance is performed at the next registration.
@@ -113,11 +114,22 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         """Sleep-arm of a replay clock advance: drop the sleeper (no engine)."""
         self._sleepers.pop(event.actor_id, None)
 
+    def on_task_suspended(self, task_id: int) -> None:
+        if self._deadlines.in_timed_wait(task_id):
+            self._naturally_timeout_blocked.add(task_id)
+            self.execution.block_thread(task_id)
+
+    def on_task_resumed(self, task_id: int) -> None:
+        if task_id in self._naturally_timeout_blocked:
+            self._naturally_timeout_blocked.discard(task_id)
+            self.execution.unblock_thread(task_id)
+
     def _on_clock_timeout(self, event: WakeEvent) -> None:
         """Timeout-arm of a replay clock advance: fire the token, scrub blocked sets."""
         fire = getattr(event.token, "fire", None)
         if fire is not None:
             fire()
+        self._naturally_timeout_blocked.discard(event.actor_id)
         self._lock_blocked.pop(event.actor_id, None)
         self._event_blocked.discard(event.actor_id)
 
@@ -285,7 +297,9 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         for res_id in resource_ids:
             lock_id = self._row_lock_registry._row_lock_int_id(res_id)
             while (holder := self._active_row_locks.get(res_id)) is not None and holder != task_id:
-                if graph is not None:
+                # Match exploration: a pending virtual timeout guarantees this
+                # wait can be cancelled, so it cannot close a permanent cycle.
+                if graph is not None and not self._deadlines.in_timed_wait(task_id):
                     cycle = graph.add_waiting(task_id, lock_id, kind="row_lock")
                     if cycle is not None:
                         graph.remove_waiting(task_id, lock_id, kind="row_lock")

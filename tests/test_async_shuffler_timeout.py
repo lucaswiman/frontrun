@@ -166,22 +166,16 @@ def test_slow_but_correct_run_cannot_return_passing_proof() -> None:
     it) and only surfaces a genuinely-detected deadlock.  explore_async_random
     conflated the two, reporting *any* run over timeout_per_run as
     property_holds=False "Deadlock detected" — a false counterexample for
-    correct-but-slow code.  Here the tasks are pure CPU work (no await), so the
-    scheduler never detects a deadlock; the run only exceeds the wall-clock
-    timeout.
+    correct-but-slow code. Here the tasks wait on an unmanaged wall timer that
+    exceeds the per-run timeout.
     """
-    import time
 
     class State:
         def __init__(self) -> None:
             self.value = 0
 
     async def slow_task(state: State) -> None:
-        # Correct, no deadlock: a pure CPU stretch that exceeds the tiny
-        # per-run timeout.  The scheduler never detects a deadlock.
-        deadline = time.perf_counter() + 0.5
-        while time.perf_counter() < deadline:
-            pass
+        await asyncio.sleep(0.5)
         state.value += 1
 
     result = asyncio.run(
@@ -192,6 +186,7 @@ def test_slow_but_correct_run_cannot_return_passing_proof() -> None:
             max_attempts=2,
             timeout_per_run=0.1,
             deadlock_timeout=5.0,
+            patch_sleep=False,
             seed=1,
         )
     )

@@ -257,6 +257,7 @@ class InterleavedLoop:
     _event_blocked: "set[int] | None" = None
     #: Stable object-id registry, or None (fall back to id()).
     _stable_ids: Any = None
+    _classify_unmanaged_stall_as_deadlock = True
 
     async def kick_stalled_schedule(self, task_id: int) -> None:
         """Hand the turn onward after a task engine-blocked itself (no-op default)."""
@@ -269,6 +270,12 @@ class InterleavedLoop:
 
     def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
         """Report a memory / resource access to the engine (no-op default)."""
+
+    def on_task_suspended(self, task_id: int) -> None:
+        """Mark an ordinary natural await as physically suspended."""
+
+    def on_task_resumed(self, task_id: int) -> None:
+        """Mark a naturally suspended task runnable before its next pause."""
 
     def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
         """Register a virtual timeout deadline (no-op default)."""
@@ -590,6 +597,12 @@ class InterleavedLoop:
                     # pending deadline (default: no clock, returns False).
                     if self._advance_virtual_deadline_for_idle():
                         self._condition.notify_all()
+                        continue
+                    if not self._classify_unmanaged_stall_as_deadlock:
+                        # A quiet unmanaged awaitable may still be a timer,
+                        # socket, subprocess, or externally completed Future.
+                        # Keep watching until the overall run timeout, which
+                        # the caller will report as inconclusive.
                         continue
                     if self._error is None:
                         self._error = SchedulerTimeoutError(

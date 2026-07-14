@@ -57,6 +57,7 @@ __all__ = [
     "suppress_sql_endpoint",
     "suppress_sql_write",
     "suppress_tid_permanently",
+    "unsuppress_tid_permanently",
 ]
 
 
@@ -225,6 +226,14 @@ def suppress_tid_permanently(tid: int | None = None) -> None:
         tid = threading.get_native_id()
     with _suppress_lock:
         _permanently_suppressed_tids.add(tid)
+
+
+def unsuppress_tid_permanently(tid: int | None = None) -> None:
+    """Remove connect-time native-thread suppression after endpoint discovery."""
+    if tid is None:
+        tid = threading.get_native_id()
+    with _suppress_lock:
+        _permanently_suppressed_tids.discard(tid)
 
 
 def is_sql_endpoint_suppressed(resource_id: str) -> bool:

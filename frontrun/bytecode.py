@@ -509,7 +509,7 @@ class BytecodeShuffler:
         self.scheduler = scheduler
         self.detect_io = detect_io
         self.threads: list[threading.Thread] = []
-        self.errors: dict[int, Exception] = {}
+        self.errors: dict[int, BaseException] = {}
         self._lock_patched = False
         self._io_patched = False
         self._sleep_patched = False
@@ -695,9 +695,15 @@ class BytecodeShuffler:
                 func(*args, **kwargs)
         except SchedulerAbort:
             pass  # scheduler already has the error; just exit cleanly
-        except Exception as e:
+        except BaseException as e:  # noqa: BLE001
             self.errors[thread_id] = e
-            self.scheduler.report_error(e)
+            if isinstance(e, Exception):
+                self.scheduler.report_error(e)
+            else:
+                # Worker BaseExceptions do not cross the thread boundary on
+                # their own. Wake peers with an ordinary scheduler error;
+                # run() re-raises the original object on the driver thread.
+                self.scheduler.report_error(RuntimeError(f"worker {thread_id} terminated with {type(e).__name__}"))
 
     def run(
         self,
@@ -1029,15 +1035,21 @@ def explore_random(
                 )
                 return result
             except TimeoutError:
-                # The run did not complete within timeout_per_run; worker
-                # threads may still be mutating the state.  Skip this schedule
-                # as inconclusive rather than evaluating the invariant on a
-                # half-finished racing state (finding 9d).
+                # Python threads cannot be killed safely. The partial state is
+                # inconclusive, and survivors may keep mutating globals, so no
+                # later attempt in this exploration is trustworthy.
                 if debug:
-                    print(f"Skipping timed-out schedule: {schedule}", flush=True)
+                    print(f"Aborting after timed-out schedule: {schedule}", flush=True)
                 result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))
-                continue
+                result.property_holds = False
+                result.unique_interleavings = len(seen_schedule_hashes)
+                result.explanation = (
+                    f"Random exploration timed out before workers completed on attempt {result.num_explored}. "
+                    "The search is inconclusive because Python threads cannot be killed safely; increase "
+                    "timeout_per_run/deadlock_timeout or remove unmanaged blocking from explored workers."
+                )
+                return result
             except _WorkerExecutionError as worker_err:
                 result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))

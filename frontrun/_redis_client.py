@@ -353,7 +353,7 @@ _ORIGINAL_METHODS: dict[tuple[type, str], Any] = {}
 
 
 def _patch_redis_py() -> None:
-    """Patch redis-py ``Redis.execute_command`` and ``Pipeline.execute``."""
+    """Patch redis-py command, immediate transaction, and pipeline execution."""
     for target in SYNC_REDIS_TARGETS:
         try:
             module = importlib.import_module(target.module_name)

@@ -55,7 +55,7 @@ from frontrun._async_autopause import (
     await_point,  # noqa: F401
     wrap_auto_paused_tasks,
 )
-from frontrun._async_cooperative import _real_asyncio_sleep
+from frontrun._async_cooperative import _guard_async_exploration, _real_asyncio_sleep
 from frontrun._random_schedules import burst_round, fair_schedule_strategy, random_round_robin_schedule
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
@@ -521,6 +521,8 @@ class AsyncShuffler:
         args: list[tuple[Any, ...]] | None = None,
         kwargs: list[dict[str, Any]] | None = None,
         timeout: float = 10.0,
+        *,
+        detect_external_deadlock: bool = True,
     ):
         """Run async functions concurrently with controlled interleaving.
 
@@ -541,15 +543,16 @@ class AsyncShuffler:
         }
 
         self.timed_out = False
+        self.scheduler._classify_unmanaged_stall_as_deadlock = detect_external_deadlock
         try:
             await self.scheduler.run_all(
                 wrap_auto_paused_tasks(task_funcs, self.scheduler),
                 timeout=timeout,
-                # Detect deadlocks formed entirely outside pause() — every
-                # unfinished task blocked on a stock asyncio primitive — so a
-                # genuine deadlock sets scheduler._error instead of surfacing
-                # as a bare wall-clock timeout that the exploration loop must
-                # skip as inconclusive (slow-but-correct runs look identical).
+                # A quiet unmanaged Future may be a timer, socket, subprocess,
+                # or external callback; no-progress alone cannot constructively
+                # prove deadlock. Cooperative primitives report exact deadlocks
+                # through scheduler._error. Let other stalls reach the ordinary
+                # per-run timeout and classify them as inconclusive.
                 detect_external_deadlock=True,
             )
         except SchedulerTimeoutError:
@@ -675,6 +678,7 @@ async def _run_with_schedule_status(
     return state, runner
 
 
+@_guard_async_exploration
 async def explore_async_random(
     setup: Callable[[], Any],
     tasks: list[Callable[[Any], Coroutine[Any, Any, None]]],
@@ -781,6 +785,9 @@ async def explore_async_random(
         num_tasks = len(tasks)
         result = InterleavingResult(property_holds=True, num_explored=0)
         seen_schedule_hashes: set[int] = set()
+        decisive_executions = 0
+        inconclusive_timeouts = 0
+        max_ops_truncations = 0
         total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
         for _ in range(max_attempts):
@@ -814,11 +821,12 @@ async def explore_async_random(
                 ]
 
                 try:
-                    await runner.run(funcs, timeout=timeout_per_run)
+                    await runner.run(funcs, timeout=timeout_per_run, detect_external_deadlock=False)
                 except Exception as task_err:  # noqa: BLE001
                     if scheduler._max_ops_exhausted:
                         result.num_explored += 1
                         seen_schedule_hashes.add(hash(tuple(schedule)))
+                        max_ops_truncations += 1
                         continue
                     # A task raised under this interleaving.  That is a legitimate
                     # counterexample (IndexError/KeyError/AssertionError in the task
@@ -838,6 +846,7 @@ async def explore_async_random(
                 seen_schedule_hashes.add(hash(tuple(schedule)))
 
                 if scheduler._max_ops_exhausted:
+                    max_ops_truncations += 1
                     continue
 
                 # A timeout/deadlock means tasks were cancelled mid-flight: the
@@ -859,7 +868,10 @@ async def explore_async_random(
                     result.explanation = f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{detail}"
                     return result
                 if runner.timed_out:
+                    inconclusive_timeouts += 1
                     continue
+
+                decisive_executions += 1
 
                 # --- serializable_invariant check ---
                 if serial_valid_states is not None:
@@ -883,6 +895,19 @@ async def explore_async_random(
                     return result
 
         result.unique_interleavings = len(seen_schedule_hashes)
+        inconclusive = inconclusive_timeouts + max_ops_truncations
+        if result.property_holds and inconclusive:
+            result.property_holds = False
+            details: list[str] = []
+            if inconclusive_timeouts:
+                details.append(f"{inconclusive_timeouts} timed out")
+            if max_ops_truncations:
+                details.append(f"{max_ops_truncations} exhausted max_ops")
+            result.explanation = (
+                f"Async random exploration completed {decisive_executions} interleaving(s), but "
+                f"{', '.join(details)} before completion. The search is inconclusive and cannot prove the property; "
+                "increase timeout_per_run or max_ops, or remove unmanaged blocking from explored tasks."
+            )
         return result
 
 

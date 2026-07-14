@@ -14,6 +14,7 @@ import pytest
 
 import frontrun
 from frontrun.cli import require_active
+from frontrun.common import InterleavingResult
 
 _async_global_counter = 0
 _async_global_augmented = 0
@@ -61,6 +62,7 @@ def test_concurrent_async_exploration_is_rejected_before_global_patching() -> No
     first.start()
     assert started.wait(timeout=2.0)
     try:
+
         async def no_op(_state: object) -> None:
             return None
 
@@ -84,7 +86,7 @@ def test_concurrent_async_exploration_is_rejected_before_global_patching() -> No
     assert first_errors == []
     assert len(first_result) == 1
     result = first_result[0]
-    assert isinstance(result, frontrun.InterleavingResult)
+    assert isinstance(result, InterleavingResult)
     assert result.property_holds, result.explanation
 
 

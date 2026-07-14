@@ -15,6 +15,14 @@ class PythonCursorTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class PythonConnectionTarget:
+    """Pure-Python DBAPI connection class needing transaction wrappers."""
+
+    module_path: str
+    class_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectFactoryTarget:
     """DBAPI driver patched by wrapping its ``connect`` function."""
 
@@ -26,6 +34,10 @@ class ConnectFactoryTarget:
 
 
 PYTHON_CURSOR_TARGETS: tuple[PythonCursorTarget, ...] = (PythonCursorTarget("pymysql.cursors", "Cursor", "pymysql"),)
+
+PYTHON_CONNECTION_TARGETS: tuple[PythonConnectionTarget, ...] = (
+    PythonConnectionTarget("pymysql.connections", "Connection"),
+)
 
 CONNECT_FACTORY_TARGETS: tuple[ConnectFactoryTarget, ...] = (
     ConnectFactoryTarget("psycopg2", "psycopg2.extensions", "cursor", "pyformat", "psycopg2"),
