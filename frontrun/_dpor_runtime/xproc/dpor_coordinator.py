@@ -271,6 +271,11 @@ def _relay_loop(
                     break
                 publish_pending_accesses()
                 holding_sync_turn = True
+            elif kind == proto.AFTER_SYNC:
+                # The holding-turn block above already released the turn.
+                # SQL uses this explicit completion frame so another user
+                # thread cannot masquerade as the prior driver's completion.
+                pass
             elif kind == proto.ACQUIRE_LOCKS:
                 # Take and hold the scheduling turn through the modeled row-lock
                 # acquire. A plain report_and_wait() schedules the next worker

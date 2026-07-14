@@ -3,8 +3,8 @@
 ``execution="process"`` serialises workers with dill, so closures and lambdas
 work (not just module-level functions); only genuinely unserialisable captures
 (open sockets, ...) fail, and then with a clear frontrun-level message. A bad
-``module:callable`` subprocess target surfaces the child's real error via
-``diagnose()`` instead of a misleading ``TimeoutError``.
+``module:callable`` subprocess target surfaces the child's real error over the
+connected worker protocol instead of a misleading ``TimeoutError``.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from frontrun._dpor_core.worker import IterationCustomizer, LivenessProbe, WorkerTarget
+from frontrun._dpor_runtime.xproc import protocol as proto
 from frontrun._dpor_runtime.xproc.dpor_coordinator import _connection_failure, _launch_error
 from frontrun._dpor_runtime.xproc.launch import (
     MpLauncher,
@@ -113,17 +114,29 @@ def test_stderr_last_line_falls_back_to_last_nonblank_line(tmp_path) -> None:
     assert _stderr_last_line(str(path)) == "final words before dying"
 
 
-def test_subprocess_launcher_diagnoses_bad_target(tmp_path) -> None:
-    # A target in a module that does not exist makes the child exit immediately
-    # with ModuleNotFoundError. diagnose() must recover that real cause from the
-    # child's stderr rather than leaving the coordinator to guess "timeout".
+def test_subprocess_worker_reports_bad_target_after_connect(tmp_path) -> None:
+    # Target resolution happens only after interception is installed, so an
+    # import failure is now a connected worker ERROR rather than a pre-HELLO
+    # stderr diagnosis.
+    socket_path = str(tmp_path / "s.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(socket_path)
+    listener.listen(1)
+    listener.settimeout(10.0)
     worker_set = SubprocessLauncher([Subprocess("frontrun_no_such_module:go")])
-    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(str(tmp_path / "s.sock"),))])
-    for proc in handles:
-        proc.wait(timeout=10)
-    detail = worker_set.diagnose(handles)
-    assert detail is not None
-    assert "No module named" in detail or "ModuleNotFoundError" in detail
+    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(socket_path,))])
+    conn, _addr = listener.accept()
+    try:
+        assert proto.recv_msg(conn) == {"t": proto.HELLO, "w": 0}
+        error = proto.recv_msg(conn)
+        assert error is not None
+        assert error["t"] == proto.ERROR
+        assert "No module named" in error["msg"] or "ModuleNotFoundError" in error["msg"]
+        for proc in handles:
+            proc.wait(timeout=10)
+    finally:
+        conn.close()
+        listener.close()
 
 
 class _FakeProc:
@@ -412,13 +425,24 @@ def test_subprocess_worker_flooding_stderr_still_exits(tmp_path) -> None:
     # and the run misreports a hang. Capture must therefore go to a file. The
     # flood target writes 256 KiB then exits 3, so diagnose() must also recover
     # its final line from the capture.
+    socket_path = str(tmp_path / "s.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(socket_path)
+    listener.listen(1)
+    listener.settimeout(10.0)
     worker_set = SubprocessLauncher([Subprocess("tests.xproc_stderr_flood:main")])
-    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(str(tmp_path / "s.sock"),))])
-    alive = worker_set.join(handles, timeout=8.0)
-    assert alive == [], "child blocked writing stderr: capture is deadlock-prone"
-    detail = worker_set.diagnose(handles)
-    assert detail is not None
-    assert "flooded stderr with 256 KiB" in detail
+    handles = worker_set.launch([WorkerTarget(worker_id=0, args=(socket_path,))])
+    conn, _addr = listener.accept()
+    try:
+        assert proto.recv_msg(conn) == {"t": proto.HELLO, "w": 0}
+        alive = worker_set.join(handles, timeout=8.0)
+        assert alive == [], "child blocked writing stderr: capture is deadlock-prone"
+        detail = worker_set.diagnose(handles)
+        assert detail is not None
+        assert "flooded stderr with 256 KiB" in detail
+    finally:
+        conn.close()
+        listener.close()
 
 
 # --- final launch's stderr capture files must not leak ----------------------

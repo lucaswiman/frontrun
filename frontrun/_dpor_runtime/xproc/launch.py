@@ -204,9 +204,12 @@ def _mp_worker_entry(
     from .worker import _connect_and_serve, _serve_persistent
     from .worker_main import _install_interception, _reset_iteration_state
 
-    worker_fn, state = dill.loads(payload)
+    worker_fn: Callable[[Any], Any] | None = None
+    state: Any = None
 
     def run_target(proxy: Any) -> None:
+        if worker_fn is None:
+            raise RuntimeError("worker payload was not loaded for this iteration")
         result = worker_fn(state)
         if inspect.isawaitable(result):
             close = getattr(result, "close", None)
@@ -235,7 +238,11 @@ def _mp_worker_entry(
     else:
 
         def body(proxy: Any) -> None:
+            nonlocal worker_fn, state
             _install_interception(proxy, worker_id)
+            # User reducers may import modules or touch external state. Load
+            # only after the scheduler context and SQL/Redis patches exist.
+            worker_fn, state = dill.loads(payload)
             run_target(proxy)
 
         _connect_and_serve(socket_path, worker_id, body)

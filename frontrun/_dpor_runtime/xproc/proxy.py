@@ -27,6 +27,7 @@ from __future__ import annotations
 import socket
 from collections.abc import Generator
 from contextlib import contextmanager
+from threading import get_ident
 from typing import Any
 
 from frontrun import _real_threading as _rt
@@ -58,6 +59,9 @@ class SchedulerProxy:
         # remains supported. A real lock, never a patched one: the guard runs
         # inside interception machinery.
         self._use_lock = _rt.lock()
+        # OS thread owning the complete semantic operation: ACCESS reports,
+        # grant, physical I/O, and explicit completion.
+        self._operation_owner: int | None = None
         # Concurrent use is raised in the offending thread, which user code may
         # join without propagating that exception.  Latch it so the bootstrap
         # thread reports ERROR instead of a false DONE after the target returns.
@@ -66,18 +70,46 @@ class SchedulerProxy:
     @contextmanager
     def _exclusive(self, *, blocking: bool = False) -> Generator[None, None, None]:
         if not self._use_lock.acquire(blocking=blocking):
-            message = (
-                "SchedulerProxy used concurrently from multiple threads: cross-process "
-                "workers must perform scheduled external accesses (SQL/Redis statements) "
-                "from one thread at a time — the coordinator schedules each worker "
-                "process as a single logical actor"
-            )
-            self._fatal_error = message
-            raise RuntimeError(message)
+            raise self._concurrent_use_error()
         try:
             yield
         finally:
             self._use_lock.release()
+
+    def _concurrent_use_error(self) -> RuntimeError:
+        message = (
+            "SchedulerProxy used concurrently from multiple threads: cross-process "
+            "workers must perform scheduled external accesses (SQL/Redis statements) "
+            "from one thread at a time — the coordinator schedules each worker "
+            "process as a single logical actor"
+        )
+        self._fatal_error = message
+        return RuntimeError(message)
+
+    @contextmanager
+    def _wire_access(self, *, blocking: bool = False) -> Generator[None, None, None]:
+        """Serialize a frame exchange, reusing operation-scoped ownership."""
+        if self._operation_owner == get_ident():
+            yield
+            return
+        with self._exclusive(blocking=blocking):
+            yield
+
+    def begin_external_operation(self) -> None:
+        """Own this one-actor proxy until :meth:`end_external_operation`."""
+        ident = get_ident()
+        if self._operation_owner == ident:
+            raise RuntimeError("nested SchedulerProxy external operation")
+        if not self._use_lock.acquire(blocking=False):
+            raise self._concurrent_use_error()
+        self._operation_owner = ident
+
+    def end_external_operation(self) -> None:
+        """Release operation-scoped ownership from the owning OS thread."""
+        if self._operation_owner != get_ident():
+            raise RuntimeError("SchedulerProxy external operation ended by a non-owner thread")
+        self._operation_owner = None
+        self._use_lock.release()
 
     def hello(self) -> None:
         """Announce this worker's id to the coordinator (first frame after connect)."""
@@ -99,7 +131,7 @@ class SchedulerProxy:
         """Report one external access. Fire-and-forget; never blocks the worker."""
         if self._aborted:
             return
-        with self._exclusive():
+        with self._wire_access():
             proto.send_msg(self._sock, {"t": proto.ACCESS, "w": self._worker_id, "rid": resource_id, "kind": kind})
 
     # --- scheduler interface used by the SQL interception layer ---
@@ -112,15 +144,26 @@ class SchedulerProxy:
         """
         if self._aborted:
             return False
-        with self._exclusive():
+        with self._wire_access():
             proto.send_msg(self._sock, {"t": proto.REPORT_AND_WAIT, "w": self._worker_id})
             return self._await_grant()
+
+    def before_sync_retry(self, thread_id: int) -> bool:
+        """Acquire and hold the coordinator's SQL/sync turn."""
+        return self.report_and_wait(None, thread_id)
+
+    def after_sync_retry(self, thread_id: int) -> None:
+        """Explicitly release the coordinator's held SQL/sync turn."""
+        if self._aborted:
+            return
+        with self._wire_access():
+            proto.send_msg(self._sock, {"t": proto.AFTER_SYNC, "w": self._worker_id})
 
     def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> None:
         """Block until *resource_ids* can be held. Raise ``SchedulerAbort`` if aborted."""
         if self._aborted:
             raise SchedulerAbort("cross-process scheduler aborted")
-        with self._exclusive():
+        with self._wire_access():
             proto.send_msg(self._sock, {"t": proto.ACQUIRE_LOCKS, "w": self._worker_id, "res": list(resource_ids)})
             granted = self._await_grant()
         if not granted:
@@ -133,7 +176,7 @@ class SchedulerProxy:
         msg: dict[str, Any] = {"t": proto.RELEASE_LOCKS, "w": self._worker_id}
         if resources is not None:
             msg["res"] = list(resources)
-        with self._exclusive():
+        with self._wire_access():
             proto.send_msg(self._sock, msg)
 
     def before_io(self, thread_id: int, resource_id: str) -> bool:
@@ -145,7 +188,7 @@ class SchedulerProxy:
         """
         if self._aborted:
             return False
-        with self._exclusive():
+        with self._wire_access():
             proto.send_msg(self._sock, {"t": proto.BEFORE_IO, "w": self._worker_id, "rid": resource_id})
             return self._await_grant()
 
@@ -153,7 +196,7 @@ class SchedulerProxy:
         """Exit the IO boundary and release the turn. Fire-and-forget."""
         if self._aborted:
             return
-        with self._exclusive():
+        with self._wire_access():
             proto.send_msg(self._sock, {"t": proto.AFTER_IO, "w": self._worker_id, "rid": resource_id})
 
     # --- worker lifecycle (called by the worker bootstrap, not interception) ---
@@ -162,7 +205,7 @@ class SchedulerProxy:
         """Tell the coordinator this worker has finished."""
         if self._aborted:
             return
-        with self._exclusive():
+        with self._wire_access():
             proto.send_msg(self._sock, {"t": proto.DONE, "w": self._worker_id})
 
     def report_error(self, message: str) -> None:
@@ -172,7 +215,7 @@ class SchedulerProxy:
         # A child thread may still be unwinding the scheduling call that
         # latched this error.  Wait for that real lock rather than losing the
         # coordinator-visible ERROR to a second concurrent-use exception.
-        with self._exclusive(blocking=True):
+        with self._wire_access(blocking=True):
             proto.send_msg(self._sock, {"t": proto.ERROR, "w": self._worker_id, "msg": message})
 
     def _await_grant(self) -> bool:

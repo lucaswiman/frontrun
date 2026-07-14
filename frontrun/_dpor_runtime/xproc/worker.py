@@ -100,9 +100,16 @@ def _serve_persistent(
                 break
             if msg.get("t") != proto.ITER_START:
                 continue
-            if before_iteration is not None:
-                before_iteration(msg)
-            _run_iteration(proxy, body)
+
+            def iteration(iter_proxy: SchedulerProxy) -> None:
+                # Target refresh/deserialization is user-controlled work: keep
+                # it inside the iteration error boundary so reducer failures
+                # become ERROR frames rather than pre-HELLO/disconnect noise.
+                if before_iteration is not None:
+                    before_iteration(msg)
+                body(iter_proxy)
+
+            _run_iteration(proxy, iteration)
 
 
 class ThreadLauncher:

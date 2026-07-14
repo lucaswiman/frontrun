@@ -28,7 +28,8 @@ import os
 import socket
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -199,6 +200,27 @@ def get_dpor_context() -> tuple[Any, int] | None:
     if thread_id is None:
         return None
     return scheduler, thread_id
+
+
+@contextmanager
+def external_operation_scope() -> Generator[None, None, None]:
+    """Hold an xproc worker's one-actor guard across one physical operation.
+
+    In-process schedulers do not expose the begin/end methods, so this is a
+    no-op there. The cross-process proxy covers semantic reporting, grant,
+    physical SQL/Redis I/O, and trailing result-derived reports with it.
+    """
+    ctx = get_dpor_context()
+    begin = getattr(ctx[0], "begin_external_operation", None) if ctx is not None else None
+    end = getattr(ctx[0], "end_external_operation", None) if ctx is not None else None
+    active = callable(begin) and callable(end)
+    if active:
+        begin()
+    try:
+        yield
+    finally:
+        if active:
+            end()
 
 
 # ---------------------------------------------------------------------------

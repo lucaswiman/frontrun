@@ -572,6 +572,13 @@ class CrossProcessCoordinator:
             elif kind == proto.REPORT_AND_WAIT:
                 conn.pending = msg
                 return
+            elif kind == proto.AFTER_SYNC:
+                # The exhaustive scheduler grants one worker at a time and
+                # reads that worker until its next blocking request.  The
+                # explicit completion frame is therefore only a boundary
+                # marker here; unlike DPOR, there is no held engine turn to
+                # release.
+                continue
             elif kind == proto.DONE:
                 conn.done = True
                 conn.pending = None
