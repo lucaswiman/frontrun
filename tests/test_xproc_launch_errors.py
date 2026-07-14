@@ -578,6 +578,34 @@ def test_worker_main_rejects_async_target(monkeypatch: pytest.MonkeyPatch) -> No
         worker_main.main()
 
 
+def test_worker_main_installs_interception_before_importing_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Import-time database work must run inside the connected scheduler context."""
+    from frontrun._dpor_runtime.xproc import worker_main
+
+    installed = False
+
+    def install(_proxy: object, _worker_id: int) -> None:
+        nonlocal installed
+        installed = True
+
+    def resolve(_target: str):
+        assert installed, "target module imported before xproc interception was installed"
+        return lambda: None
+
+    def run_inline(_socket_path: str, _worker_id: int, body: Any) -> None:
+        body(object())
+
+    monkeypatch.setenv("FRONTRUN_XPROC_SOCKET", "unused.sock")
+    monkeypatch.setenv("FRONTRUN_XPROC_WORKER_ID", "0")
+    monkeypatch.setenv("FRONTRUN_XPROC_TARGET", "tests.fake:target")
+    monkeypatch.setattr(worker_main, "_install_interception", install)
+    monkeypatch.setattr(worker_main, "_resolve_target", resolve)
+    monkeypatch.setattr(worker_main, "_connect_and_serve", run_inline)
+
+    worker_main.main()
+    assert installed
+
+
 def test_mp_worker_rejects_plain_callable_returning_awaitable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pickled process workers must not discard a dynamically returned coroutine.
 
@@ -602,3 +630,27 @@ def test_mp_worker_rejects_plain_callable_returning_awaitable(monkeypatch: pytes
         warnings.simplefilter("error", RuntimeWarning)
         with pytest.raises(TypeError, match="returned an awaitable"):
             _mp_worker_entry("unused.sock", 0, payload)
+
+
+def test_mp_worker_installs_interception_before_deserializing_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child-side reducers must not perform external I/O before scheduling is active."""
+    import dill
+
+    from frontrun._dpor_runtime.xproc import worker, worker_main
+
+    installed = False
+
+    def install(_proxy: object, _worker_id: int) -> None:
+        nonlocal installed
+        installed = True
+
+    def loads(_payload: bytes):
+        assert installed, "worker payload deserialized before xproc interception was installed"
+        return (lambda _state: None), None
+
+    monkeypatch.setattr(worker_main, "_install_interception", install)
+    monkeypatch.setattr(dill, "loads", loads)
+    monkeypatch.setattr(worker, "_connect_and_serve", lambda _socket_path, _worker_id, body: body(object()))
+
+    _mp_worker_entry("unused.sock", 0, b"payload")
+    assert installed
