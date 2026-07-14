@@ -159,6 +159,16 @@ def test_memoryview_key_matches_equivalent_bytes_key() -> None:
     assert write_resources & read_resources
 
 
+def test_copy_source_named_db_does_not_masquerade_as_option() -> None:
+    """COPY options start after the required source and destination keys."""
+    copy = _capture_accesses("COPY", ("DB", "destination"), db=0)
+    destination_write = _capture_accesses("SET", ("destination", "value"), db=0)
+
+    copy_writes = {resource for resource, kind in copy if kind == "write"}
+    destination_resources = {resource for resource, _kind in destination_write}
+    assert copy_writes & destination_resources
+
+
 def test_sync_pipeline_watch_immediate_command_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     """redis-py WATCH bypasses Pipeline.execute and must be intercepted directly."""
 
