@@ -146,6 +146,37 @@ def test_dpor_total_timeout_bounds_a_single_long_execution() -> None:
     assert result.ok, f"truncation misreported as failure: {result.failure!r} ({result.failure_kind})"
 
 
+class _NeverConnectingWorkerSet:
+    """Launcher whose handles stay alive but never connect to the coordinator."""
+
+    def launch(self, targets):  # noqa: ARG002
+        return [object()]
+
+    def join(self, handles, timeout):  # noqa: ARG002
+        return []
+
+
+def test_dpor_total_timeout_bounds_initial_worker_connection() -> None:
+    # total_timeout is an end-to-end search bound, including the initial
+    # process launch / HELLO handshake.  The coordinator previously passed its
+    # much larger connect budget to accept_hello_live(), so a worker that never
+    # connected overran total_timeout before the first execution even began.
+    coord = DporCrossProcessCoordinator(num_workers=1, deadlock_timeout=0.1, total_timeout=0.02)
+    coord._connect_budget = 0.3
+    start = time.monotonic()
+    result = coord.explore(
+        worker_set=_NeverConnectingWorkerSet(),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.15, f"total_timeout=0.02 was not honored during worker connection ({elapsed:.3f}s)"
+    assert result.ok
+    assert result.iterations == 0
+    assert result.exhausted is False
+
+
 # ---------------------------------------------------------------------------
 # Exhaustive coordinator: alive-but-slow is a timeout, not a disconnect
 # ---------------------------------------------------------------------------
