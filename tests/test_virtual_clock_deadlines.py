@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import math
+
+import pytest
+
 from frontrun._virtual_clock import DeadlineCoordinator, VirtualClock
 
 
@@ -87,3 +91,30 @@ def test_deadline_coordinator_cancels_sleep_timeout_and_actor_deadlines_independ
     assert deadlines.next_deadline() == clock.now() + 3.0
     assert [(event.actor_id, event.token) for event in deadlines.advance_to_next(clock)] == [(2, "other")]
     assert not deadlines.has_pending()
+
+
+def test_deadline_coordinator_rejects_nan_and_never_autojumps_to_infinity() -> None:
+    clock = VirtualClock()
+    deadlines = DeadlineCoordinator()
+
+    with pytest.raises(ValueError, match="NaN"):
+        deadlines.add_sleep(1, math.nan, wake_id=1)
+    with pytest.raises(ValueError, match="NaN"):
+        deadlines.add_timeout(1, math.nan, object())
+
+    deadlines.add_sleep(1, math.inf, wake_id=1)
+    assert deadlines.is_sleeping(1)
+    assert not deadlines.has_pending()
+    assert deadlines.next_deadline() is None
+    assert deadlines.advance_to_next(clock) == []
+    assert math.isfinite(clock.now())
+
+    token = object()
+    deadlines.add_timeout(1, clock.now() + 1.0, token)
+    assert [(event.token, event.kind) for event in deadlines.advance_to_next(clock)] == [(token, "timeout")]
+    assert deadlines.is_sleeping(1)
+    assert not deadlines.has_pending()
+    assert math.isfinite(clock.now())
+
+    deadlines.cancel_sleep(1)
+    assert not deadlines.is_sleeping(1)

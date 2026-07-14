@@ -11,6 +11,7 @@ Covers the design in ``ideas/virtual_clock.md``:
 from __future__ import annotations
 
 import datetime as dt
+import math
 import queue
 import sys
 import threading
@@ -1226,6 +1227,29 @@ def test_zero_timeout_waits_are_pure_probes() -> None:
         setup=State,
         workers=[worker],
         invariant=invariant,
+        clock="virtual",
+        reproduce_on_failure=0,
+    )
+    assert result.property_holds, result.explanation
+
+
+def test_event_wait_nan_matches_threading_immediate_false() -> None:
+    class State:
+        def __init__(self) -> None:
+            self.event = threading.Event()
+            self.result: bool | None = None
+            self.error: BaseException | None = None
+
+    def worker(s: State) -> None:
+        try:
+            s.result = s.event.wait(timeout=math.nan)
+        except BaseException as exc:  # noqa: BLE001 - compare the public exception contract
+            s.error = exc
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker],
+        invariant=lambda s: s.result is False and s.error is None,
         clock="virtual",
         reproduce_on_failure=0,
     )
