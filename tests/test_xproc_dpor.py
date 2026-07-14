@@ -330,6 +330,29 @@ def test_dpor_lock_first_workers_explore_deterministically() -> None:
         )
 
 
+def test_dpor_row_lock_redirect_fails_closed_until_trace_is_exact() -> None:
+    """A modeled-lock redirect must not return an inexact proof schedule."""
+    row = "sql:accounts:id=1"
+
+    def holder(proxy) -> None:
+        proxy.acquire_row_locks(0, [row])
+        proxy.io_report(row, "write")
+        proxy.report_and_wait(None, 0)
+        proxy.release_row_locks(0)
+
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, preemption_bound=None)
+    result = coord.explore(
+        worker_set=ThreadLauncher([holder, holder]),
+        setup=lambda: None,
+        invariant=lambda: True,
+    )
+
+    assert not result.ok
+    assert result.failure_kind == "nondeterministic"
+    assert result.exhausted is False
+    assert "row-lock" in (result.failure or "")
+
+
 def test_dpor_single_statement_conflict_found_deterministically() -> None:
     # Regression: workers report their accesses BEFORE executing the statement
     # (ACCESS frames precede REPORT_AND_WAIT), so when worker B's ACCESS frame
