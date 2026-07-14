@@ -256,6 +256,40 @@ def test_async_timeout_reschedule_when_is_a_noop_after_virtual_sleep() -> None:
     assert result.property_holds, result.explanation
 
 
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout_at requires 3.11+")
+def test_async_timeout_at_from_cm_when_preserves_exact_virtual_deadline() -> None:
+    # asyncio.timeout_at(cm.when()) hands the loop-time value straight to the
+    # patched timeout_at.  The loop clock stays real while the block consumes
+    # virtual time, so round-tripping that value through loop.time() smears
+    # nondeterministic wall drift into the virtual deadline; the exact
+    # provenance carried by cm.when() must be recovered instead, as
+    # Timeout.reschedule() already does.
+    class State:
+        def __init__(self) -> None:
+            self.elapsed: float | None = None
+
+    async def worker(s: State) -> None:
+        start = time.monotonic()
+        async with asyncio.timeout(1.0) as cm:
+            pass
+        try:
+            async with asyncio.timeout_at(cm.when()):
+                await asyncio.get_running_loop().create_future()
+        except TimeoutError:
+            s.elapsed = time.monotonic() - start
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[worker],
+            invariant=lambda s: s.elapsed == 1.0,
+            clock="virtual",
+            reproduce_on_failure=0,
+        )
+    )
+    assert result.property_holds, result.explanation
+
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_reschedule_extension_uses_virtual_deadline() -> None:
     # cm.reschedule(cm.when() + 5): extend the deadline by 5s → fires at t=15.
