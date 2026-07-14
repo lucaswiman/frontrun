@@ -13,6 +13,61 @@ from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_i
 from frontrun._redis_client import _intercept_pipeline_execute, set_redis_replay_mode
 
 
+def _capture_accesses(command: str, args: tuple[object, ...], *, db: int = 0) -> list[tuple[str, str]]:
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": db})
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        assert _redis_client._report_redis_access(command, args, client=client)
+    finally:
+        set_io_reporter(None)
+    return events
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "expected"),
+    [
+        pytest.param("MOVE", ("k", 1), ("redis:k:db=redis:source:6379/1", "write"), id="move"),
+        pytest.param(
+            "COPY",
+            ("source-key", "destination-key", "DB", 2),
+            ("redis:destination-key:db=redis:source:6379/2", "write"),
+            id="copy-db",
+        ),
+        pytest.param(
+            "MIGRATE",
+            ("destination", 6380, "k", 3, 1000),
+            ("redis:k:db=redis:destination:6380/3", "write"),
+            id="migrate",
+        ),
+    ],
+)
+def test_cross_scope_redis_commands_report_destination_access(
+    command: str, args: tuple[object, ...], expected: tuple[str, str]
+) -> None:
+    """Cross-database/server writes must conflict with destination traffic."""
+    assert expected in _capture_accesses(command, args)
+
+
+def test_swapdb_reports_both_database_keyspaces() -> None:
+    events = _capture_accesses("SWAPDB", (1, 2))
+
+    assert ("redis:keyspace:db=redis:source:6379/1", "write") in events
+    assert ("redis:keyspace:db=redis:source:6379/2", "write") in events
+
+
+def test_flushall_conflicts_with_other_database_traffic() -> None:
+    """FLUSHALL mutates every database on its server, not just the selected one."""
+    flush = _capture_accesses("FLUSHALL", (), db=0)
+    other_db_write = _capture_accesses("SET", ("k", "value"), db=1)
+
+    flush_writes = {resource for resource, kind in flush if kind == "write"}
+    other_reads_or_writes = {resource for resource, _kind in other_db_write}
+    assert flush_writes & other_reads_or_writes
+
+
 def test_sync_pipeline_watch_immediate_command_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     """redis-py WATCH bypasses Pipeline.execute and must be intercepted directly."""
 

@@ -108,6 +108,42 @@ def test_task_crash_counterexample_reproduces_same_exception() -> None:
     assert result.reproduction_successes == 3
 
 
+def test_task_crash_replay_wakes_peer_parked_on_event() -> None:
+    """A recorded task failure must replay with cooperative peers still parked."""
+    require_active("test_async_dpor_task_crash_replay_with_parked_peer")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def wait_forever(state: State) -> None:
+        await state.event.wait()
+
+    async def crash(_state: State) -> None:
+        raise RuntimeError("boom beside parked peer")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[wait_forever, crash],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            max_executions=1,
+            deadlock_timeout=0.1,
+            timeout_per_run=0.5,
+            reproduce_on_failure=2,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "RuntimeError: boom beside parked peer" in result.explanation
+    assert result.reproduction_attempts == 2
+    assert result.reproduction_successes == 2
+
+
 def test_lock_counterexample_reproduces() -> None:
     """A counterexample whose tasks use asyncio.Lock must reproduce.
 
