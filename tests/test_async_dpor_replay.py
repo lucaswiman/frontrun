@@ -144,6 +144,40 @@ def test_task_crash_replay_wakes_peer_parked_on_event() -> None:
     assert result.reproduction_successes == 2
 
 
+def test_cooperative_event_deadlock_replays() -> None:
+    """Schedule exhaustion must reproduce an exact cooperative deadlock."""
+    require_active("test_async_dpor_cooperative_event_deadlock_replay")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def wait_forever(state: State) -> None:
+        await state.event.wait()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[wait_forever],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            deadlock_timeout=0.1,
+            timeout_per_run=0.5,
+            reproduce_on_failure=2,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Deadlock" in result.explanation
+    assert result.reproduction_attempts == 2
+    assert result.reproduction_successes == 2
+
+
 def test_lock_counterexample_reproduces() -> None:
     """A counterexample whose tasks use asyncio.Lock must reproduce.
 

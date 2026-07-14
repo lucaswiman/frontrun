@@ -68,6 +68,16 @@ def test_flushall_conflicts_with_other_database_traffic() -> None:
     assert flush_writes & other_reads_or_writes
 
 
+def test_pubsub_channels_are_scoped_to_server_not_database() -> None:
+    """Redis Pub/Sub ignores the selected database."""
+    db0 = _capture_accesses("PUBLISH", ("updates", "zero"), db=0)
+    db1 = _capture_accesses("PUBLISH", ("updates", "one"), db=1)
+
+    db0_writes = {resource for resource, kind in db0 if kind == "write"}
+    db1_writes = {resource for resource, kind in db1 if kind == "write"}
+    assert db0_writes & db1_writes
+
+
 def test_sync_pipeline_watch_immediate_command_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     """redis-py WATCH bypasses Pipeline.execute and must be intercepted directly."""
 
