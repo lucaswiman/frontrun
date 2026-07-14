@@ -439,7 +439,8 @@ def test_reporter_called_with_correct_resource_id_format() -> None:
     log.clear()
     conn.execute("SELECT x FROM mytable")
 
-    assert all(r == "sql:mytable" or r.startswith("sql:mytable:") for r, _ in log.events)
+    assert all(r.startswith(("sql:__database__", "sql:mytable")) for r, _ in log.events)
+    assert any(r.startswith("sql:__database__") and k == "read" for r, k in log.events)
     assert any((r == "sql:mytable" or r.startswith("sql:mytable:")) and k == "read" for r, k in log.events)
     conn.close()
 
@@ -663,7 +664,7 @@ def test_suppress_cleaned_on_exception() -> None:
 
 
 def test_suppress_not_set_when_no_tables_parsed() -> None:
-    """Suppression should not be activated when SQL has no parseable tables."""
+    """Opaque SQL reports a database write without activating endpoint suppression."""
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -672,7 +673,9 @@ def test_suppress_not_set_when_no_tables_parsed() -> None:
     conn.execute("PRAGMA journal_mode=WAL")
 
     assert getattr(_io_tls, "_sql_suppress", False) is False
-    assert len(log.events) == 0
+    assert len(log.events) == 1
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "write"
     conn.close()
 
 
@@ -880,7 +883,7 @@ def test_executemany_via_cursor_works() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_non_string_operation_skips_parsing() -> None:
+def test_non_string_operation_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
 
@@ -891,13 +894,13 @@ def test_non_string_operation_skips_parsing() -> None:
     class FakeCursor:
         pass
 
-    # Call _intercept_execute with bytes — should skip parsing and call original
+    # Bytes cannot be parsed, so conservatively report a database write.
     _intercept_execute(fake_original, FakeCursor(), b"SELECT 1")
     fake_original.assert_called_once()
-    assert len(log.events) == 0
+    assert log.events == [("sql:__database__", "write")]
 
 
-def test_unparseable_sql_falls_through() -> None:
+def test_unparseable_sql_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -908,14 +911,16 @@ def test_unparseable_sql_falls_through() -> None:
     with pytest.raises(Exception):  # noqa: B017
         cur.execute("XYZZY this is not valid SQL at all blorp")
 
-    assert len(log.events) == 0
+    assert len(log.events) == 1
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "write"
     assert getattr(_io_tls, "_sql_suppress", False) is False
     with _suppress_lock:
         assert threading.get_native_id() not in _suppress_tids
     conn.close()
 
 
-def test_empty_sql_string_falls_through() -> None:
+def test_empty_sql_string_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -929,13 +934,15 @@ def test_empty_sql_string_falls_through() -> None:
     except Exception:  # noqa: BLE001
         pass
 
-    # No table events should be reported for empty SQL
-    assert len(log.events) == 0
+    # No table is known, so the statement conservatively conflicts at database scope.
+    assert len(log.events) == 1
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "write"
     assert getattr(_io_tls, "_sql_suppress", False) is False
     conn.close()
 
 
-def test_pragma_not_reported() -> None:
+def test_pragma_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -943,7 +950,9 @@ def test_pragma_not_reported() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA journal_mode=WAL")
 
-    assert len(log.events) == 0
+    assert len(log.events) == 1
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "write"
     conn.close()
 
 
@@ -955,11 +964,11 @@ def test_create_table_reported() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE foo (x INTEGER)")
 
-    # DDL write + :seq write for phantom detection
-    assert len(log.events) == 2
-    resource_id, kind = log.events[0]
-    assert kind == "write"
-    assert resource_id.startswith("sql:foo")
+    # Database intent read + DDL write + :seq write for phantom detection.
+    assert len(log.events) == 3
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "read"
+    assert all(resource_id.startswith("sql:foo") and kind == "write" for resource_id, kind in log.events[1:])
     conn.close()
 
 
@@ -1196,7 +1205,7 @@ def test_intercept_execute_exception_cleanup() -> None:
         assert threading.get_native_id() not in _suppress_tids
 
 
-def test_intercept_execute_bytes_skips_parsing() -> None:
+def test_intercept_execute_bytes_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
 
@@ -1208,7 +1217,7 @@ def test_intercept_execute_bytes_skips_parsing() -> None:
     _intercept_execute(original, fake_self, b"SELECT * FROM t")
 
     original.assert_called_once()
-    assert len(log.events) == 0
+    assert log.events == [("sql:__database__", "write")]
 
 
 # ---------------------------------------------------------------------------
@@ -1742,6 +1751,20 @@ def test_opaque_sql_conflicts_with_parsed_database_access_in_process() -> None:
 
     assert ("sql:__database__", "write") in opaque
     assert ("sql:__database__", "read") in parsed
+
+
+def test_session_local_lock_timeout_does_not_create_database_conflict() -> None:
+    """Per-connection scheduler safety settings are not shared database state."""
+    from frontrun._sql_cursor import _report_sql_access
+
+    log = IOLog()
+    set_io_reporter(log)
+    try:
+        assert _report_sql_access("SET lock_timeout = '2000ms'", db_obj=object())
+    finally:
+        set_io_reporter(None)
+
+    assert log.events == []
 
 
 def test_non_string_sql_operation_uses_opaque_database_fallback() -> None:
