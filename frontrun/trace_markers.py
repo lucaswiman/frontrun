@@ -37,7 +37,15 @@ from frontrun._marker_coordination import (
     finalize_marker_executor_run,
 )
 from frontrun._trace_marker_runtime import build_trace_function, run_traced_callable
-from frontrun.common import InterleavingResult, Schedule, Step, _is_async_callable, any_async, check_invariant
+from frontrun.common import (
+    InterleavingResult,
+    Schedule,
+    Step,
+    _is_async_callable,
+    _reject_deferred_sync_result,
+    any_async,
+    check_invariant,
+)
 
 __all__ = [
     "MARKER_PATTERN",
@@ -517,7 +525,7 @@ def explore_marker_interleavings(
         for exec_name, (target_fn, _markers) in threads.items():
 
             def _make_runner(s: Any = state, fn: Callable[..., None] = target_fn) -> None:
-                fn(s)
+                _reject_deferred_sync_result(fn(s), fn)
 
             runners[exec_name] = _make_runner
 
