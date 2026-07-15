@@ -1013,7 +1013,7 @@ class DporScheduler:
         Overridden by :class:`_ReplayDporScheduler` to *gate* accesses to
         racing objects on the recorded order instead (defect #20).
         """
-        label = _anchor_label(obj, name)
+        label = _anchor_label(obj, name, self._stable_ids)
         if label is None:
             return
         self._access_trace.append((thread_id, label, kind))
@@ -1539,7 +1539,7 @@ class _ReplayDporScheduler(DporScheduler):
         """Gate accesses to racing objects on the recorded anchor order."""
         if not self._anchor_enabled:
             return
-        label = _anchor_label(obj, name)
+        label = _anchor_label(obj, name, self._stable_ids)
         if label is None or label not in self._watched_labels:
             return
         self._gate_access((thread_id, label, kind))
