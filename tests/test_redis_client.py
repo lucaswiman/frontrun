@@ -98,28 +98,15 @@ def test_migrate_destination_host_alias_shares_identity() -> None:
     assert migrate_writes & destination_writes
 
 
-def test_unix_socket_pool_gets_distinct_identity(tmp_path: Any) -> None:
-    """A unix-socket pool must not masquerade as the default TCP endpoint.
-
-    Unix-socket connection kwargs carry ``path`` and no host/port; falling
-    back to ``localhost:6379`` would collide with an unrelated default TCP
-    server.  With no server behind the socket the identity must stay a
-    distinct per-path one.
-    """
-    events: list[tuple[str, str]] = []
+def test_unresolved_unix_socket_identity_fails_closed(tmp_path: Any) -> None:
+    """An unresolved socket may alias TCP, so a per-path scope is unsound."""
     client = SimpleNamespace(
         connection_pool=SimpleNamespace(connection_kwargs={"path": str(tmp_path / "absent.sock"), "db": 0})
     )
-    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
-    try:
-        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
-    finally:
-        set_io_reporter(None)
+    _redis_client._unix_path_server_parts.clear()
 
-    assert events
-    assert all("localhost:6379" not in resource and "127.0.0.1:6379" not in resource for resource, _kind in events), (
-        events
-    )
+    with pytest.raises(RuntimeError, match="unix-socket.*identity"):
+        _redis_client._get_redis_scope_parts(client)
 
 
 def test_select_on_single_connection_client_updates_db_scope() -> None:
@@ -131,7 +118,7 @@ def test_select_on_single_connection_client_updates_db_scope() -> None:
     )
     set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
     try:
-        _redis_client._report_redis_access("SELECT", (1,), client=client)
+        _redis_client._record_client_select(client, 1)
         assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
     finally:
         set_io_reporter(None)
@@ -149,7 +136,7 @@ def test_select_on_pooled_client_reports_both_db_scopes() -> None:
     )
     set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
     try:
-        _redis_client._report_redis_access("SELECT", (1,), client=client)
+        _redis_client._record_client_select(client, 1)
         assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
     finally:
         set_io_reporter(None)
@@ -195,7 +182,7 @@ def test_select_recorded_without_reporter_for_replay_alignment() -> None:
         connection=object(),
     )
     set_io_reporter(None)
-    assert not _redis_client._report_redis_access("SELECT", (1,), client=client)
+    assert _redis_client._intercept_execute_command(lambda *_args, **_kwargs: "OK", client, "SELECT", 1) == "OK"
 
     events: list[tuple[str, str]] = []
     set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
@@ -229,7 +216,9 @@ def test_successful_select_state_is_shared_through_connection_pool() -> None:
     selecting_client = SimpleNamespace(connection_pool=pool)
     sibling_client = SimpleNamespace(connection_pool=pool)
 
-    assert _redis_client._intercept_execute_command(lambda *_args, **_kwargs: "OK", selecting_client, "SELECT", 1) == "OK"
+    assert (
+        _redis_client._intercept_execute_command(lambda *_args, **_kwargs: "OK", selecting_client, "SELECT", 1) == "OK"
+    )
     events: list[tuple[str, str]] = []
     set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
     try:

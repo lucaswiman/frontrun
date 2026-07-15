@@ -20,6 +20,7 @@ from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._redis_client import (
     _parse_and_report_execute_command,
+    _record_client_select,
     _report_pipeline_commands,
     _suppress_endpoint_io,
 )
@@ -115,8 +116,11 @@ async def _intercept_execute_command_async(
     parsed = _parse_and_report_execute_command(args, self)
     if parsed is None:
         return await original_method(self, *args, **kwargs)
-    _cmd_name, _cmd_args, reported = parsed
-    return await _dispatch_async(original_method, self, reported, *args, **kwargs)
+    cmd_name, cmd_args, reported = parsed
+    result = await _dispatch_async(original_method, self, reported, *args, **kwargs)
+    if cmd_name.upper().split(" ", 1)[0] == "SELECT" and cmd_args:
+        _record_client_select(self, cmd_args[0])
+    return result
 
 
 async def _intercept_pipeline_execute_async(

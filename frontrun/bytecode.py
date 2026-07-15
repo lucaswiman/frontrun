@@ -92,6 +92,7 @@ from frontrun._virtual_clock import (
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import (
     InterleavingResult,
+    _call_sync_setup,
     check_invariant,
     check_serializability_violation,
 )
@@ -853,7 +854,7 @@ def run_with_schedule(
     # The clock_scope owns the time.* patch for the whole run (setup + workers);
     # patch_locks BEFORE setup() so any locks created there are cooperative.
     with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
-        state = setup()
+        state = _call_sync_setup(setup)
 
         from frontrun.common import _reject_deferred_sync_result
 

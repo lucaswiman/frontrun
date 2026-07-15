@@ -151,6 +151,7 @@ from frontrun.async_scheduler import (
 )
 from frontrun.common import (
     InterleavingResult,
+    _call_sync_setup,
     check_invariant,
     check_serializability_violation,
 )
@@ -703,16 +704,14 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
     async def _deferred_autojump(self) -> None:
         """Advance the clock once in-flight wakes have had a chance to land.
 
-        Drains up to four loop passes: a resolved future's wake chain (done
-        callback → task wakeup → engine unblock in the woken wrapper) is a
-        bounded call_soon chain, so a task that already won its race becomes
-        engine-runnable within a couple of passes and the jump is skipped in
-        favour of scheduling it.  If the run stays idle, the jump proceeds
-        exactly as the old synchronous autojump did.
+        Drain until the event loop's ready queue is actually quiescent.  User
+        callbacks may form an arbitrarily long ``call_soon`` chain before
+        resolving a future; a fixed pass count can fire a virtual timeout in
+        the middle of that live chain and manufacture a false counterexample.
         """
         handed_off = False
         try:
-            for _ in range(4):
+            while True:
                 await _real_asyncio_sleep(0)
                 async with self._condition:
                     if self._error is not None or self._finished:
@@ -730,6 +729,15 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                         return
                     if self.execution.runnable_threads():
                         break
+                    ready = getattr(asyncio.get_running_loop(), "_ready", None)
+                    if ready is None:
+                        # A non-stdlib loop whose readiness cannot be observed
+                        # cannot safely certify quiescence.  Keep draining; the
+                        # outer wall timeout remains the fail-closed backstop.
+                        continue
+                    if any(not handle.cancelled() for handle in ready):
+                        continue
+                    break
             async with self._condition:
                 if self._error is not None or self._finished:
                     return
@@ -785,8 +793,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                     # lost the race: a successful instant wait would observe
                     # its full timeout in virtual time (a false counterexample
                     # that also offsets every later deadline).  Defer the jump
-                    # a few loop passes so in-flight wakes land first — the
-                    # same drain the exact-deadlock confirm already does.
+                    # until the event-loop ready queue is quiescent so every
+                    # in-flight wake lands first.
                     self._maybe_deferred_autojump()
                     self._last_scheduled_path_id = None
                     return None
@@ -1290,7 +1298,7 @@ async def run_with_schedule_dpor(
         detect_redis=detect_redis,
     )
 
-    state = setup()
+    state = _call_sync_setup(setup)
 
     task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
         i: (lambda s=state, t=t: t(s))  # type: ignore[assignment]
@@ -1372,7 +1380,7 @@ async def _reproduce_async_counterexample(
         # One clock_context owns the time.* patch across setup + tasks +
         # invariant for this replay attempt.
         with clock_context(replay_clock):
-            state = setup()
+            state = _call_sync_setup(setup)
             task_funcs: dict[int, Callable[..., Awaitable[None]]] = {}
             for i, task in enumerate(tasks):
 
@@ -1661,7 +1669,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                 # run_all inherit the contextvar (contexts copy at create_task
                 # time), so they see the same virtual time as the driver.
                 with clock_context(virtual_clock):
-                    state = setup()
+                    state = _call_sync_setup(setup)
                     stable_ids.pre_register(state)
 
                     task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {

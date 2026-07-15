@@ -1198,9 +1198,9 @@ class TestDporPathCountSerialized:
         # 2. Python-level internals of redis-py create scheduling points
         #    with untracked object conflicts (connection setup, parser state)
         # 3. LD_PRELOAD TCP events from Redis connection setup
-        # Full-suite load can vary connection/parser scheduling points; keep a
-        # ceiling well below max_executions without pinning incidental noise.
-        assert result.num_explored <= 25, f"Lock-serialized ops should need ≤ 25 DPOR paths, got {result.num_explored}"
+        # Keep the established tight ceiling: increasing it would hide
+        # extraneous traces instead of detecting a scheduling regression.
+        assert result.num_explored <= 12, f"Lock-serialized ops should need ≤ 12 DPOR paths, got {result.num_explored}"
 
     def test_async_locked_many_redis_ops_minimal_paths(self, redis_port: int) -> None:
         """Async: many Redis ops under one asyncio.Lock → minimal DPOR paths."""

@@ -179,7 +179,18 @@ def wrap_auto_paused_tasks(
 
         async def _wrapped(f: Callable[..., Awaitable[None]] = func, t: Any = task_id) -> None:
             _auto_pause_active.set(True)
-            await _AutoPauseCoroutine(f(), t, scheduler)
+            inner = f()
+            try:
+                await _AutoPauseCoroutine(inner, t, scheduler)
+            finally:
+                # Python 3.10 does not reliably close the inner coroutine when
+                # cancellation lands while this custom awaitable is suspended
+                # in its leading scheduler pause.  Own it explicitly so a
+                # timed-out run cannot leak an unawaited worker coroutine into
+                # a later test/exploration.
+                close = getattr(inner, "close", None)
+                if callable(close):
+                    close()
 
         wrapped[task_id] = _wrapped
     return wrapped

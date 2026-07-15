@@ -502,6 +502,12 @@ impl DporEngine {
             SyncEvent::LockRelease { lock_id } => {
                 let vv = execution.threads[thread_id].dpor_vv.clone();
                 execution.lock_release_vv.insert(lock_id, vv);
+                // Publish the pre-release clock, then advance the releaser's
+                // local epoch.  An acquirer joins only the published prefix;
+                // accesses performed by the releaser after this release (but
+                // before its next scheduler hand-off) must remain concurrent
+                // with the acquirer's post-wake accesses.
+                execution.threads[thread_id].dpor_vv.increment(thread_id);
                 // Lock-aware DPOR: release does NOT create an io_vv access.
                 //
                 // Previous approach: separate virtual objects for acquire/release,
@@ -816,6 +822,44 @@ mod tests {
 
         assert!(!engine.next_execution());
         assert_eq!(engine.executions_completed(), 1);
+    }
+
+    #[test]
+    fn test_post_release_access_races_with_post_acquire_access() {
+        let mut engine = DporEngine::new(2, None, 1000, None, SearchStrategy::Dfs);
+        let mut execution = engine.begin_execution();
+        const LOCK: u64 = 10;
+        const OBJECT: u64 = 20;
+
+        assert_eq!(engine.schedule(&mut execution), Some(0));
+        engine.process_sync(&mut execution, 0, SyncEvent::LockRelease { lock_id: LOCK }, None);
+        engine.process_access(&mut execution, 0, OBJECT, AccessKind::Write);
+        execution.finish_thread(0);
+
+        assert_eq!(engine.schedule(&mut execution), Some(1));
+        engine.process_sync(&mut execution, 1, SyncEvent::LockAcquire { lock_id: LOCK }, None);
+        engine.process_access(&mut execution, 1, OBJECT, AccessKind::Write);
+
+        assert_eq!(engine.pending_races.len(), 1, "post-release work must not be inherited by the acquirer");
+    }
+
+    #[test]
+    fn test_pre_release_access_remains_ordered_before_post_acquire_access() {
+        let mut engine = DporEngine::new(2, None, 1000, None, SearchStrategy::Dfs);
+        let mut execution = engine.begin_execution();
+        const LOCK: u64 = 10;
+        const OBJECT: u64 = 20;
+
+        assert_eq!(engine.schedule(&mut execution), Some(0));
+        engine.process_access(&mut execution, 0, OBJECT, AccessKind::Write);
+        engine.process_sync(&mut execution, 0, SyncEvent::LockRelease { lock_id: LOCK }, None);
+        execution.finish_thread(0);
+
+        assert_eq!(engine.schedule(&mut execution), Some(1));
+        engine.process_sync(&mut execution, 1, SyncEvent::LockAcquire { lock_id: LOCK }, None);
+        engine.process_access(&mut execution, 1, OBJECT, AccessKind::Read);
+
+        assert!(engine.pending_races.is_empty(), "the release/acquire edge must still order the published prefix");
     }
 
     #[test]

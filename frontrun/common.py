@@ -35,9 +35,9 @@ def any_async(fns: Iterable[Any]) -> bool:
 
 
 def _reject_deferred_sync_result(  # pyright: ignore[reportUnusedFunction]  # imported by sync strategy runners
-    result: Any, worker: Any
-) -> None:
-    """Fail closed when a sync worker returns code that was never executed."""
+    result: Any, worker: Any, *, role: str = "sync worker"
+) -> Any:
+    """Fail closed when a synchronous callback returns unexecuted code."""
     if inspect.isawaitable(result):
         close = getattr(result, "close", None)
         if callable(close):
@@ -49,13 +49,18 @@ def _reject_deferred_sync_result(  # pyright: ignore[reportUnusedFunction]  # im
         result.close()
         kind = "a generator"
     else:
-        return
+        return result
     name = getattr(worker, "__qualname__", None) or repr(worker)
     raise TypeError(
-        f"explore(): sync worker {name} returned {kind}; its deferred body was not executed. "
+        f"explore(): {role} {name} returned {kind}; its deferred body was not executed. "
         "Use an `async def` worker with execution='thread' for awaitables, and execute generator bodies inside the "
         "worker before returning."
     )
+
+
+def _call_sync_setup(setup: Callable[[], Any]) -> Any:
+    """Call a synchronous setup hook and reject a deferred body."""
+    return _reject_deferred_sync_result(setup(), setup, role="setup")
 
 
 def check_invariant(invariant: Callable[[Any], Any], state: Any) -> tuple[bool, str | None]:
@@ -67,7 +72,8 @@ def check_invariant(invariant: Callable[[Any], Any], state: Any) -> tuple[bool, 
     slot so callers can fold it into their result's ``explanation``.
     """
     try:
-        return (not invariant(state), None)
+        value = _reject_deferred_sync_result(invariant(state), invariant, role="invariant")
+        return (not value, None)
     except AssertionError as exc:
         return (True, str(exc))
 
@@ -236,7 +242,7 @@ def compute_serializable_states(
         state_hash = repr
     valid: set[Any] = set()
     for perm in permutations(range(len(thread_funcs))):
-        s = setup()
+        s = _call_sync_setup(setup)
         for i in perm:
             thread_funcs[i](s)
         valid.add(state_hash(s))
@@ -256,7 +262,7 @@ async def compute_serializable_states_async(
         state_hash = repr
     valid: set[Any] = set()
     for perm in permutations(range(len(task_funcs))):
-        s = setup()
+        s = _call_sync_setup(setup)
         for i in perm:
             await task_funcs[i](s)
         valid.add(state_hash(s))

@@ -2266,9 +2266,7 @@ def test_postgres_scope_unifies_tcp_and_unix_aliases() -> None:
     from frontrun._sql_db_scope import _normalize_db_identity
 
     identities = {
-        _normalize_db_identity(
-            "mapping", driver, {"host": host, "port": 5432, "dbname": "app"}
-        )
+        _normalize_db_identity("mapping", driver, {"host": host, "port": 5432, "dbname": "app"})
         for driver, host in (
             ("psycopg", "localhost"),
             ("psycopg2", "127.0.0.1"),

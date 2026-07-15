@@ -81,6 +81,7 @@ from frontrun.async_scheduler import (
 )
 from frontrun.common import (
     InterleavingResult,
+    _call_sync_setup,
     check_invariant,
     check_serializability_violation,
 )
@@ -670,7 +671,7 @@ async def _run_with_schedule_status(
     scheduler = AwaitScheduler(schedule, len(tasks), deadlock_timeout=deadlock_timeout, detect_sql=detect_sql)
     runner = AsyncShuffler(scheduler)
 
-    state = setup()
+    state = _call_sync_setup(setup)
     funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [lambda s=state, t=t: t(s) for t in tasks]  # type: ignore[assignment]
 
     await runner.run(funcs, timeout=timeout)
@@ -816,7 +817,7 @@ async def explore_async_random(
             # setup + tasks + invariant; tasks created by runner.run inherit the
             # contextvar, so they see the same virtual time as the driver.
             with clock_context(attempt_clock):
-                state = setup()
+                state = _call_sync_setup(setup)
                 funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
                     lambda s=state, t=t: t(s)  # type: ignore[misc]
                     for t in tasks

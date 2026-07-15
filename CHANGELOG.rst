@@ -217,7 +217,24 @@ Unreleased
   DPOR could certify a false pass — with ``exhausted=True`` — on the common
   write-then-read-back shape whose "both writes land before either read-back"
   interleaving violates the invariant (thread and process modes alike; the
-  exhaustive strategy already found it).
+  exhaustive strategy already found it). Async Queue wakeups now end the
+  releasing task's segment, and lock-release vector clocks publish only the
+  pre-release prefix, so post-wake races remain discoverable and exactly
+  replayable. Async Condition wake eligibility is updated atomically with the
+  engine unblock, preventing exact replay from skipping a newly runnable task.
+
+* **Final proof-integrity hardening.** Sync setup and invariant callbacks, plus
+  Django and SQLAlchemy sync wrappers, now reject deferred results instead of
+  certifying work that was never executed. Timed-out async random runs close
+  worker coroutines reliably on Python 3.10 instead of leaking them into later
+  explorations. Virtual-clock autojump drains the event loop's complete ready
+  chain rather than stopping after four callbacks.
+  Redis tracking supports coredis 6 command requests, commits ``SELECT`` state
+  only after successful commands and shares it across a pool, and resolves Unix
+  socket aliases to their TCP server identity or fails closed. SQL database
+  identity now conservatively canonicalizes driver aliases, SQLite paths and
+  symlinks, while compound statements beginning with ``SET lock_timeout`` no
+  longer suppress an opaque database-wide access later in the statement.
 
 0.6.0 (2026-06-30)
 ------------------

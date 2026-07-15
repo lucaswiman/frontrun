@@ -22,6 +22,7 @@ import hashlib
 import os
 import weakref
 from typing import Any
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 __all__ = [
     "_CONNECTION_DB_SCOPES",
@@ -90,8 +91,17 @@ def _normalize_db_identity(kind: str, *args: Any, **kwargs: Any) -> str | None:
     """
     if kind == "mapping":
         driver, mapping = args
-        items = [(k, v) for k, v in sorted(mapping.items()) if v not in (None, "")]
-        return f"{driver}:{repr(items)}" if items else None
+        driver_name = str(driver).lower()
+        if driver_name in {"postgres", "postgresql", "psycopg", "psycopg2", "asyncpg"}:
+            driver_name = "postgresql"
+        elif driver_name in {"mysql", "pymysql", "mysqldb", "aiomysql", "mysql.connector"}:
+            driver_name = "mysql"
+        # Host spelling is not a stable database identity: DNS aliases and
+        # Unix/TCP endpoints can reach one server.  Omitting it conservatively
+        # merges same-driver/port/database resources across distinct servers,
+        # which may add paths but cannot hide a real dependency.
+        items = [(k, v) for k, v in sorted(mapping.items()) if k != "host" and v not in (None, "")]
+        return f"{driver_name}:{repr(items)}" if items else None
     if kind == "sqlite":
         database = kwargs.get("database") or (args[0] if args else None)
         if database is None:
@@ -102,8 +112,19 @@ def _normalize_db_identity(kind: str, *args: Any, **kwargs: Any) -> str | None:
         if s == ":memory:" and not use_uri:
             return None
         if use_uri or s.startswith("file:"):
-            return f"sqlite-uri:{s}"
-        return f"sqlite-path:{os.path.abspath(s)}"
+            parsed = urlsplit(s)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if query.get("mode", "").lower() == "memory" or parsed.path == ":memory:":
+                # Named shared-memory databases are identified by their URI;
+                # they are not filesystem paths and must not be realpathed.
+                canonical_query = "&".join(f"{key}={query[key]}" for key in sorted(query))
+                suffix = f"?{canonical_query}" if canonical_query else ""
+                return f"sqlite-memory-uri:{parsed.path}{suffix}"
+            uri_path = unquote(parsed.path)
+            if parsed.netloc and parsed.netloc not in ("", "localhost"):
+                uri_path = f"//{parsed.netloc}{uri_path}"
+            return f"sqlite-path:{os.path.realpath(os.path.abspath(uri_path))}"
+        return f"sqlite-path:{os.path.realpath(os.path.abspath(s))}"
     if kind == "connection":
         (conn,) = args
         info = getattr(conn, "info", None)
@@ -113,8 +134,6 @@ def _normalize_db_identity(kind: str, *args: Any, **kwargs: Any) -> str | None:
             if (identity := _normalize_db_identity("mapping", "postgres", relevant)) is not None:
                 return identity
         dsn = getattr(conn, "dsn", None)
-        if isinstance(dsn, str) and dsn:
-            return f"dsn:{dsn}"
         relevant = {
             "host": getattr(conn, "host", None),
             "port": getattr(conn, "port", None),
@@ -124,9 +143,11 @@ def _normalize_db_identity(kind: str, *args: Any, **kwargs: Any) -> str | None:
         }
         if (identity := _normalize_db_identity("mapping", "dbapi", relevant)) is not None:
             return identity
+        if isinstance(dsn, str) and dsn:
+            return f"dsn:{dsn}"
         path = getattr(conn, "filename", None)
         if isinstance(path, str) and path:
-            return f"sqlite-path:{os.path.abspath(path)}"
+            return f"sqlite-path:{os.path.realpath(os.path.abspath(path))}"
         return None
     raise ValueError(f"unknown db identity kind: {kind!r}")
 

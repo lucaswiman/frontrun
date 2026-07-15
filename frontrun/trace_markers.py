@@ -41,6 +41,7 @@ from frontrun.common import (
     InterleavingResult,
     Schedule,
     Step,
+    _call_sync_setup,
     _is_async_callable,
     _reject_deferred_sync_result,
     any_async,
@@ -524,7 +525,7 @@ def explore_marker_interleavings(
     first_explanation: str | None = None
 
     for i, schedule in enumerate(schedules):
-        state = setup()
+        state = _call_sync_setup(setup)
         executor = TraceExecutor(schedule, deadlock_timeout=deadlock_timeout)
 
         runners: dict[str, Callable[..., Any]] = {}

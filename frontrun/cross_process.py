@@ -30,6 +30,7 @@ from typing import Any, Literal
 from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, CrossProcessResult
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
 from frontrun._dpor_runtime.xproc.launch import MpLauncher, Subprocess, SubprocessLauncher
+from frontrun.common import _call_sync_setup, check_invariant
 
 __all__ = ["CrossProcessResult", "Subprocess", "explore_processes"]
 
@@ -106,10 +107,11 @@ def _state_threaded_hooks(
     state_box: dict[str, Any] = {}
 
     def coord_setup() -> None:
-        state_box["state"] = setup()
+        state_box["state"] = _call_sync_setup(setup)
 
     def coord_invariant() -> bool:
-        return bool(invariant(state_box.get("state")))
+        failed, _message = check_invariant(invariant, state_box.get("state"))
+        return not failed
 
     return coord_setup, coord_invariant, state_box
 

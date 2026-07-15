@@ -145,30 +145,80 @@ def _canonical_host(host: str) -> str:
     return canonical
 
 
-def _query_unix_socket_tcp_port(path: str) -> str | None:
-    """Ask the Redis server behind *path* for its TCP port (RESP2, suppressed I/O)."""
+def _resp_command(*parts: object) -> bytes:
+    encoded = [(_redis_arg_text(part)).encode("utf-8", "surrogateescape") for part in parts]
+    return (
+        b"*"
+        + str(len(encoded)).encode()
+        + b"\r\n"
+        + b"".join(b"$" + str(len(part)).encode() + b"\r\n" + part + b"\r\n" for part in encoded)
+    )
+
+
+def _read_resp(stream: Any) -> Any:
+    prefix = stream.read(1)
+    line = stream.readline().rstrip(b"\r\n")
+    if prefix == b"+":
+        return line
+    if prefix == b"-":
+        raise RuntimeError(line.decode("utf-8", "replace"))
+    if prefix == b":":
+        return int(line)
+    if prefix == b"$":
+        length = int(line)
+        if length < 0:
+            return None
+        value = stream.read(length)
+        stream.read(2)
+        return value
+    if prefix == b"*":
+        length = int(line)
+        return [_read_resp(stream) for _ in range(max(0, length))]
+    raise RuntimeError("invalid Redis response while resolving unix-socket identity")
+
+
+def _query_unix_socket_tcp_port(path: str, connection_kwargs: dict[str, Any]) -> str | None:
+    """Ask the Redis server behind *path* for its TCP port."""
     if not hasattr(socket, "AF_UNIX"):
         return None
     try:
         with _suppress_endpoint_io(), contextlib.closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as sock:
             sock.settimeout(1.0)
             sock.connect(path)
-            sock.sendall(b"*3\r\n$6\r\nCONFIG\r\n$3\r\nGET\r\n$4\r\nport\r\n")
-            data = b""
-            while data.count(b"\r\n") < 5 and len(data) < 512:
-                if data.startswith(b"-") and b"\r\n" in data:
-                    return None  # error reply (CONFIG disabled, NOAUTH, ...)
-                chunk = sock.recv(256)
-                if not chunk:
-                    break
-                data += chunk
-    except OSError:
+            with sock.makefile("rb") as stream:
+                password = connection_kwargs.get("password")
+                username = connection_kwargs.get("username")
+                if password is not None:
+                    auth = ("AUTH", username, password) if username is not None else ("AUTH", password)
+                    sock.sendall(_resp_command(*auth))
+                    _read_resp(stream)
+
+                # CONFIG is the most direct source.  INFO SERVER covers
+                # CONFIG-renamed/disabled deployments and exposes tcp_port.
+                try:
+                    sock.sendall(_resp_command("CONFIG", "GET", "port"))
+                    response = _read_resp(stream)
+                    if isinstance(response, list) and len(response) >= 2:
+                        port = _redis_arg_text(response[1])
+                        if port.isdigit():
+                            return port
+                except RuntimeError:
+                    pass
+
+                try:
+                    sock.sendall(_resp_command("INFO", "SERVER"))
+                    response = _read_resp(stream)
+                    if isinstance(response, bytes):
+                        for line in response.splitlines():
+                            if line.startswith(b"tcp_port:"):
+                                port = line.partition(b":")[2].decode("ascii", "replace")
+                                if port.isdigit():
+                                    return port
+                except RuntimeError:
+                    pass
+    except (OSError, RuntimeError, ValueError):
         return None
-    lines = data.split(b"\r\n")
-    if len(lines) < 5 or lines[0] != b"*2" or lines[2].lower() != b"port":
-        return None
-    port = lines[4].decode("ascii", "replace")
-    return port if port.isdigit() and port != "0" else None
+    return None
 
 
 # Unix-socket pools carry no host/port.  Resolve each socket path once to the
@@ -181,12 +231,17 @@ def _query_unix_socket_tcp_port(path: str) -> str | None:
 _unix_path_server_parts: dict[str, tuple[str, str]] = {}
 
 
-def _unix_socket_server_parts(path: str) -> tuple[str, str]:
+def _unix_socket_server_parts(path: str, connection_kwargs: dict[str, Any]) -> tuple[str, str]:
     real_path = os.path.realpath(path)
     cached = _unix_path_server_parts.get(real_path)
     if cached is None:
-        tcp_port = _query_unix_socket_tcp_port(real_path)
-        cached = ("localhost", tcp_port) if tcp_port is not None else (f"unix:{real_path}", "0")
+        tcp_port = _query_unix_socket_tcp_port(real_path, connection_kwargs)
+        if tcp_port is None:
+            raise RuntimeError(
+                "frontrun could not determine the Redis unix-socket server identity; "
+                "allow AUTH plus CONFIG GET port or INFO SERVER so unix and TCP aliases cannot be modeled as independent"
+            )
+        cached = ("localhost", tcp_port) if tcp_port != "0" else (f"unix:{real_path}", "0")
         _unix_path_server_parts[real_path] = cached
     return cached
 
@@ -237,12 +292,18 @@ def _record_client_select(client: Any, db: object) -> None:
     if getattr(client, "connection", None) is not None:  # single_connection_client
         _set_client_scope_state(client, _EXACT_DB_ATTR, _client_exact_dbs, db_text)
         return
-    possible = _get_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
+    _record_client_select_candidate(client, db_text)
+
+
+def _record_client_select_candidate(client: Any, db: object) -> None:
+    """Conservatively add a possible DB to the shared connection pool."""
+    owner = getattr(client, "connection_pool", None) or client
+    possible = _get_client_scope_state(owner, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
     if possible is None:
         possible = set()
-        if not _set_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs, possible):
+        if not _set_client_scope_state(owner, _POSSIBLE_DBS_ATTR, _client_possible_dbs, possible):
             return
-    possible.add(db_text)
+    possible.add(_redis_arg_text(db))
 
 
 def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
@@ -255,7 +316,7 @@ def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
     db = exact_db if isinstance(exact_db, str) else _redis_arg_text(kwargs.get("db", 0))
     path = kwargs.get("path")
     if path is not None:
-        host, port = _unix_socket_server_parts(_redis_arg_text(path))
+        host, port = _unix_socket_server_parts(_redis_arg_text(path), kwargs)
         return host, port, db
     host = _redis_arg_text(kwargs.get("host", "localhost"))
     port = _redis_arg_text(kwargs.get("port", 6379))
@@ -314,6 +375,12 @@ def _report_pipeline_commands(pipeline: Any) -> bool:
     """
     reported = False
     for cmd_name, cmd_args in _iter_pipeline_commands(pipeline):
+        if cmd_name.upper().split(" ", 1)[0] == "SELECT" and cmd_args:
+            # Pipeline execution can partially succeed before raising, and
+            # redis-py may return per-command errors.  Retaining both the old
+            # and candidate DB on the shared pool is the sound fail-closed
+            # model when the exact outcome is unavailable here.
+            _record_client_select_candidate(pipeline, cmd_args[0])
         if _report_redis_access(cmd_name, cmd_args, client=pipeline):
             reported = True
     return reported
@@ -336,12 +403,6 @@ def _report_redis_access(
     endpoint-level I/O should be suppressed for the subsequent Redis call).
     """
     upper = cmd_name.upper().split(" ", 1)[0]
-
-    # Track live database switches even without a reporter (setup and replay
-    # both run reporter-less); otherwise exploration and replay would derive
-    # different scopes for the same client and anchors would misalign.
-    if upper == "SELECT" and cmd_args and client is not None:
-        _record_client_select(client, cmd_args[0])
 
     reporter = get_io_reporter()
     if reporter is None:
@@ -437,7 +498,8 @@ def _report_redis_access(
     # switched).  Mirror the primary-scope accesses into every candidate
     # scope so no ordering is missed (sound over-approximation).
     if client is not None and scope_parts is not None:
-        possible_dbs = _get_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
+        possible_owner = getattr(client, "connection_pool", None) or client
+        possible_dbs = _get_client_scope_state(possible_owner, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
         if possible_dbs:
             candidate_scopes = {
                 _format_redis_db_scope(scope_parts[0], scope_parts[1], candidate_db) for candidate_db in possible_dbs
@@ -493,8 +555,20 @@ def _parse_and_report_execute_command(
     """
     if not args:
         return None
-    cmd_name = _redis_arg_text(args[0])
-    cmd_args = args[1:]
+    first = args[0]
+    request_name = getattr(first, "name", None) if len(args) == 1 else None
+    serialized_arguments = getattr(first, "serialized_arguments", None) if request_name is not None else None
+    if isinstance(request_name, (str, bytes, bytearray, memoryview)) and isinstance(
+        serialized_arguments, (tuple, list)
+    ):
+        # coredis >=6 passes one CommandRequest to execute_command.  Its repr
+        # contains a run-specific address, so treating it as the command name
+        # makes every physical command look independent and breaks replay.
+        cmd_name = _redis_arg_text(request_name)
+        cmd_args = tuple(serialized_arguments)
+    else:
+        cmd_name = _redis_arg_text(first)
+        cmd_args = args[1:]
     reported = _report_redis_access(cmd_name, cmd_args, client=client)
     return cmd_name, cmd_args, reported
 
@@ -581,12 +655,17 @@ def _intercept_execute_command_scoped(
         first_key = _redis_arg_text(cmd_args[0]) if cmd_args else ""
         resource_id = "\x1f".join(("redis", cmd_name, first_key, db_scope))
 
-    return _run_sync_dpor_envelope(
+    result = _run_sync_dpor_envelope(
         lambda: original_method(self, *args, **kwargs),
         resource_id,
         reported,
         needs_scheduling_point,
     )
+    if cmd_name.upper().split(" ", 1)[0] == "SELECT" and cmd_args:
+        # SELECT changes connection state only after the server accepts it.
+        # Recording before I/O mis-scopes later commands when SELECT fails.
+        _record_client_select(self, cmd_args[0])
+    return result
 
 
 def _intercept_pipeline_execute(

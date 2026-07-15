@@ -612,6 +612,14 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             if not fut.done():
                 fut.set_result(None)
 
+    async def _yield_after_handoff(self, scheduler: Any, task_id: int, operation: str) -> None:
+        """End the releaser segment after making a parked peer runnable."""
+        await scheduler.pause(task_id, (operation, id(self), "wake"))
+        on_task_yielded = getattr(scheduler, "on_task_yielded", None)
+        if on_task_yielded is not None:
+            on_task_yielded(task_id)
+        await _real_asyncio_sleep(0)
+
     def get_nowait(self) -> Any:
         item = super().get_nowait()
         self._wake_waiter(self._frontrun_put_waiters, _scheduler_var.get(), _task_id_var.get())
@@ -655,7 +663,11 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             )
             if not self.empty():
                 break
-        return self.get_nowait()
+        woke_putter = any(not fut.done() for _waiter, fut in self._frontrun_put_waiters)
+        item = self.get_nowait()
+        if woke_putter:
+            await self._yield_after_handoff(scheduler, task_id, "queue_get")
+        return item
 
     async def put(self, item: Any) -> None:
         task_id = _task_id_var.get()
@@ -686,7 +698,10 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
                 reason="queue put",
                 cleanup=_cleanup,
             )
+        woke_getter = any(not fut.done() for _waiter, fut in self._frontrun_get_waiters)
         self.put_nowait(item)
+        if woke_getter:
+            await self._yield_after_handoff(scheduler, task_id, "queue_put")
 
 
 class _CooperativeAsyncCondition:
