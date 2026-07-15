@@ -52,6 +52,8 @@ Use the Makefile to build virtualenvs. Prefer working in the **3.14** virtualenv
 - Run tools via e.g. `.venv-3.14/bin/pytest`, `.venv-3.14/bin/python`
 - Use `frontrun` CLI to run commands with I/O interception: `frontrun pytest -v tests/`
 
+> **Anthropic cloud sandbox caveat (remote sessions only):** In Anthropic's *managed cloud* sandbox (Claude Code on the web / remote sessions — recognizable by the `/root/.ccr` egress proxy), Python 3.14 is currently unavailable: no system 3.14 interpreter is installed and the proxy blocks uv's interpreter download from GitHub releases, so `make build-dpor-3.14` and `make rebuild` fail with a 403. **Only in that environment**, fall back to 3.13 as the testing default (`make build-dpor-3.13 build-io`, `make test-3.13`, `make build-integration-3.13`) and leave 3.14/3.14t verification to CI. Local sandboxes (e.g. the Docker dev container on macOS) have all versions — the usual 3.14 preference applies there.
+
 ## Running tests
 
 Always use `make test-<version>` to run tests. This builds the DPOR extension and I/O library, then runs pytest through the `frontrun` CLI wrapper (which sets up `LD_PRELOAD` for C-level I/O interception). Do **not** run `.venv-3.14/bin/pytest` directly — tests that use `frontrun.explore()` will be skipped or misconfigured without the `frontrun` wrapper.
