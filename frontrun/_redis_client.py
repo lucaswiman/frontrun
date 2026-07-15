@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import ipaddress
+import os
 import socket
 import threading
 from collections.abc import Callable, Generator, Iterator
@@ -132,7 +133,7 @@ def _canonical_host(host: str) -> str:
         addresses = sorted({str(info[4][0]) for info in infos})
         if addresses:
             canonical = addresses[0]
-    except OSError:
+    except (OSError, UnicodeError):  # unresolvable or non-DNS name → keep raw
         pass
     try:
         if ipaddress.ip_address(canonical).is_loopback:
@@ -143,15 +144,65 @@ def _canonical_host(host: str) -> str:
     return canonical
 
 
+def _query_unix_socket_tcp_port(path: str) -> str | None:
+    """Ask the Redis server behind *path* for its TCP port (RESP2, suppressed I/O)."""
+    if not hasattr(socket, "AF_UNIX"):
+        return None
+    try:
+        with _suppress_endpoint_io(), contextlib.closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as sock:
+            sock.settimeout(1.0)
+            sock.connect(path)
+            sock.sendall(b"*3\r\n$6\r\nCONFIG\r\n$3\r\nGET\r\n$4\r\nport\r\n")
+            data = b""
+            while data.count(b"\r\n") < 5 and len(data) < 512:
+                if data.startswith(b"-") and b"\r\n" in data:
+                    return None  # error reply (CONFIG disabled, NOAUTH, ...)
+                chunk = sock.recv(256)
+                if not chunk:
+                    break
+                data += chunk
+    except OSError:
+        return None
+    lines = data.split(b"\r\n")
+    if len(lines) < 5 or lines[0] != b"*2" or lines[2].lower() != b"port":
+        return None
+    port = lines[4].decode("ascii", "replace")
+    return port if port.isdigit() and port != "0" else None
+
+
+# Unix-socket pools carry no host/port.  Resolve each socket path once to the
+# TCP identity of the server behind it (CONFIG GET port over the socket
+# itself) so a unix-socket client and a TCP client reaching the same server
+# share resources.  On any failure keep a distinct per-path identity rather
+# than the old localhost:6379 default, which claimed an endpoint the socket
+# never touches.  Cached per real path: deterministic within a session, no
+# per-access I/O.
+_unix_path_server_parts: dict[str, tuple[str, str]] = {}
+
+
+def _unix_socket_server_parts(path: str) -> tuple[str, str]:
+    real_path = os.path.realpath(path)
+    cached = _unix_path_server_parts.get(real_path)
+    if cached is None:
+        tcp_port = _query_unix_socket_tcp_port(real_path)
+        cached = ("localhost", tcp_port) if tcp_port is not None else (f"unix:{real_path}", "0")
+        _unix_path_server_parts[real_path] = cached
+    return cached
+
+
 def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
     """Extract ``(host, port, database)`` strings from a Redis client."""
     pool = getattr(client, "connection_pool", None)
     if pool is None:
         return None
     kwargs = getattr(pool, "connection_kwargs", {})
+    db = _redis_arg_text(kwargs.get("db", 0))
+    path = kwargs.get("path")
+    if path is not None:
+        host, port = _unix_socket_server_parts(_redis_arg_text(path))
+        return host, port, db
     host = _redis_arg_text(kwargs.get("host", "localhost"))
     port = _redis_arg_text(kwargs.get("port", 6379))
-    db = _redis_arg_text(kwargs.get("db", 0))
     return host, port, db
 
 
