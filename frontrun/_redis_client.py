@@ -196,27 +196,53 @@ def _unix_socket_server_parts(path: str) -> tuple[str, str]:
 # (a missed dependency).  A single-connection client switches exactly; on a
 # pooled client only one pooled connection switched, so the configured and
 # selected databases are all kept as candidates (sound over-approximation).
-# id()-keyed with weakref eviction, mirroring
-# ``_sql_db_scope._register_connection_db_scope``.
+# State lives on the client object itself when possible; the id-keyed
+# registries (weakref-evicted, mirroring
+# ``_sql_db_scope._register_connection_db_scope``) are a fallback for
+# non-settable clients.  A client that is neither settable nor weakref-able
+# stays untracked: id() values are reusable, and a bare id-keyed entry would
+# hand a dead client's database to whatever object next occupies the address.
+_EXACT_DB_ATTR = "_frontrun_selected_db"
+_POSSIBLE_DBS_ATTR = "_frontrun_possible_dbs"
 _client_exact_dbs: dict[int, str] = {}
 _client_possible_dbs: dict[int, set[str]] = {}
 
 
-def _record_client_select(client: Any, db: object) -> None:
-    """Record a live SELECT so later accesses land in the right database scope."""
+def _set_client_scope_state(client: Any, attr: str, registry: dict[int, Any], value: Any) -> bool:
+    """Attach SELECT state to *client*; return False if it cannot be tracked safely."""
+    try:
+        setattr(client, attr, value)
+        return True
+    except (AttributeError, TypeError):
+        pass
     key = id(client)
-    db_text = _redis_arg_text(db)
-    registry: dict[int, Any]
-    if getattr(client, "connection", None) is not None:  # single_connection_client
-        _client_exact_dbs[key] = db_text
-        registry = _client_exact_dbs
-    else:
-        _client_possible_dbs.setdefault(key, set()).add(db_text)
-        registry = _client_possible_dbs
     try:
         weakref.finalize(client, registry.pop, key, None)
     except TypeError:
-        pass
+        return False
+    registry[key] = value
+    return True
+
+
+def _get_client_scope_state(client: Any, attr: str, registry: dict[int, Any]) -> Any:
+    value = getattr(client, attr, None)
+    if value is not None:
+        return value
+    return registry.get(id(client))
+
+
+def _record_client_select(client: Any, db: object) -> None:
+    """Record a live SELECT so later accesses land in the right database scope."""
+    db_text = _redis_arg_text(db)
+    if getattr(client, "connection", None) is not None:  # single_connection_client
+        _set_client_scope_state(client, _EXACT_DB_ATTR, _client_exact_dbs, db_text)
+        return
+    possible = _get_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
+    if possible is None:
+        possible = set()
+        if not _set_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs, possible):
+            return
+    possible.add(db_text)
 
 
 def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
@@ -225,7 +251,8 @@ def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
     if pool is None:
         return None
     kwargs = getattr(pool, "connection_kwargs", {})
-    db = _client_exact_dbs.get(id(client), _redis_arg_text(kwargs.get("db", 0)))
+    exact_db = _get_client_scope_state(client, _EXACT_DB_ATTR, _client_exact_dbs)
+    db = exact_db if isinstance(exact_db, str) else _redis_arg_text(kwargs.get("db", 0))
     path = kwargs.get("path")
     if path is not None:
         host, port = _unix_socket_server_parts(_redis_arg_text(path))
@@ -410,7 +437,7 @@ def _report_redis_access(
     # switched).  Mirror the primary-scope accesses into every candidate
     # scope so no ordering is missed (sound over-approximation).
     if client is not None and scope_parts is not None:
-        possible_dbs = _client_possible_dbs.get(id(client))
+        possible_dbs = _get_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
         if possible_dbs:
             candidate_scopes = {
                 _format_redis_db_scope(scope_parts[0], scope_parts[1], candidate_db) for candidate_db in possible_dbs
