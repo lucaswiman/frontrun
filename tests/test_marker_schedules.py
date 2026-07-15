@@ -426,6 +426,7 @@ class TestExploreMarkerInterleavingsAssertionError:
         assert result.failures is not None
         assert len(result.failures) == 3
 
+
 class TestExploreMarkerInterleavingsFailClosed:
     """Deferred worker bodies must fail closed instead of certifying vacuously."""
 
