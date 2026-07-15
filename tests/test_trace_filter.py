@@ -292,6 +292,28 @@ class TestCmdlineUserCode:
             else:
                 delattr(main, "__file__")
 
+    def test_stdin_user_code_in_cmdline_mode(self) -> None:
+        """Code piped via stdin (`frontrun python - < script.py`) has
+        co_filename == "<stdin>" and __main__.__file__ == "<stdin>"; it must
+        be treated as user code, or exploration certifies a pass having
+        traced nothing.
+        """
+        import sys
+
+        main = sys.modules["__main__"]
+        had_file = hasattr(main, "__file__")
+        saved_file = getattr(main, "__file__", None)
+        # Real stdin mode: __main__.__file__ is the pseudo-filename "<stdin>".
+        main.__file__ = "<stdin>"  # type: ignore[attr-defined]
+        try:
+            assert is_cmdline_user_code("<stdin>", main.__dict__) is True
+            assert is_cmdline_user_code("<stdin>", {"__name__": "some_lib"}) is False
+        finally:
+            if had_file:
+                main.__file__ = saved_file  # type: ignore[attr-defined]
+            else:
+                delattr(main, "__file__")
+
 
 # ---------------------------------------------------------------------------
 # Trace filter cleanup on exception
