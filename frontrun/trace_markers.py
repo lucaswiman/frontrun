@@ -358,8 +358,11 @@ def frontrun(
                 _fn: Callable[..., Any] = fn,
                 _a: tuple[Any, ...] = a,
                 _kw: dict[str, Any] = kw,
-            ) -> None:
-                _fn(*_a, **_kw)
+            ) -> Any:
+                # Preserve the return value so TraceExecutor's outer
+                # fail-closed check can reject deferred coroutine/generator
+                # bodies instead of certifying a run that executed nothing.
+                return _fn(*_a, **_kw)
 
             wrapped[execution_name] = _wrap_sync
         else:
