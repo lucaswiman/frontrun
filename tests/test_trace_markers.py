@@ -45,6 +45,25 @@ def test_frontrun_async_target_with_thread_args_is_awaited() -> None:
     assert observed == ["ran"], "async worker coroutine was returned and discarded instead of awaited"
 
 
+def test_frontrun_sync_wrapper_with_args_rejects_deferred_body() -> None:
+    """Convenience-function argument binding must preserve deferred returns.
+
+    The sync wrapper used for ``thread_args`` discarded the target's return
+    value, hiding it from TraceExecutor's fail-closed deferred-body check.
+    """
+
+    def worker(value: str):
+        yield value  # pragma: no cover - the deferred body must not run
+
+    with pytest.raises(TypeError, match="deferred body was not executed"):
+        frontrun(
+            Schedule([Step("task", "never")]),
+            {"task": worker},
+            thread_args={"task": ("ran",)},
+            timeout=2.0,
+        )
+
+
 def test_marker_exploration_does_not_pass_when_declared_marker_is_absent() -> None:
     """An unexecuted schedule cannot count as an exhaustively verified pass."""
 

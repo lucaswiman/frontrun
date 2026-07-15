@@ -2289,3 +2289,8 @@ class TestLockTimeoutSuppression:
         """
         reported = self._reports_for("SET lock_timeout = '0'; UPDATE accounts SET balance = balance - 1 WHERE id = 1")
         assert reported, "compound statement was completely invisible to access tracking"
+
+    def test_compound_lock_timeout_with_opaque_statement_reports_database_write(self) -> None:
+        """Parser opacity after SET must not make the compound SQL invisible."""
+        reported = self._reports_for("SET lock_timeout = '0'; CALL refresh_accounts()")
+        assert reported == [("sql:__database__", "write")]
