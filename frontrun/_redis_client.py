@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import ipaddress
+import socket
 import threading
 from collections.abc import Callable, Generator, Iterator
 from typing import Any
@@ -104,6 +106,43 @@ def _redis_arg_text(value: object) -> str:
     return str(value)
 
 
+# Cached name → canonical-address resolution.  Identity must be stable for
+# a whole session (record and replay resolve to the same string) and must
+# never cost a network lookup per access, so each name is resolved at most
+# once per process.
+_canonical_host_cache: dict[str, str] = {}
+
+
+def _canonical_host(host: str) -> str:
+    """Resolve *host* to a stable canonical server-address string.
+
+    Textual aliases of one server (``localhost`` vs ``127.0.0.1``) must map
+    to a single identity — otherwise two clients reaching the same Redis
+    instance get disjoint resources and DPOR misses their dependency.
+    Resolution picks the lexicographically first resolved address for
+    determinism and folds every loopback address to ``127.0.0.1``.  On
+    resolution failure the raw string is kept (the previous behavior).
+    """
+    cached = _canonical_host_cache.get(host)
+    if cached is not None:
+        return cached
+    canonical = host
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        addresses = sorted({str(info[4][0]) for info in infos})
+        if addresses:
+            canonical = addresses[0]
+    except OSError:
+        pass
+    try:
+        if ipaddress.ip_address(canonical).is_loopback:
+            canonical = "127.0.0.1"
+    except ValueError:
+        pass
+    _canonical_host_cache[host] = canonical
+    return canonical
+
+
 def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
     """Extract ``(host, port, database)`` strings from a Redis client."""
     pool = getattr(client, "connection_pool", None)
@@ -117,11 +156,11 @@ def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
 
 
 def _format_redis_db_scope(host: object, port: object, db: object) -> str:
-    return f"redis:{_redis_arg_text(host)}:{_redis_arg_text(port)}/{_redis_arg_text(db)}"
+    return f"redis:{_canonical_host(_redis_arg_text(host))}:{_redis_arg_text(port)}/{_redis_arg_text(db)}"
 
 
 def _format_redis_server_scope(host: object, port: object) -> str:
-    return f"redis:{_redis_arg_text(host)}:{_redis_arg_text(port)}"
+    return f"redis:{_canonical_host(_redis_arg_text(host))}:{_redis_arg_text(port)}"
 
 
 def _get_redis_db_scope(client: Any) -> str | None:
