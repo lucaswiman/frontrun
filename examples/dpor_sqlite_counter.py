@@ -28,6 +28,11 @@ import tempfile
 def _make_db(path: str) -> None:
     """Create (or reset) the counter table at *path*."""
     conn = sqlite3.connect(path)
+    # WAL lets one worker read while the other writes; in the default
+    # rollback-journal mode an open read statement blocks the peer's UPDATE
+    # at the C level for the busy timeout, stalling exactly the racy
+    # interleaving DPOR needs to reach.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("DROP TABLE IF EXISTS counter")
     conn.execute("CREATE TABLE counter (value INTEGER NOT NULL)")
     conn.execute("INSERT INTO counter VALUES (0)")
@@ -49,7 +54,10 @@ class State:
 
 def racy_increment(state: State) -> None:
     """Read the counter, increment in Python, write back — not atomic."""
-    conn = sqlite3.connect(state.db_path, check_same_thread=False)
+    # autocommit mode: a deferred transaction would hold SQLite's C-level
+    # database lock across the whole read-modify-write, blocking the other
+    # worker at the driver level and timing the exploration out.
+    conn = sqlite3.connect(state.db_path, check_same_thread=False, isolation_level=None)
     cur = conn.cursor()
     cur.execute("SELECT value FROM counter")
     value = cur.fetchone()[0]

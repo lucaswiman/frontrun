@@ -13,11 +13,11 @@ from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_i
 from frontrun._redis_client import _intercept_pipeline_execute, set_redis_replay_mode
 
 
-def _capture_accesses(command: str, args: tuple[object, ...], *, db: int = 0) -> list[tuple[str, str]]:
+def _capture_accesses(
+    command: str, args: tuple[object, ...], *, db: int = 0, host: str = "source"
+) -> list[tuple[str, str]]:
     events: list[tuple[str, str]] = []
-    client = SimpleNamespace(
-        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": db})
-    )
+    client = SimpleNamespace(connection_pool=SimpleNamespace(connection_kwargs={"host": host, "port": 6379, "db": db}))
     set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
     try:
         assert _redis_client._report_redis_access(command, args, client=client)
@@ -76,6 +76,135 @@ def test_pubsub_channels_are_scoped_to_server_not_database() -> None:
     db0_writes = {resource for resource, kind in db0 if kind == "write"}
     db1_writes = {resource for resource, kind in db1 if kind == "write"}
     assert db0_writes & db1_writes
+
+
+def test_host_aliases_share_server_identity() -> None:
+    """localhost and 127.0.0.1 reach the same server and must share resources."""
+    via_name = _capture_accesses("SET", ("k", "value"), host="localhost")
+    via_ip = _capture_accesses("SET", ("k", "value"), host="127.0.0.1")
+
+    name_writes = {resource for resource, kind in via_name if kind == "write"}
+    ip_writes = {resource for resource, kind in via_ip if kind == "write"}
+    assert name_writes & ip_writes
+
+
+def test_migrate_destination_host_alias_shares_identity() -> None:
+    """MIGRATE destination identity must canonicalize like client identity."""
+    migrate = _capture_accesses("MIGRATE", ("localhost", 6379, "k", 0, 1000), host="source")
+    destination_write = _capture_accesses("SET", ("k", "value"), host="127.0.0.1")
+
+    migrate_writes = {resource for resource, kind in migrate if kind == "write"}
+    destination_writes = {resource for resource, kind in destination_write if kind == "write"}
+    assert migrate_writes & destination_writes
+
+
+def test_unix_socket_pool_gets_distinct_identity(tmp_path: Any) -> None:
+    """A unix-socket pool must not masquerade as the default TCP endpoint.
+
+    Unix-socket connection kwargs carry ``path`` and no host/port; falling
+    back to ``localhost:6379`` would collide with an unrelated default TCP
+    server.  With no server behind the socket the identity must stay a
+    distinct per-path one.
+    """
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"path": str(tmp_path / "absent.sock"), "db": 0})
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
+    finally:
+        set_io_reporter(None)
+
+    assert events
+    assert all("localhost:6379" not in resource and "127.0.0.1:6379" not in resource for resource, _kind in events), (
+        events
+    )
+
+
+def test_select_on_single_connection_client_updates_db_scope() -> None:
+    """A live SELECT moves a single-connection client's later accesses."""
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+        connection=object(),  # redis-py sets .connection for single_connection_client
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        _redis_client._report_redis_access("SELECT", (1,), client=client)
+        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
+    finally:
+        set_io_reporter(None)
+
+    writes = {resource for resource, kind in events if kind == "write"}
+    assert "redis:k:db=redis:source:6379/1" in writes
+    assert "redis:k:db=redis:source:6379/0" not in writes
+
+
+def test_select_on_pooled_client_reports_both_db_scopes() -> None:
+    """Only one pooled connection switched; both databases stay candidates."""
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        _redis_client._report_redis_access("SELECT", (1,), client=client)
+        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
+    finally:
+        set_io_reporter(None)
+
+    writes = {resource for resource, kind in events if kind == "write"}
+    assert "redis:k:db=redis:source:6379/0" in writes
+    assert "redis:k:db=redis:source:6379/1" in writes
+
+
+def test_select_state_is_not_keyed_by_reusable_id_alone() -> None:
+    """SELECT state must live on the client (or a weakref-evicted entry).
+
+    id() values are reusable: a bare id-keyed registry entry for a dead
+    client would hand its selected database to whatever object next occupies
+    the address, silently mis-scoping an unrelated client.
+    """
+    settable = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+        connection=object(),
+    )
+    _redis_client._record_client_select(settable, 1)
+    assert id(settable) not in _redis_client._client_exact_dbs
+    assert _redis_client._get_redis_scope_parts(settable) == ("source", "6379", "1")
+
+    class _Untrackable:  # neither attribute-settable nor weakref-able
+        __slots__ = ("connection", "connection_pool")
+
+    untrackable = _Untrackable()
+    untrackable.connection_pool = SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0})
+    untrackable.connection = object()
+    _redis_client._record_client_select(untrackable, 1)
+    assert id(untrackable) not in _redis_client._client_exact_dbs
+    # Untrackable clients keep the configured scope rather than risking a
+    # stale one for a future client at the same address.
+    assert _redis_client._get_redis_scope_parts(untrackable) == ("source", "6379", "0")
+
+
+def test_select_recorded_without_reporter_for_replay_alignment() -> None:
+    """A SELECT seen while no reporter is installed (setup/replay) must still
+    move the scope, or recorded anchors and replay anchors diverge."""
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+        connection=object(),
+    )
+    set_io_reporter(None)
+    assert not _redis_client._report_redis_access("SELECT", (1,), client=client)
+
+    events: list[tuple[str, str]] = []
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
+    finally:
+        set_io_reporter(None)
+
+    assert ("redis:k:db=redis:source:6379/1", "write") in events
 
 
 def test_bytes_flushall_command_reports_server_scope() -> None:

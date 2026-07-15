@@ -21,7 +21,11 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import ipaddress
+import os
+import socket
 import threading
+import weakref
 from collections.abc import Callable, Generator, Iterator
 from typing import Any
 
@@ -104,24 +108,166 @@ def _redis_arg_text(value: object) -> str:
     return str(value)
 
 
+# Cached name → canonical-address resolution.  Identity must be stable for
+# a whole session (record and replay resolve to the same string) and must
+# never cost a network lookup per access, so each name is resolved at most
+# once per process.
+_canonical_host_cache: dict[str, str] = {}
+
+
+def _canonical_host(host: str) -> str:
+    """Resolve *host* to a stable canonical server-address string.
+
+    Textual aliases of one server (``localhost`` vs ``127.0.0.1``) must map
+    to a single identity — otherwise two clients reaching the same Redis
+    instance get disjoint resources and DPOR misses their dependency.
+    Resolution picks the lexicographically first resolved address for
+    determinism and folds every loopback address to ``127.0.0.1``.  On
+    resolution failure the raw string is kept (the previous behavior).
+    """
+    cached = _canonical_host_cache.get(host)
+    if cached is not None:
+        return cached
+    canonical = host
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        addresses = sorted({str(info[4][0]) for info in infos})
+        if addresses:
+            canonical = addresses[0]
+    except (OSError, UnicodeError):  # unresolvable or non-DNS name → keep raw
+        pass
+    try:
+        if ipaddress.ip_address(canonical).is_loopback:
+            canonical = "127.0.0.1"
+    except ValueError:
+        pass
+    _canonical_host_cache[host] = canonical
+    return canonical
+
+
+def _query_unix_socket_tcp_port(path: str) -> str | None:
+    """Ask the Redis server behind *path* for its TCP port (RESP2, suppressed I/O)."""
+    if not hasattr(socket, "AF_UNIX"):
+        return None
+    try:
+        with _suppress_endpoint_io(), contextlib.closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as sock:
+            sock.settimeout(1.0)
+            sock.connect(path)
+            sock.sendall(b"*3\r\n$6\r\nCONFIG\r\n$3\r\nGET\r\n$4\r\nport\r\n")
+            data = b""
+            while data.count(b"\r\n") < 5 and len(data) < 512:
+                if data.startswith(b"-") and b"\r\n" in data:
+                    return None  # error reply (CONFIG disabled, NOAUTH, ...)
+                chunk = sock.recv(256)
+                if not chunk:
+                    break
+                data += chunk
+    except OSError:
+        return None
+    lines = data.split(b"\r\n")
+    if len(lines) < 5 or lines[0] != b"*2" or lines[2].lower() != b"port":
+        return None
+    port = lines[4].decode("ascii", "replace")
+    return port if port.isdigit() and port != "0" else None
+
+
+# Unix-socket pools carry no host/port.  Resolve each socket path once to the
+# TCP identity of the server behind it (CONFIG GET port over the socket
+# itself) so a unix-socket client and a TCP client reaching the same server
+# share resources.  On any failure keep a distinct per-path identity rather
+# than the old localhost:6379 default, which claimed an endpoint the socket
+# never touches.  Cached per real path: deterministic within a session, no
+# per-access I/O.
+_unix_path_server_parts: dict[str, tuple[str, str]] = {}
+
+
+def _unix_socket_server_parts(path: str) -> tuple[str, str]:
+    real_path = os.path.realpath(path)
+    cached = _unix_path_server_parts.get(real_path)
+    if cached is None:
+        tcp_port = _query_unix_socket_tcp_port(real_path)
+        cached = ("localhost", tcp_port) if tcp_port is not None else (f"unix:{real_path}", "0")
+        _unix_path_server_parts[real_path] = cached
+    return cached
+
+
+# Live SELECT tracking: ``connection_kwargs["db"]`` goes stale once a client
+# issues SELECT, so later commands would be attributed to the wrong database
+# (a missed dependency).  A single-connection client switches exactly; on a
+# pooled client only one pooled connection switched, so the configured and
+# selected databases are all kept as candidates (sound over-approximation).
+# State lives on the client object itself when possible; the id-keyed
+# registries (weakref-evicted, mirroring
+# ``_sql_db_scope._register_connection_db_scope``) are a fallback for
+# non-settable clients.  A client that is neither settable nor weakref-able
+# stays untracked: id() values are reusable, and a bare id-keyed entry would
+# hand a dead client's database to whatever object next occupies the address.
+_EXACT_DB_ATTR = "_frontrun_selected_db"
+_POSSIBLE_DBS_ATTR = "_frontrun_possible_dbs"
+_client_exact_dbs: dict[int, str] = {}
+_client_possible_dbs: dict[int, set[str]] = {}
+
+
+def _set_client_scope_state(client: Any, attr: str, registry: dict[int, Any], value: Any) -> bool:
+    """Attach SELECT state to *client*; return False if it cannot be tracked safely."""
+    try:
+        setattr(client, attr, value)
+        return True
+    except (AttributeError, TypeError):
+        pass
+    key = id(client)
+    try:
+        weakref.finalize(client, registry.pop, key, None)
+    except TypeError:
+        return False
+    registry[key] = value
+    return True
+
+
+def _get_client_scope_state(client: Any, attr: str, registry: dict[int, Any]) -> Any:
+    value = getattr(client, attr, None)
+    if value is not None:
+        return value
+    return registry.get(id(client))
+
+
+def _record_client_select(client: Any, db: object) -> None:
+    """Record a live SELECT so later accesses land in the right database scope."""
+    db_text = _redis_arg_text(db)
+    if getattr(client, "connection", None) is not None:  # single_connection_client
+        _set_client_scope_state(client, _EXACT_DB_ATTR, _client_exact_dbs, db_text)
+        return
+    possible = _get_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
+    if possible is None:
+        possible = set()
+        if not _set_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs, possible):
+            return
+    possible.add(db_text)
+
+
 def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
     """Extract ``(host, port, database)`` strings from a Redis client."""
     pool = getattr(client, "connection_pool", None)
     if pool is None:
         return None
     kwargs = getattr(pool, "connection_kwargs", {})
+    exact_db = _get_client_scope_state(client, _EXACT_DB_ATTR, _client_exact_dbs)
+    db = exact_db if isinstance(exact_db, str) else _redis_arg_text(kwargs.get("db", 0))
+    path = kwargs.get("path")
+    if path is not None:
+        host, port = _unix_socket_server_parts(_redis_arg_text(path))
+        return host, port, db
     host = _redis_arg_text(kwargs.get("host", "localhost"))
     port = _redis_arg_text(kwargs.get("port", 6379))
-    db = _redis_arg_text(kwargs.get("db", 0))
     return host, port, db
 
 
 def _format_redis_db_scope(host: object, port: object, db: object) -> str:
-    return f"redis:{_redis_arg_text(host)}:{_redis_arg_text(port)}/{_redis_arg_text(db)}"
+    return f"redis:{_canonical_host(_redis_arg_text(host))}:{_redis_arg_text(port)}/{_redis_arg_text(db)}"
 
 
 def _format_redis_server_scope(host: object, port: object) -> str:
-    return f"redis:{_redis_arg_text(host)}:{_redis_arg_text(port)}"
+    return f"redis:{_canonical_host(_redis_arg_text(host))}:{_redis_arg_text(port)}"
 
 
 def _get_redis_db_scope(client: Any) -> str | None:
@@ -189,11 +335,18 @@ def _report_redis_access(
     Returns ``True`` if any Redis-level reporting was performed (which means
     endpoint-level I/O should be suppressed for the subsequent Redis call).
     """
+    upper = cmd_name.upper().split(" ", 1)[0]
+
+    # Track live database switches even without a reporter (setup and replay
+    # both run reporter-less); otherwise exploration and replay would derive
+    # different scopes for the same client and anchors would misalign.
+    if upper == "SELECT" and cmd_args and client is not None:
+        _record_client_select(client, cmd_args[0])
+
     reporter = get_io_reporter()
     if reporter is None:
         return False
 
-    upper = cmd_name.upper().split(" ", 1)[0]
     pubsub_commands = {
         "PUBLISH",
         "SPUBLISH",
@@ -278,6 +431,25 @@ def _report_redis_access(
 
     for scope, kind in sorted(keyspace_accesses, key=lambda item: (item[0] or "", item[1])):
         reporter(_redis_keyspace_resource_id(db_scope=scope), kind)
+
+    # A pooled client that issued SELECT may run any command on either the
+    # configured or a selected database (only one pooled connection actually
+    # switched).  Mirror the primary-scope accesses into every candidate
+    # scope so no ordering is missed (sound over-approximation).
+    if client is not None and scope_parts is not None:
+        possible_dbs = _get_client_scope_state(client, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
+        if possible_dbs:
+            candidate_scopes = {
+                _format_redis_db_scope(scope_parts[0], scope_parts[1], candidate_db) for candidate_db in possible_dbs
+            }
+            candidate_scopes.discard(db_scope)
+            for extra_scope in sorted(candidate_scopes):
+                for key, kind, scope in key_accesses:
+                    if scope == db_scope:
+                        reporter(_redis_resource_id(key, db_scope=extra_scope), kind)
+                for scope, kind in sorted(keyspace_accesses, key=lambda item: (item[0] or "", item[1])):
+                    if scope == db_scope:
+                        reporter(_redis_keyspace_resource_id(db_scope=extra_scope), kind)
 
     # FLUSHALL mutates every database on a server.  A server-wide intent
     # resource keeps ordinary traffic read-read while making FLUSHALL conflict

@@ -748,3 +748,98 @@ class TestPreviousLineMarkerNoDoubleFire:
             f"Previous-line marker should fire only once but fired "
             f"{len(coordinator.marker_fires)} times: {coordinator.marker_fires}"
         )
+
+
+def test_hyphenated_marker_names_schedule_and_gate():
+    """Docs promise `# frontrun: <name>`; a hyphenated name must register fully.
+
+    With the old `\\w+` capture, `read-balance` registered as `read`, so a
+    schedule addressing `read-balance` could never match and the run stalled.
+    """
+    log: list[str] = []
+
+    def t1() -> None:
+        log.append("b")  # frontrun: read-balance
+
+    def t2() -> None:
+        log.append("c")  # frontrun: write-balance
+
+    executor = TraceExecutor(
+        Schedule([Step("t2", "write-balance"), Step("t1", "read-balance")]),
+        deadlock_timeout=2.0,
+    )
+    executor.run({"t1": t1, "t2": t2}, timeout=10.0)
+    assert log == ["c", "b"]
+
+
+def test_marker_prefix_collision_cannot_hijack_sibling_step():
+    """`read-tmp` must stay distinct from `read` instead of truncating to it.
+
+    Truncation made a `read-tmp` marker register as `read` and silently consume
+    a schedule step addressed to the sibling marker literally named `read`,
+    completing the run with the wrong line gated.
+    """
+    log: list[str] = []
+
+    def t1() -> None:
+        log.append("a")  # frontrun: read-tmp
+        log.append("b")  # frontrun: read
+
+    def t2() -> None:
+        log.append("c")  # frontrun: w
+
+    executor = TraceExecutor(
+        Schedule([Step("t1", "read-tmp"), Step("t2", "w"), Step("t1", "read")]),
+        deadlock_timeout=2.0,
+    )
+    executor.run({"t1": t1, "t2": t2}, timeout=10.0)
+    assert log == ["a", "c", "b"]
+
+
+def test_unproducible_schedule_marker_name_raises():
+    """Schedule names no marker comment can ever produce must fail fast.
+
+    Previously such steps were unreachable: zero steps were consumed and the
+    low-level executor returned cleanly after a fully unscheduled run.
+    """
+    with pytest.raises(ValueError, match="marker name"):
+        ThreadCoordinator(Schedule([Step("t1", "no such name")]))
+    with pytest.raises(ValueError, match="marker name"):
+        ThreadCoordinator(Schedule([Step("t1", "")]))
+
+
+class TestTraceExecutorFailsClosedOnDeferredBody:
+    """TraceExecutor.run must not report success when a sync body was deferred."""
+
+    def test_sync_lambda_returning_coroutine_fails_closed(self):
+        """A lambda wrapping a coroutine call classifies as sync and used to
+        discard the coroutine: run() returned successfully having executed
+        nothing (docs example examples.rst 'async bank + markers via lambdas').
+        """
+
+        class AsyncCounter:
+            def __init__(self) -> None:
+                self.value = 0
+
+            async def incr(self) -> None:
+                # frontrun: incr
+                self.value += 1
+
+        counter = AsyncCounter()
+        schedule = Schedule([Step("t1", "incr")])
+        executor = TraceExecutor(schedule)
+        with pytest.raises(TypeError, match="deferred body was not executed"):
+            executor.run({"t1": lambda: counter.incr()}, timeout=5.0)  # noqa: PLW0108
+        assert counter.value == 0
+
+    def test_sync_generator_returning_worker_fails_closed(self):
+        def gen_worker():
+            def gen():
+                yield
+
+            return gen()
+
+        schedule = Schedule([Step("t1", "never")])
+        executor = TraceExecutor(schedule)
+        with pytest.raises(TypeError, match="deferred body was not executed"):
+            executor.run({"t1": gen_worker}, timeout=5.0)

@@ -423,11 +423,16 @@ class StableObjectIds:
     # stall exploration.  These are generous; typical state graphs are tiny.
     _MAX_PREREGISTER_OBJECTS = 100_000
 
-    __slots__ = ("_map", "_next_id")
+    __slots__ = ("_map", "_next_id", "_preregistered")
 
     def __init__(self) -> None:
         self._map: dict[int, int] = {}
         self._next_id = 0
+        # Stable IDs assigned by pre_register (setup-reachable objects).
+        # These IDs are deterministic across executions *and* across the
+        # exploration/replay boundary, so access anchors may embed them to
+        # distinguish instances of the same class (defect #22).
+        self._preregistered: set[int] = set()
 
     def get(self, obj: object) -> int:
         """Return the stable ID for *obj*, assigning one on first access."""
@@ -476,8 +481,9 @@ class StableObjectIds:
             # pointless and could explode the walk).
             if obj is None or isinstance(obj, (str, bytes, int, float, bool, complex)):
                 continue
-            # Assign this object's stable ID now, in deterministic order.
-            self.get(obj)
+            # Assign this object's stable ID now, in deterministic order,
+            # and record it as pre-registered (run-stable identity).
+            self._preregistered.add(self.get(obj))
             count += 1
             self._enqueue_children(obj, queue)
 
@@ -496,6 +502,16 @@ class StableObjectIds:
         # across processes, so registering their elements here would itself
         # be schedule-independent but process-dependent; leave them lazy.
 
+    def is_preregistered(self, obj: object) -> bool:
+        """Whether *obj* got its stable ID from :meth:`pre_register`.
+
+        Only pre-registered IDs are deterministic across the exploration and
+        replay runs (first-touch IDs depend on the runtime schedule), so only
+        they are safe to embed in replay anchor labels.
+        """
+        stable_id = self._map.get(id(obj))
+        return stable_id is not None and stable_id in self._preregistered
+
     def reset_for_execution(self) -> None:
         """Clear the mapping at the start of each execution.
 
@@ -506,6 +522,7 @@ class StableObjectIds:
         """
         self._map.clear()
         self._next_id = 0
+        self._preregistered.clear()
 
 
 def _register_object_key(key: int, obj: Any, name: Any) -> None:
@@ -550,12 +567,18 @@ _ANCHOR_GENERIC_TYPES = frozenset(
 )
 
 
-def anchor_label(obj: Any, name: Any) -> str | None:
+def anchor_label(obj: Any, name: Any, stable_ids: StableObjectIds | None = None) -> str | None:
     """A run-stable label for an access, or ``None`` if too generic to anchor.
 
-    Uses ``TypeName.attr`` — unlike engine object keys (which depend on
-    first-touch stable-ID assignment order and therefore differ between the
-    exploration run and each replay run), this is comparable across runs.
+    For objects pre-registered in *stable_ids* (the ``setup()`` graph, walked
+    in deterministic order by both exploration and replay), the label embeds
+    the stable ID — ``TypeName.attr#3`` — so two instances of the same class
+    never collide (defect #22).
+
+    Objects created mid-run fall back to plain ``TypeName.attr``: their
+    first-touch stable IDs depend on the runtime schedule and therefore
+    differ between the exploration run and each replay run, so the type-level
+    label is the strongest identity that is still comparable across runs.
     """
     type_name = type(obj).__name__
     if type_name in _ANCHOR_GENERIC_TYPES:
@@ -563,6 +586,8 @@ def anchor_label(obj: Any, name: Any) -> str | None:
     name_str = str(name) if name is not None else ""
     if not name_str.isidentifier() or name_str.startswith("__"):
         return None
+    if stable_ids is not None and stable_ids.is_preregistered(obj):
+        return f"{type_name}.{name_str}#{stable_ids.get(obj)}"
     return f"{type_name}.{name_str}"
 
 

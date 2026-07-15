@@ -2234,3 +2234,58 @@ def test_acquire_pending_row_locks_with_opcode_scheduler_context() -> None:
         set_dpor_thread_id(None)
         _io_tls._pending_row_locks = []
         _io_tls._held_row_locks = set()
+
+
+def test_db_scope_registration_evicted_when_connection_collected():
+    """id()-keyed scopes must not outlive their connection.
+
+    A permanently retained id -> scope entry can be inherited by an unrelated
+    object that reuses the freed address, silently attaching the wrong database
+    scope to its accesses (missed-dependency direction).
+    """
+    import gc
+
+    from frontrun._sql_db_scope import _CONNECTION_DB_SCOPES, _register_connection_db_scope
+
+    class SlottedConn:
+        # No __dict__, like raw sqlite3.Connection: the id map is the sole carrier.
+        __slots__ = ("__weakref__",)
+
+    conn = SlottedConn()
+    key = id(conn)
+    scope = _register_connection_db_scope(conn, "sqlite-path:/tmp/frontrun-scope-evict.db")
+    assert _CONNECTION_DB_SCOPES.get(key) == scope
+
+    del conn
+    gc.collect()
+    assert key not in _CONNECTION_DB_SCOPES
+
+
+class TestLockTimeoutSuppression:
+    """frontrun-injected ``SET lock_timeout`` must be invisible — but only it."""
+
+    def _reports_for(self, operation: str) -> list[tuple[str, str]]:
+        from frontrun._io_detection import set_io_reporter
+        from frontrun._sql_cursor import _report_sql_access
+
+        reported: list[tuple[str, str]] = []
+        set_io_reporter(lambda res_id, kind: reported.append((res_id, kind)))
+        try:
+            _report_sql_access(operation)
+        finally:
+            set_io_reporter(None)
+        return reported
+
+    def test_bare_set_lock_timeout_is_suppressed(self) -> None:
+        assert self._reports_for("SET lock_timeout = '50ms'") == []
+        assert self._reports_for("SET LOCAL lock_timeout = '50ms'") == []
+
+    def test_compound_statement_starting_with_set_lock_timeout_still_reports(self) -> None:
+        """A prefix match must not swallow the statements riding behind it.
+
+        ``SET lock_timeout = '0'; UPDATE ...`` previously produced zero access
+        reports: the UPDATE became invisible to DPOR (missed write dependency,
+        false-certification direction).
+        """
+        reported = self._reports_for("SET lock_timeout = '0'; UPDATE accounts SET balance = balance - 1 WHERE id = 1")
+        assert reported, "compound statement was completely invisible to access tracking"

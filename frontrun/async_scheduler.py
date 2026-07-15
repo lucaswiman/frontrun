@@ -47,6 +47,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
 from frontrun._async_autopause import _in_scheduler_pause
+from frontrun._deadlock import DeadlockError
 from frontrun._virtual_clock import real_monotonic
 
 # Real asyncio.sleep captured before any patching, for the shared pause() yield.
@@ -557,9 +558,21 @@ class InterleavedLoop:
                 if not t.done():
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if isinstance(self._error, DeadlockError):
+                raise self._error
             if errors:
                 raise next(iter(errors.values()))
             raise SchedulerTimeoutError("Tasks did not complete within timeout. Check for deadlocks in your schedule.")
+
+        # A DeadlockError verdict is the root cause: report_error's first-wins
+        # rule means a genuine worker error would have claimed self._error
+        # before any deadlock was declared, so task errors recorded alongside a
+        # DeadlockError are collateral of the abort wake (e.g. a cooperative
+        # primitive raising SchedulerTimeoutError while free-running).  Raising
+        # them instead would score a deadlock counterexample as failing to
+        # reproduce.
+        if isinstance(self._error, DeadlockError):
+            raise self._error
 
         if errors:
             raise next(iter(errors.values()))

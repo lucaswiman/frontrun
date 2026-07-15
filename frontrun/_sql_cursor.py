@@ -384,8 +384,15 @@ def _report_sql_access(
         # PostgreSQL lock_timeout is scoped to this connection (or its current
         # transaction with SET LOCAL). frontrun injects it to bound physical
         # row-lock waits; treating it as an opaque shared database write creates
-        # false dependencies against every real statement.
-        if _RE_SESSION_LOCAL_LOCK_TIMEOUT.match(operation):
+        # false dependencies against every real statement. The regex is
+        # prefix-anchored, so only suppress when the parser saw nothing else:
+        # "SET lock_timeout = '0'; UPDATE ..." still carries a real write.
+        if (
+            _RE_SESSION_LOCAL_LOCK_TIMEOUT.match(operation)
+            and access.tx_op is None
+            and not access.read_tables
+            and not access.write_tables
+        ):
             return True
 
         if access.tx_op is None:

@@ -164,7 +164,8 @@ class InterleavingResult:
         failure_kind: Structured category of the failure for
             ``execution="process"`` — one of ``"invariant"``,
             ``"worker_error"``, ``"deadlock"``, ``"timeout"``,
-            ``"nondeterministic"``, ``"step_limit"``.  ``None`` when the
+            ``"nondeterministic"``, ``"step_limit"``, ``"branch_limit"``.
+            ``None`` when the
             invariant held or for thread/async execution (which encodes the
             failure in ``explanation`` only).
     """

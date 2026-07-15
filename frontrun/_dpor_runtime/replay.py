@@ -76,6 +76,14 @@ def _run_dpor_schedule(
     # the workers resolve their virtual clock via scheduler TLS.
     with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
         state = setup()
+        # Mirror exploration (explore.py): assign stable IDs to the fresh
+        # setup() graph in deterministic order before any worker runs.  The
+        # scheduler's StableObjectIds is freshly constructed (the analogue of
+        # exploration's per-execution reset_execution_state), so setup-time
+        # first-touch IDs and this walk reproduce exploration's numbering
+        # exactly — access anchors embed these IDs to distinguish instances
+        # of the same class (defect #22).
+        scheduler._stable_ids.pre_register(state)
 
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:

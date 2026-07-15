@@ -21,7 +21,22 @@ from frontrun._cooperative import real_condition, real_lock
 from frontrun._threaded_runner import join_threads_with_deadline
 from frontrun.common import Schedule
 
-MARKER_PATTERN = re.compile(r"#\s*frontrun:\s*(\w+)")
+# Docs promise ``# frontrun: <name>``: the name is the whole whitespace-free
+# token, not just its leading ``\w+`` run. Truncating (`read-balance` -> `read`)
+# made hyphenated schedules stall and let a prefix-colliding sibling marker
+# silently consume another step's turn.
+MARKER_PATTERN = re.compile(r"#\s*frontrun:\s*(\S+)")
+
+
+def _validate_schedule_marker_names(schedule: Schedule) -> None:
+    """Reject schedule steps whose marker name no comment can ever produce."""
+    for step in schedule.steps:
+        name = step.marker_name
+        if not name or any(ch.isspace() for ch in name):
+            raise ValueError(
+                f"Step({step.execution_name!r}, {name!r}): marker names are single whitespace-free tokens "
+                "(the <name> in '# frontrun: <name>'), so this step could never match a marker"
+            )
 
 
 def finalize_marker_executor_run(
@@ -163,6 +178,7 @@ class ThreadCoordinator:
     """
 
     def __init__(self, schedule: Schedule, *, deadlock_timeout: float = 5.0):
+        _validate_schedule_marker_names(schedule)
         self.schedule = schedule
         self.deadlock_timeout = deadlock_timeout
         self.current_step = 0

@@ -721,7 +721,12 @@ class _CooperativeAsyncCondition:
         if scheduler is None or task_id is None:
             return await self._real_condition.wait()
         if scheduler._error is not None:
-            return True
+            # Raise (mirroring Queue.get/put) instead of returning True:
+            # returning completes synchronously with zero await points, so a
+            # predicate loop (wait_for, or ``while not pred: await wait()``)
+            # whose predicate never turns true spins without yielding and
+            # starves the event loop -- no timeout can ever fire.
+            raise SchedulerTimeoutError("condition wait aborted by scheduler")
         fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._waiters.append((task_id, fut))
         # Release before parking so a notifier can take the lock; re-acquired on
@@ -777,6 +782,12 @@ class _CooperativeAsyncCondition:
             on_wake=_reacquire_on_wake,
             on_finally=_reacquire_exception_safe,
         )
+        if scheduler._error is not None:
+            # Woken by an abort (_wake_all_for_abort), not a notify: the lock
+            # was re-acquired above, so raising here keeps the stock
+            # Condition.wait contract (lock held on exit) while terminating
+            # predicate loops that would otherwise re-enter wait() and spin.
+            raise SchedulerTimeoutError("condition wait aborted by scheduler")
         return True
 
     async def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> Any:
