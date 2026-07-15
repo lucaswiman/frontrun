@@ -3,296 +3,43 @@ Changelog
 
 All releases: https://github.com/lucaswiman/frontrun/releases
 
-Unreleased
-----------
-
-* **Backwards incompatible: tri-state verdicts.**
-  ``InterleavingResult.property_holds`` is now ``bool | None``: ``True`` is a
-  pass *certificate* (at least one interleaving completed, every worker body
-  ran, no coverage-degrading event), ``False`` means a failure was found and
-  always implies a counterexample/failure record, and ``None`` means the
-  exploration was *inconclusive* — no evidence either way, with the cause and
-  remedy in the new ``inconclusive_reason`` field.
-  ``assert_holds()`` now raises on **both** non-pass verdicts, with distinct
-  exception types: ``AssertionError`` for a found counterexample (unchanged),
-  and the new ``frontrun.InconclusiveExploration`` for inconclusive runs.
-  Code that must tolerate the weaker "no failure found" claim (e.g. a tightly
-  budgeted smoke lane) opts in by name with
-  ``assert_holds(allow_inconclusive=True)``.
-  Migration notes:
-
-  - Runs that previously produced a **vacuous pass** — e.g. a ``total_timeout``
-    that expired before any interleaving completed, or a zero-iteration
-    cross-process search — now return ``property_holds=None`` and make
-    ``assert_holds()`` raise ``InconclusiveExploration``. A CI lane relying on
-    that silent green must either raise its budget or opt in as above.
-  - Runs that previously encoded truncation as **False without a
-    counterexample** (mid-run timeout aborts, ``max_ops`` exhaustion,
-    timed-out async searches) now return ``None`` with the same message in
-    ``inconclusive_reason``; ``False`` is reserved for genuine failures.
-  - ``if result.property_holds:`` stays fail-closed for free (``None`` is
-    falsy), but code comparing ``property_holds is False`` to detect
-    truncation must switch to ``property_holds is None`` /
-    ``inconclusive_reason``.
-
-  Internally, ``property_holds=True`` can only be produced by the new
-  pass-certificate chokepoint (``frontrun._certificate.certify_pass``), which
-  validates positive evidence from every strategy and raises the new
-  ``frontrun.FrontrunInternalError`` on internally contradictory evidence
-  (e.g. completed interleavings claimed while a worker body never ran).
-  See the new "Design principles" documentation page ("Fail closed").
-
-* **Soundness: coarse-by-default access identity.** Redis commands without an
-  audited key-scope entry are now modeled as conservative database-wide plus
-  server-wide writes instead of being invisible to DPOR, and
-  ``SELECT ... INTO <table>`` targets are classified as writes. Unrecognized
-  operations can no longer silently prune real races (over-merging is allowed,
-  under-merging is forbidden); command tables are tested for scope
-  completeness.
-
-* **Soundness: honest exhaustiveness at row-lock boundaries.** When a modeled
-  row-lock conflict redirects a worker after its engine step was committed
-  (issue #250), the exploration's ``exhausted`` claim is demoted to ``False``
-  (sticky for the run) in both thread mode and cross-process mode, instead of
-  certifying full coverage over a search tree that diverged from physical
-  execution.
-
-* **New differential oracle: virtual vs. real clock.** Hypothesis-generated
-  small programs are explored under ``clock="real"``, ``"virtual"``, and
-  ``"explored"`` and their verdicts cross-checked (a certified virtual-clock
-  pass must not fail under the real clock). The oracle found one explored-clock
-  false-certification gap, tracked as issue #254 and pinned as an ``xfail``
-  regression.
-
 0.7.0 (2026-07-14)
 ------------------
 
-* **Marker names now capture the full whitespace-free token.** A
-  ``# frontrun: <name>`` comment registers everything up to the next
-  whitespace (previously only the leading ``[A-Za-z0-9_]+`` run), so
-  hyphenated names like ``read-balance`` schedule correctly. Names that
-  relied on truncation (e.g. ``# frontrun: read,`` matching a schedule step
-  ``read``) change meaning on upgrade; the failure mode is a named
-  schedule-stall ``TimeoutError``, not a silent pass. Relatedly,
-  ``ThreadCoordinator`` (and every marker executor built on it) now raises
-  ``ValueError`` for schedule steps whose marker name is empty or contains
-  whitespace, since no comment could ever produce them.
+* **Breaking: tri-state verdicts.** ``InterleavingResult.property_holds`` is now
+  ``bool | None`` — ``True`` is a pass *certificate*, ``False`` always implies a
+  counterexample, and ``None`` means *inconclusive* (cause in the new
+  ``inconclusive_reason`` field). ``assert_holds()`` raises on both non-pass
+  verdicts, with ``frontrun.InconclusiveExploration`` for ``None``; opt in with
+  ``assert_holds(allow_inconclusive=True)``. Runs that used to report a vacuous
+  pass or a counterexample-less ``False`` (timeouts, ``max_ops`` exhaustion) now
+  return ``None``; code checking ``property_holds is False`` for truncation must
+  switch to ``is None``.
 
-* **Marker-based execution fails closed on deferred worker bodies.** A sync
-  worker that returns a coroutine, generator, or async generator (e.g. a
-  ``lambda`` wrapping an ``async def`` call) now raises ``TypeError``
-  from ``TraceExecutor.run`` / ``explore_marker_interleavings`` instead of
-  reporting success without executing the body. Pass coroutine-returning
-  callables (``functools.partial(obj.method, arg)`` or the bound method) so
-  they are dispatched to the async executor.
+* **Cross-process exploration.** ``frontrun.explore(execution="process")`` runs
+  each worker in its own Python process contending on shared SQL/Redis state,
+  reusing the thread-mode ``setup`` / ``workers`` / ``invariant`` shape (workers
+  serialised with dill; install the ``process`` extra). Supports ``count=`` and
+  ``reuse_workers=True``, reports truncation honestly via
+  ``CrossProcessResult.exhausted``, and exports structured results
+  (``frontrun.CrossProcessResult`` with a ``failures`` list). See
+  :doc:`cross_process`.
 
-* ``explore_marker_interleavings`` and async random exploration now always
-  populate ``InterleavingResult.explanation`` when the invariant fails
-  (previously ``assert_holds()`` raised an empty ``AssertionError`` when the
-  invariant returned ``False`` without raising).
+* **Virtual clock.** ``frontrun.explore(clock="virtual"|"explored")`` explores
+  timeout, retry, and TTL races with zero wall time across sync and async DPOR
+  and random strategies — covering cooperative timed waits, async ``wait_for`` /
+  ``timeout``, and ``datetime`` values — with ``clock="explored"`` making timer
+  firings schedulable. A virtual-vs-real-clock differential oracle guards it. See
+  :doc:`virtual_clock`.
 
-* **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
-  now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
-  workers with DPOR and random strategies. Explored code reads scheduler time,
-  sleeps and timeout wrappers use zero-wall-time virtual deadlines, and
-  ``clock="explored"`` makes timer firings schedulable. This includes
-  cooperative timed waits, async ``wait_for`` / ``timeout`` / ``timeout_at``,
-  async Event/Queue/Condition wakeups, concrete ``datetime`` / ``date`` values,
-  captured ``time.*`` diagnostics where tracing is available, and preservation
-  of pre-existing third-party time patches. The invariant is evaluated under
-  the same clock and sleep patches as setup and the workers (a TTL-style
-  invariant that sleeps ages the virtual clock instead of blocking for real
-  wall time), and the random strategy's autojump yields to the event loop
-  after a virtual timeout fires so ``asyncio.wait_for`` / ``asyncio.timeout``
-  cancel the timed-out task instead of letting it run to completion. See
-  :doc:`virtual_clock` (including its known-limitations section).
-
-* **Cross-process exploration.** ``frontrun.explore(...)`` gains an
-  ``execution="process"`` mode that runs each worker in its own Python process,
-  using the same ``setup`` / ``workers`` / ``invariant`` shape as thread mode
-  for shared SQL/Redis state. Workers are serialised with dill (install the
-  ``process`` extra), and process runs support ``count=`` and
-  ``reuse_workers=True``; the lower-level ``explore_processes`` API still
-  supports explicit ``Subprocess`` targets and exhaustive search. Process-mode
-  errors now fail fast with clearer messages, report truncation honestly via
-  ``CrossProcessResult.exhausted`` (``exhausted=True`` requires a genuinely
-  unbounded search: the default ``preemption_bound=2`` truncates the DPOR
-  tree, so bounded runs report ``False`` — pass ``preemption_bound=None`` to
-  claim full coverage), honor ``total_timeout`` even while a single execution
-  is in flight, and reject in-process-only options instead
-  of silently ignoring them. A scheduler stall (``deadlock_timeout`` expiry —
-  e.g. unmodeled database-level blocking) is reported as
-  ``failure_kind="timeout"`` rather than counting as a clean pass, and an
-  execution truncated by the DPOR ``max_branches`` cap is reported as its own
-  ``failure_kind="branch_limit"`` (previously it burned ``deadlock_timeout``
-  and masqueraded as a ``"timeout"`` whose message pointed at the wrong knob).
-  Both strategies now surface the launcher's captured child stderr on a
-  connect failure (previously ``strategy="exhaustive"`` reported a bare
-  connect timeout, hiding e.g. the child's ``ModuleNotFoundError``).
-  See :doc:`cross_process`.
-
-  Invalid process bounds now fail before workers launch, and lower-level
-  ``Subprocess`` targets that return awaitables report an unsupported-async
-  worker error instead of silently succeeding with an unawaited coroutine.
-  Mapping-input labels are preserved in ``CrossProcessResult.worker_labels``;
-  poisoned reused processes are killed, reaped, and freshly launched before
-  exploration continues.
-
-* **explore() rejects options its strategy would ignore.** Thread-mode
-  ``frontrun.explore(...)`` now raises ``ValueError`` for any explicitly-passed
-  option the selected strategy does not support (e.g. ``seed=`` with
-  ``strategy="dpor"``, ``preemption_bound=`` with ``strategy="random"``,
-  ``reproduce_on_failure=`` with async random), extending the process branch's
-  no-silent-no-op principle to every entry path. Code that passed such options
-  before relied on them silently doing nothing — drop the option or switch
-  strategy. Newly covered by the same principle: ``reuse_workers=True`` with
-  thread execution (previously a silent no-op) now raises, ``explore_processes``
-  rejects ``max_iterations`` under ``strategy="dpor"`` (it only bounds the
-  exhaustive coordinator — use ``max_executions``) and the DPOR knobs under
-  ``strategy="exhaustive"``, and every process-branch rejection message now
-  follows the same sentence shape as the thread-branch ones (what was passed,
-  why it is invalid, what to do instead).
-
-  *Caveat:* explicit-option detection is value-based — an option passed at its
-  signature default is indistinguishable from an omitted one, so e.g.
-  ``explore(..., seed=None, strategy="dpor")`` is accepted (a no-op either
-  way).
-
-* **Mixed sync/async worker lists get an actionable diagnosis.** Passing a mix
-  of ``async def`` and plain ``def`` workers to ``frontrun.explore(...)``
-  previously routed the whole list to the async engine, where the sync workers
-  failed with an opaque ``can't be used in 'await' expression``. A plain
-  callable that *returns* an awaitable is a valid async worker and statically
-  indistinguishable from a sync one, so the mix cannot be rejected up front;
-  instead the first execution now fails with a ``TypeError`` naming the sync
-  worker and stating the fix (make every worker ``async def`` or a callable
-  returning an awaitable, or every worker a plain ``def``). A plain callable
-  returning an awaitable remains supported when another ``async def`` worker
-  establishes the async execution model; an all-plain list is ambiguous, so a
-  returned awaitable now fails closed instead of being discarded by the sync
-  engine and falsely certified.
-
-* **Structured process-mode results.** ``CrossProcessResult`` is now exported
-  at the top level (``frontrun.CrossProcessResult``) and carries a
-  ``failures`` list of every failing ``(execution_number, schedule)`` pair —
-  the DPOR strategy accumulates all of them with the new
-  ``stop_on_first=False``. ``explore_processes`` also gains the thread-mode
-  DPOR knobs ``stop_on_first``, ``total_timeout``, ``search``, and
-  ``max_branches``. The ``InterleavingResult`` returned by
-  ``explore(execution="process")`` no longer flattens everything into the
-  explanation string: it gains ``exhausted`` and ``failure_kind`` fields and
-  populates ``failures``, alongside the human-readable ``explanation``
-  (thread/async results leave ``exhausted`` as ``None`` — they do not report
-  it yet).
-
-* **Cross-process robustness.** Iteration liveness is now judged on relay
-  *progress* rather than wall time, so a long-but-healthy run is no longer
-  aborted mid-flight; a worker that stays connected but silent past
-  ``deadlock_timeout`` is diagnosed as ``failure_kind="timeout"`` (with
-  raise-``deadlock_timeout`` advice) instead of a misleading "worker
-  disconnected"; and the exhaustive coordinator bounds each run with
-  ``max_steps_per_run`` (``failure_kind="step_limit"``) so a nonterminating
-  worker cannot hang exploration forever.
-
-* **Release-blocking proof-integrity fixes.** The ``process`` extra now installs
-  the SQL parser required by cross-process workers, and process SQL
-  interception fails closed if that parser is unavailable instead of silently
-  certifying a run with no semantic accesses. Failed physical COMMIT/ROLLBACK
-  operations retain modeled transaction state and row locks. Marker exploration
-  no longer counts an unconsumed or timed-out schedule as an exhaustive pass;
-  async marker workers with arguments are awaited correctly. Random exploration
-  keeps sampled prefixes within ``max_ops``, returns sync worker crashes with
-  every deterministically extended turn in the structured counterexample, and
-  keeps async work controlled when its sampled prefix ends. Async SQL row-lock
-  contenders now park inside the scheduler (including replay) rather than
-  entering a blocking database call, preserving cross-resource deadlock cycles
-  and replayability. A second audit now also rejects timed-out sync/async runs,
-  self-cancelled async workers, and ``SystemExit`` from sync workers instead of
-  treating partial state as a proof; makes ``Queue.join()`` cooperative; restores
-  nested async trace filters; and replays task-crash counterexamples. SQL
-  transaction state is tied to its owning connection, statement failures keep
-  earlier row locks, and failed transaction-control statements take effect only
-  after physical success. Opaque and non-string SQL uses a conservative
-  database-wide conflict in every execution mode instead of relying on an
-  endpoint-level preload fallback,
-  while Redis replay no longer invents boundaries for empty/keyless pipelines.
-  The final release audit also prevents random exploration from certifying
-  timed-out or ``max_ops``-truncated executions, propagates worker
-  ``SystemExit``, keeps async virtual timeouts live across bare-future awaits,
-  rejects overlapping async explorations before they can corrupt global patch
-  state, tracks Redis ``WATCH`` operations, completes PyMySQL transaction
-  teardown, limits SQL socket suppression to the database endpoint, and
-  carries async Django's synchronous-driver reports across its worker-thread
-  bridge so DPOR can find ORM races instead of serializing them away. Process
-  relays publish access traces before the corresponding observable grant, so
-  OS socket-arrival races cannot reorder a replay trace. SQL endpoint identity
-  now matches preload reporting for IPv6 peers, and generic async SQL avoids
-  double-intercepting synchronous driver work on free-threaded Python. Redis
-  ``MOVE``, ``COPY ... DB``, ``MIGRATE``, and ``SWAPDB`` now report destination
-  database/server dependencies; ``FLUSHALL`` conflicts across all databases on
-  its server; byte and ``memoryview`` command/key values retain stable semantic
-  identity; and redis-py Pub/Sub subscriptions, patterns, unsubscriptions, and
-  server introspection use a conservative server scope. Worker failures cancel
-  parked async peers without masking the original error, cooperative exact
-  and mixed Event/Lock deadlocks replay, non-cancellation ``BaseException``
-  subclasses and user-raised ``TimeoutError`` propagate without being mistaken
-  for harness timeouts,
-  positive total budgets always run at least one execution, invalid zero limits
-  are rejected, and process workers cannot silently return unexecuted generators.
-
-* **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
-  ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
-  dispatch on the subclass instead of always returning the patched base
-  class). Async ``asyncio.timeout`` deadlines fire at exact virtual times,
-  ``asyncio.wait_for`` on a bare future is a schedulable wait, and
-  ``Condition.wait_for`` timeouts behave consistently across supported Python
-  versions. A task that re-entered a timed wait immediately after a completed
-  ``wait_for`` no longer loses the deferred clock advance owed to its new
-  deadline (previously a correct program could stall for ``timeout_per_run``
-  wall seconds and be reported as an inconclusive failure), and
-  ``asyncio.timeout_at(cm.when())`` recovers the exact virtual deadline
-  instead of smearing real wall-clock drift into it.
-
-* **Replay fixes.** Replaying a counterexample now reproduces exact deadlocks
-  (a replayed schedule that ends in the discovered deadlock no longer aborts
-  the replay machinery) and timed-wait expiries under IO-anchored replay, so
-  ``reproduce_on_failure`` statistics stay meaningful for deadlock-, timeout-,
-  and task-crash-shaped counterexamples, including peers parked on cooperative
-  Event/Queue/Condition primitives. Timed-out replays never return partial state
-  for invariant evaluation.
-
-* **DPOR correctness.** Accesses after ``await`` are now attributed before
-  scheduling successors, ``asyncio.Lock`` / event state races replay
-  consistently, async Redis commands create post-command scheduling boundaries
-  for TOCTOU races, and pure-lock deadlocks are found reliably across supported
-  Python versions. Cross-process modeled row-lock contention now fails closed as
-  ``failure_kind="nondeterministic"`` instead of returning an engine schedule
-  that may differ from physical statement order; exact protocol support remains
-  deferred. The engine now tracks both the earliest and latest synced-I/O
-  access per (thread, object, kind): previously only the first access
-  survived, so a worker that wrote a row and read it back
-  (``UPDATE ...; SELECT ...``) lost the read-back from race detection and
-  DPOR could certify a false pass — with ``exhausted=True`` — on the common
-  write-then-read-back shape whose "both writes land before either read-back"
-  interleaving violates the invariant (thread and process modes alike; the
-  exhaustive strategy already found it). Async Queue wakeups now end the
-  releasing task's segment, and lock-release vector clocks publish only the
-  pre-release prefix, so post-wake races remain discoverable and exactly
-  replayable. Async Condition wake eligibility is updated atomically with the
-  engine unblock, preventing exact replay from skipping a newly runnable task.
-
-* **Final proof-integrity hardening.** Sync setup and invariant callbacks, plus
-  Django and SQLAlchemy sync wrappers, now reject deferred results instead of
-  certifying work that was never executed. Timed-out async random runs close
-  worker coroutines reliably on Python 3.10 instead of leaking them into later
-  explorations. Virtual-clock autojump drains the event loop's complete ready
-  chain rather than stopping after four callbacks.
-  Redis tracking supports coredis 6 command requests, commits ``SELECT`` state
-  only after successful commands and shares it across a pool, and resolves Unix
-  socket aliases to their TCP server identity or fails closed. SQL database
-  identity now conservatively canonicalizes driver aliases, SQLite paths and
-  symlinks, while compound statements beginning with ``SET lock_timeout`` no
-  longer suppress an opaque database-wide access later in the statement.
+* **A large assortment of bugfixes too numerous to name.** Broad proof-integrity
+  hardening (fail closed on timeouts, ``max_ops`` truncation, deferred worker
+  bodies, and unaudited SQL/Redis access identity, which now defaults to
+  conservative global writes), replay of deadlock- and timeout-shaped
+  counterexamples, DPOR correctness fixes (write-then-read-back races, async
+  lock/queue/condition wakeups), and stricter validation — ``explore()`` now
+  rejects options the chosen strategy would ignore and diagnoses mixed
+  sync/async worker lists instead of failing opaquely.
 
 0.6.0 (2026-06-30)
 ------------------
