@@ -19,6 +19,15 @@ The anchoring use case is the **Python free-threading (no-GIL) transition**: onc
 
 **Explicitly out of scope:** scheduling *unmodified / non-Python* workers via wire-level interception (the removed `LD_PRELOAD` PoC, or a DSN-level protocol-aware proxy). That is a black-box, Jepsen-shaped problem — observing histories for consistency violations rather than proving a specific interleaving — and belongs in a *separate* tool. Such a tool could reuse frontrun's Rust DPOR engine (the reusable seam: vector clocks, sleep sets, wakeup tree, row-lock reasoning are product-agnostic), but the interception layer and the product shape are different. Don't grow frontrun toward it.
 
+### Soundness principles
+
+The full statement lives in `docs/design-principles.rst` (rendered in the Sphinx docs) — read it before touching result construction, access identity, or exhaustiveness claims. The short form:
+
+- **Fail closed.** `property_holds=True` is a certificate requiring positive evidence (≥1 interleaving executed, worker bodies actually ran, no coverage-degrading events) — never a default or an error-path fallthrough. A vacuous pass (zero explored interleavings) is a frontrun bug. When soundness is uncertain, report inconclusive, never a clean pass.
+- **Over-merging allowed, under-merging forbidden.** Semantic access identity (SQL rows/tables, Redis key scopes, lock objects) is coarse by default: unknown or unparseable operations are conservative global writes. Narrowing to a specific row/key requires positive evidence (command-table entry, successful parse). Under-merging silently prunes real races → false pass.
+- **Honest exhaustiveness.** `exhausted=True` means full coverage under the stated model. Any truncating bound, skipped branch, or divergence between the engine's planned schedule and the physical execution demotes it to False ("no failure found within bounds").
+- **Oracles over review.** Soundness is defended by differential oracles (DPOR vs exhaustive enumeration / Mazurkiewicz trace counts; virtual-vs-real clock) and mutation tests attacking the certification gate. A soundness fix isn't done until a test fails on the old behavior.
+
 ## Project layout
 
 - `frontrun/` — Python package (pure Python + compiled `_dpor` extension)

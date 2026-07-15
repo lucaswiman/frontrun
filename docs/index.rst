@@ -38,6 +38,7 @@ choice — see :doc:`virtual_clock`.
 
    installation
    quickstart
+   design-principles
    approaches
    case_studies
    dpor_guide
