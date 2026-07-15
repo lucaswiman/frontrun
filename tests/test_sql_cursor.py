@@ -2261,6 +2261,39 @@ def test_db_scope_registration_evicted_when_connection_collected():
     assert key not in _CONNECTION_DB_SCOPES
 
 
+def test_postgres_scope_unifies_tcp_and_unix_aliases() -> None:
+    """One database must not split into independent scopes by connection alias."""
+    from frontrun._sql_db_scope import _normalize_db_identity
+
+    identities = {
+        _normalize_db_identity(
+            "mapping", driver, {"host": host, "port": 5432, "dbname": "app"}
+        )
+        for driver, host in (
+            ("psycopg", "localhost"),
+            ("psycopg2", "127.0.0.1"),
+            ("postgres", "/var/run/postgresql"),
+        )
+    }
+
+    assert len(identities) == 1
+
+
+def test_sqlite_scope_unifies_path_uri_and_symlink(tmp_path: Any) -> None:
+    """SQLite path spelling must not split accesses to one physical file."""
+    from frontrun._sql_db_scope import _normalize_db_identity
+
+    database = tmp_path / "database.sqlite3"
+    database.touch()
+    alias = tmp_path / "alias.sqlite3"
+    alias.symlink_to(database)
+
+    path_identity = _normalize_db_identity("sqlite", str(database))
+    uri_identity = _normalize_db_identity("sqlite", f"file:{alias}?mode=rwc", uri=True)
+
+    assert path_identity == uri_identity
+
+
 class TestLockTimeoutSuppression:
     """frontrun-injected ``SET lock_timeout`` must be invisible — but only it."""
 
