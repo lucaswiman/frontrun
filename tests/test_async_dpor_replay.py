@@ -15,13 +15,19 @@ DeadlockError or phantom ownership in later replays.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import threading
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import pytest
 
+import frontrun._async_cooperative as async_cooperative
 from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
-from frontrun._deadlock import DeadlockError
+from frontrun._deadlock import DeadlockError, WaitForGraph
 from frontrun._dpor_core import event_wake_sync_id
 from frontrun._opcode_observer import StableObjectIds
+from frontrun._virtual_clock import VirtualClock
 from frontrun.async_dpor import (
     AsyncDporScheduler,
     _async_parked_conditions,
@@ -37,6 +43,43 @@ from frontrun.async_dpor import (
 )
 from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active
+
+
+def test_replay_timeout_guarded_row_lock_wait_is_not_a_deadlock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replay must mirror exploration's timeout-aware wait-for graph."""
+
+    async def run() -> None:
+        graph = WaitForGraph()
+        monkeypatch.setattr(async_cooperative, "_async_wait_graph", graph)
+        clock = VirtualClock()
+        scheduler = _ReplayAsyncScheduler([1, 0, 1], 2, virtual_clock=clock, clock_actor_id=2)
+
+        async def no_op(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(scheduler, "kick_stalled_schedule", no_op)
+        monkeypatch.setattr(scheduler, "wait_until_scheduled_after_block", no_op)
+
+        scheduler._row_lock_registry.record_acquire(0, "A", graph)
+        scheduler._row_lock_registry.record_acquire(1, "B", graph)
+        lock_b = scheduler._row_lock_registry._row_lock_int_id("B")
+        assert graph.add_waiting(0, lock_b, kind="row_lock") is None
+        scheduler.add_timeout_deadline(1, clock.now() + 1.0, object())
+
+        acquire = asyncio.create_task(scheduler.acquire_row_locks_async(1, ["A"]))
+        try:
+            await asyncio.sleep(0)
+            assert not acquire.done(), "the pending timeout makes this wait recoverable"
+
+            scheduler.release_row_locks(0, ["A"])
+            assert await acquire == ["A"]
+        finally:
+            if not acquire.done():
+                acquire.cancel()
+            with contextlib.suppress(asyncio.CancelledError, DeadlockError):
+                await acquire
+
+    asyncio.run(run())
 
 
 def test_task_crash_counterexample_reproduces_same_exception() -> None:
@@ -66,6 +109,153 @@ def test_task_crash_counterexample_reproduces_same_exception() -> None:
     assert "RuntimeError: deterministic worker crash" in result.explanation
     assert result.reproduction_attempts == 3
     assert result.reproduction_successes == 3
+
+
+def test_task_crash_replay_wakes_peer_parked_on_event() -> None:
+    """A recorded task failure must replay with cooperative peers still parked."""
+    require_active("test_async_dpor_task_crash_replay_with_parked_peer")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def wait_forever(state: State) -> None:
+        await state.event.wait()
+
+    async def crash(_state: State) -> None:
+        raise RuntimeError("boom beside parked peer")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[wait_forever, crash],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            max_executions=1,
+            deadlock_timeout=0.1,
+            timeout_per_run=0.5,
+            reproduce_on_failure=2,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "RuntimeError: boom beside parked peer" in result.explanation
+    assert result.reproduction_attempts == 2
+    assert result.reproduction_successes == 2
+
+
+def test_task_crash_survives_peer_suppressing_cleanup_cancellation() -> None:
+    """A stubborn peer reaching the run timeout must not replace the first worker crash."""
+    require_active("test_async_dpor_task_crash_with_stubborn_peer")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def stubborn_peer(state: State) -> None:
+        try:
+            await state.event.wait()
+        except asyncio.CancelledError:
+            await asyncio.get_running_loop().create_future()
+
+    async def crash(_state: State) -> None:
+        raise RuntimeError("boom before stubborn cleanup")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[stubborn_peer, crash],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            max_executions=1,
+            deadlock_timeout=0.02,
+            timeout_per_run=0.15,
+            reproduce_on_failure=0,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "RuntimeError: boom before stubborn cleanup" in result.explanation
+
+
+def test_cooperative_event_deadlock_replays() -> None:
+    """Schedule exhaustion must reproduce an exact cooperative deadlock."""
+    require_active("test_async_dpor_cooperative_event_deadlock_replay")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+
+    async def wait_forever(state: State) -> None:
+        await state.event.wait()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[wait_forever],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            deadlock_timeout=0.1,
+            timeout_per_run=0.5,
+            reproduce_on_failure=2,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Deadlock" in result.explanation
+    assert result.reproduction_attempts == 2
+    assert result.reproduction_successes == 2
+
+
+def test_mixed_event_and_lock_deadlock_replays() -> None:
+    """Exact replay must count tasks blocked on both Events and Locks."""
+    require_active("test_async_dpor_mixed_event_lock_deadlock_replay")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.lock = asyncio.Lock()
+
+    async def holder(state: State) -> None:
+        async with state.lock:
+            await state.event.wait()
+
+    async def notifier(state: State) -> None:
+        async with state.lock:
+            state.event.set()
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[holder, notifier],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            deadlock_timeout=0.1,
+            timeout_per_run=0.5,
+            reproduce_on_failure=2,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "Deadlock" in result.explanation
+    assert result.reproduction_attempts == 2
+    assert result.reproduction_successes == 2
 
 
 def test_lock_counterexample_reproduces() -> None:
@@ -391,6 +581,7 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
             self.execution = Execution()
             self._stable_ids = StableObjectIds()
             self._error = None
+            self._event_blocked = {1}
             self.syncs: list[tuple[int, str, int]] = []
 
         def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
@@ -416,6 +607,238 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
 
         assert scheduler.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
         assert scheduler.execution.unblocked == [1]
+        assert scheduler._event_blocked == set()
     finally:
         _unpatch_asyncio_event()
         _reset_async_lock_state()
+
+
+@pytest.mark.parametrize("clock", ["real", "virtual"])
+def test_condition_notify_counterexample_replays_exactly(clock: str) -> None:
+    """A notified waiter must remain eligible for its recorded replay slot."""
+    require_active("test_async_condition_notify_counterexample_replay")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.cond = asyncio.Condition()
+            self.ready = False
+            self.value = 0
+
+    async def waiter(state: State) -> None:
+        async with state.cond:
+            while not state.ready:
+                await state.cond.wait()
+        value = state.value
+        await asyncio.sleep(0)
+        state.value = value + 1
+
+    async def notifier(state: State) -> None:
+        async with state.cond:
+            state.ready = True
+            state.cond.notify()
+        value = state.value
+        await asyncio.sleep(0)
+        state.value = value + 1
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, notifier],
+            invariant=lambda state: state.value == 2,
+            strategy="dpor",
+            clock=clock,
+            max_executions=50,
+            reproduce_on_failure=10,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.num_explored == 2
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
+@pytest.mark.parametrize("clock", ["real", "virtual"])
+def test_queue_wake_does_not_hide_post_put_race(clock: str) -> None:
+    """Queue handoff orders the item transfer, not both workers' later I/O."""
+    require_active("test_async_queue_wake_post_put_race")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue()
+            self.value = 0
+
+    async def consumer(state: State) -> None:
+        await state.queue.get()
+        value = state.value
+        await asyncio.sleep(0)
+        state.value = value + 1
+
+    async def producer(state: State) -> None:
+        await state.queue.put("ready")
+        value = state.value
+        await asyncio.sleep(0)
+        state.value = value + 1
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[consumer, producer],
+            invariant=lambda state: state.value == 2,
+            strategy="dpor",
+            clock=clock,
+            max_executions=50,
+            reproduce_on_failure=10,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
+# ---------------------------------------------------------------------------
+# Synthesized replay deadlock vs. abort-woken cooperative waiters
+# ---------------------------------------------------------------------------
+
+
+def _replay_deadlock_in_thread(
+    setup: Callable[[], Any],
+    tasks: list[Callable[[Any], Coroutine[Any, Any, None]]],
+    schedule: list[int],
+    join_timeout: float,
+) -> tuple[threading.Thread, dict[str, Any]]:
+    """Run a deadlock-counterexample replay on a watchdog thread.
+
+    The replay must terminate on its own (``timeout_per_run`` bounds it); the
+    thread + join(timeout) harness turns an event-loop-starving hang into a
+    bounded test failure instead of hanging the suite.
+    """
+    from frontrun.async_dpor import _reproduce_async_counterexample
+
+    result: dict[str, Any] = {}
+
+    def target() -> None:
+        async def main() -> tuple[int, int]:
+            async_cooperative._patch_asyncio_lock()
+            async_cooperative._patch_asyncio_event()
+            async_cooperative._patch_asyncio_queue_condition()
+            try:
+                return await _reproduce_async_counterexample(
+                    schedule,
+                    setup,
+                    tasks,
+                    None,  # invariant None -> the finding being replayed is a deadlock
+                    len(tasks),
+                    1,
+                    3.0,
+                    0.5,
+                )
+            finally:
+                async_cooperative._unpatch_asyncio_queue_condition()
+                async_cooperative._unpatch_asyncio_event()
+                async_cooperative._unpatch_asyncio_lock()
+
+        try:
+            result["value"] = asyncio.run(main())
+        except BaseException as exc:  # noqa: BLE001 - surfaced via the result dict
+            result["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout=join_timeout)
+    return thread, result
+
+
+@pytest.mark.intentionally_leaves_dangling_threads
+def test_replay_deadlock_with_condition_predicate_waiter_terminates() -> None:
+    """The synthesized replay DeadlockError must not spin a Condition waiter.
+
+    ``_on_error_set`` wakes tasks parked on cooperative primitives.  A waiter
+    inside ``Condition.wait_for`` (or the canonical ``while not pred: await
+    cond.wait()`` loop) re-evaluates its still-false predicate and calls
+    ``wait()`` again; an abort guard that *returns* synchronously turns that
+    loop into a zero-await spin which starves the event loop, so no asyncio
+    timeout can ever fire and the replay hangs forever.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.event = asyncio.Event()
+            self.cond = asyncio.Condition()
+            self.flag = False
+
+    async def waits_on_event(state: State) -> None:
+        await state.event.wait()
+
+    async def waits_on_condition(state: State) -> None:
+        async with state.cond:
+            await state.cond.wait_for(lambda: state.flag)
+
+    thread, result = _replay_deadlock_in_thread(
+        State, [waits_on_event, waits_on_condition], [0, 1, 0, 1, 0, 1], join_timeout=20.0
+    )
+
+    assert not thread.is_alive(), (
+        "replay hung: the Condition.wait abort guard spun without yielding, starving the event loop"
+    )
+    assert "error" not in result, f"replay raised: {result.get('error')!r}"
+    attempts, successes = result["value"]
+    assert attempts == 1
+    assert successes == 1, "the deadlock must replay as a DeadlockError, not be masked by the abort unwind"
+
+
+@pytest.mark.intentionally_leaves_dangling_threads
+def test_replay_deadlock_with_queue_waiters_reproduces() -> None:
+    """A queue-parked deadlock must replay as a deadlock, not score 0/N.
+
+    On abort, ``Queue.get`` waiters raise ``SchedulerTimeoutError``; the base
+    ``run_all`` surfaced those collateral task errors *before* the scheduler's
+    own DeadlockError verdict, so ``_reproduce_async_counterexample`` counted
+    the attempt as a failed reproduction (``except TimeoutError: continue``).
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[object] = asyncio.Queue()
+
+    async def waits_on_queue(state: State) -> None:
+        await state.queue.get()
+
+    thread, result = _replay_deadlock_in_thread(
+        State, [waits_on_queue, waits_on_queue], [0, 1, 0, 1, 0, 1], join_timeout=20.0
+    )
+
+    assert not thread.is_alive(), "replay hung instead of terminating"
+    assert "error" not in result, f"replay raised: {result.get('error')!r}"
+    attempts, successes = result["value"]
+    assert attempts == 1
+    assert successes == 1, "DeadlockError verdict must take priority over the queue waiters' abort unwind"
+
+
+def test_replay_sleep_timeout_abort_wakes_parked_primitive_waiters() -> None:
+    """The replay ``sleep_until`` watchdog must wake parked cooperative waiters.
+
+    Both ``sleep_until`` abort branches assign ``self._error`` directly; without
+    routing through ``_on_error_set()`` a peer parked on a cooperative primitive
+    stays parked until the outer ``timeout_per_run`` elapses instead of
+    free-running to completion (the same bug class as ``_handle_timeout``).
+    """
+
+    async def scenario() -> bool:
+        scheduler = _ReplayAsyncScheduler([0, 1, 1], 2, deadlock_timeout=0.05)
+        event = _CooperativeAsyncEvent()
+        _async_parked_events.add(event)
+        try:
+            assert not event._event.is_set()
+            await scheduler.sleep_until(1, deadline=100.0)
+            assert isinstance(scheduler._error, TimeoutError)
+            return event._event.is_set()
+        finally:
+            _async_parked_events.clear()
+
+    assert asyncio.run(scenario()) is True

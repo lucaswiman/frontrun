@@ -47,6 +47,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
 from frontrun._async_autopause import _in_scheduler_pause
+from frontrun._deadlock import DeadlockError
 from frontrun._virtual_clock import real_monotonic
 
 # Real asyncio.sleep captured before any patching, for the shared pause() yield.
@@ -257,6 +258,7 @@ class InterleavedLoop:
     _event_blocked: "set[int] | None" = None
     #: Stable object-id registry, or None (fall back to id()).
     _stable_ids: Any = None
+    _classify_unmanaged_stall_as_deadlock = True
 
     async def kick_stalled_schedule(self, task_id: int) -> None:
         """Hand the turn onward after a task engine-blocked itself (no-op default)."""
@@ -269,6 +271,12 @@ class InterleavedLoop:
 
     def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
         """Report a memory / resource access to the engine (no-op default)."""
+
+    def on_task_suspended(self, task_id: int) -> None:
+        """Mark an ordinary natural await as physically suspended."""
+
+    def on_task_resumed(self, task_id: int) -> None:
+        """Mark a naturally suspended task runnable before its next pause."""
 
     def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
         """Register a virtual timeout deadline (no-op default)."""
@@ -495,22 +503,38 @@ class InterleavedLoop:
             task_funcs = dict(enumerate(task_funcs))
 
         self._num_tasks = len(task_funcs)
-        errors: dict[Any, Exception] = {}
+        errors: dict[Any, BaseException] = {}
         cancelling_for_timeout = False
+        cleanup_cancellations: set[asyncio.Task[Any]] = set()
+        tasks: list[asyncio.Task[None]] = []
+
+        def _cancel_error_peers() -> None:
+            current = asyncio.current_task()
+            for task in tasks:
+                if task is not current and not task.done():
+                    cleanup_cancellations.add(task)
+                    task.cancel()
 
         async def _run(task_id: Any, func: Callable[..., Awaitable[None]]) -> None:
             try:
                 self._setup_task_context(task_id)
                 await func()
             except asyncio.CancelledError as e:
-                if cancelling_for_timeout:
+                current = asyncio.current_task()
+                if cancelling_for_timeout or current in cleanup_cancellations:
                     raise
                 error = WorkerCancelledError(str(e) or f"worker {task_id!r} cancelled itself")
                 errors[task_id] = error
                 await self._report_error(error)
+                _cancel_error_peers()
             except Exception as e:
                 errors[task_id] = e
                 await self._report_error(e)
+                _cancel_error_peers()
+            except BaseException as e:
+                errors[task_id] = e
+                await self._report_error(RuntimeError(f"worker {task_id!r} terminated with {type(e).__name__}"))
+                _cancel_error_peers()
             finally:
                 self._cleanup_task_context(task_id)
                 await self._mark_done(task_id)
@@ -534,7 +558,21 @@ class InterleavedLoop:
                 if not t.done():
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if isinstance(self._error, DeadlockError):
+                raise self._error
+            if errors:
+                raise next(iter(errors.values()))
             raise SchedulerTimeoutError("Tasks did not complete within timeout. Check for deadlocks in your schedule.")
+
+        # A DeadlockError verdict is the root cause: report_error's first-wins
+        # rule means a genuine worker error would have claimed self._error
+        # before any deadlock was declared, so task errors recorded alongside a
+        # DeadlockError are collateral of the abort wake (e.g. a cooperative
+        # primitive raising SchedulerTimeoutError while free-running).  Raising
+        # them instead would score a deadlock counterexample as failing to
+        # reproduce.
+        if isinstance(self._error, DeadlockError):
+            raise self._error
 
         if errors:
             raise next(iter(errors.values()))
@@ -590,6 +628,12 @@ class InterleavedLoop:
                     # pending deadline (default: no clock, returns False).
                     if self._advance_virtual_deadline_for_idle():
                         self._condition.notify_all()
+                        continue
+                    if not self._classify_unmanaged_stall_as_deadlock:
+                        # A quiet unmanaged awaitable may still be a timer,
+                        # socket, subprocess, or externally completed Future.
+                        # Keep watching until the overall run timeout, which
+                        # the caller will report as inconclusive.
                         continue
                     if self._error is None:
                         self._error = SchedulerTimeoutError(

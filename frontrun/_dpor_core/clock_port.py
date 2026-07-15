@@ -138,7 +138,7 @@ class VirtualClockPort:
                 self._unblock(actor_id)
                 self.coordinator.cancel(actor_id, _TIMED_WAIT_TOKEN)
                 self._sync()
-            self._on_give_up(actor_id)
+                self._on_give_up(actor_id)
             self._condition.notify_all()
 
     def note_blocking_spin(self, actor_id: int, resource_id: int, waiting: bool, *, timed_wait: bool = False) -> None:

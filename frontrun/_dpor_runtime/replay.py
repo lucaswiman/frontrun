@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from frontrun._dpor_core import is_reproduction_run
 from frontrun._virtual_clock import ClockConfig, VirtualClock, clock_scope, validate_clock
+from frontrun.common import _call_sync_setup
 
 from ._shared import *
 from .runner import DporBytecodeRunner
@@ -75,7 +76,15 @@ def _run_dpor_schedule(
     # One clock_scope owns the time.* patch across setup + the worker phase;
     # the workers resolve their virtual clock via scheduler TLS.
     with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
-        state = setup()
+        state = _call_sync_setup(setup)
+        # Mirror exploration (explore.py): assign stable IDs to the fresh
+        # setup() graph in deterministic order before any worker runs.  The
+        # scheduler's StableObjectIds is freshly constructed (the analogue of
+        # exploration's per-execution reset_execution_state), so setup-time
+        # first-touch IDs and this walk reproduce exploration's numbering
+        # exactly — access anchors embed these IDs to distinguish instances
+        # of the same class (defect #22).
+        scheduler._stable_ids.pre_register(state)
 
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:

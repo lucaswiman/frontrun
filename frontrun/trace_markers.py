@@ -37,7 +37,16 @@ from frontrun._marker_coordination import (
     finalize_marker_executor_run,
 )
 from frontrun._trace_marker_runtime import build_trace_function, run_traced_callable
-from frontrun.common import InterleavingResult, Schedule, Step, _is_async_callable, any_async, check_invariant
+from frontrun.common import (
+    InterleavingResult,
+    Schedule,
+    Step,
+    _call_sync_setup,
+    _is_async_callable,
+    _reject_deferred_sync_result,
+    any_async,
+    check_invariant,
+)
 
 __all__ = [
     "MARKER_PATTERN",
@@ -107,7 +116,10 @@ class _ThreadTraceExecutor:
             coordinator=self.coordinator,
             execution_name=execution_name,
             trace_function=self._create_trace_function(execution_name),
-            body=lambda: target(*args, **kwargs),
+            # Fail closed if the body returns a coroutine/generator: a sync
+            # classification (e.g. a lambda wrapping a coroutine call) would
+            # otherwise discard it and report success without executing it.
+            body=lambda: _reject_deferred_sync_result(target(*args, **kwargs), target),
             error_sink=self.thread_errors,
         )
 
@@ -347,8 +359,11 @@ def frontrun(
                 _fn: Callable[..., Any] = fn,
                 _a: tuple[Any, ...] = a,
                 _kw: dict[str, Any] = kw,
-            ) -> None:
-                _fn(*_a, **_kw)
+            ) -> Any:
+                # Preserve the return value so TraceExecutor's outer
+                # fail-closed check can reject deferred coroutine/generator
+                # bodies instead of certifying a run that executed nothing.
+                return _fn(*_a, **_kw)
 
             wrapped[execution_name] = _wrap_sync
         else:
@@ -510,14 +525,14 @@ def explore_marker_interleavings(
     first_explanation: str | None = None
 
     for i, schedule in enumerate(schedules):
-        state = setup()
+        state = _call_sync_setup(setup)
         executor = TraceExecutor(schedule, deadlock_timeout=deadlock_timeout)
 
         runners: dict[str, Callable[..., Any]] = {}
         for exec_name, (target_fn, _markers) in threads.items():
 
             def _make_runner(s: Any = state, fn: Callable[..., None] = target_fn) -> None:
-                fn(s)
+                _reject_deferred_sync_result(fn(s), fn)
 
             runners[exec_name] = _make_runner
 
@@ -567,7 +582,11 @@ def explore_marker_interleavings(
 
         invariant_failed, assertion_msg = check_invariant(invariant, state)
         if invariant_failed:
-            explanation = f"AssertionError: {assertion_msg}" if assertion_msg else None
+            explanation = (
+                f"AssertionError: {assertion_msg}"
+                if assertion_msg
+                else f"Invariant violated under marker schedule: {schedule}"
+            )
             if first_explanation is None:
                 first_explanation = explanation
             failures.append((i, schedule))

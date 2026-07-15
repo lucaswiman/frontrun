@@ -171,25 +171,33 @@ def is_dynamic_code(filename: str) -> bool:
 
 
 def _is_cmdline_mode() -> bool:
-    """Return True if the current process was started with ``python -c``."""
+    """Return True if the program came from ``python -c`` or stdin.
+
+    ``python -c`` leaves ``__main__`` without ``__file__``; a program piped
+    via stdin (``python -`` / ``python < script.py``) sets ``__file__`` to
+    the pseudo-filename ``"<stdin>"``.
+    """
     main = sys.modules.get("__main__")
-    return main is not None and not hasattr(main, "__file__")
+    if main is None:
+        return False
+    return not hasattr(main, "__file__") or getattr(main, "__file__", None) == "<stdin>"
 
 
 def is_cmdline_user_code(filename: str, f_globals: dict[str, object]) -> bool:
-    """Check whether *filename* is user code from a ``python -c`` invocation.
+    """Check whether *filename* is user code from ``python -c`` or stdin.
 
-    When Python is started with ``-c``, user-defined functions have
-    ``co_filename == "<string>"`` and their ``f_globals`` (or
+    When Python is started with ``-c`` (or the program is piped via stdin /
+    typed at the REPL), user-defined functions have ``co_filename ==
+    "<string>"`` (``"<stdin>"`` for stdin) and their ``f_globals`` (or
     ``__globals__``) is ``__main__.__dict__``.  This function returns
     ``True`` for exactly that combination, allowing the trace callbacks
     to treat such code as user code rather than library-exec'd code.
 
-    Returns ``False`` for non-``<string>`` filenames, for ``<string>``
+    Returns ``False`` for other filenames, for ``<string>``/``<stdin>``
     code whose globals don't belong to ``__main__``, or when the process
     was started as a normal script (``__main__`` has a ``__file__``).
     """
-    if filename != "<string>":
+    if filename not in ("<string>", "<stdin>"):
         return False
     if not _is_cmdline_mode():
         return False

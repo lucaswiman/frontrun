@@ -82,6 +82,11 @@ async def _make_async_db() -> aiosqlite.Connection:
 def _cleanup_async_sql_patch() -> Generator[None, None, None]:
     """Ensure async SQL patching is cleaned up between tests."""
     yield
+    # aiosqlite 0.22 resolves close() after queuing its worker stop.  Join
+    # already-closing non-daemon workers before the global leak check runs.
+    for thread in threading.enumerate():
+        if "_connection_worker_thread" in thread.name:
+            thread.join(timeout=1.0)
     unpatch_sql_async()
     _ASYNC_ORIGINAL_METHODS.clear()
     _ASYNC_PATCHES.clear()
@@ -473,11 +478,11 @@ def test_report_sql_access_returns_false_without_reporter() -> None:
     assert _report_sql_access("SELECT * FROM users") is False
 
 
-def test_report_sql_access_returns_false_for_non_string() -> None:
+def test_report_sql_access_reports_opaque_database_write_for_non_string() -> None:
     log = IOLog()
     set_io_reporter(log)
-    assert _report_sql_access(12345) is False  # type: ignore[arg-type]
-    assert len(log.events) == 0
+    assert _report_sql_access(12345) is True
+    assert log.events == [("sql:__database__", "write")]
 
 
 def test_report_sql_access_handles_tx_control() -> None:
@@ -642,7 +647,7 @@ async def test_insert_into_select_reports_both() -> None:
 
 @pytest.mark.asyncio
 async def test_pragma_no_data_access() -> None:
-    """Statements like PRAGMA don't report table data access."""
+    """Statements like PRAGMA conservatively report opaque database access."""
     log = IOLog()
     set_io_reporter(log)
     patch_sql_async()
@@ -651,7 +656,7 @@ async def test_pragma_no_data_access() -> None:
         log.clear()
         await conn.execute("PRAGMA journal_mode")
 
-    assert len(log.events) == 0
+    assert log.events == [("sql:__database__", "write")]
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +713,7 @@ async def test_empty_string_operation() -> None:
 
 @pytest.mark.asyncio
 async def test_non_string_operation_passthrough() -> None:
-    """Non-string operation should be passed through without parsing."""
+    """Non-string operations pass through after an opaque database report."""
     call_log: list[Any] = []
 
     async def fake_execute(self: Any, op: Any) -> str:
@@ -719,7 +724,7 @@ async def test_non_string_operation_passthrough() -> None:
     set_io_reporter(log)
     result = await _intercept_execute_async(fake_execute, None, 42)  # type: ignore[arg-type]
     assert result == "ok"
-    assert len(log.events) == 0
+    assert log.events == [("sql:__database__", "write")]
 
 
 class TestAsyncUpdateZeroRowRelease:
@@ -930,3 +935,41 @@ async def test_executemany_insert_records_uncaptured() -> None:
         )
     finally:
         _sql_insert_tracker.clear_insert_tracker()
+
+
+# ---------------------------------------------------------------------------
+# asyncpg PreparedStatement patching (SQLAlchemy asyncpg dialect blind spot)
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncpgPreparedStatementPatching:
+    """SQLAlchemy's asyncpg dialect executes every statement through
+    ``Connection.prepare()`` → ``PreparedStatement.fetch()``.  Those methods
+    (and the cursor factories) must be patched, or the SQL never reaches
+    ``_report_sql_access`` and DPOR certifies racy code as clean.
+    """
+
+    def test_patch_wraps_prepared_statement_and_cursor_methods(self) -> None:
+        asyncpg = pytest.importorskip("asyncpg")
+        from asyncpg import prepared_stmt as ps_mod
+
+        ps_cls = ps_mod.PreparedStatement
+        method_names = [
+            name
+            for name in ("fetch", "fetchmany", "fetchrow", "fetchval", "executemany", "cursor")
+            if hasattr(ps_cls, name)
+        ]
+        ps_originals = {name: getattr(ps_cls, name) for name in method_names}
+        conn_cursor_orig = asyncpg.Connection.cursor
+
+        patch_sql_async()
+        try:
+            for name, orig in ps_originals.items():
+                assert getattr(ps_cls, name) is not orig, f"PreparedStatement.{name} must be patched"
+            assert asyncpg.Connection.cursor is not conn_cursor_orig, "Connection.cursor must be patched"
+        finally:
+            unpatch_sql_async()
+
+        for name, orig in ps_originals.items():
+            assert getattr(ps_cls, name) is orig, f"PreparedStatement.{name} must be restored on unpatch"
+        assert asyncpg.Connection.cursor is conn_cursor_orig, "Connection.cursor must be restored on unpatch"

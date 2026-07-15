@@ -92,6 +92,7 @@ from frontrun._virtual_clock import (
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import (
     InterleavingResult,
+    _call_sync_setup,
     check_invariant,
     check_serializability_violation,
 )
@@ -106,6 +107,10 @@ class _WorkerExecutionError(Exception):
     def __init__(self, cause: Exception) -> None:
         super().__init__(str(cause))
         self.cause = cause
+
+
+class _MaxOpsExhaustedError(TimeoutError):
+    """The scheduler cap was reached before the worker trace completed."""
 
 
 class OpcodeScheduler:
@@ -509,7 +514,8 @@ class BytecodeShuffler:
         self.scheduler = scheduler
         self.detect_io = detect_io
         self.threads: list[threading.Thread] = []
-        self.errors: dict[int, Exception] = {}
+        self.errors: dict[int, BaseException] = {}
+        self.worker_originated_errors: dict[int, BaseException] = {}
         self._lock_patched = False
         self._io_patched = False
         self._sleep_patched = False
@@ -695,9 +701,17 @@ class BytecodeShuffler:
                 func(*args, **kwargs)
         except SchedulerAbort:
             pass  # scheduler already has the error; just exit cleanly
-        except Exception as e:
+        except BaseException as e:  # noqa: BLE001
+            if getattr(self.scheduler, "_error", None) is not e:
+                self.worker_originated_errors[thread_id] = e
             self.errors[thread_id] = e
-            self.scheduler.report_error(e)
+            if isinstance(e, Exception):
+                self.scheduler.report_error(e)
+            else:
+                # Worker BaseExceptions do not cross the thread boundary on
+                # their own. Wake peers with an ordinary scheduler error;
+                # run() re-raises the original object on the driver thread.
+                self.scheduler.report_error(RuntimeError(f"worker {thread_id} terminated with {type(e).__name__}"))
 
     def run(
         self,
@@ -840,11 +854,14 @@ def run_with_schedule(
     # The clock_scope owns the time.* patch for the whole run (setup + workers);
     # patch_locks BEFORE setup() so any locks created there are cooperative.
     with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
-        state = setup()
+        state = _call_sync_setup(setup)
+
+        from frontrun.common import _reject_deferred_sync_result
 
         def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:
-                thread_func(thread_state)
+                result = thread_func(thread_state)
+                _reject_deferred_sync_result(result, thread_func)
 
             return thread_wrapper
 
@@ -852,7 +869,11 @@ def run_with_schedule(
         timed_out = False
         try:
             runner.run(funcs, timeout=timeout)
-        except TimeoutError:
+        except TimeoutError as exc:
+            if runner.worker_originated_errors:
+                if _worker_errors_as_findings:
+                    raise _WorkerExecutionError(exc) from exc
+                raise
             if debug:
                 print(f"Timed out with {timeout=} on {schedule=}", flush=True)
             timed_out = True
@@ -860,7 +881,7 @@ def run_with_schedule(
             raise
         except Exception as exc:
             if scheduler._max_ops_exhausted:
-                raise TimeoutError("run_with_schedule exhausted max_ops before workers completed") from exc
+                raise _MaxOpsExhaustedError("run_with_schedule exhausted max_ops before workers completed") from exc
             if _worker_errors_as_findings and runner.errors:
                 raise _WorkerExecutionError(exc) from exc
             raise
@@ -876,7 +897,9 @@ def run_with_schedule(
         # threads may still be mutating.  Evaluating an invariant on such a
         # half-finished racing state is meaningless (finding 9d).  Callers in
         # exploration loops catch this and skip the schedule as inconclusive.
-        if timed_out or isinstance(scheduler._error, TimeoutError) or scheduler._max_ops_exhausted:
+        if scheduler._max_ops_exhausted:
+            raise _MaxOpsExhaustedError("run_with_schedule exhausted max_ops before workers completed")
+        if timed_out or isinstance(scheduler._error, TimeoutError):
             raise TimeoutError(f"run_with_schedule timed out after {timeout}s; worker threads did not complete")
     return state
 
@@ -971,6 +994,8 @@ def explore_random(
         providing a lower bound on exploration coverage.
     """
     _require_frontrun_env("explore_random")
+    if max_attempts <= 0:
+        raise ValueError("max_attempts must be positive")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
     clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
@@ -991,8 +1016,8 @@ def explore_random(
         seen_schedule_hashes: set[int] = set()
         total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
-        for _ in range(max_attempts):
-            if total_deadline is not None and time.monotonic() > total_deadline:
+        for attempt in range(max_attempts):
+            if attempt > 0 and total_deadline is not None and time.monotonic() > total_deadline:
                 break
             schedule = random_round_robin_schedule(rng, num_threads, max_ops)
 
@@ -1028,16 +1053,33 @@ def explore_random(
                     f"Deadlock detected after {result.num_explored} interleaving(s).\n\n{dl_err.cycle_description}"
                 )
                 return result
-            except TimeoutError:
-                # The run did not complete within timeout_per_run; worker
-                # threads may still be mutating the state.  Skip this schedule
-                # as inconclusive rather than evaluating the invariant on a
-                # half-finished racing state (finding 9d).
-                if debug:
-                    print(f"Skipping timed-out schedule: {schedule}", flush=True)
+            except _MaxOpsExhaustedError:
                 result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))
-                continue
+                result.property_holds = False
+                result.unique_interleavings = len(seen_schedule_hashes)
+                result.explanation = (
+                    f"Random exploration exhausted max_ops={max_ops} on attempt {result.num_explored}. "
+                    "The completed run is inconclusive because scheduling control ended before the worker trace; "
+                    "increase max_ops to claim a passing exploration."
+                )
+                return result
+            except TimeoutError:
+                # Python threads cannot be killed safely. The partial state is
+                # inconclusive, and survivors may keep mutating globals, so no
+                # later attempt in this exploration is trustworthy.
+                if debug:
+                    print(f"Aborting after timed-out schedule: {schedule}", flush=True)
+                result.num_explored += 1
+                seen_schedule_hashes.add(hash(tuple(schedule)))
+                result.property_holds = False
+                result.unique_interleavings = len(seen_schedule_hashes)
+                result.explanation = (
+                    f"Random exploration timed out before workers completed on attempt {result.num_explored}. "
+                    "The search is inconclusive because Python threads cannot be killed safely; increase "
+                    "timeout_per_run/deadlock_timeout or remove unmanaged blocking from explored workers."
+                )
+                return result
             except _WorkerExecutionError as worker_err:
                 result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))

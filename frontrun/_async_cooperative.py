@@ -21,9 +21,11 @@ scheduler.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from typing import Any
+import functools
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, ParamSpec, TypeVar
 
+from frontrun import _real_threading as _rt
 from frontrun._async_autopause import _in_scheduler_pause, _scheduler_var, _task_id_var
 from frontrun._deadlock import DeadlockError, WaitForGraph, format_cycle
 from frontrun._dpor_core import event_wake_sync_id
@@ -40,6 +42,7 @@ __all__ = [
     "_async_parked_queues",
     "_async_task_held_locks",
     "_async_wake_sync_id",
+    "_guard_async_exploration",
     "_patch_asyncio_event",
     "_patch_asyncio_lock",
     "_patch_asyncio_queue_condition",
@@ -53,6 +56,28 @@ __all__ = [
     "_wake_parked_async_event_waiters",
     "_wake_parked_async_primitive_waiters",
 ]
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_async_exploration_lock = _rt.lock()
+
+
+def _guard_async_exploration(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Coroutine[Any, Any, _R]]:
+    """Reject overlapping async explorations before global patching begins."""
+
+    @functools.wraps(func)
+    async def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if not _async_exploration_lock.acquire(blocking=False):
+            raise RuntimeError(
+                "concurrent async exploration is unsupported because asyncio patches and scheduler state are process-wide"
+            )
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            _async_exploration_lock.release()
+
+    return guarded
+
 
 # Saved originals, captured before any patching runs.
 _real_asyncio_lock = asyncio.Lock
@@ -119,6 +144,20 @@ def _async_wake_sync_id(scheduler: Any, obj: object, waiter: int) -> int:
     stable_ids = scheduler._stable_ids
     obj_id = stable_ids.get(obj) if stable_ids is not None else id(obj)
     return event_wake_sync_id(obj_id, waiter)
+
+
+def _unblock_primitive_waiter(scheduler: Any, waiter: int) -> None:
+    """Make a physically-woken primitive waiter replay-runnable immediately.
+
+    The engine unblock and the replay scheduler's ``_event_blocked`` view are
+    one logical transition.  Waiting until the future resumes to update the
+    latter lets replay skip the waiter's recorded slot even though exploration
+    can schedule it immediately after the engine unblock.
+    """
+    event_blocked = getattr(scheduler, "_event_blocked", None)
+    if event_blocked is not None:
+        event_blocked.discard(waiter)
+    scheduler.execution.unblock_thread(waiter)
 
 
 async def _engine_parked_wait(
@@ -513,7 +552,7 @@ class _CooperativeAsyncEvent:
             _report_state_access(self, "__event_state__", "write")
             for waiter in list(self._waiters):
                 scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-                scheduler.execution.unblock_thread(waiter)
+                _unblock_primitive_waiter(scheduler, waiter)
         self._event.set()
 
     def __repr__(self) -> str:
@@ -565,13 +604,21 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         waiter, fut = waiter_info
         if scheduler is not None and task_id is not None:
             scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-            scheduler.execution.unblock_thread(waiter)
+            _unblock_primitive_waiter(scheduler, waiter)
         fut.set_result(None)
 
     def _wake_all_for_abort(self) -> None:
         for _waiter, fut in self._frontrun_get_waiters + self._frontrun_put_waiters:
             if not fut.done():
                 fut.set_result(None)
+
+    async def _yield_after_handoff(self, scheduler: Any, task_id: int, operation: str) -> None:
+        """End the releaser segment after making a parked peer runnable."""
+        await scheduler.pause(task_id, (operation, id(self), "wake"))
+        on_task_yielded = getattr(scheduler, "on_task_yielded", None)
+        if on_task_yielded is not None:
+            on_task_yielded(task_id)
+        await _real_asyncio_sleep(0)
 
     def get_nowait(self) -> Any:
         item = super().get_nowait()
@@ -616,7 +663,11 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             )
             if not self.empty():
                 break
-        return self.get_nowait()
+        woke_putter = any(not fut.done() for _waiter, fut in self._frontrun_put_waiters)
+        item = self.get_nowait()
+        if woke_putter:
+            await self._yield_after_handoff(scheduler, task_id, "queue_get")
+        return item
 
     async def put(self, item: Any) -> None:
         task_id = _task_id_var.get()
@@ -626,6 +677,8 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             return
         await scheduler.pause(task_id, ("queue_put", id(self)))
         while self.full():
+            if scheduler._error is not None:
+                raise SchedulerTimeoutError("queue put aborted by scheduler")
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._frontrun_put_waiters.append((task_id, fut))
 
@@ -645,7 +698,10 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
                 reason="queue put",
                 cleanup=_cleanup,
             )
+        woke_getter = any(not fut.done() for _waiter, fut in self._frontrun_get_waiters)
         self.put_nowait(item)
+        if woke_getter:
+            await self._yield_after_handoff(scheduler, task_id, "queue_put")
 
 
 class _CooperativeAsyncCondition:
@@ -693,6 +749,13 @@ class _CooperativeAsyncCondition:
         scheduler = _scheduler_var.get()
         if scheduler is None or task_id is None:
             return await self._real_condition.wait()
+        if scheduler._error is not None:
+            # Raise (mirroring Queue.get/put) instead of returning True:
+            # returning completes synchronously with zero await points, so a
+            # predicate loop (wait_for, or ``while not pred: await wait()``)
+            # whose predicate never turns true spins without yielding and
+            # starves the event loop -- no timeout can ever fire.
+            raise SchedulerTimeoutError("condition wait aborted by scheduler")
         fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._waiters.append((task_id, fut))
         # Release before parking so a notifier can take the lock; re-acquired on
@@ -748,6 +811,12 @@ class _CooperativeAsyncCondition:
             on_wake=_reacquire_on_wake,
             on_finally=_reacquire_exception_safe,
         )
+        if scheduler._error is not None:
+            # Woken by an abort (_wake_all_for_abort), not a notify: the lock
+            # was re-acquired above, so raising here keeps the stock
+            # Condition.wait contract (lock held on exit) while terminating
+            # predicate loops that would otherwise re-enter wait() and spin.
+            raise SchedulerTimeoutError("condition wait aborted by scheduler")
         return True
 
     async def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> Any:
@@ -787,7 +856,7 @@ class _CooperativeAsyncCondition:
                 continue
             if scheduler is not None and task_id is not None and getattr(scheduler, "_error", None) is None:
                 scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-                scheduler.execution.unblock_thread(waiter)
+                _unblock_primitive_waiter(scheduler, waiter)
             fut.set_result(None)
             woke += 1
         if not self._waiters:

@@ -44,7 +44,6 @@ if not settings.configured:
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.db import connection, connections  # noqa: E402
 
-import frontrun  # noqa: E402
 from frontrun.async_dpor import await_point  # noqa: E402
 from frontrun.contrib.django import async_django_dpor  # noqa: E402
 
@@ -106,7 +105,8 @@ class TestAsyncDporDjango:
         executed_sql: list[str] = []
         cursor_exit_called = False
         conn = connections["default"]
-        original_cursor = conn.cursor
+        connection_cls = type(conn)
+        original_cursor = connection_cls.cursor
 
         class CursorProxy:
             def __init__(self, cursor):
@@ -131,10 +131,13 @@ class TestAsyncDporDjango:
                 target = self._entered_cursor or self._cursor
                 return getattr(target, name)
 
-        def cursor_wrapper(*args, **kwargs):
-            return CursorProxy(original_cursor(*args, **kwargs))
+        def cursor_wrapper(self, *args, **kwargs):
+            return CursorProxy(original_cursor(self, *args, **kwargs))
 
-        monkeypatch.setattr(conn, "cursor", cursor_wrapper)
+        # Django's connection storage is async-context-local.  Patch the
+        # wrapper class so this observes the fresh connection created inside
+        # the explored task, not only this synchronous context's instance.
+        monkeypatch.setattr(connection_cls, "cursor", cursor_wrapper)
 
         class _State:
             pass
@@ -157,7 +160,6 @@ class TestAsyncDporDjango:
         assert "SET lock_timeout = '500ms'" in executed_sql
         assert cursor_exit_called
 
-    @pytest.mark.intentionally_leaves_dangling_threads
     def test_activation_race(self, _pg_available) -> None:
         """Async DPOR should detect a double-activation race using Django async ORM."""
 
@@ -190,19 +192,24 @@ class TestAsyncDporDjango:
             return not (state.results[0] == "activated" and state.results[1] == "activated")
 
         async def run_test():
-            return await frontrun.explore(
-                setup=_State,
-                workers=[make_task(0), make_task(1)],
-                invariant=invariant,
-                detect_io=True,
-                deadlock_timeout=10.0,
-                timeout_per_run=15.0,
-            )
+            from asgiref.sync import ThreadSensitiveContext
+
+            async with ThreadSensitiveContext():
+                return await async_django_dpor(
+                    setup=_State,
+                    tasks=[make_task(0), make_task(1)],
+                    invariant=invariant,
+                    detect_sql=True,
+                    deadlock_timeout=10.0,
+                    timeout_per_run=15.0,
+                )
 
         result = asyncio.run(run_test())
         assert not result.property_holds, (
             f"Async DPOR should detect the double-activation race. Explored {result.num_explored} interleavings."
         )
+        assert result.reproduction_attempts == 10
+        assert result.reproduction_successes == 10
 
     def test_exploration_completes(self, _pg_available) -> None:
         """Verify exploration completes without deadlock with Django async."""
@@ -219,13 +226,16 @@ class TestAsyncDporDjango:
             await await_point()
 
         async def run_test():
-            return await frontrun.explore(
-                setup=_State,
-                workers=[read_only, read_only],
-                invariant=lambda s: True,
-                detect_io=True,
-                deadlock_timeout=10.0,
-            )
+            from asgiref.sync import ThreadSensitiveContext
+
+            async with ThreadSensitiveContext():
+                return await async_django_dpor(
+                    setup=_State,
+                    tasks=[read_only, read_only],
+                    invariant=lambda s: True,
+                    detect_sql=True,
+                    deadlock_timeout=10.0,
+                )
 
         result = asyncio.run(run_test())
         assert result.property_holds

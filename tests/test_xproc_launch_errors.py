@@ -656,6 +656,26 @@ def test_mp_worker_rejects_plain_callable_returning_awaitable(monkeypatch: pytes
             _mp_worker_entry("unused.sock", 0, payload)
 
 
+@pytest.mark.parametrize("async_generator", [False, True], ids=["generator", "async-generator"])
+def test_mp_worker_rejects_generator_results(monkeypatch: pytest.MonkeyPatch, async_generator: bool) -> None:
+    """Process workers must not report success without executing generator bodies."""
+    from frontrun._dpor_runtime.xproc import worker, worker_main
+
+    def returns_generator(_state: object):
+        yield "body never silently skipped"
+
+    async def returns_async_generator(_state: object):
+        yield "body never silently skipped"
+
+    target = returns_async_generator if async_generator else returns_generator
+    monkeypatch.setattr(worker_main, "_install_interception", lambda _proxy, _worker_id: None)
+    monkeypatch.setattr(worker, "_connect_and_serve", lambda _socket_path, _worker_id, body: body(object()))
+
+    payload = _dumps_worker(target, object())
+    with pytest.raises(TypeError, match="returned (?:an async generator|a generator)"):
+        _mp_worker_entry("unused.sock", 0, payload)
+
+
 def test_mp_worker_installs_interception_before_deserializing_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     """Child-side reducers must not perform external I/O before scheduling is active."""
     import dill

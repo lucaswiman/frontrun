@@ -125,6 +125,7 @@ def test_reuse_restarts_killable_workers_after_unclean_iteration(monkeypatch: py
     class DummyScheduler:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             self._error = None
+            self._row_lock_redirected = False
 
     def two_executions(**_kwargs: Any):
         yield SimpleNamespace(execution=SimpleNamespace(schedule_trace=[0]), index=1)

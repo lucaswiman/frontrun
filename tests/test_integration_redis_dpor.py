@@ -24,7 +24,12 @@ Running::
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+import subprocess
+import tempfile
 import threading
+import time
 
 import pytest
 
@@ -1142,7 +1147,7 @@ class TestDporPathCountSerialized:
     """Verify DPOR explores minimal paths when operations are lock-serialized."""
 
     def test_locked_many_redis_ops_minimal_paths(self, redis_port: int) -> None:
-        """Many Redis ops all under one lock → DPOR explores ≤ 2 paths.
+        """Many Redis ops all under one lock avoid combinatorial path growth.
 
         With 2 threads and a single lock serializing all access, DPOR should
         explore at most 2 orderings (thread 0 first, thread 1 first), not
@@ -1193,6 +1198,8 @@ class TestDporPathCountSerialized:
         # 2. Python-level internals of redis-py create scheduling points
         #    with untracked object conflicts (connection setup, parser state)
         # 3. LD_PRELOAD TCP events from Redis connection setup
+        # Keep the established tight ceiling: increasing it would hide
+        # extraneous traces instead of detecting a scheduling regression.
         assert result.num_explored <= 12, f"Lock-serialized ops should need ≤ 12 DPOR paths, got {result.num_explored}"
 
     def test_async_locked_many_redis_ops_minimal_paths(self, redis_port: int) -> None:
@@ -1247,3 +1254,178 @@ class TestDporPathCountSerialized:
         # can exist even with application-level locks (e.g. lock granularity
         # bugs).  The bound is relaxed to account for this.
         assert result.num_explored <= 15, f"Async lock-serialized ops should need ≤ 15 paths, got {result.num_explored}"
+
+
+# ---------------------------------------------------------------------------
+# Server/database identity regressions (0.7.0 release audit)
+#
+# Each test uses a reader/writer witness pattern: the invariant is violated
+# only when the writer's SET lands before the reader's GET, an ordering the
+# initial schedule does not produce.  Reaching it requires DPOR to detect the
+# GET/SET dependency and backtrack, so a missed dependency (two identities
+# for one physical database) falsely certifies the property.  Connections
+# are established during setup so the workers execute key-level commands
+# only.
+# ---------------------------------------------------------------------------
+
+
+class TestRedisIdentityAliases:
+    """Two clients naming one server differently must share resources."""
+
+    def test_dpor_detects_race_across_host_aliases(self, redis_port: int) -> None:
+        """localhost and 127.0.0.1 reach the same server (issue #250 finding)."""
+        port = redis_port
+
+        class State:
+            def __init__(self) -> None:
+                self.reader = redis_lib.Redis(host="localhost", port=port, decode_responses=True)
+                self.writer = redis_lib.Redis(host="127.0.0.1", port=port, decode_responses=True)
+                self.reader.ping()
+                self.writer.ping()
+                self.reader.delete("alias_flag", "alias_witness")
+
+        def reader(state: State) -> None:
+            if state.reader.get("alias_flag") == "1":
+                state.reader.set("alias_witness", "1")
+
+        def writer(state: State) -> None:
+            state.writer.set("alias_flag", "1")
+
+        def invariant(state: State) -> bool:
+            return state.reader.get("alias_witness") is None
+
+        result = frontrun.explore(
+            setup=State,
+            workers=[reader, writer],
+            invariant=invariant,
+            detect_io=True,
+            max_executions=50,
+            deadlock_timeout=15.0,
+            reproduce_on_failure=0,
+        )
+        assert not result.property_holds, "aliased clients reach one server; the SET-before-GET order must be found"
+
+
+class TestRedisUnixSocketIdentity:
+    """A unix-socket client and a TCP client to one server must share resources."""
+
+    _UNIX_PORT = int(os.environ.get("REDIS_PORT_UNIX", "16398"))
+
+    @pytest.fixture
+    def unix_socket_server(self):
+        """Spawn a dedicated redis-server listening on both TCP and a unix socket."""
+        if not shutil.which("redis-server"):
+            pytest.skip("redis-server not installed")
+        tmpdir = tempfile.mkdtemp(prefix="fr-redis-")  # short path: AF_UNIX limit
+        sock_path = os.path.join(tmpdir, "redis.sock")
+        proc = subprocess.Popen(
+            [
+                "redis-server",
+                "--port",
+                str(self._UNIX_PORT),
+                "--unixsocket",
+                sock_path,
+                "--save",
+                "",
+                "--appendonly",
+                "no",
+                "--loglevel",
+                "warning",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.time() + 5.0
+        while not os.path.exists(sock_path) and time.time() < deadline:
+            time.sleep(0.05)
+        client = redis_lib.Redis(unix_socket_path=sock_path)
+        try:
+            client.ping()
+        except redis_lib.exceptions.RedisError:
+            proc.terminate()
+            proc.wait()
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            pytest.skip("could not start a unix-socket redis-server")
+        finally:
+            client.close()
+        yield sock_path, self._UNIX_PORT
+        proc.terminate()
+        proc.wait()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_dpor_detects_race_between_unix_socket_and_tcp_clients(self, unix_socket_server: tuple[str, int]) -> None:
+        """Mixed unix-socket/TCP access to one server (issue #250 finding)."""
+        sock_path, port = unix_socket_server
+
+        class State:
+            def __init__(self) -> None:
+                self.reader = redis_lib.Redis(unix_socket_path=sock_path, decode_responses=True)
+                self.writer = redis_lib.Redis(host="localhost", port=port, decode_responses=True)
+                self.reader.ping()
+                self.writer.ping()
+                self.reader.delete("unix_flag", "unix_witness")
+
+        def reader(state: State) -> None:
+            if state.reader.get("unix_flag") == "1":
+                state.reader.set("unix_witness", "1")
+
+        def writer(state: State) -> None:
+            state.writer.set("unix_flag", "1")
+
+        def invariant(state: State) -> bool:
+            return state.reader.get("unix_witness") is None
+
+        result = frontrun.explore(
+            setup=State,
+            workers=[reader, writer],
+            invariant=invariant,
+            detect_io=True,
+            max_executions=50,
+            deadlock_timeout=15.0,
+            reproduce_on_failure=0,
+        )
+        assert not result.property_holds, "unix-socket and TCP clients reach one server; the race must be found"
+
+
+class TestRedisLiveSelectIdentity:
+    """A live SELECT must move a client's accesses to the selected database."""
+
+    def test_dpor_detects_race_after_connection_init_select(self, redis_port: int) -> None:
+        """SELECT at connection-init time (issue #250 finding).
+
+        The reader client is configured db=0 but switched to db 1 with a live
+        SELECT during setup, so both workers physically race on db1:select_flag.
+        Attributing the reader's accesses to the stale configured db misses the
+        dependency and falsely certifies.
+        """
+        port = redis_port
+
+        class State:
+            def __init__(self) -> None:
+                self.reader = redis_lib.Redis(port=port, db=0, decode_responses=True, single_connection_client=True)
+                self.writer = redis_lib.Redis(port=port, db=1, decode_responses=True)
+                self.reader.ping()
+                self.reader.execute_command("SELECT", 1)
+                self.writer.ping()
+                self.writer.delete("select_flag", "select_witness")
+
+        def reader(state: State) -> None:
+            if state.reader.get("select_flag") == "1":
+                state.reader.set("select_witness", "1")
+
+        def writer(state: State) -> None:
+            state.writer.set("select_flag", "1")
+
+        def invariant(state: State) -> bool:
+            return state.writer.get("select_witness") is None
+
+        result = frontrun.explore(
+            setup=State,
+            workers=[reader, writer],
+            invariant=invariant,
+            detect_io=True,
+            max_executions=50,
+            deadlock_timeout=15.0,
+            reproduce_on_failure=0,
+        )
+        assert not result.property_holds, "both workers race on db 1; the SET-before-GET order must be found"

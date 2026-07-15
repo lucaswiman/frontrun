@@ -21,6 +21,18 @@ def _notify_task_yielded(scheduler: Any, task_id: int) -> None:
         on_task_yielded(task_id)
 
 
+def _notify_task_suspended(scheduler: Any, task_id: int) -> None:
+    hook = getattr(scheduler, "on_task_suspended", None)
+    if hook is not None:
+        hook(task_id)
+
+
+def _notify_task_resumed(scheduler: Any, task_id: int) -> None:
+    hook = getattr(scheduler, "on_task_resumed", None)
+    if hook is not None:
+        hook(task_id)
+
+
 async def await_point() -> None:
     """Yield to the active async scheduler, or return immediately if none exists."""
     if _auto_pause_active.get():
@@ -36,7 +48,7 @@ async def await_point() -> None:
 class _AutoPauseIterator:
     """Wrap a coroutine so every natural await can become a scheduling boundary."""
 
-    __slots__ = ("_inner", "_task_id", "_scheduler", "_pause_iter", "_buffered_value")
+    __slots__ = ("_inner", "_task_id", "_scheduler", "_pause_iter", "_buffered_value", "_naturally_blocked")
 
     def __init__(self, inner_coro: Any, task_id: int, scheduler: Any) -> None:
         self._inner = inner_coro
@@ -44,6 +56,19 @@ class _AutoPauseIterator:
         self._scheduler = scheduler
         self._pause_iter: Any | None = None
         self._buffered_value: Any = None
+        self._naturally_blocked = False
+
+    def _mark_naturally_suspended(self) -> None:
+        if _in_scheduler_pause.get() > 0:
+            return
+        _notify_task_suspended(self._scheduler, self._task_id)
+        self._naturally_blocked = True
+
+    def _mark_naturally_resumed(self) -> None:
+        if not self._naturally_blocked:
+            return
+        self._naturally_blocked = False
+        _notify_task_resumed(self._scheduler, self._task_id)
 
     def __next__(self) -> Any:
         return self.send(None)
@@ -56,6 +81,7 @@ class _AutoPauseIterator:
         with the buffered value, and report the await-point yield."""
         self._pause_iter = None
         yielded = self._inner.send(self._buffered_value)
+        self._mark_naturally_suspended()
         _notify_task_yielded(self._scheduler, self._task_id)
         return yielded
 
@@ -69,6 +95,7 @@ class _AutoPauseIterator:
         if _in_scheduler_pause.get() > 0:
             return self._inner.send(value)
 
+        self._mark_naturally_resumed()
         self._buffered_value = value
         pause_coro = self._scheduler.pause(self._task_id)
         self._pause_iter = pause_coro.__await__()
@@ -119,12 +146,14 @@ class _AutoPauseIterator:
                 # escaped, exactly where an unwrapped await would raise.
                 self._pause_iter = None
                 return self._inner.throw(exc)
+        self._mark_naturally_resumed()
         if val is None and tb is None:
             return self._inner.throw(typ)
         return self._inner.throw(typ, val, tb)
 
     def close(self) -> None:
         self._close_pause_iter()
+        self._mark_naturally_resumed()
         self._inner.close()
 
 
@@ -150,7 +179,18 @@ def wrap_auto_paused_tasks(
 
         async def _wrapped(f: Callable[..., Awaitable[None]] = func, t: Any = task_id) -> None:
             _auto_pause_active.set(True)
-            await _AutoPauseCoroutine(f(), t, scheduler)
+            inner = f()
+            try:
+                await _AutoPauseCoroutine(inner, t, scheduler)
+            finally:
+                # Python 3.10 does not reliably close the inner coroutine when
+                # cancellation lands while this custom awaitable is suspended
+                # in its leading scheduler pause.  Own it explicitly so a
+                # timed-out run cannot leak an unawaited worker coroutine into
+                # a later test/exploration.
+                close = getattr(inner, "close", None)
+                if callable(close):
+                    close()
 
         wrapped[task_id] = _wrapped
     return wrapped

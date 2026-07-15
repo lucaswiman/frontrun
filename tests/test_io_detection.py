@@ -8,6 +8,7 @@ Verifies that:
 5. Patch/unpatch is clean (no leaks between tests)
 """
 
+import asyncio
 import builtins
 import socket
 import threading
@@ -151,6 +152,20 @@ def test_double_unpatch_is_idempotent():
     patch_io()
     unpatch_io()
     unpatch_io()  # should not raise
+
+
+def test_task_io_reporter_propagates_to_context_thread():
+    """Async task reporting survives sync_to_async/to_thread context copying."""
+    from frontrun._io_detection import clear_io_reporter_task, set_io_reporter_task
+
+    log = IOLog()
+    set_io_reporter_task(log)
+    try:
+        observed = asyncio.run(asyncio.to_thread(get_io_reporter))
+    finally:
+        clear_io_reporter_task()
+
+    assert observed is log
 
 
 # ---------------------------------------------------------------------------

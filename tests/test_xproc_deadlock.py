@@ -31,7 +31,9 @@ def _locker(first: str, second: str):
 
 
 def test_detects_cross_worker_lock_cycle() -> None:
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0)
+    # A merely redirected trace is not replay-exact and therefore fails
+    # closed. Keep exploring so a later concrete lock cycle can supersede it.
+    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
     result = coord.explore(
         worker_set=ThreadLauncher([_locker(ROW1, ROW2), _locker(ROW2, ROW1)]),
         setup=lambda: None,
@@ -42,12 +44,15 @@ def test_detects_cross_worker_lock_cycle() -> None:
     assert result.failing_schedule is not None
 
 
-def test_same_order_locking_has_no_deadlock() -> None:
-    # Both workers take locks in the same order => no cycle, invariant holds.
+def test_same_order_locking_fails_closed_without_claiming_deadlock() -> None:
+    # Both workers take locks in the same order, so there is no cycle. Physical
+    # lock redirection still makes the committed engine trace inexact, however,
+    # and must not be certified as an exhaustive successful exploration.
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0)
     result = coord.explore(
         worker_set=ThreadLauncher([_locker(ROW1, ROW2), _locker(ROW1, ROW2)]),
         setup=lambda: None,
         invariant=lambda: True,
     )
-    assert result.ok, f"unexpected {result.failure_kind}: {result.failure!r}"
+    assert not result.ok
+    assert result.failure_kind == "nondeterministic"

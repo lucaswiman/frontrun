@@ -81,6 +81,24 @@ def _resolve_target(target: str) -> object:
     return getattr(module, attr)
 
 
+def _reject_deferred_worker_result(result: object, target: str) -> None:
+    if inspect.isawaitable(result):
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+        kind = "an awaitable"
+    elif inspect.isasyncgen(result):
+        kind = "an async generator"
+    elif inspect.isgenerator(result):
+        result.close()
+        kind = "a generator"
+    else:
+        return
+    raise TypeError(
+        f"process worker {target} returned {kind}; deferred workers are not supported with execution='process'"
+    )
+
+
 def main() -> None:
     socket_path = os.environ["FRONTRUN_XPROC_SOCKET"]
     worker_id = int(os.environ["FRONTRUN_XPROC_WORKER_ID"])
@@ -98,17 +116,7 @@ def main() -> None:
         if fn is None:
             fn = _resolve_target(target)
         result = fn(*args)  # type: ignore[operator]
-        if inspect.isawaitable(result):
-            # Avoid both the false-success verdict and an unawaited-coroutine
-            # warning. Cross-process scheduling is sync-only: there is no async
-            # scheduler in the child that could make this execution meaningful.
-            close = getattr(result, "close", None)
-            if callable(close):
-                close()
-            raise TypeError(
-                f"explore_processes() target {target!r} returned an awaitable; "
-                "async workers are not supported with execution='process'"
-            )
+        _reject_deferred_worker_result(result, repr(target))
 
     if reuse:
         # Install interception once (it is global and shares the persistent

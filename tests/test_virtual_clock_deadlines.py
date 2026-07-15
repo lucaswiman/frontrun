@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import threading
 
 import pytest
 
+from frontrun._dpor_core.clock_port import VirtualClockPort
 from frontrun._virtual_clock import DeadlineCoordinator, VirtualClock
 
 
@@ -119,3 +121,20 @@ def test_deadline_coordinator_rejects_nan_and_never_autojumps_to_infinity() -> N
 
     deadlines.cancel_sleep(1)
     assert not deadlines.is_sleeping(1)
+
+
+def test_timed_wait_give_up_callback_runs_under_engine_lock() -> None:
+    """Scheduler waiter bookkeeping shares the PyO3 engine lock."""
+    engine_lock = threading.Lock()
+    callback_lock_states: list[bool] = []
+    port = VirtualClockPort(
+        condition=threading.Condition(),
+        engine_lock=engine_lock,
+        on_give_up=lambda _actor_id: callback_lock_states.append(engine_lock.locked()),
+    )
+    clock = VirtualClock()
+    port.add_timed_wait(1, timeout=1.0, clock=clock)
+
+    port.give_up_timed_wait(1)
+
+    assert callback_lock_states == [True]

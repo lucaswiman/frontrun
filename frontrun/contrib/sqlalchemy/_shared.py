@@ -56,11 +56,11 @@ def wrap_sync_thread(
     engine: Any,
     current_connection: contextvars.ContextVar[Any],
     lock_timeout: int | None,
-    fn: Callable[[T], None],
-) -> Callable[[T], None]:
+    fn: Callable[[T], Any],
+) -> Callable[[T], Any]:
     """Return a thread wrapper that manages a per-thread SQLAlchemy connection."""
 
-    def wrapper(state: T) -> None:
+    def wrapper(state: T) -> Any:
         from frontrun._cooperative import suppress_sync_reporting, unsuppress_sync_reporting
 
         # Suppress cooperative lock sync events during connection setup
@@ -120,7 +120,7 @@ def wrap_sync_thread(
         exc_info: tuple[type[BaseException], BaseException, object] | tuple[None, None, None] = (None, None, None)
         with _current_connection_scope(current_connection, conn):
             try:
-                fn(state)
+                return fn(state)
             except BaseException:
                 exc_info = sys.exc_info()  # type: ignore[assignment]
                 raise

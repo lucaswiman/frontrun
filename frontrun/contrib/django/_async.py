@@ -71,5 +71,6 @@ async def async_django_dpor(
         detect_sql=detect_sql,
         trace_packages=resolved_packages,
         lock_timeout=lock_timeout,
+        _bridge_sync_io=True,
         **kwargs,
     )

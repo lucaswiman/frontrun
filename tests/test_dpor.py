@@ -489,6 +489,21 @@ class TestWakeupTreeEngine:
 
 
 class TestExploreDpor:
+    def test_worker_timeout_error_is_not_scheduler_timeout(self) -> None:
+        """A user TimeoutError is a worker failure, not an inconclusive harness timeout."""
+
+        def fails(_state: object) -> None:
+            raise TimeoutError("user timeout failure")
+
+        with pytest.raises(TimeoutError, match="user timeout failure"):
+            frontrun.explore(
+                setup=object,
+                workers=[fails],
+                invariant=lambda _state: True,
+                detect_io=False,
+                reproduce_on_failure=0,
+            )
+
     def test_worker_system_exit_is_not_silent_success(self) -> None:
         """A worker that exits must not be marked done as a successful run."""
 

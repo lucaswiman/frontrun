@@ -34,6 +34,35 @@ def any_async(fns: Iterable[Any]) -> bool:
     return any(_is_async_callable(fn) for fn in fns if callable(fn))
 
 
+def _reject_deferred_sync_result(  # pyright: ignore[reportUnusedFunction]  # imported by sync strategy runners
+    result: Any, worker: Any, *, role: str = "sync worker"
+) -> Any:
+    """Fail closed when a synchronous callback returns unexecuted code."""
+    if inspect.isawaitable(result):
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+        kind = "an awaitable"
+    elif inspect.isasyncgen(result):
+        kind = "an async generator"
+    elif inspect.isgenerator(result):
+        result.close()
+        kind = "a generator"
+    else:
+        return result
+    name = getattr(worker, "__qualname__", None) or repr(worker)
+    raise TypeError(
+        f"explore(): {role} {name} returned {kind}; its deferred body was not executed. "
+        "Use an `async def` worker with execution='thread' for awaitables, and execute generator bodies inside the "
+        "worker before returning."
+    )
+
+
+def _call_sync_setup(setup: Callable[[], Any]) -> Any:
+    """Call a synchronous setup hook and reject a deferred body."""
+    return _reject_deferred_sync_result(setup(), setup, role="setup")
+
+
 def check_invariant(invariant: Callable[[Any], Any], state: Any) -> tuple[bool, str | None]:
     """Evaluate *invariant* on *state*, tolerating ``AssertionError``.
 
@@ -43,7 +72,8 @@ def check_invariant(invariant: Callable[[Any], Any], state: Any) -> tuple[bool, 
     slot so callers can fold it into their result's ``explanation``.
     """
     try:
-        return (not invariant(state), None)
+        value = _reject_deferred_sync_result(invariant(state), invariant, role="invariant")
+        return (not value, None)
     except AssertionError as exc:
         return (True, str(exc))
 
@@ -140,7 +170,8 @@ class InterleavingResult:
         failure_kind: Structured category of the failure for
             ``execution="process"`` — one of ``"invariant"``,
             ``"worker_error"``, ``"deadlock"``, ``"timeout"``,
-            ``"nondeterministic"``, ``"step_limit"``.  ``None`` when the
+            ``"nondeterministic"``, ``"step_limit"``, ``"branch_limit"``.
+            ``None`` when the
             invariant held or for thread/async execution (which encodes the
             failure in ``explanation`` only).
     """
@@ -211,7 +242,7 @@ def compute_serializable_states(
         state_hash = repr
     valid: set[Any] = set()
     for perm in permutations(range(len(thread_funcs))):
-        s = setup()
+        s = _call_sync_setup(setup)
         for i in perm:
             thread_funcs[i](s)
         valid.add(state_hash(s))
@@ -231,7 +262,7 @@ async def compute_serializable_states_async(
         state_hash = repr
     valid: set[Any] = set()
     for perm in permutations(range(len(task_funcs))):
-        s = setup()
+        s = _call_sync_setup(setup)
         for i in perm:
             await task_funcs[i](s)
         valid.add(state_hash(s))

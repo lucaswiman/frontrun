@@ -55,6 +55,8 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         clock_actor_id: int | None = None,
         detect_sql: bool = False,
         detect_redis: bool = False,
+        bridge_sync_io: bool = False,
+        expected_deadlock: bool = False,
     ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
         self._condition = _real_asyncio_condition()
@@ -68,6 +70,8 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         self.virtual_clock = virtual_clock
         self._clock_actor_id = clock_actor_id
         self._deadlines = DeadlineCoordinator()
+        self._naturally_timeout_blocked: set[int] = set()
+        self._bridge_sync_io = bridge_sync_io
         self._sleepers: dict[int, float] = {}
         # Recorded actor entries reached before any deadline was registered
         # (drift): the owed advance is performed at the next registration.
@@ -75,9 +79,11 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         self._event_blocked: set[int] = set()  # pyright: ignore[reportIncompatibleVariableOverride]
         self._detect_sql = detect_sql
         self._detect_redis = detect_redis
+        self._expected_deadlock = expected_deadlock
         self._row_lock_registry = RowLockRegistry()
         self._active_row_locks = self._row_lock_registry._active_row_locks
         self._row_lock_waiters: dict[str, list[tuple[int, asyncio.Future[None]]]] = {}
+        self._lock_blocked: dict[int, int] = {}
         self._current_task: int | None = None
         self._current_task_consumed = False
         if schedule:
@@ -94,11 +100,13 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                 self._current_task = first
         # Stubs so the patched cooperative asyncio.Lock can call
         # engine.report_sync / execution.block_thread without crashing during
-        # replay. _lock_blocked mirrors the DPOR scheduler's attribute so the
-        # same lock-acquire code path works unmodified.
+        # replay using the same lock-acquire code path.
         self.engine: Any = ReplayEngine()
         self.execution: Any = ReplayExecution()
-        self._lock_blocked: dict[int, int] = {}
+
+    def _blocked_tasks(self) -> set[int]:
+        """Tasks unavailable on cooperative primitives during replay."""
+        return self._event_blocked | self._lock_blocked.keys()
 
     def _extend_schedule(self) -> bool:
         return extend_replay_schedule(
@@ -106,18 +114,33 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
             self._replay_index,
             self._replay_max_ops,
             self._num_replay_tasks,
-            self._tasks_done | self._event_blocked,
+            self._tasks_done | self._blocked_tasks(),
         )
 
     def _on_clock_sleep(self, event: WakeEvent) -> None:
         """Sleep-arm of a replay clock advance: drop the sleeper (no engine)."""
         self._sleepers.pop(event.actor_id, None)
 
+    def on_task_suspended(self, task_id: int) -> None:
+        if self._deadlines.in_timed_wait(task_id):
+            self._naturally_timeout_blocked.add(task_id)
+            self.execution.block_thread(task_id)
+        elif self._bridge_sync_io:
+            self._event_blocked.add(task_id)
+            self._notify_waiters_soon()
+
+    def on_task_resumed(self, task_id: int) -> None:
+        self._event_blocked.discard(task_id)
+        if task_id in self._naturally_timeout_blocked:
+            self._naturally_timeout_blocked.discard(task_id)
+            self.execution.unblock_thread(task_id)
+
     def _on_clock_timeout(self, event: WakeEvent) -> None:
         """Timeout-arm of a replay clock advance: fire the token, scrub blocked sets."""
         fire = getattr(event.token, "fire", None)
         if fire is not None:
             fire()
+        self._naturally_timeout_blocked.discard(event.actor_id)
         self._lock_blocked.pop(event.actor_id, None)
         self._event_blocked.discard(event.actor_id)
 
@@ -146,7 +169,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                 self._replay_schedule,
                 self._replay_index,
                 self._extend_schedule,
-                self._tasks_done | self._event_blocked,
+                self._tasks_done | self._blocked_tasks(),
             )
             if next_actor is not None and self._clock_actor_id is not None and next_actor == self._clock_actor_id:
                 # Recorded clock-actor step: advance the clock and keep going.
@@ -161,7 +184,18 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         self._current_task = next_actor
         self._current_task_consumed = False
         if next_actor is None:
-            self._finished = True
+            blocked = self._blocked_tasks() - self._tasks_done
+            if (
+                self._expected_deadlock
+                and blocked
+                and len(self._tasks_done | blocked) == self._num_replay_tasks
+                and not self._deadlines.has_pending()
+            ):
+                description = "all unfinished replay tasks are blocked on modeled cooperative primitives"
+                self._error = DeadlockError(f"Replay deadlock: {description}", description)
+                self._on_error_set()
+            else:
+                self._finished = True
 
     async def sleep_until(self, task_id: int, deadline: float | None = None, *, duration: float | None = None) -> None:
         """Replay counterpart of ``AsyncDporScheduler.sleep_until``."""
@@ -205,6 +239,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                             self._error = SchedulerTimeoutError(
                                 f"Replay deadlock: task {task_id} sleeping until t={deadline} was never woken"
                             )
+                            self._on_error_set()
                             self._condition.notify_all()
                             return
                     while not (self._finished or self._error) and self._current_task != task_id:
@@ -218,6 +253,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                             self._error = SchedulerTimeoutError(
                                 f"Replay deadlock: task {task_id} woke from sleep but was never scheduled"
                             )
+                            self._on_error_set()
                             self._condition.notify_all()
                             return
                     if not (self._finished or self._error):
@@ -274,6 +310,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         return False
 
     def _on_error_set(self) -> None:
+        _async_cooperative._wake_parked_async_primitive_waiters()
         for waiters in self._row_lock_waiters.values():
             for _task_id, future in waiters:
                 if not future.done():
@@ -285,7 +322,9 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         for res_id in resource_ids:
             lock_id = self._row_lock_registry._row_lock_int_id(res_id)
             while (holder := self._active_row_locks.get(res_id)) is not None and holder != task_id:
-                if graph is not None:
+                # Match exploration: a pending virtual timeout guarantees this
+                # wait can be cancelled, so it cannot close a permanent cycle.
+                if graph is not None and not self._deadlines.in_timed_wait(task_id):
                     cycle = graph.add_waiting(task_id, lock_id, kind="row_lock")
                     if cycle is not None:
                         graph.remove_waiting(task_id, lock_id, kind="row_lock")

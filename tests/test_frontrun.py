@@ -69,6 +69,49 @@ def test_wrap_sync_thread_exit_receives_exception_info_on_lock_timeout_failure()
     assert exit_args[2] is not None, "Expected a traceback, got None"
 
 
+def test_sqlalchemy_sync_wrapper_preserves_deferred_worker_return():
+    """The core runner must see coroutine/generator returns and fail closed."""
+    import contextvars
+    from unittest.mock import MagicMock
+
+    from frontrun.contrib.sqlalchemy._shared import wrap_sync_thread
+
+    conn = MagicMock()
+    conn_ctx = MagicMock()
+    conn_ctx.__enter__ = MagicMock(return_value=conn)
+    conn_ctx.__exit__ = MagicMock(return_value=False)
+    engine = MagicMock()
+    engine.connect.return_value = conn_ctx
+    current_connection: contextvars.ContextVar[object] = contextvars.ContextVar("test_deferred_conn")
+    deferred = object()
+
+    wrapper = wrap_sync_thread(engine, current_connection, lock_timeout=None, fn=lambda _state: deferred)
+
+    assert wrapper(None) is deferred
+
+
+def test_django_sync_wrapper_preserves_deferred_worker_return():
+    """Django connection cleanup must not discard the worker return value."""
+    from frontrun.contrib.django._shared import wrap_sync_thread
+
+    class Connection:
+        def close(self) -> None:
+            pass
+
+        def ensure_connection(self) -> None:
+            pass
+
+    deferred = object()
+    wrapper = wrap_sync_thread(
+        lambda _state: deferred,
+        connections={"default": Connection()},
+        db_alias="default",
+        lock_timeout=None,
+    )
+
+    assert wrapper(None) is deferred
+
+
 def test_sqlite3_custom_factory_traced():
     """sqlite3.connect(factory=CustomConnection) must still trace SQL."""
     import sqlite3

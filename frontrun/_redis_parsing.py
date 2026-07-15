@@ -66,6 +66,8 @@ class RedisAccessResult(NamedTuple):
 
 def _decode_arg(arg: object) -> object:
     """Normalize Redis byte arguments without losing arbitrary byte values."""
+    if isinstance(arg, memoryview):
+        arg = arg.tobytes()
     if isinstance(arg, (bytes, bytearray)):
         return bytes(arg).decode("utf-8", "surrogateescape")
     return arg

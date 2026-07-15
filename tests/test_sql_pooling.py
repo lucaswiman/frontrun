@@ -99,8 +99,9 @@ class TestResetConnectionState:
         # Next user of the connection gets a clean state
         reporter.reset_mock()
         _intercept_execute(cursor.execute, cursor, "SELECT * FROM users WHERE id = 1")
-        # SELECT reports table-level read + :seq read for phantom detection
-        assert reporter.call_count == 2
+        # SELECT reports database intent + table-level read + :seq read for
+        # phantom detection.
+        assert reporter.call_count == 3
 
     def test_reset_does_not_clear_insert_aliases_from_other_logical_sessions(self, reporter):
         """Pool reset is per-connection state; it must not wipe global INSERT alias tracking."""

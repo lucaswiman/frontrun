@@ -80,6 +80,38 @@ def test_explore_sync_dpor_passes_for_correct_code():
     assert result.property_holds
 
 
+def test_explore_rejects_deferred_setup_body() -> None:
+    """A sync exploration must not certify without executing async setup."""
+
+    async def setup() -> Counter:
+        return Counter()
+
+    with pytest.raises(TypeError, match="setup.*deferred body was not executed"):
+        frontrun.explore(
+            setup=setup,
+            workers=[lambda _state: None],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            max_executions=1,
+        )
+
+
+def test_explore_rejects_deferred_invariant_body() -> None:
+    """An async invariant result must not be treated as truthy without awaiting."""
+
+    async def invariant(_state: Counter) -> bool:
+        return False
+
+    with pytest.raises(TypeError, match="invariant.*deferred body was not executed"):
+        frontrun.explore(
+            setup=Counter,
+            workers=[lambda _state: None],
+            invariant=invariant,
+            strategy="dpor",
+            max_executions=1,
+        )
+
+
 def test_explore_sync_random_strategy():
     """explore(strategy='random') finds the lost-update race."""
     result = frontrun.explore(
@@ -746,6 +778,63 @@ def test_explore_accepts_plain_callable_returning_awaitable():
         )
     )
     assert result.property_holds, result.explanation
+
+
+def test_explore_all_plain_awaitable_workers_fail_closed() -> None:
+    """An ambiguous all-plain worker list must not discard returned coroutines."""
+
+    def returns_awaitable(c: AsyncCounter):
+        return c.increment()
+
+    with pytest.raises(TypeError, match="returned an awaitable"):
+        frontrun.explore(
+            setup=AsyncCounter,
+            workers=[returns_awaitable],
+            invariant=lambda c: c.value == 1,
+            reproduce_on_failure=0,
+        )
+
+
+@pytest.mark.parametrize("strategy", ["dpor", "random"])
+def test_async_worker_baseexception_is_not_certified_as_a_pass(strategy: str) -> None:
+    async def exits(_state: object) -> None:
+        raise GeneratorExit("worker exited")
+
+    limits = {"max_executions": 1, "reproduce_on_failure": 0} if strategy == "dpor" else {"max_attempts": 1}
+    with pytest.raises(GeneratorExit, match="worker exited"):
+        asyncio.run(
+            frontrun.explore(
+                setup=object,
+                workers=[exits],
+                invariant=lambda _state: True,
+                strategy=strategy,
+                **limits,
+            )
+        )
+
+
+def test_tiny_positive_total_timeout_still_runs_one_execution() -> None:
+    result = frontrun.explore(
+        setup=object,
+        workers=[lambda _state: None],
+        invariant=lambda _state: False,
+        total_timeout=1e-12,
+        reproduce_on_failure=0,
+    )
+
+    assert result.num_explored == 1
+    assert not result.property_holds
+
+
+def test_random_rejects_zero_attempts() -> None:
+    with pytest.raises(ValueError, match="max_attempts must be positive"):
+        frontrun.explore(
+            setup=object,
+            workers=[lambda _state: None],
+            invariant=lambda _state: True,
+            strategy="random",
+            max_attempts=0,
+        )
 
 
 def test_explore_process_rejects_async_workers_in_mixed_list_eagerly():

@@ -218,6 +218,12 @@ def _virtual_timeout_impl(value: float | None, *, at: bool) -> Any:
         return real(value)
     if value is None:
         return _VirtualAsyncTimeoutContext(scheduler, task_id, None, deadline=None)
+    if at and isinstance(value, _VirtualLoopDeadline) and value.clock is clock:
+        # timeout_at(cm.when()): the value carries its exact virtual deadline.
+        # Recover it rather than round-tripping through loop.time(), which
+        # would smear real wall drift into the virtual deadline (the loop
+        # clock stays real while explored code consumes virtual time).
+        return _VirtualAsyncTimeoutContext(scheduler, task_id, value, deadline=value.virtual_deadline)
     loop_now = asyncio.get_running_loop().time()
     if at:
         when = value

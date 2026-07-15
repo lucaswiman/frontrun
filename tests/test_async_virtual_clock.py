@@ -259,12 +259,15 @@ def test_async_random_schedule_exhaustion_still_advances_virtual_sleep(clock: st
     is exhausted must still advance the clock to its deadline (mirrors the
     sync max_ops regression) instead of returning with the clock frozen."""
 
+    observed_elapsed: list[float] = []
+
     async def worker(s: _SleepObserver) -> None:
         for _ in range(300):
             await asyncio.sleep(0)  # burn the schedule (max_ops=10)
         s.start = time.monotonic()
         await asyncio.sleep(120.0)
         s.end = time.monotonic()
+        observed_elapsed.append(s.end - s.start)
 
     result = asyncio.run(
         frontrun.explore(
@@ -279,7 +282,10 @@ def test_async_random_schedule_exhaustion_still_advances_virtual_sleep(clock: st
             timeout_per_run=2.0,
         )
     )
-    assert result.property_holds, result.explanation
+    assert observed_elapsed == [pytest.approx(120.0)]
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "max_ops" in result.explanation
 
 
 def test_async_random_explored_clock_can_fire_timer_early() -> None:
@@ -736,6 +742,40 @@ def test_async_timeout_contexts_share_exact_virtual_deadline() -> None:
         assert result.property_holds, result.explanation
 
     assert len(set(orders)) == 1, f"timeout firing order flipped across identical runs: {orders}"
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
+def test_task_crash_is_not_masked_by_peer_in_virtual_wait_for() -> None:
+    """The first worker error must abort peers parked in managed virtual waits."""
+
+    async def wait_forever(_state: dict[str, object]) -> None:
+        pending = asyncio.get_running_loop().create_future()
+        await asyncio.wait_for(pending, timeout=10.0)
+
+    async def crash(_state: dict[str, object]) -> None:
+        raise RuntimeError("boom beside virtual timeout")
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=dict,
+            workers=[wait_forever, crash],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            deadlock_timeout=0.1,
+            timeout_per_run=0.5,
+            reproduce_on_failure=2,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.counterexample == [0, 1]
+    assert result.explanation is not None
+    assert "RuntimeError: boom beside virtual timeout" in result.explanation
+    assert result.reproduction_attempts == 2
+    assert result.reproduction_successes == 2
 
 
 @pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="asyncio.timeout requires Python 3.11+")
@@ -1551,6 +1591,53 @@ def test_async_event_wait_with_virtual_sleeper_autojumps() -> None:
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert wall_elapsed < 4.0, f"event+sleeper took {wall_elapsed:.1f}s (autojump stall?)"
+
+
+def test_async_autojump_drains_unbounded_ready_callback_chain() -> None:
+    """A live call_soon chain must win before its wait_for timeout fires."""
+
+    class State:
+        def __init__(self) -> None:
+            self.future: asyncio.Future[None] | None = None
+            self.ok = False
+
+    async def waiter(state: State) -> None:
+        state.future = asyncio.get_running_loop().create_future()
+        await asyncio.wait_for(state.future, 10.0)
+        # Once the ready chain resolves the future, a real virtual deadline
+        # still needs to autojump so this also guards eventual clock progress.
+        await asyncio.sleep(1.0)
+        state.ok = True
+
+    async def resolver(state: State) -> None:
+        while state.future is None:
+            await asyncio.sleep(0)
+        loop = asyncio.get_running_loop()
+
+        def hop(remaining: int) -> None:
+            if remaining:
+                loop.call_soon(hop, remaining - 1)
+            else:
+                assert state.future is not None
+                state.future.set_result(None)
+
+        loop.call_soon(hop, 20)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, resolver],
+            invariant=lambda state: state.ok,
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            reproduce_on_failure=0,
+            detect_io=False,
+        )
+    )
+
+    assert result.property_holds, result.explanation
+    assert result.num_explored == 1
 
 
 def test_async_queue_get_deadlock_detected_exactly() -> None:

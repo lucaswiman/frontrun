@@ -63,6 +63,7 @@ from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun.cli import require_active as _require_frontrun_env
 from frontrun.common import (
     InterleavingResult,
+    _call_sync_setup,
     check_invariant,
     check_serializability_violation,
 )

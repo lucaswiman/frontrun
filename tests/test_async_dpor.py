@@ -8,14 +8,128 @@ as scheduling granularity.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
 import frontrun
 from frontrun.cli import require_active
+from frontrun.common import InterleavingResult
 
 _async_global_counter = 0
 _async_global_augmented = 0
+
+
+@pytest.mark.parametrize(
+    ("bridge_sync_io", "expected_calls"),
+    [
+        (False, ["async-patch", "async-unpatch"]),
+        (True, ["sync-patch", "async-patch", "async-unpatch", "sync-unpatch"]),
+    ],
+)
+def test_async_sql_scopes_sync_driver_patching_to_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+    bridge_sync_io: bool,
+    expected_calls: list[str],
+) -> None:
+    """Only adapters that bridge through sync workers patch sync SQL drivers."""
+    import frontrun.async_dpor as async_dpor
+
+    require_active("test_async_sql_scopes_sync_driver_patching_to_bridge")
+    calls: list[str] = []
+    monkeypatch.setattr(async_dpor, "_sql_async_available", True)
+    monkeypatch.setattr(async_dpor, "patch_sql", lambda: calls.append("sync-patch"))
+    monkeypatch.setattr(async_dpor, "unpatch_sql", lambda: calls.append("sync-unpatch"))
+    monkeypatch.setattr(async_dpor, "patch_sql_async", lambda: calls.append("async-patch"))
+    monkeypatch.setattr(async_dpor, "unpatch_sql_async", lambda: calls.append("async-unpatch"))
+
+    async def worker(_state: object) -> None:
+        return None
+
+    result = asyncio.run(
+        async_dpor._explore_async_dpor(
+            setup=object,
+            tasks=[worker],
+            invariant=lambda _state: True,
+            max_executions=1,
+            reproduce_on_failure=0,
+            detect_sql=True,
+            _bridge_sync_io=bridge_sync_io,
+        )
+    )
+
+    assert result.property_holds, result.explanation
+    assert calls == expected_calls
+
+
+def test_concurrent_async_exploration_is_rejected_before_global_patching() -> None:
+    """A losing concurrent run must not unpatch the active run's primitives."""
+    from frontrun._async_cooperative import _CooperativeAsyncEvent, _CooperativeAsyncLock
+
+    started = threading.Event()
+    release = threading.Event()
+    first_result: list[object] = []
+    first_errors: list[BaseException] = []
+
+    class State:
+        patches_intact = False
+
+    async def holding_worker(state: State) -> None:
+        started.set()
+        while not release.is_set():
+            await asyncio.sleep(0)
+        state.patches_intact = asyncio.Event is _CooperativeAsyncEvent and asyncio.Lock is _CooperativeAsyncLock
+
+    def run_first() -> None:
+        try:
+            first_result.append(
+                asyncio.run(
+                    frontrun.explore(
+                        setup=State,
+                        workers=[holding_worker],
+                        invariant=lambda state: state.patches_intact,
+                        strategy="dpor",
+                        max_executions=1,
+                        timeout_per_run=30.0,
+                        deadlock_timeout=0.5,
+                        reproduce_on_failure=0,
+                        detect_io=False,
+                    )
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001
+            first_errors.append(exc)
+
+    first = threading.Thread(target=run_first)
+    first.start()
+    assert started.wait(timeout=2.0)
+    try:
+
+        async def no_op(_state: object) -> None:
+            return None
+
+        with pytest.raises(RuntimeError, match="concurrent async exploration"):
+            asyncio.run(
+                frontrun.explore(
+                    setup=object,
+                    workers=[no_op],
+                    invariant=lambda _state: True,
+                    strategy="dpor",
+                    max_executions=1,
+                    reproduce_on_failure=0,
+                    detect_io=False,
+                )
+            )
+    finally:
+        release.set()
+        first.join(timeout=3.0)
+
+    assert not first.is_alive()
+    assert first_errors == []
+    assert len(first_result) == 1
+    result = first_result[0]
+    assert isinstance(result, InterleavingResult)
+    assert result.property_holds, result.explanation
 
 
 class TestAsyncDporBasic:

@@ -8,12 +8,14 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Generator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, call
 
 import pytest
 
 import frontrun._sql_cursor as sql_cursor_mod
+import frontrun._sql_endpoint_suppression as endpoint_suppression
 from frontrun._io_detection import _io_tls, set_io_reporter
 from frontrun._sql_cursor import (
     _ORIGINAL_METHODS,
@@ -24,6 +26,7 @@ from frontrun._sql_cursor import (
     patch_sql,
     unpatch_sql,
 )
+from frontrun._sql_endpoint_suppression import clear_permanent_suppressions
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -76,6 +79,13 @@ def _make_db() -> sqlite3.Connection:
     return conn
 
 
+def test_ipv6_peer_resource_id_matches_preload_format() -> None:
+    """Python endpoint suppression must use the Rust preload IPv6 identity."""
+    assert endpoint_suppression._socket_resource_id_from_peer(("::1", 5432, 0, 0)) == (
+        "socket:[0000:0000:0000:0000:0000:0000:0000:0001]:5432"
+    )
+
+
 def _make_fresh_db() -> sqlite3.Connection:
     """Create a fresh in-memory db, bypassing any patching to avoid noise during setup."""
     orig_connect = getattr(sql_cursor_mod, "_get_orig_sqlite3_connect", lambda: None)()
@@ -101,8 +111,10 @@ def _make_fresh_db() -> sqlite3.Connection:
 @pytest.fixture(autouse=True)
 def _cleanup_sql_patch() -> Generator[None, None, None]:
     """Ensure SQL patching is cleaned up between tests."""
+    clear_permanent_suppressions()
     yield
     unpatch_sql()
+    clear_permanent_suppressions()
     _ORIGINAL_METHODS.clear()
     _PATCHES.clear()
     _suppress_tids.clear()
@@ -126,6 +138,83 @@ def test_patch_patches_sqlite3_connect() -> None:
     orig_connect = sqlite3.connect
     patch_sql()
     assert sqlite3.connect is not orig_connect
+
+
+def test_patch_wraps_pymysql_connection_transaction_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A physical PyMySQL commit/rollback/close must update modeled state."""
+
+    class Cursor:
+        def execute(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def executemany(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    class Connection:
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    originals = (Connection.commit, Connection.rollback, Connection.close)
+
+    def fake_import(name: str) -> Any:
+        if name == "pymysql.cursors":
+            return SimpleNamespace(Cursor=Cursor)
+        if name == "pymysql":
+            return SimpleNamespace(paramstyle="pyformat")
+        if name == "pymysql.connections":
+            return SimpleNamespace(Connection=Connection)
+        raise ImportError(name)
+
+    monkeypatch.setattr(sql_cursor_mod.importlib, "import_module", fake_import)
+    patch_sql()
+
+    assert Connection.commit is not originals[0]
+    assert Connection.rollback is not originals[1]
+    assert Connection.close is not originals[2]
+
+    unpatch_sql()
+    assert (Connection.commit, Connection.rollback, Connection.close) == originals
+
+
+def test_failed_patched_connect_does_not_hide_later_socket_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Connect-time TID suppression must be unwound even when the driver fails."""
+
+    class Cursor:
+        def execute(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def executemany(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    class Connection:
+        pass
+
+    def fail_connect(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("database unavailable")
+
+    driver = SimpleNamespace(connect=fail_connect)
+    extensions = SimpleNamespace(cursor=Cursor, connection=Connection)
+
+    def fake_import(name: str) -> Any:
+        if name == "psycopg2":
+            return driver
+        if name == "psycopg2.extensions":
+            return extensions
+        raise ImportError(name)
+
+    monkeypatch.setattr(sql_cursor_mod.importlib, "import_module", fake_import)
+    patch_sql()
+
+    with pytest.raises(OSError, match="database unavailable"):
+        driver.connect()
+
+    assert not is_tid_suppressed(threading.get_native_id())
 
 
 def test_patch_produces_traced_connection() -> None:
@@ -350,7 +439,8 @@ def test_reporter_called_with_correct_resource_id_format() -> None:
     log.clear()
     conn.execute("SELECT x FROM mytable")
 
-    assert all(r == "sql:mytable" or r.startswith("sql:mytable:") for r, _ in log.events)
+    assert all(r.startswith(("sql:__database__", "sql:mytable")) for r, _ in log.events)
+    assert any(r.startswith("sql:__database__") and k == "read" for r, k in log.events)
     assert any((r == "sql:mytable" or r.startswith("sql:mytable:")) and k == "read" for r, k in log.events)
     conn.close()
 
@@ -512,6 +602,7 @@ def test_suppress_tid_removed_after_execute() -> None:
     current_tid = threading.get_native_id()
     with _suppress_lock:
         assert current_tid not in _suppress_tids
+    assert not is_tid_suppressed(current_tid), "SQL must not hide later unrelated socket I/O on this worker"
 
 
 def test_is_tid_suppressed_false_for_unknown_tid() -> None:
@@ -573,7 +664,7 @@ def test_suppress_cleaned_on_exception() -> None:
 
 
 def test_suppress_not_set_when_no_tables_parsed() -> None:
-    """Suppression should not be activated when SQL has no parseable tables."""
+    """Opaque SQL reports a database write without activating endpoint suppression."""
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -582,7 +673,9 @@ def test_suppress_not_set_when_no_tables_parsed() -> None:
     conn.execute("PRAGMA journal_mode=WAL")
 
     assert getattr(_io_tls, "_sql_suppress", False) is False
-    assert len(log.events) == 0
+    assert len(log.events) == 1
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "write"
     conn.close()
 
 
@@ -790,7 +883,7 @@ def test_executemany_via_cursor_works() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_non_string_operation_skips_parsing() -> None:
+def test_non_string_operation_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
 
@@ -801,13 +894,13 @@ def test_non_string_operation_skips_parsing() -> None:
     class FakeCursor:
         pass
 
-    # Call _intercept_execute with bytes — should skip parsing and call original
+    # Bytes cannot be parsed, so conservatively report a database write.
     _intercept_execute(fake_original, FakeCursor(), b"SELECT 1")
     fake_original.assert_called_once()
-    assert len(log.events) == 0
+    assert log.events == [("sql:__database__", "write")]
 
 
-def test_unparseable_sql_falls_through() -> None:
+def test_unparseable_sql_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -818,14 +911,16 @@ def test_unparseable_sql_falls_through() -> None:
     with pytest.raises(Exception):  # noqa: B017
         cur.execute("XYZZY this is not valid SQL at all blorp")
 
-    assert len(log.events) == 0
+    assert len(log.events) == 1
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "write"
     assert getattr(_io_tls, "_sql_suppress", False) is False
     with _suppress_lock:
         assert threading.get_native_id() not in _suppress_tids
     conn.close()
 
 
-def test_empty_sql_string_falls_through() -> None:
+def test_empty_sql_string_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -839,13 +934,15 @@ def test_empty_sql_string_falls_through() -> None:
     except Exception:  # noqa: BLE001
         pass
 
-    # No table events should be reported for empty SQL
-    assert len(log.events) == 0
+    # No table is known, so the statement conservatively conflicts at database scope.
+    assert len(log.events) == 1
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "write"
     assert getattr(_io_tls, "_sql_suppress", False) is False
     conn.close()
 
 
-def test_pragma_not_reported() -> None:
+def test_pragma_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -853,7 +950,9 @@ def test_pragma_not_reported() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA journal_mode=WAL")
 
-    assert len(log.events) == 0
+    assert len(log.events) == 1
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "write"
     conn.close()
 
 
@@ -865,11 +964,11 @@ def test_create_table_reported() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE foo (x INTEGER)")
 
-    # DDL write + :seq write for phantom detection
-    assert len(log.events) == 2
-    resource_id, kind = log.events[0]
-    assert kind == "write"
-    assert resource_id.startswith("sql:foo")
+    # Database intent read + DDL write + :seq write for phantom detection.
+    assert len(log.events) == 3
+    assert log.events[0][0].startswith("sql:__database__")
+    assert log.events[0][1] == "read"
+    assert all(resource_id.startswith("sql:foo") and kind == "write" for resource_id, kind in log.events[1:])
     conn.close()
 
 
@@ -1106,7 +1205,7 @@ def test_intercept_execute_exception_cleanup() -> None:
         assert threading.get_native_id() not in _suppress_tids
 
 
-def test_intercept_execute_bytes_skips_parsing() -> None:
+def test_intercept_execute_bytes_reports_opaque_database_write() -> None:
     log = IOLog()
     set_io_reporter(log)
 
@@ -1118,7 +1217,7 @@ def test_intercept_execute_bytes_skips_parsing() -> None:
     _intercept_execute(original, fake_self, b"SELECT * FROM t")
 
     original.assert_called_once()
-    assert len(log.events) == 0
+    assert log.events == [("sql:__database__", "write")]
 
 
 # ---------------------------------------------------------------------------
@@ -1635,18 +1734,12 @@ def test_failed_data_statement_keeps_row_locks_from_earlier_statements() -> None
                 delattr(_io_tls, attr)
 
 
-def test_xproc_opaque_sql_conflicts_with_parsed_database_access() -> None:
-    """Process workers need a semantic fallback because LD_PRELOAD is scrubbed."""
-    from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id
+def test_opaque_sql_conflicts_with_parsed_database_access_in_process() -> None:
+    """Endpoint suppression must not hide opaque SQL from in-process DPOR."""
     from frontrun._sql_cursor import _report_sql_access
-
-    class ProcessProxy:
-        requires_semantic_io_fallback = True
 
     log = IOLog()
     set_io_reporter(log)
-    set_dpor_scheduler(ProcessProxy())
-    set_dpor_thread_id(0)
     try:
         assert _report_sql_access("EXECUTE prepared_update(1)", db_obj=object())
         opaque = list(log.events)
@@ -1654,12 +1747,37 @@ def test_xproc_opaque_sql_conflicts_with_parsed_database_access() -> None:
         assert _report_sql_access("SELECT * FROM accounts", db_obj=object())
         parsed = list(log.events)
     finally:
-        set_dpor_scheduler(None)
-        set_dpor_thread_id(None)
         set_io_reporter(None)
 
     assert ("sql:__database__", "write") in opaque
     assert ("sql:__database__", "read") in parsed
+
+
+def test_session_local_lock_timeout_does_not_create_database_conflict() -> None:
+    """Per-connection scheduler safety settings are not shared database state."""
+    from frontrun._sql_cursor import _report_sql_access
+
+    log = IOLog()
+    set_io_reporter(log)
+    try:
+        assert _report_sql_access("SET lock_timeout = '2000ms'", db_obj=object())
+    finally:
+        set_io_reporter(None)
+
+    assert log.events == []
+
+
+def test_non_string_sql_operation_uses_opaque_database_fallback() -> None:
+    from frontrun._sql_cursor import _report_sql_access
+
+    log = IOLog()
+    set_io_reporter(log)
+    try:
+        assert _report_sql_access(object(), db_obj=object())
+    finally:
+        set_io_reporter(None)
+
+    assert ("sql:__database__", "write") in log.events
 
 
 def test_zero_row_update_release_is_postgresql_only() -> None:
@@ -2116,3 +2234,94 @@ def test_acquire_pending_row_locks_with_opcode_scheduler_context() -> None:
         set_dpor_thread_id(None)
         _io_tls._pending_row_locks = []
         _io_tls._held_row_locks = set()
+
+
+def test_db_scope_registration_evicted_when_connection_collected():
+    """id()-keyed scopes must not outlive their connection.
+
+    A permanently retained id -> scope entry can be inherited by an unrelated
+    object that reuses the freed address, silently attaching the wrong database
+    scope to its accesses (missed-dependency direction).
+    """
+    import gc
+
+    from frontrun._sql_db_scope import _CONNECTION_DB_SCOPES, _register_connection_db_scope
+
+    class SlottedConn:
+        # No __dict__, like raw sqlite3.Connection: the id map is the sole carrier.
+        __slots__ = ("__weakref__",)
+
+    conn = SlottedConn()
+    key = id(conn)
+    scope = _register_connection_db_scope(conn, "sqlite-path:/tmp/frontrun-scope-evict.db")
+    assert _CONNECTION_DB_SCOPES.get(key) == scope
+
+    del conn
+    gc.collect()
+    assert key not in _CONNECTION_DB_SCOPES
+
+
+def test_postgres_scope_unifies_tcp_and_unix_aliases() -> None:
+    """One database must not split into independent scopes by connection alias."""
+    from frontrun._sql_db_scope import _normalize_db_identity
+
+    identities = {
+        _normalize_db_identity("mapping", driver, {"host": host, "port": 5432, "dbname": "app"})
+        for driver, host in (
+            ("psycopg", "localhost"),
+            ("psycopg2", "127.0.0.1"),
+            ("postgres", "/var/run/postgresql"),
+        )
+    }
+
+    assert len(identities) == 1
+
+
+def test_sqlite_scope_unifies_path_uri_and_symlink(tmp_path: Any) -> None:
+    """SQLite path spelling must not split accesses to one physical file."""
+    from frontrun._sql_db_scope import _normalize_db_identity
+
+    database = tmp_path / "database.sqlite3"
+    database.touch()
+    alias = tmp_path / "alias.sqlite3"
+    alias.symlink_to(database)
+
+    path_identity = _normalize_db_identity("sqlite", str(database))
+    uri_identity = _normalize_db_identity("sqlite", f"file:{alias}?mode=rwc", uri=True)
+
+    assert path_identity == uri_identity
+
+
+class TestLockTimeoutSuppression:
+    """frontrun-injected ``SET lock_timeout`` must be invisible — but only it."""
+
+    def _reports_for(self, operation: str) -> list[tuple[str, str]]:
+        from frontrun._io_detection import set_io_reporter
+        from frontrun._sql_cursor import _report_sql_access
+
+        reported: list[tuple[str, str]] = []
+        set_io_reporter(lambda res_id, kind: reported.append((res_id, kind)))
+        try:
+            _report_sql_access(operation)
+        finally:
+            set_io_reporter(None)
+        return reported
+
+    def test_bare_set_lock_timeout_is_suppressed(self) -> None:
+        assert self._reports_for("SET lock_timeout = '50ms'") == []
+        assert self._reports_for("SET LOCAL lock_timeout = '50ms'") == []
+
+    def test_compound_statement_starting_with_set_lock_timeout_still_reports(self) -> None:
+        """A prefix match must not swallow the statements riding behind it.
+
+        ``SET lock_timeout = '0'; UPDATE ...`` previously produced zero access
+        reports: the UPDATE became invisible to DPOR (missed write dependency,
+        false-certification direction).
+        """
+        reported = self._reports_for("SET lock_timeout = '0'; UPDATE accounts SET balance = balance - 1 WHERE id = 1")
+        assert reported, "compound statement was completely invisible to access tracking"
+
+    def test_compound_lock_timeout_with_opaque_statement_reports_database_write(self) -> None:
+        """Parser opacity after SET must not make the compound SQL invisible."""
+        reported = self._reports_for("SET lock_timeout = '0'; CALL refresh_accounts()")
+        assert reported == [("sql:__database__", "write")]

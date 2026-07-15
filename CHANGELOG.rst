@@ -6,6 +6,33 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+0.7.0 (2026-07-14)
+------------------
+
+* **Marker names now capture the full whitespace-free token.** A
+  ``# frontrun: <name>`` comment registers everything up to the next
+  whitespace (previously only the leading ``[A-Za-z0-9_]+`` run), so
+  hyphenated names like ``read-balance`` schedule correctly. Names that
+  relied on truncation (e.g. ``# frontrun: read,`` matching a schedule step
+  ``read``) change meaning on upgrade; the failure mode is a named
+  schedule-stall ``TimeoutError``, not a silent pass. Relatedly,
+  ``ThreadCoordinator`` (and every marker executor built on it) now raises
+  ``ValueError`` for schedule steps whose marker name is empty or contains
+  whitespace, since no comment could ever produce them.
+
+* **Marker-based execution fails closed on deferred worker bodies.** A sync
+  worker that returns a coroutine, generator, or async generator (e.g. a
+  ``lambda`` wrapping an ``async def`` call) now raises ``TypeError``
+  from ``TraceExecutor.run`` / ``explore_marker_interleavings`` instead of
+  reporting success without executing the body. Pass coroutine-returning
+  callables (``functools.partial(obj.method, arg)`` or the bound method) so
+  they are dispatched to the async executor.
+
+* ``explore_marker_interleavings`` and async random exploration now always
+  populate ``InterleavingResult.explanation`` when the invariant fails
+  (previously ``assert_holds()`` raised an empty ``AssertionError`` when the
+  invariant returned ``False`` without raising).
+
 * **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
   now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
   workers with DPOR and random strategies. Explored code reads scheduler time,
@@ -81,7 +108,11 @@ Unreleased
   indistinguishable from a sync one, so the mix cannot be rejected up front;
   instead the first execution now fails with a ``TypeError`` naming the sync
   worker and stating the fix (make every worker ``async def`` or a callable
-  returning an awaitable, or every worker a plain ``def``).
+  returning an awaitable, or every worker a plain ``def``). A plain callable
+  returning an awaitable remains supported when another ``async def`` worker
+  establishes the async execution model; an all-plain list is ambiguous, so a
+  returned awaitable now fails closed instead of being discarded by the sync
+  engine and falsely certified.
 
 * **Structured process-mode results.** ``CrossProcessResult`` is now exported
   at the top level (``frontrun.CrossProcessResult``) and carries a
@@ -123,9 +154,33 @@ Unreleased
   nested async trace filters; and replays task-crash counterexamples. SQL
   transaction state is tied to its owning connection, statement failures keep
   earlier row locks, and failed transaction-control statements take effect only
-  after physical success. Cross-process opaque SQL uses a conservative
-  database-wide conflict instead of relying on the unavailable preload fallback,
+  after physical success. Opaque and non-string SQL uses a conservative
+  database-wide conflict in every execution mode instead of relying on an
+  endpoint-level preload fallback,
   while Redis replay no longer invents boundaries for empty/keyless pipelines.
+  The final release audit also prevents random exploration from certifying
+  timed-out or ``max_ops``-truncated executions, propagates worker
+  ``SystemExit``, keeps async virtual timeouts live across bare-future awaits,
+  rejects overlapping async explorations before they can corrupt global patch
+  state, tracks Redis ``WATCH`` operations, completes PyMySQL transaction
+  teardown, limits SQL socket suppression to the database endpoint, and
+  carries async Django's synchronous-driver reports across its worker-thread
+  bridge so DPOR can find ORM races instead of serializing them away. Process
+  relays publish access traces before the corresponding observable grant, so
+  OS socket-arrival races cannot reorder a replay trace. SQL endpoint identity
+  now matches preload reporting for IPv6 peers, and generic async SQL avoids
+  double-intercepting synchronous driver work on free-threaded Python. Redis
+  ``MOVE``, ``COPY ... DB``, ``MIGRATE``, and ``SWAPDB`` now report destination
+  database/server dependencies; ``FLUSHALL`` conflicts across all databases on
+  its server; byte and ``memoryview`` command/key values retain stable semantic
+  identity; and redis-py Pub/Sub subscriptions, patterns, unsubscriptions, and
+  server introspection use a conservative server scope. Worker failures cancel
+  parked async peers without masking the original error, cooperative exact
+  and mixed Event/Lock deadlocks replay, non-cancellation ``BaseException``
+  subclasses and user-raised ``TimeoutError`` propagate without being mistaken
+  for harness timeouts,
+  positive total budgets always run at least one execution, invalid zero limits
+  are rejected, and process workers cannot silently return unexecuted generators.
 
 * **Virtual-clock fixes.** User subclasses of ``datetime.datetime`` /
   ``datetime.date`` keep stdlib semantics under a virtual clock (the shims now
@@ -133,21 +188,53 @@ Unreleased
   class). Async ``asyncio.timeout`` deadlines fire at exact virtual times,
   ``asyncio.wait_for`` on a bare future is a schedulable wait, and
   ``Condition.wait_for`` timeouts behave consistently across supported Python
-  versions.
+  versions. A task that re-entered a timed wait immediately after a completed
+  ``wait_for`` no longer loses the deferred clock advance owed to its new
+  deadline (previously a correct program could stall for ``timeout_per_run``
+  wall seconds and be reported as an inconclusive failure), and
+  ``asyncio.timeout_at(cm.when())`` recovers the exact virtual deadline
+  instead of smearing real wall-clock drift into it.
 
 * **Replay fixes.** Replaying a counterexample now reproduces exact deadlocks
   (a replayed schedule that ends in the discovered deadlock no longer aborts
   the replay machinery) and timed-wait expiries under IO-anchored replay, so
   ``reproduce_on_failure`` statistics stay meaningful for deadlock-, timeout-,
-  and task-crash-shaped counterexamples. Timed-out replays never return partial
-  state for invariant evaluation.
+  and task-crash-shaped counterexamples, including peers parked on cooperative
+  Event/Queue/Condition primitives. Timed-out replays never return partial state
+  for invariant evaluation.
 
 * **DPOR correctness.** Accesses after ``await`` are now attributed before
   scheduling successors, ``asyncio.Lock`` / event state races replay
   consistently, async Redis commands create post-command scheduling boundaries
-  for TOCTOU races, SQL row-lock schedules stay exact without hiding row data
-  races, and pure-lock deadlocks are found reliably across supported Python
-  versions.
+  for TOCTOU races, and pure-lock deadlocks are found reliably across supported
+  Python versions. Cross-process modeled row-lock contention now fails closed as
+  ``failure_kind="nondeterministic"`` instead of returning an engine schedule
+  that may differ from physical statement order; exact protocol support remains
+  deferred. The engine now tracks both the earliest and latest synced-I/O
+  access per (thread, object, kind): previously only the first access
+  survived, so a worker that wrote a row and read it back
+  (``UPDATE ...; SELECT ...``) lost the read-back from race detection and
+  DPOR could certify a false pass — with ``exhausted=True`` — on the common
+  write-then-read-back shape whose "both writes land before either read-back"
+  interleaving violates the invariant (thread and process modes alike; the
+  exhaustive strategy already found it). Async Queue wakeups now end the
+  releasing task's segment, and lock-release vector clocks publish only the
+  pre-release prefix, so post-wake races remain discoverable and exactly
+  replayable. Async Condition wake eligibility is updated atomically with the
+  engine unblock, preventing exact replay from skipping a newly runnable task.
+
+* **Final proof-integrity hardening.** Sync setup and invariant callbacks, plus
+  Django and SQLAlchemy sync wrappers, now reject deferred results instead of
+  certifying work that was never executed. Timed-out async random runs close
+  worker coroutines reliably on Python 3.10 instead of leaking them into later
+  explorations. Virtual-clock autojump drains the event loop's complete ready
+  chain rather than stopping after four callbacks.
+  Redis tracking supports coredis 6 command requests, commits ``SELECT`` state
+  only after successful commands and shares it across a pool, and resolves Unix
+  socket aliases to their TCP server identity or fails closed. SQL database
+  identity now conservatively canonicalizes driver aliases, SQLite paths and
+  symlinks, while compound statements beginning with ``SET lock_timeout`` no
+  longer suppress an opaque database-wide access later in the statement.
 
 0.6.0 (2026-06-30)
 ------------------

@@ -248,7 +248,7 @@ _EVAL_CMDS: frozenset[str] = frozenset({"EVAL", "EVALSHA", "EVAL_RO", "EVALSHA_R
 # resource (intent-lock pattern) so DPOR explores the racing order against
 # concurrent key traffic.  See the keyspace intent-lock note in
 # ``_redis_parsing.parse_redis_access``.
-_KEYSPACE_WRITE_CMDS: frozenset[str] = frozenset({"FLUSHDB", "FLUSHALL"})
+_KEYSPACE_WRITE_CMDS: frozenset[str] = frozenset({"FLUSHDB", "FLUSHALL", "SWAPDB"})
 
 # Commands that read the *entire* keyspace (enumeration / existence over all
 # keys) without naming a specific key.  Modeled as a read on the database-wide

@@ -41,17 +41,17 @@ def _fresh_connection(connections: Any, db_alias: str, lock_timeout: int | None)
 
 
 def wrap_sync_thread(
-    fn: Callable[[T], None],
+    fn: Callable[[T], Any],
     *,
     connections: Any,
     db_alias: str,
     lock_timeout: int | None,
-) -> Callable[[T], None]:
+) -> Callable[[T], Any]:
     """Return a thread wrapper that opens a fresh Django connection."""
 
-    def wrapper(state: T) -> None:
+    def wrapper(state: T) -> Any:
         with _fresh_connection(connections, db_alias, lock_timeout):
-            fn(state)
+            return fn(state)
 
     return wrapper
 

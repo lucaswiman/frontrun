@@ -73,6 +73,7 @@ from frontrun._async_cooperative import (
     _CooperativeAsyncEvent,  # noqa: F401  # re-exported for tests
     _CooperativeAsyncLock,  # noqa: F401  # re-exported for tests
     _CooperativeAsyncQueue,  # noqa: F401  # re-exported for tests
+    _guard_async_exploration,
     _patch_asyncio_event,
     _patch_asyncio_lock,
     _patch_asyncio_queue_condition,
@@ -150,6 +151,7 @@ from frontrun.async_scheduler import (
 )
 from frontrun.common import (
     InterleavingResult,
+    _call_sync_setup,
     check_invariant,
     check_serializability_violation,
 )
@@ -166,10 +168,17 @@ except ModuleNotFoundError as _err:
 # Lazy import for async SQL patching (avoid hard dependency)
 _sql_async_available = False
 try:
+    from frontrun._sql_cursor import patch_sql, unpatch_sql
     from frontrun._sql_cursor_async import patch_sql_async, unpatch_sql_async
 
     _sql_async_available = True
 except ImportError:
+
+    def patch_sql() -> None:  # type: ignore[misc]
+        pass
+
+    def unpatch_sql() -> None:  # type: ignore[misc]
+        pass
 
     def patch_sql_async() -> None:  # type: ignore[misc]
         pass
@@ -260,6 +269,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         deadlock_timeout: float = 5.0,
         detect_sql: bool = False,
         detect_redis: bool = False,
+        bridge_sync_io: bool = False,
         stable_ids: StableObjectIds | None = None,
         virtual_clock: VirtualClock | None = None,
         clock_mode: str = "real",
@@ -310,6 +320,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._clock_actor_id = clock_actor_id
         self._clock_diagnostics = clock_diagnostics
         self._deadlines = DeadlineCoordinator()
+        self._naturally_blocked: set[int] = set()
         self._last_scheduled_path_id: int | None = None
         self._current_path_id: int | None = None
         self._current_task_consumed = False
@@ -321,6 +332,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._current_task: int | None = None
         self._detect_sql = detect_sql
         self._detect_redis = detect_redis
+        self._bridge_sync_io = bridge_sync_io
         self._engine_lock = NoOpLock()
         self.trace_recorder = None
         self._iter_to_container: dict[int, Any] = {}
@@ -329,6 +341,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._stable_ids = stable_ids if stable_ids is not None else StableObjectIds()
         # Pending I/O accesses per task (from SQL interception)
         self._pending_io: dict[int, list[tuple[int, str, bool]]] = {i: [] for i in range(num_tasks)}
+        self._pending_io_lock = threading.Lock()
 
         # Track tasks blocked on asyncio.Lock: task_id → lock-holder task_id.
         # When DPOR schedules a blocked task, override to run the holder.
@@ -382,6 +395,17 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             # it to tell whether the jump it was armed for is still owed.
             self._schedule_seq += 1
 
+    def on_task_suspended(self, task_id: int) -> None:
+        if self._deadlines.in_timed_wait(task_id) or self._bridge_sync_io:
+            self._naturally_blocked.add(task_id)
+            self.execution.block_thread(task_id)
+            asyncio.get_running_loop().create_task(self.kick_stalled_schedule(task_id))
+
+    def on_task_resumed(self, task_id: int) -> None:
+        if task_id in self._naturally_blocked:
+            self._naturally_blocked.discard(task_id)
+            self.execution.unblock_thread(task_id)
+
     def _activate_current_task_path(self, task_id: int) -> None:
         if self._current_task == task_id and self._current_path_id is not None:
             self._active_path_ids[task_id] = self._current_path_id
@@ -415,6 +439,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         fire = getattr(event.token, "fire", None)
         if fire is not None:
             fire()
+        self._naturally_blocked.discard(tid)
         self._lock_blocked.pop(tid, None)
         self._event_blocked.discard(tid)
         self.execution.unblock_thread(tid)
@@ -587,6 +612,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._deadlock_confirm_task = asyncio.get_running_loop().create_task(self._confirm_exact_deadlock())
 
     async def _confirm_exact_deadlock(self) -> None:
+        handed_off = False
         try:
             snapshot = self._deadlock_confirm_progress
             while True:
@@ -596,6 +622,14 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                     if self._error is not None or self._finished:
                         return
                     if snapshot is not None and self._progress != snapshot:
+                        # The run made progress after this check was armed. A
+                        # new idle state created in that window could not arm
+                        # its own watcher; transfer to a fresh one (see
+                        # _rearm_idle_watchers).
+                        self._deadlock_confirm_pending = False
+                        self._deadlock_confirm_progress = None
+                        handed_off = True
+                        self._rearm_idle_watchers()
                         return
                     if len(self._tasks_done) >= self._num_engine_tasks:
                         return
@@ -627,8 +661,9 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                         return
                 await _real_asyncio_sleep(min(0.01, max(0.001, self.deadlock_timeout / 10.0)))
         finally:
-            self._deadlock_confirm_pending = False
-            self._deadlock_confirm_progress = None
+            if not handed_off:
+                self._deadlock_confirm_pending = False
+                self._deadlock_confirm_progress = None
 
     def _maybe_deferred_autojump(self) -> None:
         """Arm a deferred autojump (virtual clock, nothing engine-runnable).
@@ -642,19 +677,41 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._autojump_seq_at_arm = self._schedule_seq
         self._autojump_task = asyncio.get_running_loop().create_task(self._deferred_autojump())
 
+    def _rearm_idle_watchers(self) -> None:
+        """Re-arm the idle-state watcher matching the *current* run state.
+
+        Called under ``self._condition`` when a stale deferred autojump (or
+        exact-deadlock confirm) aborts because a real turn was handed out
+        after it was armed.  A new "nothing runnable" state created in that
+        window could not arm its own watcher — the pending flag was still
+        held by the stale task — so the owed clock advance or deadlock check
+        would otherwise be dropped and a correct program would stall until
+        ``timeout_per_run``.  The caller must have cleared its own pending
+        flag (and must not clobber it afterwards: the flag now belongs to the
+        freshly armed task).
+        """
+        if self._error is not None or self._finished:
+            return
+        if self.execution.runnable_threads():
+            # Someone is genuinely runnable; the normal _schedule_next path
+            # re-arms when the run next goes idle.
+            return
+        if can_autojump(self.virtual_clock, self._clock_actor_id, self._has_pending_deadlines()):
+            self._maybe_deferred_autojump()
+        else:
+            self._maybe_confirm_exact_deadlock()
+
     async def _deferred_autojump(self) -> None:
         """Advance the clock once in-flight wakes have had a chance to land.
 
-        Drains up to four loop passes: a resolved future's wake chain (done
-        callback → task wakeup → engine unblock in the woken wrapper) is a
-        bounded call_soon chain, so a task that already won its race becomes
-        engine-runnable within a couple of passes and the jump is skipped in
-        favour of scheduling it.  If the run stays idle, the jump proceeds
-        exactly as the old synchronous autojump did.
+        Drain until the event loop's ready queue is actually quiescent.  User
+        callbacks may form an arbitrarily long ``call_soon`` chain before
+        resolving a future; a fixed pass count can fire a virtual timeout in
+        the middle of that live chain and manufacture a false counterexample.
         """
         handed_off = False
         try:
-            for _ in range(4):
+            while True:
                 await _real_asyncio_sleep(0)
                 async with self._condition:
                     if self._error is not None or self._finished:
@@ -663,14 +720,31 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                         # Someone else was handed a real turn since this jump
                         # was armed (note: _current_task alone is not a valid
                         # signal — it retains the *stale* previous holder, e.g.
-                        # the parked sleeper whose registration armed us).
+                        # the parked sleeper whose registration armed us).  If
+                        # that turn already re-parked the run idle again, the
+                        # owed advance transfers to a fresh watcher.
+                        self._autojump_pending = False
+                        handed_off = True
+                        self._rearm_idle_watchers()
                         return
                     if self.execution.runnable_threads():
                         break
+                    ready = getattr(asyncio.get_running_loop(), "_ready", None)
+                    if ready is None:
+                        # A non-stdlib loop whose readiness cannot be observed
+                        # cannot safely certify quiescence.  Keep draining; the
+                        # outer wall timeout remains the fail-closed backstop.
+                        continue
+                    if any(not handle.cancelled() for handle in ready):
+                        continue
+                    break
             async with self._condition:
                 if self._error is not None or self._finished:
                     return
                 if self._schedule_seq != self._autojump_seq_at_arm:
+                    self._autojump_pending = False
+                    handed_off = True
+                    self._rearm_idle_watchers()
                     return
                 if not self.execution.runnable_threads():
                     if not can_autojump(self.virtual_clock, self._clock_actor_id, self._has_pending_deadlines()):
@@ -719,8 +793,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                     # lost the race: a successful instant wait would observe
                     # its full timeout in virtual time (a false counterexample
                     # that also offsets every later deadline).  Defer the jump
-                    # a few loop passes so in-flight wakes land first — the
-                    # same drain the exact-deadlock confirm already does.
+                    # until the event-loop ready queue is quiescent so every
+                    # in-flight wake lands first.
                     self._maybe_deferred_autojump()
                     self._last_scheduled_path_id = None
                     return None
@@ -811,7 +885,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         from frontrun._io_detection import (
             set_dpor_scheduler_task,
             set_dpor_thread_id_task,
-            set_io_reporter,
+            set_io_reporter_task,
             set_tx_store_task,
         )
 
@@ -829,9 +903,10 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 if current_task is None:
                     current_task = task_id
                 object_key = _make_object_key(hash(resource_id), resource_id)
-                self._pending_io.setdefault(current_task, []).append((object_key, kind, True))
+                with self._pending_io_lock:
+                    self._pending_io.setdefault(current_task, []).append((object_key, kind, True))
 
-            set_io_reporter(_io_reporter)
+            set_io_reporter_task(_io_reporter)
 
         # Reset transaction state for this task in a fresh per-task store.
         store = set_tx_store_task()
@@ -915,13 +990,19 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
 
         _scheduler_var.set(None)
         _task_id_var.set(None)
-        from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter
+        from frontrun._io_detection import (
+            set_dpor_scheduler_task,
+            set_dpor_thread_id_task,
+            set_io_reporter,
+            set_io_reporter_task,
+        )
 
         # Clear this task's task-aware DPOR context.  These contextvars are
         # per-task (they die with the task), but clearing keeps any further
         # interception in this context from resolving a stale scheduler.
         set_dpor_scheduler_task(None)
         set_dpor_thread_id_task(None)
+        set_io_reporter_task(None)
 
         # The IO reporter is per-OS-thread (shared by all tasks on the event
         # loop), so only clear it when ALL tasks are done — clearing it when
@@ -1133,14 +1214,15 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
 
     def _flush_pending_io(self, task_id: int) -> None:
         """Flush pending I/O accesses to the DPOR engine."""
-        pending = self._pending_io.get(task_id)
+        with self._pending_io_lock:
+            pending = self._pending_io.get(task_id, [])
+            self._pending_io[task_id] = []
         if pending:
             for obj_key, kind, synced in pending:
                 if synced:
                     self.engine.report_synced_io_access(self.execution, task_id, obj_key, kind)
                 else:
                     self.engine.report_io_access(self.execution, task_id, obj_key, kind)
-            pending.clear()
 
     def report_and_wait_sync(self, task_id: int) -> None:
         """Synchronous report-and-wait for use from SQL cursor interception.
@@ -1153,7 +1235,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         We just flush pending I/O here; the actual scheduling happens
         at the next ``await_point()``.
         """
-        self._flush_pending_io(task_id)
+        if threading.get_ident() == self._event_loop_thread_id:
+            self._flush_pending_io(task_id)
 
     def report_and_wait(self, frame: Any, thread_id: int) -> bool:
         """Compatibility method for SQL cursor interception.
@@ -1164,7 +1247,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         flush pending I/O but the actual scheduling happens at await
         points.  Returns True to indicate the task should continue.
         """
-        self._flush_pending_io(thread_id)
+        if threading.get_ident() == self._event_loop_thread_id:
+            self._flush_pending_io(thread_id)
         return True
 
     def finish_task(self, task_id: int) -> None:
@@ -1186,6 +1270,7 @@ async def run_with_schedule_dpor(
     deadlock_timeout: float = 5.0,
     detect_sql: bool = False,
     detect_redis: bool = False,
+    bridge_sync_io: bool = False,
 ) -> Any:
     """Run one async DPOR execution and return the state object.
 
@@ -1213,7 +1298,7 @@ async def run_with_schedule_dpor(
         detect_redis=detect_redis,
     )
 
-    state = setup()
+    state = _call_sync_setup(setup)
 
     task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
         i: (lambda s=state, t=t: t(s))  # type: ignore[assignment]
@@ -1270,6 +1355,7 @@ async def _reproduce_async_counterexample(
     clock: ClockMode = "real",
     detect_sql: bool = False,
     detect_redis: bool = False,
+    bridge_sync_io: bool = False,
     expected_task_error: tuple[type[Exception], str] | None = None,
 ) -> tuple[int, int]:
     """Measure how often an async DPOR counterexample reproduces."""
@@ -1288,11 +1374,13 @@ async def _reproduce_async_counterexample(
             clock_actor_id=clock_config.actor_id(num_tasks),
             detect_sql=detect_sql,
             detect_redis=detect_redis,
+            bridge_sync_io=bridge_sync_io,
+            expected_deadlock=invariant is None and expected_task_error is None,
         )
         # One clock_context owns the time.* patch across setup + tasks +
         # invariant for this replay attempt.
         with clock_context(replay_clock):
-            state = setup()
+            state = _call_sync_setup(setup)
             task_funcs: dict[int, Callable[..., Awaitable[None]]] = {}
             for i, task in enumerate(tasks):
 
@@ -1340,6 +1428,7 @@ async def _reproduce_async_counterexample(
     return reproduce_on_failure, successes
 
 
+@_guard_async_exploration
 async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-module by frontrun._strategy and contrib helpers
     setup: Callable[[], T],
     tasks: list[Callable[[T], Coroutine[Any, Any, None]]],
@@ -1362,6 +1451,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
     error_on_any_race: bool = False,
     clock: ClockMode = "real",
     clock_diagnostics: bool = False,
+    _bridge_sync_io: bool = False,
 ) -> InterleavingResult:
     """Systematically explore async interleavings using DPOR.
 
@@ -1497,6 +1587,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             clock=clock,
             detect_sql=detect_sql,
             detect_redis=detect_redis,
+            bridge_sync_io=_bridge_sync_io,
             expected_task_error=(type(task_error), str(task_error)) if task_error is not None else None,
         )
         result.reproduction_attempts = attempts
@@ -1529,6 +1620,11 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         _set_active_trace_filter(_TraceFilter(trace_packages))
     try:
         with PatchScope() as patch_scope:
+            patch_scope.add(
+                patch_sql,
+                unpatch_sql,
+                enabled=detect_sql and _bridge_sync_io and _sql_async_available,
+            )
             patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
             patch_scope.add(patch_redis_async, unpatch_redis_async, enabled=detect_redis and _redis_async_available)
             patch_scope.add(_patch_asyncio_lock, _unpatch_asyncio_lock)
@@ -1559,6 +1655,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                     deadlock_timeout=deadlock_timeout,
                     detect_sql=detect_sql,
                     detect_redis=detect_redis,
+                    bridge_sync_io=_bridge_sync_io,
                     stable_ids=stable_ids,
                     virtual_clock=virtual_clock,
                     clock_mode=clock,
@@ -1572,7 +1669,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                 # run_all inherit the contextvar (contexts copy at create_task
                 # time), so they see the same virtual time as the driver.
                 with clock_context(virtual_clock):
-                    state = setup()
+                    state = _call_sync_setup(setup)
                     stable_ids.pre_register(state)
 
                     task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {

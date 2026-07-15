@@ -194,9 +194,20 @@ class TestSqlConflictIsolation:
         assert any(r == "sql:table_a" or r.startswith("sql:table_a:") for r in res_a)
         assert any(r == "sql:table_b" or r.startswith("sql:table_b:") for r in res_b)
 
-        # No overlap in table names
-        tables_a = {r.split(":", 1)[1].split(":")[0] for r in res_a if r.startswith("sql:")}
-        tables_b = {r.split(":", 1)[1].split(":")[0] for r in res_b if r.startswith("sql:")}
+        # Parsed statements also share the conservative database-intent
+        # resource. Their concrete table resources must remain independent.
+        assert any(r.startswith("sql:__database__") for r in res_a)
+        assert any(r.startswith("sql:__database__") for r in res_b)
+        tables_a = {
+            r.split(":", 1)[1].split(":")[0]
+            for r in res_a
+            if r.startswith("sql:") and not r.startswith("sql:__database__")
+        }
+        tables_b = {
+            r.split(":", 1)[1].split(":")[0]
+            for r in res_b
+            if r.startswith("sql:") and not r.startswith("sql:__database__")
+        }
         assert not (tables_a & tables_b)
 
     def test_multi_thread_independent_accesses(self) -> None:
@@ -228,7 +239,12 @@ class TestSqlConflictIsolation:
             t.join()
 
         # 10 distinct tables reported
-        tables = {r.split(":", 1)[1].split(":")[0] for r, _ in all_events if r.startswith("sql:")}
+        assert any(r.startswith("sql:__database__") and kind == "read" for r, kind in all_events)
+        tables = {
+            r.split(":", 1)[1].split(":")[0]
+            for r, _ in all_events
+            if r.startswith("sql:") and not r.startswith("sql:__database__")
+        }
         assert len(tables) == 10
         assert all(f"table_{i}" in tables for i in range(10))
 

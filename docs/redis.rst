@@ -221,6 +221,17 @@ Known limitations
   object) may still produce additional backtrack points beyond those from Redis
   keys alone.
 - **coredis async client**: supported but less tested than ``redis.asyncio``.
+  Subscription setup through coredis' private Pub/Sub transport is not
+  intercepted; use redis-py when exploring publish-vs-subscribe ordering.
+- **Unix-socket server identity**: frontrun authenticates with configured
+  credentials and uses ``CONFIG GET port`` (falling back to ``INFO SERVER``)
+  to match a Unix-socket client with TCP clients for the same Redis server. If
+  the server denies both queries, exploration fails closed instead of treating
+  the Unix path as an independent server and potentially missing conflicts.
+- **Pipelined ``SELECT`` failures**: because Redis can execute an initial
+  ``SELECT`` before a later pipeline command fails, frontrun conservatively
+  keeps both the previous and selected databases as possible pool state. This
+  can add paths after a failed pipeline, but cannot hide a dependency.
 
 See also
 --------

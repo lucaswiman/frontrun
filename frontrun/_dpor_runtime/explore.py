@@ -11,6 +11,7 @@ from frontrun._dpor_core import (
     record_dpor_failure,
 )
 from frontrun._virtual_clock import ClockConfig, ClockMode, clock_scope
+from frontrun.common import _call_sync_setup, _reject_deferred_sync_result
 
 from ._shared import *
 from ._shared import _require_frontrun_env, _set_active_trace_filter, _TraceFilter
@@ -364,7 +365,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
             # nested runs of _reproduce_dpor_counterexample are safe under the
             # held scope: every patch is reference-counted.
             with clock_scope(virtual_clock), runner.patch_scope(patch_sleep=patch_sleep):
-                state = setup()
+                state = _call_sync_setup(setup)
                 # Assign stable object IDs in deterministic, schedule-independent
                 # order *before* any worker runs.  Without this, IDs are assigned
                 # in first-touch order, which DPOR backtracks permute across
@@ -375,7 +376,8 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
 
                 def make_thread_func(thread_func: Callable[[T], None], s: T) -> Callable[[], None]:
                     def wrapper() -> None:
-                        thread_func(s)
+                        result = thread_func(s)
+                        _reject_deferred_sync_result(result, thread_func)
 
                     return wrapper
 
@@ -383,7 +385,8 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                 try:
                     runner.run(funcs, timeout=timeout_per_run)
                 except TimeoutError:
-                    pass
+                    if runner.worker_originated_errors:
+                        raise
 
                 result.num_explored += 1
 

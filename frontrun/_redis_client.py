@@ -21,7 +21,11 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import ipaddress
+import os
+import socket
 import threading
+import weakref
 from collections.abc import Callable, Generator, Iterator
 from typing import Any
 
@@ -86,16 +90,259 @@ def _redis_keyspace_resource_id(db_scope: str | None = None) -> str:
     return _redis_resource_id("keyspace", db_scope=db_scope)
 
 
+def _redis_server_keyspace_resource_id(server_scope: str) -> str:
+    """Build the server-wide intent resource used to model ``FLUSHALL``."""
+    return f"redis:server-keyspace:server={server_scope}"
+
+
+def _redis_server_pubsub_resource_id(server_scope: str) -> str:
+    """Build a server-wide intent resource for overlapping Pub/Sub operations."""
+    return f"redis:pubsub:server={server_scope}"
+
+
+def _redis_arg_text(value: object) -> str:
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "surrogateescape")
+    return str(value)
+
+
+# Cached name → canonical-address resolution.  Identity must be stable for
+# a whole session (record and replay resolve to the same string) and must
+# never cost a network lookup per access, so each name is resolved at most
+# once per process.
+_canonical_host_cache: dict[str, str] = {}
+
+
+def _canonical_host(host: str) -> str:
+    """Resolve *host* to a stable canonical server-address string.
+
+    Textual aliases of one server (``localhost`` vs ``127.0.0.1``) must map
+    to a single identity — otherwise two clients reaching the same Redis
+    instance get disjoint resources and DPOR misses their dependency.
+    Resolution picks the lexicographically first resolved address for
+    determinism and folds every loopback address to ``127.0.0.1``.  On
+    resolution failure the raw string is kept (the previous behavior).
+    """
+    cached = _canonical_host_cache.get(host)
+    if cached is not None:
+        return cached
+    canonical = host
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        addresses = sorted({str(info[4][0]) for info in infos})
+        if addresses:
+            canonical = addresses[0]
+    except (OSError, UnicodeError):  # unresolvable or non-DNS name → keep raw
+        pass
+    try:
+        if ipaddress.ip_address(canonical).is_loopback:
+            canonical = "127.0.0.1"
+    except ValueError:
+        pass
+    _canonical_host_cache[host] = canonical
+    return canonical
+
+
+def _resp_command(*parts: object) -> bytes:
+    encoded = [(_redis_arg_text(part)).encode("utf-8", "surrogateescape") for part in parts]
+    return (
+        b"*"
+        + str(len(encoded)).encode()
+        + b"\r\n"
+        + b"".join(b"$" + str(len(part)).encode() + b"\r\n" + part + b"\r\n" for part in encoded)
+    )
+
+
+def _read_resp(stream: Any) -> Any:
+    prefix = stream.read(1)
+    line = stream.readline().rstrip(b"\r\n")
+    if prefix == b"+":
+        return line
+    if prefix == b"-":
+        raise RuntimeError(line.decode("utf-8", "replace"))
+    if prefix == b":":
+        return int(line)
+    if prefix == b"$":
+        length = int(line)
+        if length < 0:
+            return None
+        value = stream.read(length)
+        stream.read(2)
+        return value
+    if prefix == b"*":
+        length = int(line)
+        return [_read_resp(stream) for _ in range(max(0, length))]
+    raise RuntimeError("invalid Redis response while resolving unix-socket identity")
+
+
+def _query_unix_socket_tcp_port(path: str, connection_kwargs: dict[str, Any]) -> str | None:
+    """Ask the Redis server behind *path* for its TCP port."""
+    if not hasattr(socket, "AF_UNIX"):
+        return None
+    try:
+        with _suppress_endpoint_io(), contextlib.closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as sock:
+            sock.settimeout(1.0)
+            sock.connect(path)
+            with sock.makefile("rb") as stream:
+                password = connection_kwargs.get("password")
+                username = connection_kwargs.get("username")
+                if password is not None:
+                    auth = ("AUTH", username, password) if username is not None else ("AUTH", password)
+                    sock.sendall(_resp_command(*auth))
+                    _read_resp(stream)
+
+                # CONFIG is the most direct source.  INFO SERVER covers
+                # CONFIG-renamed/disabled deployments and exposes tcp_port.
+                try:
+                    sock.sendall(_resp_command("CONFIG", "GET", "port"))
+                    response = _read_resp(stream)
+                    if isinstance(response, list) and len(response) >= 2:
+                        port = _redis_arg_text(response[1])
+                        if port.isdigit():
+                            return port
+                except RuntimeError:
+                    pass
+
+                try:
+                    sock.sendall(_resp_command("INFO", "SERVER"))
+                    response = _read_resp(stream)
+                    if isinstance(response, bytes):
+                        for line in response.splitlines():
+                            if line.startswith(b"tcp_port:"):
+                                port = line.partition(b":")[2].decode("ascii", "replace")
+                                if port.isdigit():
+                                    return port
+                except RuntimeError:
+                    pass
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+# Unix-socket pools carry no host/port.  Resolve each socket path once to the
+# TCP identity of the server behind it (CONFIG GET port over the socket
+# itself) so a unix-socket client and a TCP client reaching the same server
+# share resources.  On any failure keep a distinct per-path identity rather
+# than the old localhost:6379 default, which claimed an endpoint the socket
+# never touches.  Cached per real path: deterministic within a session, no
+# per-access I/O.
+_unix_path_server_parts: dict[str, tuple[str, str]] = {}
+
+
+def _unix_socket_server_parts(path: str, connection_kwargs: dict[str, Any]) -> tuple[str, str]:
+    real_path = os.path.realpath(path)
+    cached = _unix_path_server_parts.get(real_path)
+    if cached is None:
+        tcp_port = _query_unix_socket_tcp_port(real_path, connection_kwargs)
+        if tcp_port is None:
+            raise RuntimeError(
+                "frontrun could not determine the Redis unix-socket server identity; "
+                "allow AUTH plus CONFIG GET port or INFO SERVER so unix and TCP aliases cannot be modeled as independent"
+            )
+        cached = ("localhost", tcp_port) if tcp_port != "0" else (f"unix:{real_path}", "0")
+        _unix_path_server_parts[real_path] = cached
+    return cached
+
+
+# Live SELECT tracking: ``connection_kwargs["db"]`` goes stale once a client
+# issues SELECT, so later commands would be attributed to the wrong database
+# (a missed dependency).  A single-connection client switches exactly; on a
+# pooled client only one pooled connection switched, so the configured and
+# selected databases are all kept as candidates (sound over-approximation).
+# State lives on the client object itself when possible; the id-keyed
+# registries (weakref-evicted, mirroring
+# ``_sql_db_scope._register_connection_db_scope``) are a fallback for
+# non-settable clients.  A client that is neither settable nor weakref-able
+# stays untracked: id() values are reusable, and a bare id-keyed entry would
+# hand a dead client's database to whatever object next occupies the address.
+_EXACT_DB_ATTR = "_frontrun_selected_db"
+_POSSIBLE_DBS_ATTR = "_frontrun_possible_dbs"
+_client_exact_dbs: dict[int, str] = {}
+_client_possible_dbs: dict[int, set[str]] = {}
+
+
+def _set_client_scope_state(client: Any, attr: str, registry: dict[int, Any], value: Any) -> bool:
+    """Attach SELECT state to *client*; return False if it cannot be tracked safely."""
+    try:
+        setattr(client, attr, value)
+        return True
+    except (AttributeError, TypeError):
+        pass
+    key = id(client)
+    try:
+        weakref.finalize(client, registry.pop, key, None)
+    except TypeError:
+        return False
+    registry[key] = value
+    return True
+
+
+def _get_client_scope_state(client: Any, attr: str, registry: dict[int, Any]) -> Any:
+    value = getattr(client, attr, None)
+    if value is not None:
+        return value
+    return registry.get(id(client))
+
+
+def _record_client_select(client: Any, db: object) -> None:
+    """Record a live SELECT so later accesses land in the right database scope."""
+    db_text = _redis_arg_text(db)
+    if getattr(client, "connection", None) is not None:  # single_connection_client
+        _set_client_scope_state(client, _EXACT_DB_ATTR, _client_exact_dbs, db_text)
+        return
+    _record_client_select_candidate(client, db_text)
+
+
+def _record_client_select_candidate(client: Any, db: object) -> None:
+    """Conservatively add a possible DB to the shared connection pool."""
+    owner = getattr(client, "connection_pool", None) or client
+    possible = _get_client_scope_state(owner, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
+    if possible is None:
+        possible = set()
+        if not _set_client_scope_state(owner, _POSSIBLE_DBS_ATTR, _client_possible_dbs, possible):
+            return
+    possible.add(_redis_arg_text(db))
+
+
+def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
+    """Extract ``(host, port, database)`` strings from a Redis client."""
+    pool = getattr(client, "connection_pool", None)
+    if pool is None:
+        return None
+    kwargs = getattr(pool, "connection_kwargs", {})
+    exact_db = _get_client_scope_state(client, _EXACT_DB_ATTR, _client_exact_dbs)
+    db = exact_db if isinstance(exact_db, str) else _redis_arg_text(kwargs.get("db", 0))
+    path = kwargs.get("path")
+    if path is not None:
+        host, port = _unix_socket_server_parts(_redis_arg_text(path), kwargs)
+        return host, port, db
+    host = _redis_arg_text(kwargs.get("host", "localhost"))
+    port = _redis_arg_text(kwargs.get("port", 6379))
+    return host, port, db
+
+
+def _format_redis_db_scope(host: object, port: object, db: object) -> str:
+    return f"redis:{_canonical_host(_redis_arg_text(host))}:{_redis_arg_text(port)}/{_redis_arg_text(db)}"
+
+
+def _format_redis_server_scope(host: object, port: object) -> str:
+    return f"redis:{_canonical_host(_redis_arg_text(host))}:{_redis_arg_text(port)}"
+
+
 def _get_redis_db_scope(client: Any) -> str | None:
     """Extract a stable database scope from a Redis client object."""
-    # redis-py exposes connection_pool.connection_kwargs
-    pool = getattr(client, "connection_pool", None)
-    if pool is not None:
-        kwargs = getattr(pool, "connection_kwargs", {})
-        host = kwargs.get("host", "localhost")
-        port = kwargs.get("port", 6379)
-        db = kwargs.get("db", 0)
-        return f"redis:{host}:{port}/{db}"
+    parts = _get_redis_scope_parts(client)
+    return _format_redis_db_scope(*parts) if parts is not None else None
+
+
+def _find_redis_option(cmd_args: tuple[object, ...], option: str) -> object | None:
+    """Return a COPY option value after its required source/destination keys."""
+    for index, arg in enumerate(cmd_args[2:-1], start=2):
+        value = _redis_arg_text(arg)
+        if value.upper() == option:
+            return cmd_args[index + 1]
     return None
 
 
@@ -116,7 +363,7 @@ def _iter_pipeline_commands(pipeline: Any) -> Iterator[tuple[str, tuple[Any, ...
         else:
             continue
         if cmd_args_full:
-            cmd_name = str(cmd_args_full[0])
+            cmd_name = _redis_arg_text(cmd_args_full[0])
             cmd_cmd_args = tuple(cmd_args_full[1:])
             yield cmd_name, cmd_cmd_args
 
@@ -128,6 +375,12 @@ def _report_pipeline_commands(pipeline: Any) -> bool:
     """
     reported = False
     for cmd_name, cmd_args in _iter_pipeline_commands(pipeline):
+        if cmd_name.upper().split(" ", 1)[0] == "SELECT" and cmd_args:
+            # Pipeline execution can partially succeed before raising, and
+            # redis-py may return per-command errors.  Retaining both the old
+            # and candidate DB on the shared pool is the sound fail-closed
+            # model when the exact outcome is unavailable here.
+            _record_client_select_candidate(pipeline, cmd_args[0])
         if _report_redis_access(cmd_name, cmd_args, client=pipeline):
             reported = True
     return reported
@@ -149,34 +402,129 @@ def _report_redis_access(
     Returns ``True`` if any Redis-level reporting was performed (which means
     endpoint-level I/O should be suppressed for the subsequent Redis call).
     """
+    upper = cmd_name.upper().split(" ", 1)[0]
+
     reporter = get_io_reporter()
     if reporter is None:
         return False
 
+    pubsub_commands = {
+        "PUBLISH",
+        "SPUBLISH",
+        "SUBSCRIBE",
+        "PSUBSCRIBE",
+        "SSUBSCRIBE",
+        "UNSUBSCRIBE",
+        "PUNSUBSCRIBE",
+        "SUNSUBSCRIBE",
+    }
     access = parse_redis_access(cmd_name, cmd_args)
 
     # Transaction control — no key-level reporting needed.
     if access.is_transaction_control and not access.read_keys and not access.write_keys:
         return True  # Still suppress endpoint I/O for protocol overhead.
 
-    if not access.read_keys and not access.write_keys and access.keyspace is None:
+    if (
+        not access.read_keys
+        and not access.write_keys
+        and access.keyspace is None
+        and upper not in pubsub_commands
+        and upper != "PUBSUB"
+    ):
         return False
 
-    db_scope = _get_redis_db_scope(client) if client is not None else None
+    scope_parts = _get_redis_scope_parts(client) if client is not None else None
+    db_scope = _format_redis_db_scope(*scope_parts) if scope_parts is not None else None
 
-    for key in access.read_keys:
-        res_id = _redis_resource_id(key, db_scope=db_scope)
-        reporter(res_id, "read")
+    key_accesses: list[tuple[str, str, str | None]] = []
+    keyspace_accesses: set[tuple[str | None, str]] = set()
 
-    for key in access.write_keys:
-        res_id = _redis_resource_id(key, db_scope=db_scope)
-        reporter(res_id, "write")
+    if upper == "COPY" and len(cmd_args) >= 2:
+        destination_scope = db_scope
+        destination_db = _find_redis_option(cmd_args, "DB")
+        if scope_parts is not None and destination_db is not None:
+            destination_scope = _format_redis_db_scope(scope_parts[0], scope_parts[1], destination_db)
+        key_accesses.append((access.read_keys[0], "read", db_scope))
+        key_accesses.append((access.write_keys[0], "write", destination_scope))
+    elif upper == "MOVE" and len(cmd_args) >= 2:
+        destination_scope = db_scope
+        if scope_parts is not None:
+            destination_scope = _format_redis_db_scope(scope_parts[0], scope_parts[1], cmd_args[1])
+        key = access.write_keys[0]
+        key_accesses.extend(((key, "read", db_scope), (key, "write", db_scope), (key, "write", destination_scope)))
+    elif upper == "MIGRATE" and len(cmd_args) >= 4:
+        key_accesses.extend((key, "read", db_scope) for key in access.read_keys)
+        key_accesses.extend((key, "write", db_scope) for key in access.write_keys)
+        destination_scope = _format_redis_db_scope(cmd_args[0], cmd_args[1], cmd_args[3])
+        key_accesses.extend((key, "write", destination_scope) for key in access.write_keys)
+    elif upper in pubsub_commands:
+        channel_scope = _format_redis_server_scope(scope_parts[0], scope_parts[1]) if scope_parts is not None else None
+        key_accesses.extend((key, "read", channel_scope) for key in access.read_keys)
+        key_accesses.extend((key, "write", channel_scope) for key in access.write_keys)
+        if channel_scope is not None:
+            # Pattern subscriptions overlap dynamically named channels, and
+            # zero-argument unsubscribe affects an unknown set. Keep exact
+            # channel resources, plus this conservative server-wide intent.
+            pubsub_kind = "write" if upper in {"PUBLISH", "SPUBLISH"} else "read"
+            reporter(_redis_server_pubsub_resource_id(channel_scope), pubsub_kind)
+    elif upper == "PUBSUB":
+        if scope_parts is not None:
+            reporter(
+                _redis_server_pubsub_resource_id(_format_redis_server_scope(scope_parts[0], scope_parts[1])),
+                "write",
+            )
+    elif upper == "SWAPDB":
+        if len(cmd_args) >= 2 and scope_parts is not None:
+            keyspace_accesses.add((_format_redis_db_scope(scope_parts[0], scope_parts[1], cmd_args[0]), "write"))
+            keyspace_accesses.add((_format_redis_db_scope(scope_parts[0], scope_parts[1], cmd_args[1]), "write"))
+        else:
+            keyspace_accesses.add((db_scope, "write"))
+    else:
+        key_accesses.extend((key, "read", db_scope) for key in access.read_keys)
+        key_accesses.extend((key, "write", db_scope) for key in access.write_keys)
+        if access.keyspace is not None:
+            keyspace_accesses.add((db_scope, access.keyspace))
 
-    # Database-wide keyspace intent-lock: FLUSHDB/FLUSHALL write the whole
-    # keyspace, while per-key commands and keyspace scans read it.  This lets
-    # DPOR explore FLUSH*-vs-key races without over-serializing key traffic.
-    if access.keyspace is not None:
-        reporter(_redis_keyspace_resource_id(db_scope=db_scope), access.keyspace)
+    for key, kind, scope in key_accesses:
+        reporter(_redis_resource_id(key, db_scope=scope), kind)
+        if access.keyspace is not None:
+            keyspace_accesses.add((scope, "read"))
+
+    for scope, kind in sorted(keyspace_accesses, key=lambda item: (item[0] or "", item[1])):
+        reporter(_redis_keyspace_resource_id(db_scope=scope), kind)
+
+    # A pooled client that issued SELECT may run any command on either the
+    # configured or a selected database (only one pooled connection actually
+    # switched).  Mirror the primary-scope accesses into every candidate
+    # scope so no ordering is missed (sound over-approximation).
+    if client is not None and scope_parts is not None:
+        possible_owner = getattr(client, "connection_pool", None) or client
+        possible_dbs = _get_client_scope_state(possible_owner, _POSSIBLE_DBS_ATTR, _client_possible_dbs)
+        if possible_dbs:
+            candidate_scopes = {
+                _format_redis_db_scope(scope_parts[0], scope_parts[1], candidate_db) for candidate_db in possible_dbs
+            }
+            candidate_scopes.discard(db_scope)
+            for extra_scope in sorted(candidate_scopes):
+                for key, kind, scope in key_accesses:
+                    if scope == db_scope:
+                        reporter(_redis_resource_id(key, db_scope=extra_scope), kind)
+                for scope, kind in sorted(keyspace_accesses, key=lambda item: (item[0] or "", item[1])):
+                    if scope == db_scope:
+                        reporter(_redis_keyspace_resource_id(db_scope=extra_scope), kind)
+
+    # FLUSHALL mutates every database on a server.  A server-wide intent
+    # resource keeps ordinary traffic read-read while making FLUSHALL conflict
+    # with accesses from clients selected into any database on that server.
+    server_scopes: set[str] = set()
+    for scope, _kind in keyspace_accesses:
+        if scope is not None:
+            server_scopes.add(scope.rsplit("/", 1)[0])
+    if upper == "MIGRATE" and len(cmd_args) >= 2:
+        server_scopes.add(_format_redis_server_scope(cmd_args[0], cmd_args[1]))
+    server_kind = "write" if upper == "FLUSHALL" else "read"
+    for server_scope in sorted(server_scopes):
+        reporter(_redis_server_keyspace_resource_id(server_scope), server_kind)
 
     return True
 
@@ -207,8 +555,20 @@ def _parse_and_report_execute_command(
     """
     if not args:
         return None
-    cmd_name = str(args[0])
-    cmd_args = args[1:]
+    first = args[0]
+    request_name = getattr(first, "name", None) if len(args) == 1 else None
+    serialized_arguments = getattr(first, "serialized_arguments", None) if request_name is not None else None
+    if isinstance(request_name, (str, bytes, bytearray, memoryview)) and isinstance(
+        serialized_arguments, (tuple, list)
+    ):
+        # coredis >=6 passes one CommandRequest to execute_command.  Its repr
+        # contains a run-specific address, so treating it as the command name
+        # makes every physical command look independent and breaks replay.
+        cmd_name = _redis_arg_text(request_name)
+        cmd_args = tuple(serialized_arguments)
+    else:
+        cmd_name = _redis_arg_text(first)
+        cmd_args = args[1:]
     reported = _report_redis_access(cmd_name, cmd_args, client=client)
     return cmd_name, cmd_args, reported
 
@@ -292,15 +652,20 @@ def _intercept_execute_command_scoped(
     resource_id = ""
     if needs_scheduling_point:
         db_scope = _get_redis_db_scope(self) or ""
-        first_key = str(cmd_args[0]) if cmd_args else ""
+        first_key = _redis_arg_text(cmd_args[0]) if cmd_args else ""
         resource_id = "\x1f".join(("redis", cmd_name, first_key, db_scope))
 
-    return _run_sync_dpor_envelope(
+    result = _run_sync_dpor_envelope(
         lambda: original_method(self, *args, **kwargs),
         resource_id,
         reported,
         needs_scheduling_point,
     )
+    if cmd_name.upper().split(" ", 1)[0] == "SELECT" and cmd_args:
+        # SELECT changes connection state only after the server accepts it.
+        # Recording before I/O mis-scopes later commands when SELECT fails.
+        _record_client_select(self, cmd_args[0])
+    return result
 
 
 def _intercept_pipeline_execute(
@@ -353,7 +718,7 @@ _ORIGINAL_METHODS: dict[tuple[type, str], Any] = {}
 
 
 def _patch_redis_py() -> None:
-    """Patch redis-py ``Redis.execute_command`` and ``Pipeline.execute``."""
+    """Patch redis-py command, immediate transaction, and pipeline execution."""
     for target in SYNC_REDIS_TARGETS:
         try:
             module = importlib.import_module(target.module_name)

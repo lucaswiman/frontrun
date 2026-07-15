@@ -331,10 +331,17 @@ table-reset helper):
        },
        setup=lambda: reset_accounts(dsn),
        invariant=lambda _state: True,   # we are looking for the deadlock, not a data race
+       stop_on_first=False,
    )
    assert not result.ok
    assert result.failure_kind == "deadlock"
    assert result.failing_schedule is not None
+
+``stop_on_first=False`` matters here: physical row-lock contention can
+redirect an early interleaving before the lock cycle is reached, and with
+``stop_on_first=True`` exploration stops at that first (fail-closed,
+``failure_kind="nondeterministic"``) result. Letting exploration continue
+allows the concrete deadlock cycle to supersede it.
 
 
 Redis workers

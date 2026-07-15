@@ -209,6 +209,11 @@ class DporScheduler:
         # holders instead, preventing the scheduler from cycling
         # indefinitely between a blocked thread and its holder.
         self._row_lock_blocked: dict[int, int] = {}
+        # A redirect means the current cross-process protocol may already have
+        # committed an engine step for a statement that did not physically run.
+        # The coordinator fails closed rather than returning that inexact trace
+        # as a constructive proof or an exhausted pass.
+        self._row_lock_redirected = False
 
         # Last path_id snapshot from _schedule_next, used to attribute
         # lock events to the correct scheduling step on free-threaded Python.
@@ -1008,7 +1013,7 @@ class DporScheduler:
         Overridden by :class:`_ReplayDporScheduler` to *gate* accesses to
         racing objects on the recorded order instead (defect #20).
         """
-        label = _anchor_label(obj, name)
+        label = _anchor_label(obj, name, self._stable_ids)
         if label is None:
             return
         self._access_trace.append((thread_id, label, kind))
@@ -1387,6 +1392,7 @@ class DporScheduler:
                         already_held = True
                         break
                     # Another thread holds this row lock — check for cycle first
+                    self._row_lock_redirected = True
                     if graph is not None:
                         cycle = graph.add_waiting(thread_id, lock_int_id, kind="row_lock")
                         if cycle is not None:
@@ -1533,7 +1539,7 @@ class _ReplayDporScheduler(DporScheduler):
         """Gate accesses to racing objects on the recorded anchor order."""
         if not self._anchor_enabled:
             return
-        label = _anchor_label(obj, name)
+        label = _anchor_label(obj, name, self._stable_ids)
         if label is None or label not in self._watched_labels:
             return
         self._gate_access((thread_id, label, kind))
