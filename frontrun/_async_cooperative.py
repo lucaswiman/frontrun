@@ -146,6 +146,20 @@ def _async_wake_sync_id(scheduler: Any, obj: object, waiter: int) -> int:
     return event_wake_sync_id(obj_id, waiter)
 
 
+def _unblock_primitive_waiter(scheduler: Any, waiter: int) -> None:
+    """Make a physically-woken primitive waiter replay-runnable immediately.
+
+    The engine unblock and the replay scheduler's ``_event_blocked`` view are
+    one logical transition.  Waiting until the future resumes to update the
+    latter lets replay skip the waiter's recorded slot even though exploration
+    can schedule it immediately after the engine unblock.
+    """
+    event_blocked = getattr(scheduler, "_event_blocked", None)
+    if event_blocked is not None:
+        event_blocked.discard(waiter)
+    scheduler.execution.unblock_thread(waiter)
+
+
 async def _engine_parked_wait(
     scheduler: Any,
     task_id: int,
@@ -538,7 +552,7 @@ class _CooperativeAsyncEvent:
             _report_state_access(self, "__event_state__", "write")
             for waiter in list(self._waiters):
                 scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-                scheduler.execution.unblock_thread(waiter)
+                _unblock_primitive_waiter(scheduler, waiter)
         self._event.set()
 
     def __repr__(self) -> str:
@@ -590,7 +604,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         waiter, fut = waiter_info
         if scheduler is not None and task_id is not None:
             scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-            scheduler.execution.unblock_thread(waiter)
+            _unblock_primitive_waiter(scheduler, waiter)
         fut.set_result(None)
 
     def _wake_all_for_abort(self) -> None:
@@ -827,7 +841,7 @@ class _CooperativeAsyncCondition:
                 continue
             if scheduler is not None and task_id is not None and getattr(scheduler, "_error", None) is None:
                 scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-                scheduler.execution.unblock_thread(waiter)
+                _unblock_primitive_waiter(scheduler, waiter)
             fut.set_result(None)
             woke += 1
         if not self._waiters:

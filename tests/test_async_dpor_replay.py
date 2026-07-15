@@ -581,6 +581,7 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
             self.execution = Execution()
             self._stable_ids = StableObjectIds()
             self._error = None
+            self._event_blocked = {1}
             self.syncs: list[tuple[int, str, int]] = []
 
         def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
@@ -606,6 +607,7 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
 
         assert scheduler.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
         assert scheduler.execution.unblocked == [1]
+        assert scheduler._event_blocked == set()
     finally:
         _unpatch_asyncio_event()
         _reset_async_lock_state()
