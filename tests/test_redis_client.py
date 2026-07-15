@@ -207,6 +207,54 @@ def test_select_recorded_without_reporter_for_replay_alignment() -> None:
     assert ("redis:k:db=redis:source:6379/1", "write") in events
 
 
+def test_failed_select_does_not_change_single_connection_scope() -> None:
+    """A rejected SELECT leaves the physical connection in its old database."""
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+        connection=object(),
+    )
+
+    def fail(_client: Any, *_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("invalid database")
+
+    with pytest.raises(RuntimeError, match="invalid database"):
+        _redis_client._intercept_execute_command(fail, client, "SELECT", 1)
+
+    assert _redis_client._get_redis_scope_parts(client) == ("source", "6379", "0")
+
+
+def test_successful_select_state_is_shared_through_connection_pool() -> None:
+    """A selected pooled connection may be reused by a sibling Redis client."""
+    pool = SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0})
+    selecting_client = SimpleNamespace(connection_pool=pool)
+    sibling_client = SimpleNamespace(connection_pool=pool)
+
+    assert _redis_client._intercept_execute_command(lambda *_args, **_kwargs: "OK", selecting_client, "SELECT", 1) == "OK"
+    events: list[tuple[str, str]] = []
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        assert _redis_client._report_redis_access("GET", ("k",), client=sibling_client)
+    finally:
+        set_io_reporter(None)
+
+    assert ("redis:k:db=redis:source:6379/1", "read") in events
+
+
+def test_async_failed_select_does_not_change_single_connection_scope() -> None:
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+        connection=object(),
+    )
+
+    async def fail(_client: Any, *_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("invalid database")
+
+    with pytest.raises(RuntimeError, match="invalid database"):
+        asyncio.run(_redis_client_async._intercept_execute_command_async(fail, client, "SELECT", 1))
+
+    assert _redis_client._get_redis_scope_parts(client) == ("source", "6379", "0")
+
+
 def test_bytes_flushall_command_reports_server_scope() -> None:
     """redis-py may pass command tokens as bytes; scope semantics must survive normalization."""
     events: list[tuple[str, str]] = []
