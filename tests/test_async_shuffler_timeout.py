@@ -14,6 +14,7 @@ state.
 from __future__ import annotations
 
 import asyncio
+import gc
 from typing import Any
 
 import pytest
@@ -158,7 +159,7 @@ def test_lock_deadlock_with_no_task_in_pause_is_detected() -> None:
     assert "deadlock" in str(runner.scheduler._error).lower()
 
 
-def test_slow_but_correct_run_cannot_return_passing_proof() -> None:
+def test_slow_but_correct_run_cannot_return_passing_proof(recwarn: pytest.WarningsRecorder) -> None:
     """A slow-but-correct run that merely exceeds timeout_per_run must NOT be
     reported as a deadlock counterexample.
 
@@ -196,6 +197,8 @@ def test_slow_but_correct_run_cannot_return_passing_proof() -> None:
     assert result.explanation is not None
     assert "inconclusive" in result.explanation.lower()
     assert "deadlock" not in result.explanation.lower()
+    gc.collect()
+    assert not [warning for warning in recwarn if "was never awaited" in str(warning.message)]
 
 
 def test_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
