@@ -9,6 +9,30 @@ Unreleased
 0.7.0 (2026-07-14)
 ------------------
 
+* **Marker names now capture the full whitespace-free token.** A
+  ``# frontrun: <name>`` comment registers everything up to the next
+  whitespace (previously only the leading ``[A-Za-z0-9_]+`` run), so
+  hyphenated names like ``read-balance`` schedule correctly. Names that
+  relied on truncation (e.g. ``# frontrun: read,`` matching a schedule step
+  ``read``) change meaning on upgrade; the failure mode is a named
+  schedule-stall ``TimeoutError``, not a silent pass. Relatedly,
+  ``ThreadCoordinator`` (and every marker executor built on it) now raises
+  ``ValueError`` for schedule steps whose marker name is empty or contains
+  whitespace, since no comment could ever produce them.
+
+* **Marker-based execution fails closed on deferred worker bodies.** A sync
+  worker that returns a coroutine, generator, or async generator (e.g. a
+  ``lambda`` wrapping an ``async def`` call) now raises ``TypeError``
+  from ``TraceExecutor.run`` / ``explore_marker_interleavings`` instead of
+  reporting success without executing the body. Pass coroutine-returning
+  callables (``functools.partial(obj.method, arg)`` or the bound method) so
+  they are dispatched to the async executor.
+
+* ``explore_marker_interleavings`` and async random exploration now always
+  populate ``InterleavingResult.explanation`` when the invariant fails
+  (previously ``assert_holds()`` raised an empty ``AssertionError`` when the
+  invariant returned ``False`` without raising).
+
 * **Virtual clock for timeout, retry, and TTL races.** ``frontrun.explore(...)``
   now accepts ``clock="virtual"`` and ``clock="explored"`` for sync and async
   workers with DPOR and random strategies. Explored code reads scheduler time,
