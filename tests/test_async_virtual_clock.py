@@ -1593,6 +1593,53 @@ def test_async_event_wait_with_virtual_sleeper_autojumps() -> None:
     assert wall_elapsed < 4.0, f"event+sleeper took {wall_elapsed:.1f}s (autojump stall?)"
 
 
+def test_async_autojump_drains_unbounded_ready_callback_chain() -> None:
+    """A live call_soon chain must win before its wait_for timeout fires."""
+
+    class State:
+        def __init__(self) -> None:
+            self.future: asyncio.Future[None] | None = None
+            self.ok = False
+
+    async def waiter(state: State) -> None:
+        state.future = asyncio.get_running_loop().create_future()
+        await asyncio.wait_for(state.future, 10.0)
+        # Once the ready chain resolves the future, a real virtual deadline
+        # still needs to autojump so this also guards eventual clock progress.
+        await asyncio.sleep(1.0)
+        state.ok = True
+
+    async def resolver(state: State) -> None:
+        while state.future is None:
+            await asyncio.sleep(0)
+        loop = asyncio.get_running_loop()
+
+        def hop(remaining: int) -> None:
+            if remaining:
+                loop.call_soon(hop, remaining - 1)
+            else:
+                assert state.future is not None
+                state.future.set_result(None)
+
+        loop.call_soon(hop, 20)
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, resolver],
+            invariant=lambda state: state.ok,
+            strategy="dpor",
+            clock="virtual",
+            max_executions=1,
+            reproduce_on_failure=0,
+            detect_io=False,
+        )
+    )
+
+    assert result.property_holds, result.explanation
+    assert result.num_explored == 1
+
+
 def test_async_queue_get_deadlock_detected_exactly() -> None:
     class State:
         def __init__(self) -> None:
