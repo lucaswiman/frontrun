@@ -1249,3 +1249,53 @@ class TestDporPathCountSerialized:
         # can exist even with application-level locks (e.g. lock granularity
         # bugs).  The bound is relaxed to account for this.
         assert result.num_explored <= 15, f"Async lock-serialized ops should need ≤ 15 paths, got {result.num_explored}"
+
+
+# ---------------------------------------------------------------------------
+# Server/database identity regressions (0.7.0 release audit)
+#
+# Each test uses a reader/writer witness pattern: the invariant is violated
+# only when the writer's SET lands before the reader's GET, an ordering the
+# initial schedule does not produce.  Reaching it requires DPOR to detect the
+# GET/SET dependency and backtrack, so a missed dependency (two identities
+# for one physical database) falsely certifies the property.  Connections
+# are established during setup so the workers execute key-level commands
+# only.
+# ---------------------------------------------------------------------------
+
+
+class TestRedisIdentityAliases:
+    """Two clients naming one server differently must share resources."""
+
+    def test_dpor_detects_race_across_host_aliases(self, redis_port: int) -> None:
+        """localhost and 127.0.0.1 reach the same server (issue #250 finding)."""
+        port = redis_port
+
+        class State:
+            def __init__(self) -> None:
+                self.reader = redis_lib.Redis(host="localhost", port=port, decode_responses=True)
+                self.writer = redis_lib.Redis(host="127.0.0.1", port=port, decode_responses=True)
+                self.reader.ping()
+                self.writer.ping()
+                self.reader.delete("alias_flag", "alias_witness")
+
+        def reader(state: State) -> None:
+            if state.reader.get("alias_flag") == "1":
+                state.reader.set("alias_witness", "1")
+
+        def writer(state: State) -> None:
+            state.writer.set("alias_flag", "1")
+
+        def invariant(state: State) -> bool:
+            return state.reader.get("alias_witness") is None
+
+        result = frontrun.explore(
+            setup=State,
+            workers=[reader, writer],
+            invariant=invariant,
+            detect_io=True,
+            max_executions=50,
+            deadlock_timeout=15.0,
+            reproduce_on_failure=0,
+        )
+        assert not result.property_holds, "aliased clients reach one server; the SET-before-GET order must be found"

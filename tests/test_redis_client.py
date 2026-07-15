@@ -13,11 +13,11 @@ from frontrun._io_detection import set_dpor_scheduler, set_dpor_thread_id, set_i
 from frontrun._redis_client import _intercept_pipeline_execute, set_redis_replay_mode
 
 
-def _capture_accesses(command: str, args: tuple[object, ...], *, db: int = 0) -> list[tuple[str, str]]:
+def _capture_accesses(
+    command: str, args: tuple[object, ...], *, db: int = 0, host: str = "source"
+) -> list[tuple[str, str]]:
     events: list[tuple[str, str]] = []
-    client = SimpleNamespace(
-        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": db})
-    )
+    client = SimpleNamespace(connection_pool=SimpleNamespace(connection_kwargs={"host": host, "port": 6379, "db": db}))
     set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
     try:
         assert _redis_client._report_redis_access(command, args, client=client)
@@ -76,6 +76,26 @@ def test_pubsub_channels_are_scoped_to_server_not_database() -> None:
     db0_writes = {resource for resource, kind in db0 if kind == "write"}
     db1_writes = {resource for resource, kind in db1 if kind == "write"}
     assert db0_writes & db1_writes
+
+
+def test_host_aliases_share_server_identity() -> None:
+    """localhost and 127.0.0.1 reach the same server and must share resources."""
+    via_name = _capture_accesses("SET", ("k", "value"), host="localhost")
+    via_ip = _capture_accesses("SET", ("k", "value"), host="127.0.0.1")
+
+    name_writes = {resource for resource, kind in via_name if kind == "write"}
+    ip_writes = {resource for resource, kind in via_ip if kind == "write"}
+    assert name_writes & ip_writes
+
+
+def test_migrate_destination_host_alias_shares_identity() -> None:
+    """MIGRATE destination identity must canonicalize like client identity."""
+    migrate = _capture_accesses("MIGRATE", ("localhost", 6379, "k", 0, 1000), host="source")
+    destination_write = _capture_accesses("SET", ("k", "value"), host="127.0.0.1")
+
+    migrate_writes = {resource for resource, kind in migrate if kind == "write"}
+    destination_writes = {resource for resource, kind in destination_write if kind == "write"}
+    assert migrate_writes & destination_writes
 
 
 def test_bytes_flushall_command_reports_server_scope() -> None:
