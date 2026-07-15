@@ -80,6 +80,43 @@ answer is *inconclusive* or a demoted claim --- never a clean pass.
 False failures are annoying; false passes are the one thing a testing
 tool must not produce.
 
+Three verdicts, not two
+~~~~~~~~~~~~~~~~~~~~~~~
+
+A result therefore carries one of three verdicts:
+
+* **Pass** --- the certificate above: at least one interleaving
+  executed, worker bodies ran, no coverage-degrading events.
+* **Fail** --- a counterexample exists.  A fail verdict *implies* a
+  counterexample; vacuous runs must never be shoehorned into it.
+* **Inconclusive** --- no evidence either way, with a machine-readable
+  reason (e.g. the timeout elapsed before the first interleaving
+  completed, or an iteration budget of zero).
+
+Users can legitimately force a vacuous run --- a very short timeout, a
+zero iteration budget.  That is still *inconclusive*, not a pass and
+not a frontrun bug: ``assert_holds()`` raises on **both** non-pass
+verdicts, with distinct exception types, and the inconclusive error
+names the cause and the remedy in one line.  The failure mode this
+guards against is the CI job whose budget silently degrades until it is
+testing nothing while staying green.  A test that wants a
+budget-bounded smoke lane where zero work is acceptable must opt into
+the weaker claim *by name at the call site* (e.g.
+``assert_holds(allow_inconclusive=True)`` or a separately named
+``assert_no_failure_found()``) so the test reads as the weaker claim it
+makes.
+
+Encoding: ``property_holds`` is ``bool | None`` with ``None`` meaning
+inconclusive.  This is fail-closed for existing callers for free ---
+``if result.property_holds:`` treats ``None`` as falsy --- while
+preserving the guarantee that ``False`` implies a counterexample.
+
+One distinction stays sharp: user-induced vacuity is a legitimate
+inconclusive; **internally contradictory** evidence is not.  A result
+claiming explored interleavings whose evidence shows no worker body
+ever ran is a frontrun internal error and raises as such immediately
+--- it never reaches a verdict at all.
+
 
 Dependencies: over-approximate, never under-approximate
 -------------------------------------------------------
