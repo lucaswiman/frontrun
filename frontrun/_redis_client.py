@@ -34,7 +34,15 @@ from frontrun._deadlock import SchedulerAbort
 from frontrun._io_detection import _io_tls, external_operation_scope, get_io_reporter
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
-from frontrun._redis_parsing import parse_redis_access
+from frontrun._redis_command_data import (
+    _COMMAND_KEY_SPECS,
+    _EVAL_CMDS,
+    _KEYSPACE_READ_CMDS,
+    _KEYSPACE_WRITE_CMDS,
+    _STATELESS_NO_ACCESS_CMDS,
+    _TX_CONTROL_CMDS,
+)
+from frontrun._redis_parsing import _PUBSUB_CMDS, RedisAccessResult, parse_redis_access
 from frontrun._redis_patch_registry import SYNC_REDIS_TARGETS
 
 _suppress_tids: set[int] = set()
@@ -375,15 +383,88 @@ def _report_pipeline_commands(pipeline: Any) -> bool:
     """
     reported = False
     for cmd_name, cmd_args in _iter_pipeline_commands(pipeline):
-        if cmd_name.upper().split(" ", 1)[0] == "SELECT" and cmd_args:
+        upper_first = cmd_name.upper().split(" ", 1)[0]
+        if upper_first == "SELECT" and cmd_args:
             # Pipeline execution can partially succeed before raising, and
             # redis-py may return per-command errors.  Retaining both the old
             # and candidate DB on the shared pool is the sound fail-closed
             # model when the exact outcome is unavailable here.
             _record_client_select_candidate(pipeline, cmd_args[0])
+        elif upper_first == "RESET":
+            # RESET returns the connection to the default database.
+            _record_client_select_candidate(pipeline, 0)
         if _report_redis_access(cmd_name, cmd_args, client=pipeline):
             reported = True
     return reported
+
+
+# ---------------------------------------------------------------------------
+# Coarse-by-default fallback classification
+# ---------------------------------------------------------------------------
+
+# Commands with explicit modeling that is not driven by the key-spec table:
+# transaction control, atomic scripts (declared KEYS), pub/sub channels,
+# database-wide keyspace intents, SORT's dedicated parser, live-SELECT scope
+# tracking, and the curated stateless allowlist.  Membership here (or in
+# ``_COMMAND_KEY_SPECS``) is the *positive evidence* required for narrow
+# scoping; anything else defaults to the coarse conservative access.
+_RECOGNIZED_NO_SPEC_CMDS: frozenset[str] = (
+    _TX_CONTROL_CMDS
+    | _EVAL_CMDS
+    | _PUBSUB_CMDS
+    | _KEYSPACE_WRITE_CMDS
+    | _KEYSPACE_READ_CMDS
+    | _STATELESS_NO_ACCESS_CMDS
+    | frozenset({"WATCH", "SELECT", "PUBSUB", "SORT", "SORT_RO"})
+)
+
+
+def _needs_coarse_fallback(cmd_name: str, cmd_args: tuple[object, ...], access: RedisAccessResult) -> bool:
+    """Whether a command must fall back to the coarse conservative access.
+
+    Soundness invariant: over-merging is allowed, under-merging is forbidden.
+    Narrow scoping (specific keys, or legitimately zero accesses) requires
+    positive evidence — the command must be explicitly modeled or on the
+    curated stateless allowlist.  Everything else (a command missing from the
+    table, an unmodeled subcommand, a modeled command whose key extraction
+    failed, a script declaring zero KEYS) is treated as a database-wide plus
+    server-wide keyspace WRITE so a missed dependency can never falsely
+    certify a buggy interleaving as a pass.
+    """
+    upper = cmd_name.upper()
+    # Normalize compound command names from redis-py 4.2+ ("OBJECT ENCODING"),
+    # mirroring _redis_parsing._parse_redis_access_keys.
+    if " " in upper:
+        first, rest = upper.split(" ", 1)
+        cmd_args = (rest, *cmd_args)
+        upper = first
+
+    if upper in _STATELESS_NO_ACCESS_CMDS or upper == "SELECT":
+        # Stateless by curation; SELECT's state effect is fully captured by
+        # live db-scope tracking (_record_client_select).
+        return False
+
+    recognized = upper in _RECOGNIZED_NO_SPEC_CMDS or upper in _COMMAND_KEY_SPECS
+    if not recognized and cmd_args:
+        # Subcommand dispatch ("OBJECT ENCODING", "MEMORY USAGE", ...).  An
+        # unmodeled subcommand of a modeled parent stays unrecognized.
+        recognized = f"{upper} {_redis_arg_text(cmd_args[0]).upper()}" in _COMMAND_KEY_SPECS
+    if not recognized:
+        return True
+
+    if access.read_keys or access.write_keys or access.keyspace is not None:
+        return False  # positive evidence: extraction succeeded
+
+    # Recognized command that produced zero accesses.  Legitimate only for
+    # pub/sub (covered by the server-wide pub/sub intent resource) and plain
+    # transaction control; EVAL-family commands declaring zero KEYS may still
+    # touch anything and must go coarse, as must key-spec commands whose
+    # extraction failed (e.g. XREAD without STREAMS).
+    if upper in _PUBSUB_CMDS or upper == "PUBSUB":
+        return False
+    if access.is_transaction_control and upper not in _EVAL_CMDS:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -419,13 +500,18 @@ def _report_redis_access(
         "SUNSUBSCRIBE",
     }
     access = parse_redis_access(cmd_name, cmd_args)
+    # Unknown/unparseable commands must not default to zero accesses or a
+    # silently-narrow scope: anything without positive modeling evidence gets
+    # a coarse conservative database-wide + server-wide keyspace write below.
+    coarse = _needs_coarse_fallback(cmd_name, cmd_args, access)
 
     # Transaction control — no key-level reporting needed.
-    if access.is_transaction_control and not access.read_keys and not access.write_keys:
+    if not coarse and access.is_transaction_control and not access.read_keys and not access.write_keys:
         return True  # Still suppress endpoint I/O for protocol overhead.
 
     if (
-        not access.read_keys
+        not coarse
+        and not access.read_keys
         and not access.write_keys
         and access.keyspace is None
         and upper not in pubsub_commands
@@ -484,6 +570,13 @@ def _report_redis_access(
         key_accesses.extend((key, "write", db_scope) for key in access.write_keys)
         if access.keyspace is not None:
             keyspace_accesses.add((db_scope, access.keyspace))
+        if coarse:
+            # Conservative fallback: a database-wide keyspace WRITE conflicts
+            # with every key access in the database (per-key commands take a
+            # keyspace read), and the server-wide write below covers other
+            # databases on the same server.  Any heuristic key access parsed
+            # above is kept as an over-approximation.
+            keyspace_accesses.add((db_scope, "write"))
 
     for key, kind, scope in key_accesses:
         reporter(_redis_resource_id(key, db_scope=scope), kind)
@@ -522,24 +615,34 @@ def _report_redis_access(
             server_scopes.add(scope.rsplit("/", 1)[0])
     if upper == "MIGRATE" and len(cmd_args) >= 2:
         server_scopes.add(_format_redis_server_scope(cmd_args[0], cmd_args[1]))
-    server_kind = "write" if upper == "FLUSHALL" else "read"
+    # Coarse commands could be FLUSHALL-shaped (blast radius unknown), so they
+    # also take the server-wide write.
+    server_kind = "write" if upper == "FLUSHALL" or coarse else "read"
     for server_scope in sorted(server_scopes):
         reporter(_redis_server_keyspace_resource_id(server_scope), server_kind)
 
     return True
 
 
-def _replay_needs_scheduling_point(access: Any) -> bool:
+def _replay_needs_scheduling_point(
+    access: RedisAccessResult, cmd_name: str | None = None, cmd_args: tuple[object, ...] = ()
+) -> bool:
     """Whether a Redis command needs a replay scheduling point.
 
     During replay the I/O reporter is ``None``, so ``_report_redis_access``
     reports nothing and ``reported`` is ``False``.  We must still recreate a
     scheduling point for every command that created one during exploration —
-    i.e. any command carrying a key-level *or* keyspace-level intent-lock —
-    so the io-anchored replay schedule stays aligned.  Connection-setup
-    commands (AUTH, SELECT, CLIENT SETNAME, ...) carry none and are skipped.
+    i.e. any command carrying a key-level *or* keyspace-level intent-lock,
+    plus (when *cmd_name* is supplied) any command that fell back to the
+    coarse conservative access — so the io-anchored replay schedule stays
+    aligned.  Connection-setup commands (AUTH, SELECT, CLIENT SETNAME, ...)
+    carry none and are skipped.
     """
-    return bool(access.read_keys or access.write_keys or access.keyspace is not None)
+    if access.read_keys or access.write_keys or access.keyspace is not None:
+        return True
+    if cmd_name is None:
+        return False
+    return _needs_coarse_fallback(cmd_name, cmd_args, access)
 
 
 def _parse_and_report_execute_command(
@@ -640,7 +743,7 @@ def _intercept_execute_command_scoped(
     needs_scheduling_point = reported
     if not needs_scheduling_point and _redis_replay_mode:
         access = parse_redis_access(cmd_name, cmd_args)
-        needs_scheduling_point = _replay_needs_scheduling_point(access)
+        needs_scheduling_point = _replay_needs_scheduling_point(access, cmd_name, cmd_args)
 
     # Build a structured resource ID for IO-anchored replay.  Fields are
     # joined with the unit separator (\x1f) so the replay scheduler can
@@ -661,10 +764,16 @@ def _intercept_execute_command_scoped(
         reported,
         needs_scheduling_point,
     )
-    if cmd_name.upper().split(" ", 1)[0] == "SELECT" and cmd_args:
+    upper_first = cmd_name.upper().split(" ", 1)[0]
+    if upper_first == "SELECT" and cmd_args:
         # SELECT changes connection state only after the server accepts it.
         # Recording before I/O mis-scopes later commands when SELECT fails.
         _record_client_select(self, cmd_args[0])
+    elif upper_first == "RESET":
+        # RESET returns the connection to the default database.  Keeping the
+        # old scope *and* adding db 0 as a candidate is the sound
+        # over-approximation (mirrors pooled SELECT handling).
+        _record_client_select_candidate(self, 0)
     return result
 
 
@@ -696,7 +805,7 @@ def _intercept_pipeline_execute_scoped(
     needs_scheduling_point = reported
     if not needs_scheduling_point and _redis_replay_mode:
         needs_scheduling_point = any(
-            _replay_needs_scheduling_point(parse_redis_access(cmd_name, cmd_args))
+            _replay_needs_scheduling_point(parse_redis_access(cmd_name, cmd_args), cmd_name, cmd_args)
             for cmd_name, cmd_args in _iter_pipeline_commands(self)
         )
 

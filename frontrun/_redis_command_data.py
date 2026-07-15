@@ -315,6 +315,71 @@ _NO_KEY_CMDS: frozenset[str] = frozenset(
     }
 )
 
+# Curated allowlist of genuinely stateless commands — the ONLY commands
+# allowed to produce zero accesses at report time.  Everything else that is
+# not positively modeled falls back to a coarse conservative access
+# (database-wide + server-wide keyspace WRITE) in
+# ``_redis_client._report_redis_access``: over-merging is allowed,
+# under-merging is forbidden.
+#
+# Curation criterion: a command belongs here only if its execution order
+# relative to any data command can never change an observable data-plane
+# outcome.  Justifications:
+#
+# * Connection-local handshake/flags (no shared state): ASKING, AUTH,
+#   HELLO, PING, ECHO, QUIT, READONLY, READWRITE, REPLCONF, RESET.
+#   RESET additionally returns the connection to database 0; that scope
+#   effect is handled by live db-candidate tracking in ``_redis_client``
+#   (mirroring SELECT), not by an access record.
+# * Pure introspection/diagnostics (read-only, not data-plane): COMMAND,
+#   INFO, LATENCY, LOLWUT, MONITOR, ROLE, SLOWLOG, TIME, PFSELFTEST.
+# * Persistence-plane only — serializes state to disk; no command can
+#   observe a resulting data difference: BGREWRITEAOF, BGSAVE, LASTSAVE,
+#   SAVE.
+# * Replication/ack barriers (block, read-only): WAIT, WAITAOF.
+# * Control-plane without data movement: CLIENT (connection metadata;
+#   CLIENT KILL/PAUSE affect timing/liveness, which frontrun itself
+#   schedules, never data values), CLUSTER (topology metadata; actual key
+#   movement happens via MIGRATE/RESTORE, which are modeled).
+#
+# Deliberately NOT allowlisted (coarse instead): SCRIPT/FUNCTION (script
+# cache races EVALSHA/FCALL into NOSCRIPT), CONFIG (can change eviction
+# and other data-affecting behavior), ACL (can deny later commands),
+# DEBUG (arbitrary server manipulation), MODULE, SHUTDOWN,
+# REPLICAOF/SLAVEOF/FAILOVER/PSYNC/SYNC (replica promotion can lose
+# writes).
+_STATELESS_NO_ACCESS_CMDS: frozenset[str] = frozenset(
+    {
+        "ASKING",
+        "AUTH",
+        "BGREWRITEAOF",
+        "BGSAVE",
+        "CLIENT",
+        "CLUSTER",
+        "COMMAND",
+        "ECHO",
+        "HELLO",
+        "INFO",
+        "LASTSAVE",
+        "LATENCY",
+        "LOLWUT",
+        "MONITOR",
+        "PFSELFTEST",
+        "PING",
+        "QUIT",
+        "READONLY",
+        "READWRITE",
+        "REPLCONF",
+        "RESET",
+        "ROLE",
+        "SAVE",
+        "SLOWLOG",
+        "TIME",
+        "WAIT",
+        "WAITAOF",
+    }
+)
+
 # Parent commands that dispatch to subcommands in the key-spec table.
 # When a specific subcommand (e.g. "OBJECT HELP") is not found, we return
 # no-keys instead of hitting the conservative fallback.

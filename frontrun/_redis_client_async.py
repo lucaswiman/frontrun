@@ -21,6 +21,7 @@ from frontrun._patching import patch_method, restore_patches, wrap_method_metada
 from frontrun._redis_client import (
     _parse_and_report_execute_command,
     _record_client_select,
+    _record_client_select_candidate,
     _report_pipeline_commands,
     _suppress_endpoint_io,
 )
@@ -118,8 +119,13 @@ async def _intercept_execute_command_async(
         return await original_method(self, *args, **kwargs)
     cmd_name, cmd_args, reported = parsed
     result = await _dispatch_async(original_method, self, reported, *args, **kwargs)
-    if cmd_name.upper().split(" ", 1)[0] == "SELECT" and cmd_args:
+    upper_first = cmd_name.upper().split(" ", 1)[0]
+    if upper_first == "SELECT" and cmd_args:
         _record_client_select(self, cmd_args[0])
+    elif upper_first == "RESET":
+        # RESET returns the connection to the default database; add db 0 as a
+        # candidate scope (sound over-approximation, mirrors the sync path).
+        _record_client_select_candidate(self, 0)
     return result
 
 
