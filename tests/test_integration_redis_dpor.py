@@ -24,7 +24,12 @@ Running::
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+import subprocess
+import tempfile
 import threading
+import time
 
 import pytest
 
@@ -1299,3 +1304,86 @@ class TestRedisIdentityAliases:
             reproduce_on_failure=0,
         )
         assert not result.property_holds, "aliased clients reach one server; the SET-before-GET order must be found"
+
+
+class TestRedisUnixSocketIdentity:
+    """A unix-socket client and a TCP client to one server must share resources."""
+
+    _UNIX_PORT = int(os.environ.get("REDIS_PORT_UNIX", "16398"))
+
+    @pytest.fixture
+    def unix_socket_server(self):
+        """Spawn a dedicated redis-server listening on both TCP and a unix socket."""
+        if not shutil.which("redis-server"):
+            pytest.skip("redis-server not installed")
+        tmpdir = tempfile.mkdtemp(prefix="fr-redis-")  # short path: AF_UNIX limit
+        sock_path = os.path.join(tmpdir, "redis.sock")
+        proc = subprocess.Popen(
+            [
+                "redis-server",
+                "--port",
+                str(self._UNIX_PORT),
+                "--unixsocket",
+                sock_path,
+                "--save",
+                "",
+                "--appendonly",
+                "no",
+                "--loglevel",
+                "warning",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.time() + 5.0
+        while not os.path.exists(sock_path) and time.time() < deadline:
+            time.sleep(0.05)
+        client = redis_lib.Redis(unix_socket_path=sock_path)
+        try:
+            client.ping()
+        except redis_lib.exceptions.RedisError:
+            proc.terminate()
+            proc.wait()
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            pytest.skip("could not start a unix-socket redis-server")
+        finally:
+            client.close()
+        yield sock_path, self._UNIX_PORT
+        proc.terminate()
+        proc.wait()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_dpor_detects_race_between_unix_socket_and_tcp_clients(
+        self, unix_socket_server: tuple[str, int]
+    ) -> None:
+        """Mixed unix-socket/TCP access to one server (issue #250 finding)."""
+        sock_path, port = unix_socket_server
+
+        class State:
+            def __init__(self) -> None:
+                self.reader = redis_lib.Redis(unix_socket_path=sock_path, decode_responses=True)
+                self.writer = redis_lib.Redis(host="localhost", port=port, decode_responses=True)
+                self.reader.ping()
+                self.writer.ping()
+                self.reader.delete("unix_flag", "unix_witness")
+
+        def reader(state: State) -> None:
+            if state.reader.get("unix_flag") == "1":
+                state.reader.set("unix_witness", "1")
+
+        def writer(state: State) -> None:
+            state.writer.set("unix_flag", "1")
+
+        def invariant(state: State) -> bool:
+            return state.reader.get("unix_witness") is None
+
+        result = frontrun.explore(
+            setup=State,
+            workers=[reader, writer],
+            invariant=invariant,
+            detect_io=True,
+            max_executions=50,
+            deadlock_timeout=15.0,
+            reproduce_on_failure=0,
+        )
+        assert not result.property_holds, "unix-socket and TCP clients reach one server; the race must be found"

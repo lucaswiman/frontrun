@@ -98,6 +98,30 @@ def test_migrate_destination_host_alias_shares_identity() -> None:
     assert migrate_writes & destination_writes
 
 
+def test_unix_socket_pool_gets_distinct_identity(tmp_path: Any) -> None:
+    """A unix-socket pool must not masquerade as the default TCP endpoint.
+
+    Unix-socket connection kwargs carry ``path`` and no host/port; falling
+    back to ``localhost:6379`` would collide with an unrelated default TCP
+    server.  With no server behind the socket the identity must stay a
+    distinct per-path one.
+    """
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"path": str(tmp_path / "absent.sock"), "db": 0})
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
+    finally:
+        set_io_reporter(None)
+
+    assert events
+    assert all(
+        "localhost:6379" not in resource and "127.0.0.1:6379" not in resource for resource, _kind in events
+    ), events
+
+
 def test_bytes_flushall_command_reports_server_scope() -> None:
     """redis-py may pass command tokens as bytes; scope semantics must survive normalization."""
     events: list[tuple[str, str]] = []
