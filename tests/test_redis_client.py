@@ -159,6 +159,34 @@ def test_select_on_pooled_client_reports_both_db_scopes() -> None:
     assert "redis:k:db=redis:source:6379/1" in writes
 
 
+def test_select_state_is_not_keyed_by_reusable_id_alone() -> None:
+    """SELECT state must live on the client (or a weakref-evicted entry).
+
+    id() values are reusable: a bare id-keyed registry entry for a dead
+    client would hand its selected database to whatever object next occupies
+    the address, silently mis-scoping an unrelated client.
+    """
+    settable = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+        connection=object(),
+    )
+    _redis_client._record_client_select(settable, 1)
+    assert id(settable) not in _redis_client._client_exact_dbs
+    assert _redis_client._get_redis_scope_parts(settable) == ("source", "6379", "1")
+
+    class _Untrackable:  # neither attribute-settable nor weakref-able
+        __slots__ = ("connection", "connection_pool")
+
+    untrackable = _Untrackable()
+    untrackable.connection_pool = SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0})
+    untrackable.connection = object()
+    _redis_client._record_client_select(untrackable, 1)
+    assert id(untrackable) not in _redis_client._client_exact_dbs
+    # Untrackable clients keep the configured scope rather than risking a
+    # stale one for a future client at the same address.
+    assert _redis_client._get_redis_scope_parts(untrackable) == ("source", "6379", "0")
+
+
 def test_select_recorded_without_reporter_for_replay_alignment() -> None:
     """A SELECT seen while no reporter is installed (setup/replay) must still
     move the scope, or recorded anchors and replay anchors diverge."""
