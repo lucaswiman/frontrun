@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import weakref
 from typing import Any
 
 __all__ = [
@@ -62,7 +63,17 @@ def _stable_db_scope(identity: str) -> str:
 def _register_connection_db_scope(connection: Any, identity: str) -> str:
     """Associate a stable database scope with a connection object."""
     scope = _stable_db_scope(identity)
-    _CONNECTION_DB_SCOPES[id(connection)] = scope
+    key = id(connection)
+    _CONNECTION_DB_SCOPES[key] = scope
+    # Evict the entry when the connection is collected: id() values are
+    # reusable, and a stale mapping would hand this scope to whatever
+    # unrelated object next occupies the address. Weakref callbacks fire
+    # during dealloc, before the address can be reused. Some connection
+    # types are not weakref-able; their entries stay (as before).
+    try:
+        weakref.finalize(connection, _CONNECTION_DB_SCOPES.pop, key, None)
+    except TypeError:
+        pass
     try:
         setattr(connection, _DB_SCOPE_ATTR, scope)
     except AttributeError:
