@@ -54,6 +54,7 @@ import importlib
 from importlib.metadata import version as _metadata_version
 from typing import TYPE_CHECKING, Any
 
+from frontrun._certificate import FrontrunInternalError, InconclusiveExploration
 from frontrun.common import NondeterministicSQLError
 from frontrun.explore import explore
 from frontrun.trace_markers import TraceExecutor
@@ -100,6 +101,8 @@ def __dir__() -> list[str]:
 __all__ = [
     "ClockMode",
     "CrossProcessResult",
+    "FrontrunInternalError",
+    "InconclusiveExploration",
     "NondeterministicSQLError",
     "Subprocess",
     "TraceExecutor",

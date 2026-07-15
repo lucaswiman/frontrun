@@ -478,14 +478,25 @@ engine for conflict analysis.
 Prefer ``assert_holds()`` over manual asserts
 ---------------------------------------------
 
-All exploration functions return an :class:`~frontrun.common.InterleavingResult`.
+All exploration functions return an :class:`~frontrun.common.InterleavingResult`
+with a tri-state ``property_holds`` verdict: ``True`` (a certified pass),
+``False`` (a failure was found — always with a counterexample/failure record),
+or ``None`` (inconclusive: no evidence either way, e.g. a budget expired before
+any interleaving completed; ``inconclusive_reason`` names cause and remedy).
 Use :meth:`~frontrun.common.InterleavingResult.assert_holds` to check the result
-in a single call — it raises ``AssertionError`` (with the full race explanation)
-on failure and returns ``None`` on success::
+in a single call — it returns ``None`` on a certified pass and raises a distinct
+exception for each non-pass verdict: ``AssertionError`` (with the full race
+explanation) on failure, and :class:`frontrun.InconclusiveExploration` when the
+exploration was inconclusive::
 
    result = frontrun.explore(setup=setup, workers=[t1, t2], invariant=invariant)
-   result.assert_holds()   # raises with explanation when property_holds is False
+   result.assert_holds()   # raises unless the exploration certified a pass
+
+A test that deliberately accepts the weaker "no failure found" claim (e.g. a
+tightly budgeted smoke lane) opts in by name at the call site with
+``result.assert_holds(allow_inconclusive=True)`` — genuine failures still raise.
 
 This is preferable to ``assert result.property_holds, result.explanation``
-because it works correctly under pytest's assertion rewriting and requires no
-memory burden on the caller to supply the message argument.
+because it works correctly under pytest's assertion rewriting, distinguishes an
+inconclusive run from a found race, and requires no memory burden on the caller
+to supply the message argument.

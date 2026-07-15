@@ -134,7 +134,12 @@ before workers start. Put the test in a ``.py`` file, or use
 
 Compare with the same test written against a safe, single-statement increment
 (``UPDATE counter SET val = val + 1``): the invariant holds under every
-interleaving and ``result.property_holds`` is ``True``.
+interleaving and ``result.property_holds`` is ``True``.  As everywhere else,
+``property_holds`` is tri-state: ``True`` is a pass certificate backed by the
+coordinator's evidence (completed iterations, every worker process observed to
+finish), ``False`` implies a failure record exists, and ``None`` means the run
+was inconclusive — e.g. ``total_timeout`` expired before a single interleaving
+completed — with the cause in ``result.inconclusive_reason``.
 
 ``execution="process"`` accepts sync ``"dpor"`` only. Async workers and other
 strategies raise ``ValueError`` (SQL/Redis state is external, so async worker
@@ -242,7 +247,12 @@ The :class:`~frontrun.common.InterleavingResult` returned by
 ``explore(execution="process")`` carries the same structured information:
 ``exhausted``, ``failure_kind``, and ``failures`` are copied from the
 underlying ``CrossProcessResult`` alongside the human-readable
-``explanation``.
+``explanation``.  An ``ok`` result is converted through the pass-certificate
+chokepoint: it certifies ``property_holds=True`` only with at least one
+completed iteration and clean-completion evidence for every worker, and a
+zero-iteration truncation (e.g. ``total_timeout`` expiring during worker
+startup) becomes ``property_holds=None`` with the truncation cause in
+``inconclusive_reason``.
 
 
 Strategies and worker reuse

@@ -135,11 +135,21 @@ def test_reuse_restarts_killable_workers_after_unclean_iteration(monkeypatch: py
         runs = 0
 
         def _run_reused(
-            self, _socks, _worker_set, _scheduler, _accesses, _worker_errors, unclean, _total_deadline=None
+            self,
+            _socks,
+            _worker_set,
+            _scheduler,
+            _accesses,
+            _worker_errors,
+            unclean,
+            _total_deadline=None,
+            completed=None,
         ) -> None:
             self.runs += 1
             if self.runs == 1:
                 unclean.add(0)
+            elif completed is not None:
+                completed.add(0)
 
     monkeypatch.setattr(coordinator_module, "_RelayDporScheduler", DummyScheduler)
     monkeypatch.setattr(coordinator_module, "dpor_exploration_iter", two_executions)

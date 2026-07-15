@@ -30,6 +30,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from frontrun._certificate import PassEvidence, certify_pass
 from frontrun._marker_coordination import (
     MARKER_PATTERN,
     MarkerRegistry,
@@ -523,6 +524,8 @@ def explore_marker_interleavings(
     num_explored = 0
     failures: list[tuple[int, Schedule]] = []
     first_explanation: str | None = None
+    # Pass-certificate evidence: each worker's body entered at least once.
+    workers_entered = dict.fromkeys(threads, False)
 
     for i, schedule in enumerate(schedules):
         state = _call_sync_setup(setup)
@@ -531,7 +534,8 @@ def explore_marker_interleavings(
         runners: dict[str, Callable[..., Any]] = {}
         for exec_name, (target_fn, _markers) in threads.items():
 
-            def _make_runner(s: Any = state, fn: Callable[..., None] = target_fn) -> None:
+            def _make_runner(s: Any = state, fn: Callable[..., None] = target_fn, name: str = exec_name) -> None:
+                workers_entered[name] = True
                 _reject_deferred_sync_result(fn(s), fn)
 
             runners[exec_name] = _make_runner
@@ -609,8 +613,18 @@ def explore_marker_interleavings(
             explanation=first_explanation,
         )
 
-    return InterleavingResult(
-        property_holds=True,
-        num_explored=num_explored,
-        unique_interleavings=num_explored,
+    return certify_pass(
+        result=InterleavingResult(
+            property_holds=None,
+            num_explored=num_explored,
+            unique_interleavings=num_explored,
+        ),
+        evidence=PassEvidence(
+            executions=num_explored,
+            workers_executed=[workers_entered[name] for name in threads],
+            vacuous_reason=(
+                "no marker interleaving was executed; declare at least one marker per thread "
+                "so schedules can be generated"
+            ),
+        ),
     )

@@ -227,6 +227,15 @@ class CrossProcessResult:
     # stop_on_first=False accumulates ALL failing executions instead of only
     # the first.
     failures: list[tuple[int, list[int]]] = field(default_factory=list)
+    # Pass-certificate evidence: workers_executed[i] is True iff worker i sent
+    # a clean DONE frame in at least one counted iteration. Populated on
+    # ok=True results by both coordinators and consumed by certify_pass in
+    # cross_process._to_interleaving_result.
+    workers_executed: list[bool] = field(default_factory=list)
+    # Why the search stopped before its natural end (e.g. total_timeout expiry
+    # during startup), when known. Feeds the inconclusive reason for ok=True
+    # results with zero iterations.
+    truncation: str | None = None
 
 
 class _Conn:
@@ -237,6 +246,9 @@ class _Conn:
         self.sock = sock
         self.pending: dict[str, Any] | None = None  # blocking request awaiting a grant
         self.done = False
+        # True only for a clean DONE frame (worker body ran to completion), as
+        # opposed to `done`, which any terminal (error/timeout) also sets.
+        self.completed = False
         self.error: str | None = None
         # recv timed out with the socket still open: the worker is alive but
         # silent past deadlock_timeout (distinct from a disconnect/EOF).
@@ -260,6 +272,8 @@ class _Outcome:
     # Workers whose recv timed out while still connected (alive but silent past
     # deadlock_timeout), mapped to a human-facing diagnosis.
     timeouts: dict[int, str]
+    # Workers that sent a clean DONE this run (pass-certificate evidence).
+    completed: set[int]
 
 
 class CrossProcessCoordinator:
@@ -317,9 +331,14 @@ class CrossProcessCoordinator:
         seen: set[tuple[int, ...]] = set()
         iterations = 0
         exhausted = True
+        truncation: str | None = None
+        # Pass-certificate evidence: workers observed to send a clean DONE in
+        # at least one counted iteration.
+        workers_ran = [False] * self.num_workers
         while stack:
             if iterations >= max_iterations:
                 exhausted = False
+                truncation = f"max_iterations={max_iterations} reached before the search space was covered"
                 break
             prefix = stack.pop()
             key = tuple(prefix)
@@ -333,6 +352,8 @@ class CrossProcessCoordinator:
             except (TimeoutError, OSError) as exc:
                 return _connection_failure(exc, iterations + 1)
             iterations += 1
+            for wid in outcome.completed:
+                workers_ran[wid] = True
 
             if outcome.errors:
                 wid, msg = next(iter(sorted(outcome.errors.items())))
@@ -412,7 +433,13 @@ class CrossProcessCoordinator:
                 chosen = outcome.schedule[i]
                 stack.extend([*outcome.schedule[:i], alt] for alt in outcome.branch_points[i] if alt != chosen)
 
-        return CrossProcessResult(ok=True, iterations=iterations, exhausted=exhausted)
+        return CrossProcessResult(
+            ok=True,
+            iterations=iterations,
+            exhausted=exhausted,
+            workers_executed=workers_ran,
+            truncation=truncation,
+        )
 
     # -- one interleaving ---------------------------------------------------
 
@@ -463,7 +490,8 @@ class CrossProcessCoordinator:
                     "running: it blocked outside frontrun's model (e.g. database-level locking) or a statement "
                     "ran longer than deadlock_timeout; raise deadlock_timeout if the workload is just slow"
                 )
-            return _Outcome(schedule, branch_points, accesses, stop, errors, timeouts)
+            completed = {wid for wid, c in conns.items() if c.completed}
+            return _Outcome(schedule, branch_points, accesses, stop, errors, timeouts, completed)
         finally:
             for c in conns.values():
                 try:
@@ -588,6 +616,7 @@ class CrossProcessCoordinator:
                 continue
             elif kind == proto.DONE:
                 conn.done = True
+                conn.completed = True
                 conn.pending = None
                 registry.pop_all(conn.worker_id, None)
                 return

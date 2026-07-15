@@ -93,6 +93,7 @@ from frontrun._async_virtual_timeouts import (
     _unpatch_asyncio_sleep,
     _unpatch_asyncio_timeouts,
 )
+from frontrun._certificate import PassEvidence, certify_pass
 from frontrun._deadlock import DeadlockError, format_cycle
 from frontrun._dpor_core import (
     NoOpLock,
@@ -1555,7 +1556,10 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         max_executions=max_executions,
     )
 
-    result = InterleavingResult(property_holds=True)
+    # Verdict-less accumulator: the pass verdict is only stamped by
+    # certify_pass() at the end, from evidence gathered below.
+    result = InterleavingResult(property_holds=None)
+    workers_entered = [False] * num_tasks
     decisive_executions = 0
     inconclusive_timeouts = 0
     stable_ids = StableObjectIds()
@@ -1672,9 +1676,20 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                     state = _call_sync_setup(setup)
                     stable_ids.pre_register(state)
 
+                    def make_task_func(
+                        idx: int, task: Callable[[T], Coroutine[Any, Any, None]], s: T
+                    ) -> Callable[[], Coroutine[Any, Any, None]]:
+                        async def wrapper() -> None:
+                            # Pass-certificate evidence: this task's body was
+                            # entered (awaiting the coroutine runs its body up
+                            # to the first suspension in the same step).
+                            workers_entered[idx] = True
+                            await task(s)
+
+                        return wrapper
+
                     task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
-                        i: (lambda s=state, t=t: t(s))  # type: ignore[assignment]
-                        for i, t in enumerate(tasks)
+                        i: make_task_func(i, t, state) for i, t in enumerate(tasks)
                     }
 
                     deadlock_error: DeadlockError | None = None
@@ -1788,19 +1803,34 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
         if _restore_loop_time is not None:
             _restore_loop_time()
 
-    if result.property_holds and result.num_explored > 0 and inconclusive_timeouts > 0:
-        result.property_holds = False
-        if decisive_executions == 0:
-            result.explanation = (
-                f"Async DPOR checked no completed interleavings: all {inconclusive_timeouts} explored execution(s) "
-                "timed out before completion. This is inconclusive, not a deadlock counterexample; increase "
-                "timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
-            )
-        else:
-            result.explanation = (
-                f"Async DPOR completed {decisive_executions} interleaving(s), but {inconclusive_timeouts} additional "
-                "execution(s) timed out before completion. The search is inconclusive and cannot prove the property; "
-                "increase timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
-            )
-
-    return result
+    if result.property_holds is False:
+        # Failures recorded with stop_on_first=False fall through to here.
+        return result
+    # No failure found: certify (or honestly refuse to certify) the pass.
+    degradation: list[str] = []
+    if inconclusive_timeouts > 0 and decisive_executions > 0:
+        degradation.append(
+            f"Async DPOR completed {decisive_executions} interleaving(s), but {inconclusive_timeouts} additional "
+            "execution(s) timed out before completion. The search is inconclusive and cannot prove the property; "
+            "increase timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
+        )
+    if inconclusive_timeouts > 0 and decisive_executions == 0:
+        vacuous_reason = (
+            f"Async DPOR checked no completed interleavings: all {inconclusive_timeouts} explored execution(s) "
+            "timed out before completion. This is inconclusive, not a deadlock counterexample; increase "
+            "timeout_per_run/deadlock_timeout or remove unmanaged wall-clock blocking from explored tasks."
+        )
+    else:
+        vacuous_reason = (
+            f"total_timeout={total_timeout!r}s elapsed before any interleaving completed; "
+            "increase total_timeout or reduce the workload"
+        )
+    return certify_pass(
+        result=result,
+        evidence=PassEvidence(
+            executions=decisive_executions,
+            workers_executed=workers_entered,
+            degradation_events=degradation,
+            vacuous_reason=vacuous_reason,
+        ),
+    )

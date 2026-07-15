@@ -244,7 +244,11 @@ def test_to_interleaving_result_carries_structured_fields() -> None:
 def test_to_interleaving_result_ok_maps_exhausted() -> None:
     from frontrun.cross_process import _to_interleaving_result
 
-    ir = _to_interleaving_result(CrossProcessResult(ok=True, iterations=3, exhausted=True))
+    # An ok result is a pass *certificate*: it must carry the coordinators'
+    # per-worker completion evidence or the conversion refuses to certify.
+    ir = _to_interleaving_result(
+        CrossProcessResult(ok=True, iterations=3, exhausted=True, workers_executed=[True, True])
+    )
     assert ir.property_holds is True
     assert ir.exhausted is True
     assert ir.failure_kind is None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from frontrun._certificate import PassEvidence, certify_pass
 from frontrun._dpor_core import (
     compute_serializable_baseline_sync,
     dpor_exploration_iter,
@@ -186,7 +187,10 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
         search=search,
     )
 
-    result = InterleavingResult(property_holds=True)
+    # Verdict-less accumulator: the pass verdict is only stamped by
+    # certify_pass() at the end, from evidence gathered below.
+    result = InterleavingResult(property_holds=None)
+    workers_entered = [False] * num_threads
     stable_ids = StableObjectIds()
     # Shared lock serialising ALL PyO3 calls to engine/execution objects.
     # On free-threaded Python, PyO3 &mut self borrows panic rather than
@@ -374,14 +378,16 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                 # (silently pruning genuinely distinct interleavings).
                 stable_ids.pre_register(state)
 
-                def make_thread_func(thread_func: Callable[[T], None], s: T) -> Callable[[], None]:
+                def make_thread_func(idx: int, thread_func: Callable[[T], None], s: T) -> Callable[[], None]:
                     def wrapper() -> None:
+                        # Pass-certificate evidence: this worker's body was entered.
+                        workers_entered[idx] = True
                         result = thread_func(s)
                         _reject_deferred_sync_result(result, thread_func)
 
                     return wrapper
 
-                funcs = [make_thread_func(t, state) for t in threads]
+                funcs = [make_thread_func(i, t, state) for i, t in enumerate(threads)]
                 try:
                     runner.run(funcs, timeout=timeout_per_run)
                 except TimeoutError:
@@ -418,14 +424,16 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                     # Python threads cannot be terminated safely. Once a run
                     # times out, survivors may continue outside scheduler
                     # control and no later execution is trustworthy. Stop the
-                    # search immediately and never turn an unevaluable partial
-                    # run into a passing proof.
-                    result.property_holds = False
-                    result.explanation = (
+                    # search immediately with an inconclusive verdict — a
+                    # timed-out partial run is neither a passing proof nor a
+                    # counterexample.
+                    result.property_holds = None
+                    result.inconclusive_reason = (
                         f"DPOR execution {result.num_explored} timed out before all worker threads completed. "
                         "The search is inconclusive because Python threads cannot be killed safely; increase "
                         "timeout_per_run/deadlock_timeout or remove unmanaged blocking from explored workers."
                     )
+                    result.explanation = result.inconclusive_reason
                     clear_instr_cache()
                     return result
                 if _deadlock_err is not None:
@@ -619,4 +627,21 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
     if report is not None and report_path is not None:
         generate_html_report(report, report_path)
 
-    return result
+    if result.property_holds is False:
+        # Failures recorded with stop_on_first=False fall through to here.
+        return result
+    # No failure found: certify (or honestly refuse to certify) the pass.
+    # dpor_exploration_iter always yields the baseline execution, so a
+    # zero-execution outcome can only mean the total_timeout budget expired
+    # before it completed.
+    return certify_pass(
+        result=result,
+        evidence=PassEvidence(
+            executions=result.num_explored,
+            workers_executed=workers_entered,
+            vacuous_reason=(
+                f"total_timeout={total_timeout!r}s elapsed before any interleaving completed; "
+                "increase total_timeout or reduce the workload"
+            ),
+        ),
+    )

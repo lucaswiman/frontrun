@@ -64,23 +64,49 @@ def _to_interleaving_result(result: CrossProcessResult) -> Any:
 
     Keeps ``execution="process"`` result-compatible with threads/async
     (``property_holds`` / ``counterexample`` / ``explanation`` / ``assert_holds``).
+    An ``ok`` result is routed through :func:`frontrun._certificate.certify_pass`
+    with the coordinator's real evidence (iterations, per-worker DONE frames,
+    the exhausted/divergence claim and any truncation cause), so a zero-iteration
+    truncation surfaces as inconclusive rather than a vacuous pass.
     """
+    from frontrun._certificate import PassEvidence, certify_pass
     from frontrun.common import InterleavingResult
 
-    explanation = None
-    if not result.ok:
-        kind = f"[{result.failure_kind}] " if result.failure_kind else ""
-        where = f" at schedule {result.failing_schedule}" if result.failing_schedule is not None else ""
-        explanation = f"{kind}{result.failure or 'invariant violated'}{where}"
-        # Surface the external-access trace so a process-mode failure is
-        # diagnosable without dropping down to explore_processes().
-        if result.accesses:
-            trace = ", ".join(
-                f"{result.worker_labels.get(wid, f'w{wid}')}:{access}:{rid}" for wid, rid, access in result.accesses
-            )
-            explanation += f"\n  accesses: {trace}"
+    if result.ok:
+        return certify_pass(
+            result=InterleavingResult(
+                property_holds=None,
+                num_explored=result.iterations,
+                unique_interleavings=result.iterations,
+                exhausted=result.exhausted,
+            ),
+            evidence=PassEvidence(
+                executions=result.iterations,
+                workers_executed=result.workers_executed,
+                exhausted_claim=result.exhausted,
+                vacuous_reason=(
+                    f"cross-process exploration completed no interleavings: {result.truncation}; "
+                    "increase the budget or reduce the workload"
+                )
+                if result.truncation
+                else (
+                    "cross-process exploration completed no interleavings before the search budget expired; "
+                    "increase total_timeout/max_iterations or reduce the workload"
+                ),
+            ),
+        )
+    kind = f"[{result.failure_kind}] " if result.failure_kind else ""
+    where = f" at schedule {result.failing_schedule}" if result.failing_schedule is not None else ""
+    explanation = f"{kind}{result.failure or 'invariant violated'}{where}"
+    # Surface the external-access trace so a process-mode failure is
+    # diagnosable without dropping down to explore_processes().
+    if result.accesses:
+        trace = ", ".join(
+            f"{result.worker_labels.get(wid, f'w{wid}')}:{access}:{rid}" for wid, rid, access in result.accesses
+        )
+        explanation += f"\n  accesses: {trace}"
     return InterleavingResult(
-        property_holds=result.ok,
+        property_holds=False,
         counterexample=result.failing_schedule,
         num_explored=result.iterations,
         unique_interleavings=result.iterations,

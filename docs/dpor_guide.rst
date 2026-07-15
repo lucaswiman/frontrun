@@ -249,7 +249,7 @@ Interpreting results
 
    @dataclass
    class InterleavingResult:
-       property_holds: bool                              # True if invariant held everywhere
+       property_holds: bool | None                       # tri-state verdict (see below)
        counterexample: list[int] | Schedule | None = None  # first failing schedule
        num_explored: int = 0                             # total interleavings tried
        unique_interleavings: int = 0                     # distinct schedules (= num_explored for DPOR)
@@ -258,6 +258,20 @@ Interpreting results
        reproduction_attempts: int = 0                    # number of replay attempts
        reproduction_successes: int = 0                   # how many replays reproduced the failure
        sql_anomaly: SqlAnomaly | None = None             # classified SQL isolation anomaly (if any)
+       inconclusive_reason: str | None = None            # cause + remedy when property_holds is None
+
+``property_holds`` carries one of **three verdicts** (see
+:doc:`design-principles`):
+
+* ``True`` — a pass *certificate*: at least one interleaving actually
+  executed, every worker body ran, and no coverage-degrading event occurred.
+* ``False`` — a failure was found; ``False`` always implies a
+  counterexample/failure record exists.
+* ``None`` — the exploration was *inconclusive*: no evidence either way (for
+  example a ``total_timeout`` that expired before any interleaving completed,
+  or every execution timing out mid-run).  ``inconclusive_reason`` names the
+  cause and the remedy.  ``None`` is falsy, so
+  ``if result.property_holds:`` remains fail-closed for existing callers.
 
 ``counterexample`` is a list of thread IDs representing the order in
 which threads were scheduled. For example, ``[0, 0, 1, 1]`` means thread 0
@@ -593,8 +607,11 @@ Prefer ``assert_holds()`` over manual asserts
 ---------------------------------------------
 
 :meth:`InterleavingResult.assert_holds` is the recommended way to check a DPOR
-result in a test.  It raises ``AssertionError`` with the full race explanation
-when the invariant failed, and does nothing on success::
+result in a test.  It raises on **both** non-pass verdicts, with distinct
+exception types: ``AssertionError`` with the full race explanation when a
+counterexample was found, and :class:`frontrun.InconclusiveExploration` (whose
+message names the cause and remedy) when the exploration was inconclusive.  It
+does nothing on a certified pass::
 
    result = frontrun.explore(setup=setup, workers=[thread1, thread2], invariant=invariant)
    result.assert_holds()          # preferred
@@ -603,6 +620,11 @@ when the invariant failed, and does nothing on success::
 Pass ``msg_prefix`` to distinguish multiple assertions in one test::
 
    result.assert_holds(msg_prefix="transfer race: ")
+
+A budget-bounded smoke lane that accepts the weaker claim "no failure found"
+must opt in by name at the call site::
+
+   result.assert_holds(allow_inconclusive=True)   # inconclusive is tolerated; failures still raise
 
 
 Workers in separate processes
