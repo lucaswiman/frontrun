@@ -478,11 +478,11 @@ def test_report_sql_access_returns_false_without_reporter() -> None:
     assert _report_sql_access("SELECT * FROM users") is False
 
 
-def test_report_sql_access_returns_false_for_non_string() -> None:
+def test_report_sql_access_reports_opaque_database_write_for_non_string() -> None:
     log = IOLog()
     set_io_reporter(log)
-    assert _report_sql_access(12345) is False  # type: ignore[arg-type]
-    assert len(log.events) == 0
+    assert _report_sql_access(12345) is True
+    assert log.events == [("sql:__database__", "write")]
 
 
 def test_report_sql_access_handles_tx_control() -> None:
@@ -647,7 +647,7 @@ async def test_insert_into_select_reports_both() -> None:
 
 @pytest.mark.asyncio
 async def test_pragma_no_data_access() -> None:
-    """Statements like PRAGMA don't report table data access."""
+    """Statements like PRAGMA conservatively report opaque database access."""
     log = IOLog()
     set_io_reporter(log)
     patch_sql_async()
@@ -656,7 +656,7 @@ async def test_pragma_no_data_access() -> None:
         log.clear()
         await conn.execute("PRAGMA journal_mode")
 
-    assert len(log.events) == 0
+    assert log.events == [("sql:__database__", "write")]
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +713,7 @@ async def test_empty_string_operation() -> None:
 
 @pytest.mark.asyncio
 async def test_non_string_operation_passthrough() -> None:
-    """Non-string operation should be passed through without parsing."""
+    """Non-string operations pass through after an opaque database report."""
     call_log: list[Any] = []
 
     async def fake_execute(self: Any, op: Any) -> str:
@@ -724,7 +724,7 @@ async def test_non_string_operation_passthrough() -> None:
     set_io_reporter(log)
     result = await _intercept_execute_async(fake_execute, None, 42)  # type: ignore[arg-type]
     assert result == "ok"
-    assert len(log.events) == 0
+    assert log.events == [("sql:__database__", "write")]
 
 
 class TestAsyncUpdateZeroRowRelease:

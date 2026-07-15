@@ -774,8 +774,8 @@ def test_dpor_exploration_iter_holds_lock_across_engine_calls() -> None:
     assert lock.exit_count == 4
 
 
-def test_dpor_exploration_iter_stops_at_total_deadline() -> None:
-    """Once total_deadline is in the past, the generator yields nothing further."""
+def test_dpor_exploration_iter_permits_baseline_after_total_deadline() -> None:
+    """An elapsed positive budget still permits the required baseline execution."""
     import time
 
     from frontrun._dpor_core import dpor_exploration_iter
@@ -794,10 +794,8 @@ def test_dpor_exploration_iter_stops_at_total_deadline() -> None:
             total_deadline=past,
         )
     )
-    assert seen == []
-    # No begin_execution should have been called when the deadline is already
-    # past at the start of the very first iteration.
-    assert engine._begin_calls == 0
+    assert [step.index for step in seen] == [1]
+    assert engine._begin_calls == 1
 
 
 def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
@@ -821,8 +819,8 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
     engine.current_lock = lock
     stable_ids = _StubStableIds()
 
-    # Deadline of 2.5 means iterations 1, 2, 3 yield (clock reads 0.0, 1.0, 2.0)
-    # and iteration 4's check (clock reads 3.0) triggers the early return.
+    # The first iteration is guaranteed without consulting the clock.  The
+    # next three yield at 0.0, 1.0, and 2.0; the 3.0 check then stops.
     seen = list(
         dpor_exploration_iter(
             engine=engine,
@@ -831,7 +829,7 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
             total_deadline=2.5,
         )
     )
-    assert len(seen) == 3
+    assert len(seen) == 4
 
 
 def test_dpor_exploration_iter_works_with_real_threading_lock() -> None:

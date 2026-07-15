@@ -145,8 +145,9 @@ def dpor_exploration_iter(
     Encapsulates the boundary work shared by ``_explore_dpor`` (sync) and
     ``_explore_async_dpor`` (async):
 
-    1. Bail out if ``total_deadline`` (an absolute :func:`time.monotonic`
-       timestamp from :func:`make_deadline`) has passed.
+    1. After the required baseline execution, bail out if ``total_deadline``
+       (an absolute :func:`time.monotonic` timestamp from
+       :func:`make_deadline`) has passed.
     2. :func:`reset_execution_state` to clear per-execution state.
     3. ``engine.begin_execution()`` under ``engine_lock``.
     4. Yield to the caller, which runs the workers and inspects the
