@@ -1353,9 +1353,7 @@ class TestRedisUnixSocketIdentity:
         proc.wait()
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    def test_dpor_detects_race_between_unix_socket_and_tcp_clients(
-        self, unix_socket_server: tuple[str, int]
-    ) -> None:
+    def test_dpor_detects_race_between_unix_socket_and_tcp_clients(self, unix_socket_server: tuple[str, int]) -> None:
         """Mixed unix-socket/TCP access to one server (issue #250 finding)."""
         sock_path, port = unix_socket_server
 
@@ -1404,9 +1402,7 @@ class TestRedisLiveSelectIdentity:
 
         class State:
             def __init__(self) -> None:
-                self.reader = redis_lib.Redis(
-                    port=port, db=0, decode_responses=True, single_connection_client=True
-                )
+                self.reader = redis_lib.Redis(port=port, db=0, decode_responses=True, single_connection_client=True)
                 self.writer = redis_lib.Redis(port=port, db=1, decode_responses=True)
                 self.reader.ping()
                 self.reader.execute_command("SELECT", 1)

@@ -117,9 +117,9 @@ def test_unix_socket_pool_gets_distinct_identity(tmp_path: Any) -> None:
         set_io_reporter(None)
 
     assert events
-    assert all(
-        "localhost:6379" not in resource and "127.0.0.1:6379" not in resource for resource, _kind in events
-    ), events
+    assert all("localhost:6379" not in resource and "127.0.0.1:6379" not in resource for resource, _kind in events), (
+        events
+    )
 
 
 def test_select_on_single_connection_client_updates_db_scope() -> None:
