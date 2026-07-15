@@ -892,8 +892,11 @@ async def explore_async_random(
                     result.property_holds = False
                     result.counterexample = schedule
                     result.unique_interleavings = len(seen_schedule_hashes)
-                    if assertion_msg:
-                        result.explanation = f"AssertionError: {assertion_msg}"
+                    result.explanation = (
+                        f"AssertionError: {assertion_msg}"
+                        if assertion_msg
+                        else f"Invariant violated after {result.num_explored} interleaving(s); schedule: {schedule}"
+                    )
                     return result
 
         result.unique_interleavings = len(seen_schedule_hashes)

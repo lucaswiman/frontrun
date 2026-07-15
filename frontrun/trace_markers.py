@@ -115,7 +115,10 @@ class _ThreadTraceExecutor:
             coordinator=self.coordinator,
             execution_name=execution_name,
             trace_function=self._create_trace_function(execution_name),
-            body=lambda: target(*args, **kwargs),
+            # Fail closed if the body returns a coroutine/generator: a sync
+            # classification (e.g. a lambda wrapping a coroutine call) would
+            # otherwise discard it and report success without executing it.
+            body=lambda: _reject_deferred_sync_result(target(*args, **kwargs), target),
             error_sink=self.thread_errors,
         )
 
@@ -575,7 +578,11 @@ def explore_marker_interleavings(
 
         invariant_failed, assertion_msg = check_invariant(invariant, state)
         if invariant_failed:
-            explanation = f"AssertionError: {assertion_msg}" if assertion_msg else None
+            explanation = (
+                f"AssertionError: {assertion_msg}"
+                if assertion_msg
+                else f"Invariant violated under marker schedule: {schedule}"
+            )
             if first_explanation is None:
                 first_explanation = explanation
             failures.append((i, schedule))
