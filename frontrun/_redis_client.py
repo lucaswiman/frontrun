@@ -25,6 +25,7 @@ import ipaddress
 import os
 import socket
 import threading
+import weakref
 from collections.abc import Callable, Generator, Iterator
 from typing import Any
 
@@ -190,13 +191,41 @@ def _unix_socket_server_parts(path: str) -> tuple[str, str]:
     return cached
 
 
+# Live SELECT tracking: ``connection_kwargs["db"]`` goes stale once a client
+# issues SELECT, so later commands would be attributed to the wrong database
+# (a missed dependency).  A single-connection client switches exactly; on a
+# pooled client only one pooled connection switched, so the configured and
+# selected databases are all kept as candidates (sound over-approximation).
+# id()-keyed with weakref eviction, mirroring
+# ``_sql_db_scope._register_connection_db_scope``.
+_client_exact_dbs: dict[int, str] = {}
+_client_possible_dbs: dict[int, set[str]] = {}
+
+
+def _record_client_select(client: Any, db: object) -> None:
+    """Record a live SELECT so later accesses land in the right database scope."""
+    key = id(client)
+    db_text = _redis_arg_text(db)
+    registry: dict[int, Any]
+    if getattr(client, "connection", None) is not None:  # single_connection_client
+        _client_exact_dbs[key] = db_text
+        registry = _client_exact_dbs
+    else:
+        _client_possible_dbs.setdefault(key, set()).add(db_text)
+        registry = _client_possible_dbs
+    try:
+        weakref.finalize(client, registry.pop, key, None)
+    except TypeError:
+        pass
+
+
 def _get_redis_scope_parts(client: Any) -> tuple[str, str, str] | None:
     """Extract ``(host, port, database)`` strings from a Redis client."""
     pool = getattr(client, "connection_pool", None)
     if pool is None:
         return None
     kwargs = getattr(pool, "connection_kwargs", {})
-    db = _redis_arg_text(kwargs.get("db", 0))
+    db = _client_exact_dbs.get(id(client), _redis_arg_text(kwargs.get("db", 0)))
     path = kwargs.get("path")
     if path is not None:
         host, port = _unix_socket_server_parts(_redis_arg_text(path))
@@ -279,11 +308,18 @@ def _report_redis_access(
     Returns ``True`` if any Redis-level reporting was performed (which means
     endpoint-level I/O should be suppressed for the subsequent Redis call).
     """
+    upper = cmd_name.upper().split(" ", 1)[0]
+
+    # Track live database switches even without a reporter (setup and replay
+    # both run reporter-less); otherwise exploration and replay would derive
+    # different scopes for the same client and anchors would misalign.
+    if upper == "SELECT" and cmd_args and client is not None:
+        _record_client_select(client, cmd_args[0])
+
     reporter = get_io_reporter()
     if reporter is None:
         return False
 
-    upper = cmd_name.upper().split(" ", 1)[0]
     pubsub_commands = {
         "PUBLISH",
         "SPUBLISH",
@@ -368,6 +404,25 @@ def _report_redis_access(
 
     for scope, kind in sorted(keyspace_accesses, key=lambda item: (item[0] or "", item[1])):
         reporter(_redis_keyspace_resource_id(db_scope=scope), kind)
+
+    # A pooled client that issued SELECT may run any command on either the
+    # configured or a selected database (only one pooled connection actually
+    # switched).  Mirror the primary-scope accesses into every candidate
+    # scope so no ordering is missed (sound over-approximation).
+    if client is not None and scope_parts is not None:
+        possible_dbs = _client_possible_dbs.get(id(client))
+        if possible_dbs:
+            candidate_scopes = {
+                _format_redis_db_scope(scope_parts[0], scope_parts[1], candidate_db) for candidate_db in possible_dbs
+            }
+            candidate_scopes.discard(db_scope)
+            for extra_scope in sorted(candidate_scopes):
+                for key, kind, scope in key_accesses:
+                    if scope == db_scope:
+                        reporter(_redis_resource_id(key, db_scope=extra_scope), kind)
+                for scope, kind in sorted(keyspace_accesses, key=lambda item: (item[0] or "", item[1])):
+                    if scope == db_scope:
+                        reporter(_redis_keyspace_resource_id(db_scope=extra_scope), kind)
 
     # FLUSHALL mutates every database on a server.  A server-wide intent
     # resource keeps ordinary traffic read-read while making FLUSHALL conflict
