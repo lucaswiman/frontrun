@@ -122,6 +122,63 @@ def test_unix_socket_pool_gets_distinct_identity(tmp_path: Any) -> None:
     ), events
 
 
+def test_select_on_single_connection_client_updates_db_scope() -> None:
+    """A live SELECT moves a single-connection client's later accesses."""
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+        connection=object(),  # redis-py sets .connection for single_connection_client
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        _redis_client._report_redis_access("SELECT", (1,), client=client)
+        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
+    finally:
+        set_io_reporter(None)
+
+    writes = {resource for resource, kind in events if kind == "write"}
+    assert "redis:k:db=redis:source:6379/1" in writes
+    assert "redis:k:db=redis:source:6379/0" not in writes
+
+
+def test_select_on_pooled_client_reports_both_db_scopes() -> None:
+    """Only one pooled connection switched; both databases stay candidates."""
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+    )
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        _redis_client._report_redis_access("SELECT", (1,), client=client)
+        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
+    finally:
+        set_io_reporter(None)
+
+    writes = {resource for resource, kind in events if kind == "write"}
+    assert "redis:k:db=redis:source:6379/0" in writes
+    assert "redis:k:db=redis:source:6379/1" in writes
+
+
+def test_select_recorded_without_reporter_for_replay_alignment() -> None:
+    """A SELECT seen while no reporter is installed (setup/replay) must still
+    move the scope, or recorded anchors and replay anchors diverge."""
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0}),
+        connection=object(),
+    )
+    set_io_reporter(None)
+    assert not _redis_client._report_redis_access("SELECT", (1,), client=client)
+
+    events: list[tuple[str, str]] = []
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        assert _redis_client._report_redis_access("SET", ("k", "value"), client=client)
+    finally:
+        set_io_reporter(None)
+
+    assert ("redis:k:db=redis:source:6379/1", "write") in events
+
+
 def test_bytes_flushall_command_reports_server_scope() -> None:
     """redis-py may pass command tokens as bytes; scope semantics must survive normalization."""
     events: list[tuple[str, str]] = []

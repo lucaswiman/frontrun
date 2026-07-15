@@ -1387,3 +1387,49 @@ class TestRedisUnixSocketIdentity:
             reproduce_on_failure=0,
         )
         assert not result.property_holds, "unix-socket and TCP clients reach one server; the race must be found"
+
+
+class TestRedisLiveSelectIdentity:
+    """A live SELECT must move a client's accesses to the selected database."""
+
+    def test_dpor_detects_race_after_connection_init_select(self, redis_port: int) -> None:
+        """SELECT at connection-init time (issue #250 finding).
+
+        The reader client is configured db=0 but switched to db 1 with a live
+        SELECT during setup, so both workers physically race on db1:select_flag.
+        Attributing the reader's accesses to the stale configured db misses the
+        dependency and falsely certifies.
+        """
+        port = redis_port
+
+        class State:
+            def __init__(self) -> None:
+                self.reader = redis_lib.Redis(
+                    port=port, db=0, decode_responses=True, single_connection_client=True
+                )
+                self.writer = redis_lib.Redis(port=port, db=1, decode_responses=True)
+                self.reader.ping()
+                self.reader.execute_command("SELECT", 1)
+                self.writer.ping()
+                self.writer.delete("select_flag", "select_witness")
+
+        def reader(state: State) -> None:
+            if state.reader.get("select_flag") == "1":
+                state.reader.set("select_witness", "1")
+
+        def writer(state: State) -> None:
+            state.writer.set("select_flag", "1")
+
+        def invariant(state: State) -> bool:
+            return state.writer.get("select_witness") is None
+
+        result = frontrun.explore(
+            setup=State,
+            workers=[reader, writer],
+            invariant=invariant,
+            detect_io=True,
+            max_executions=50,
+            deadlock_timeout=15.0,
+            reproduce_on_failure=0,
+        )
+        assert not result.property_holds, "both workers race on db 1; the SET-before-GET order must be found"
