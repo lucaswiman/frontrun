@@ -2234,3 +2234,28 @@ def test_acquire_pending_row_locks_with_opcode_scheduler_context() -> None:
         set_dpor_thread_id(None)
         _io_tls._pending_row_locks = []
         _io_tls._held_row_locks = set()
+
+
+def test_db_scope_registration_evicted_when_connection_collected():
+    """id()-keyed scopes must not outlive their connection.
+
+    A permanently retained id -> scope entry can be inherited by an unrelated
+    object that reuses the freed address, silently attaching the wrong database
+    scope to its accesses (missed-dependency direction).
+    """
+    import gc
+
+    from frontrun._sql_db_scope import _CONNECTION_DB_SCOPES, _register_connection_db_scope
+
+    class SlottedConn:
+        # No __dict__, like raw sqlite3.Connection: the id map is the sole carrier.
+        __slots__ = ("__weakref__",)
+
+    conn = SlottedConn()
+    key = id(conn)
+    scope = _register_connection_db_scope(conn, "sqlite-path:/tmp/frontrun-scope-evict.db")
+    assert _CONNECTION_DB_SCOPES.get(key) == scope
+
+    del conn
+    gc.collect()
+    assert key not in _CONNECTION_DB_SCOPES
