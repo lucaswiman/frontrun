@@ -6,6 +6,64 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 Unreleased
 ----------
 
+* **Backwards incompatible: tri-state verdicts.**
+  ``InterleavingResult.property_holds`` is now ``bool | None``: ``True`` is a
+  pass *certificate* (at least one interleaving completed, every worker body
+  ran, no coverage-degrading event), ``False`` means a failure was found and
+  always implies a counterexample/failure record, and ``None`` means the
+  exploration was *inconclusive* — no evidence either way, with the cause and
+  remedy in the new ``inconclusive_reason`` field.
+  ``assert_holds()`` now raises on **both** non-pass verdicts, with distinct
+  exception types: ``AssertionError`` for a found counterexample (unchanged),
+  and the new ``frontrun.InconclusiveExploration`` for inconclusive runs.
+  Code that must tolerate the weaker "no failure found" claim (e.g. a tightly
+  budgeted smoke lane) opts in by name with
+  ``assert_holds(allow_inconclusive=True)``.
+  Migration notes:
+
+  - Runs that previously produced a **vacuous pass** — e.g. a ``total_timeout``
+    that expired before any interleaving completed, or a zero-iteration
+    cross-process search — now return ``property_holds=None`` and make
+    ``assert_holds()`` raise ``InconclusiveExploration``. A CI lane relying on
+    that silent green must either raise its budget or opt in as above.
+  - Runs that previously encoded truncation as **False without a
+    counterexample** (mid-run timeout aborts, ``max_ops`` exhaustion,
+    timed-out async searches) now return ``None`` with the same message in
+    ``inconclusive_reason``; ``False`` is reserved for genuine failures.
+  - ``if result.property_holds:`` stays fail-closed for free (``None`` is
+    falsy), but code comparing ``property_holds is False`` to detect
+    truncation must switch to ``property_holds is None`` /
+    ``inconclusive_reason``.
+
+  Internally, ``property_holds=True`` can only be produced by the new
+  pass-certificate chokepoint (``frontrun._certificate.certify_pass``), which
+  validates positive evidence from every strategy and raises the new
+  ``frontrun.FrontrunInternalError`` on internally contradictory evidence
+  (e.g. completed interleavings claimed while a worker body never ran).
+  See the new "Design principles" documentation page ("Fail closed").
+
+* **Soundness: coarse-by-default access identity.** Redis commands without an
+  audited key-scope entry are now modeled as conservative database-wide plus
+  server-wide writes instead of being invisible to DPOR, and
+  ``SELECT ... INTO <table>`` targets are classified as writes. Unrecognized
+  operations can no longer silently prune real races (over-merging is allowed,
+  under-merging is forbidden); command tables are tested for scope
+  completeness.
+
+* **Soundness: honest exhaustiveness at row-lock boundaries.** When a modeled
+  row-lock conflict redirects a worker after its engine step was committed
+  (issue #250), the exploration's ``exhausted`` claim is demoted to ``False``
+  (sticky for the run) in both thread mode and cross-process mode, instead of
+  certifying full coverage over a search tree that diverged from physical
+  execution.
+
+* **New differential oracle: virtual vs. real clock.** Hypothesis-generated
+  small programs are explored under ``clock="real"``, ``"virtual"``, and
+  ``"explored"`` and their verdicts cross-checked (a certified virtual-clock
+  pass must not fail under the real clock). The oracle found one explored-clock
+  false-certification gap, tracked as issue #254 and pinned as an ``xfail``
+  regression.
+
 0.7.0 (2026-07-14)
 ------------------
 

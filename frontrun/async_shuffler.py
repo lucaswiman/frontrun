@@ -56,6 +56,7 @@ from frontrun._async_autopause import (
     wrap_auto_paused_tasks,
 )
 from frontrun._async_cooperative import _guard_async_exploration, _real_asyncio_sleep
+from frontrun._certificate import PassEvidence, certify_pass
 from frontrun._random_schedules import burst_round, fair_schedule_strategy, random_round_robin_schedule
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
@@ -786,15 +787,20 @@ async def explore_async_random(
 
         rng = random.Random(seed)
         num_tasks = len(tasks)
-        result = InterleavingResult(property_holds=True, num_explored=0)
+        # Verdict-less accumulator: the pass verdict is only stamped by
+        # certify_pass() at the end, from evidence gathered below.
+        result = InterleavingResult(property_holds=None, num_explored=0)
+        workers_entered = [False] * num_tasks
         seen_schedule_hashes: set[int] = set()
         decisive_executions = 0
         inconclusive_timeouts = 0
         max_ops_truncations = 0
         total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
-        for attempt in range(max_attempts):
-            if attempt > 0 and total_deadline is not None and time.monotonic() > total_deadline:
+        for _attempt in range(max_attempts):
+            if total_deadline is not None and time.monotonic() > total_deadline:
+                # A pre-expired budget explores nothing: the final result is
+                # then inconclusive, never a vacuous pass.
                 break
             schedule = random_round_robin_schedule(rng, num_tasks, max_ops)
 
@@ -818,9 +824,19 @@ async def explore_async_random(
             # contextvar, so they see the same virtual time as the driver.
             with clock_context(attempt_clock):
                 state = _call_sync_setup(setup)
+
+                def make_task_func(
+                    idx: int, task: Callable[[Any], Coroutine[Any, Any, None]], s: Any
+                ) -> Callable[[], Coroutine[Any, Any, None]]:
+                    async def wrapper() -> None:
+                        # Pass-certificate evidence: this task's body was entered.
+                        workers_entered[idx] = True
+                        await task(s)
+
+                    return wrapper
+
                 funcs: list[Callable[..., Coroutine[Any, Any, None]]] = [
-                    lambda s=state, t=t: t(s)  # type: ignore[misc]
-                    for t in tasks
+                    make_task_func(i, t, state) for i, t in enumerate(tasks)
                 ]
 
                 try:
@@ -901,20 +917,32 @@ async def explore_async_random(
                     return result
 
         result.unique_interleavings = len(seen_schedule_hashes)
-        inconclusive = inconclusive_timeouts + max_ops_truncations
-        if result.property_holds and inconclusive:
-            result.property_holds = False
-            details: list[str] = []
-            if inconclusive_timeouts:
-                details.append(f"{inconclusive_timeouts} timed out")
-            if max_ops_truncations:
-                details.append(f"{max_ops_truncations} exhausted max_ops")
-            result.explanation = (
-                f"Async random exploration completed {decisive_executions} interleaving(s), but "
-                f"{', '.join(details)} before completion. The search is inconclusive and cannot prove the property; "
-                "increase timeout_per_run or max_ops, or remove unmanaged blocking from explored tasks."
-            )
-        return result
+        # Every failure path above returned early, so no failure was found:
+        # certify (or honestly refuse to certify) the pass.
+        details: list[str] = []
+        if inconclusive_timeouts:
+            details.append(f"{inconclusive_timeouts} timed out")
+        if max_ops_truncations:
+            details.append(f"{max_ops_truncations} exhausted max_ops")
+        degradation_message = (
+            f"Async random exploration completed {decisive_executions} interleaving(s), but "
+            f"{', '.join(details)} before completion. The search is inconclusive and cannot prove the property; "
+            "increase timeout_per_run or max_ops, or remove unmanaged blocking from explored tasks."
+        )
+        return certify_pass(
+            result=result,
+            evidence=PassEvidence(
+                executions=decisive_executions,
+                workers_executed=workers_entered,
+                degradation_events=[degradation_message] if details else (),
+                vacuous_reason=degradation_message
+                if details
+                else (
+                    f"total_timeout={total_timeout!r}s elapsed before any interleaving completed; "
+                    "increase total_timeout or reduce the workload"
+                ),
+            ),
+        )
 
 
 def schedule_strategy(num_tasks: int, max_ops: int = 100) -> Any:  # type: ignore[name-defined]

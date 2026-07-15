@@ -44,6 +44,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, TypeVar
 
+from frontrun._certificate import PassEvidence, certify_pass
 from frontrun._cooperative import (
     clear_context,
     patch_locks,
@@ -809,6 +810,7 @@ def run_with_schedule(
     _max_ops: int | None = None,
     _worker_errors_as_findings: bool = False,
     _recorded_schedule: list[int] | None = None,
+    _workers_entered: list[bool] | None = None,
 ) -> T:
     """Run one interleaving and return the state object.
 
@@ -858,14 +860,17 @@ def run_with_schedule(
 
         from frontrun.common import _reject_deferred_sync_result
 
-        def make_thread_func(thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
+        def make_thread_func(idx: int, thread_func: Callable[[T], None], thread_state: T) -> Callable[[], None]:
             def thread_wrapper() -> None:
+                if _workers_entered is not None:
+                    # Pass-certificate evidence: this worker's body was entered.
+                    _workers_entered[idx] = True
                 result = thread_func(thread_state)
                 _reject_deferred_sync_result(result, thread_func)
 
             return thread_wrapper
 
-        funcs: list[Callable[[], None]] = [make_thread_func(t, state) for t in threads]
+        funcs: list[Callable[[], None]] = [make_thread_func(i, t, state) for i, t in enumerate(threads)]
         timed_out = False
         try:
             runner.run(funcs, timeout=timeout)
@@ -1012,12 +1017,17 @@ def explore_random(
 
         rng = random.Random(seed)
         num_threads = len(threads)
-        result = InterleavingResult(property_holds=True, num_explored=0)
+        # Verdict-less accumulator: the pass verdict is only stamped by
+        # certify_pass() at the end, from evidence gathered below.
+        result = InterleavingResult(property_holds=None, num_explored=0)
+        workers_entered = [False] * num_threads
         seen_schedule_hashes: set[int] = set()
         total_deadline = time.monotonic() + total_timeout if total_timeout is not None else None
 
-        for attempt in range(max_attempts):
-            if attempt > 0 and total_deadline is not None and time.monotonic() > total_deadline:
+        for _attempt in range(max_attempts):
+            if total_deadline is not None and time.monotonic() > total_deadline:
+                # A pre-expired budget explores nothing: the final result is
+                # then inconclusive, never a vacuous pass.
                 break
             schedule = random_round_robin_schedule(rng, num_threads, max_ops)
 
@@ -1042,6 +1052,7 @@ def explore_random(
                     clock_diagnostics=clock_diagnostics,
                     _worker_errors_as_findings=True,
                     _recorded_schedule=schedule,
+                    _workers_entered=workers_entered,
                 )
             except DeadlockError as dl_err:
                 result.num_explored += 1
@@ -1056,13 +1067,14 @@ def explore_random(
             except _MaxOpsExhaustedError:
                 result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))
-                result.property_holds = False
+                result.property_holds = None
                 result.unique_interleavings = len(seen_schedule_hashes)
-                result.explanation = (
+                result.inconclusive_reason = (
                     f"Random exploration exhausted max_ops={max_ops} on attempt {result.num_explored}. "
                     "The completed run is inconclusive because scheduling control ended before the worker trace; "
                     "increase max_ops to claim a passing exploration."
                 )
+                result.explanation = result.inconclusive_reason
                 return result
             except TimeoutError:
                 # Python threads cannot be killed safely. The partial state is
@@ -1072,13 +1084,14 @@ def explore_random(
                     print(f"Aborting after timed-out schedule: {schedule}", flush=True)
                 result.num_explored += 1
                 seen_schedule_hashes.add(hash(tuple(schedule)))
-                result.property_holds = False
+                result.property_holds = None
                 result.unique_interleavings = len(seen_schedule_hashes)
-                result.explanation = (
+                result.inconclusive_reason = (
                     f"Random exploration timed out before workers completed on attempt {result.num_explored}. "
                     "The search is inconclusive because Python threads cannot be killed safely; increase "
                     "timeout_per_run/deadlock_timeout or remove unmanaged blocking from explored workers."
                 )
+                result.explanation = result.inconclusive_reason
                 return result
             except _WorkerExecutionError as worker_err:
                 result.num_explored += 1
@@ -1156,7 +1169,20 @@ def explore_random(
                 return result
 
         result.unique_interleavings = len(seen_schedule_hashes)
-        return result
+        # Every failure path above returned early, so no failure was found:
+        # certify (or honestly refuse to certify) the pass.  Zero executions
+        # can only mean the total_timeout budget was already spent.
+        return certify_pass(
+            result=result,
+            evidence=PassEvidence(
+                executions=result.num_explored,
+                workers_executed=workers_entered,
+                vacuous_reason=(
+                    f"total_timeout={total_timeout!r}s elapsed before any interleaving completed; "
+                    "increase total_timeout or reduce the workload"
+                ),
+            ),
+        )
     finally:
         _set_active_trace_filter(None)
 

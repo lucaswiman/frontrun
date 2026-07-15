@@ -487,8 +487,21 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                         if t.name not in write:
                             read.add(t.name)
                 elif isinstance(node, (exp.Select, exp.Union, exp.Intersect, exp.Except)):
+                    # SELECT ... INTO <table> creates and populates the target
+                    # table — a write, not a read (classifying it as a read
+                    # under-merges).  The INTO clause may sit on the top-level
+                    # SELECT or on a SELECT inside a set operation.
+                    into_target_ids: set[int] = set()
+                    selects = [node] if isinstance(node, exp.Select) else node.find_all(exp.Select)
+                    for select_node in selects:
+                        into = select_node.args.get("into")
+                        into_tbl = into.this if into is not None else None
+                        if isinstance(into_tbl, exp.Table):
+                            write.add(into_tbl.name)
+                            into_target_ids.add(id(into_tbl))
                     for t in node.find_all(exp.Table):
-                        read.add(t.name)
+                        if id(t) not in into_target_ids:
+                            read.add(t.name)
                 elif top_level:
                     # DDL, GRANT, etc. — conservatively treat as write.
                     for t in node.find_all(exp.Table):

@@ -149,6 +149,7 @@ def _relay_loop(
     unclean: set[int],
     progress: list[float] | None = None,
     recv_timeout: float | None = None,
+    completed: set[int] | None = None,
 ) -> None:
     """Translate one worker's socket frames into scheduler calls.
 
@@ -323,6 +324,12 @@ def _relay_loop(
                 scheduler.after_io(worker_id, msg["rid"])
             elif kind == proto.DONE:
                 clean = True
+                # Pass-certificate evidence: the worker body ran to completion
+                # (only a clean DONE counts; ERROR is a clean terminal but not
+                # a completed body).
+                if completed is not None:
+                    with accesses_lock:
+                        completed.add(worker_id)
                 break
             elif kind == proto.ERROR:
                 message = str(msg.get("msg", "worker error"))
@@ -503,6 +510,24 @@ class DporCrossProcessCoordinator:
         # thread-mode InterleavingResult.failures — with stop_on_first=False
         # later failing schedules must not be discarded.
         failures: list[tuple[int, list[int]]] = []
+        # Sticky across executions within this exploration, reset per explore()
+        # call: True once any execution's scheduler observed a row-lock-blocked
+        # redirect (issue #250). The engine step for the waiter was already
+        # committed via before_sync_retry when acquire_row_locks handed
+        # execution to the lock holder, so the engine's schedule and the
+        # physical execution can diverge at row-lock boundaries and follow-on
+        # races in derived executions can be suppressed. Used ONLY to demote
+        # the coverage claim (exhausted) fail-closed — never ok/failure
+        # reporting. The proper fix (defer engine-step commitment until
+        # row-lock arbitration decides) is a scheduler-protocol change tracked
+        # in issue #250.
+        row_lock_redirected = False
+        # Pass-certificate evidence: workers observed to send a clean DONE in
+        # at least one counted iteration; and, when the search was truncated,
+        # the machine-readable cause (feeds the inconclusive reason for
+        # zero-iteration ok results).
+        workers_ran = [False] * self.num_workers
+        truncation: str | None = None
         try:
             for step in dpor_exploration_iter(
                 engine=engine,
@@ -537,8 +562,9 @@ class DporCrossProcessCoordinator:
                             check_worker_id(wid, self.num_workers, persistent_socks, sock)
                             persistent_socks[wid] = sock
                         persistent_poisoned = False
-                    except _TotalTimeoutExpiredError:
+                    except _TotalTimeoutExpiredError as exc:
                         exhausted = False
+                        truncation = str(exc)
                         break
                     except (TimeoutError, OSError) as exc:
                         return replace(
@@ -559,6 +585,7 @@ class DporCrossProcessCoordinator:
                 accesses: list[tuple[int, str, str]] = []
                 worker_errors: dict[int, str] = {}
                 unclean: set[int] = set()
+                completed: set[int] = set()
                 setup()  # reset external state before each interleaving
                 try:
                     if self.reuse_workers:
@@ -566,17 +593,27 @@ class DporCrossProcessCoordinator:
                         # means its protocol/process state is unsafe to retain.
                         persistent_poisoned = True
                         self._run_reused(
-                            persistent_socks, worker_set, scheduler, accesses, worker_errors, unclean, deadline
+                            persistent_socks,
+                            worker_set,
+                            scheduler,
+                            accesses,
+                            worker_errors,
+                            unclean,
+                            deadline,
+                            completed,
                         )
                         persistent_poisoned = bool(unclean)
                     else:
-                        self._run_spawned(listener, worker_set, scheduler, accesses, worker_errors, unclean, deadline)
-                except _TotalTimeoutExpiredError:
+                        self._run_spawned(
+                            listener, worker_set, scheduler, accesses, worker_errors, unclean, deadline, completed
+                        )
+                except _TotalTimeoutExpiredError as exc:
                     # The in-flight execution was truncated by the user's time
                     # budget: nothing about it was verified, so it neither
                     # counts as explored nor as a failure — but the search can
                     # no longer claim exhaustion.
                     exhausted = False
+                    truncation = str(exc)
                     break
                 except (TimeoutError, OSError) as exc:
                     return replace(_connection_failure(exc, num_explored + 1), failures=failures)
@@ -587,7 +624,15 @@ class DporCrossProcessCoordinator:
                     # broader (a generic TypeError from launch machinery) is a
                     # bug and must propagate rather than be mislabeled.
                     return replace(_serialization_failure(exc, num_explored + 1), failures=failures)
+                # Latch before evaluation so the demotion survives no matter
+                # how this execution is scored (the per-execution scheduler is
+                # discarded below; the exception paths above already return
+                # exhausted=False results).
+                if scheduler._row_lock_redirected:
+                    row_lock_redirected = True
                 num_explored += 1
+                for wid in completed:
+                    workers_ran[wid] = True
 
                 result = self._evaluate(
                     execution, scheduler, engine_lock, invariant, worker_errors, accesses, num_explored
@@ -647,11 +692,28 @@ class DporCrossProcessCoordinator:
                 # exhausted honestly so a bounded run doesn't over-claim coverage.
                 if self.max_executions is not None and num_explored >= self.max_executions:
                     exhausted = False
+                    truncation = f"max_executions={self.max_executions} reached before the search space was covered"
                 elif deadline is not None and time.monotonic() > deadline:
                     exhausted = False
+                    truncation = f"total_timeout={self.total_timeout}s expired before the search space was covered"
+            if row_lock_redirected:
+                # A row-lock-blocked redirect desynchronized at least one
+                # execution's engine trace from its physical statement order
+                # (issue #250), so derived executions may have been pruned:
+                # even when the engine reports the search tree fully explored,
+                # coverage cannot be certified. Demote only the coverage claim
+                # — ok/failure reporting for the executions that did run is
+                # untouched (fail-closed).
+                exhausted = False
             if first_failure is not None:
                 return replace(first_failure, iterations=num_explored, exhausted=exhausted, failures=failures)
-            return CrossProcessResult(ok=True, iterations=num_explored, exhausted=exhausted)
+            return CrossProcessResult(
+                ok=True,
+                iterations=num_explored,
+                exhausted=exhausted,
+                workers_executed=workers_ran,
+                truncation=truncation,
+            )
         finally:
             if self.reuse_workers:
                 if persistent_handles is not None:
@@ -685,6 +747,7 @@ class DporCrossProcessCoordinator:
         worker_errors: dict[int, str],
         unclean: set[int],
         total_deadline: float | None = None,
+        completed: set[int] | None = None,
     ) -> None:
         accesses_lock = threading.Lock()
         # Relays update this heartbeat on every received frame or issued grant.
@@ -702,6 +765,7 @@ class DporCrossProcessCoordinator:
                     unclean,
                     progress,
                     self.deadlock_timeout,
+                    completed,
                 ),
                 name=f"xproc-relay-{wid}",
                 daemon=True,
@@ -768,6 +832,7 @@ class DporCrossProcessCoordinator:
         worker_errors: dict[int, str],
         unclean: set[int],
         total_deadline: float | None = None,
+        completed: set[int] | None = None,
     ) -> None:
         handles = worker_set.launch(worker_targets(self.socket_path, list(range(self.num_workers))))
         socks_by_id: dict[int, socket.socket] = {}
@@ -801,7 +866,7 @@ class DporCrossProcessCoordinator:
                 worker_set.join(handles, self.deadlock_timeout)
                 raise _launch_error(worker_set, handles, exc) from exc
             try:
-                self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline)
+                self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline, completed)
             except _TotalTimeoutExpiredError:
                 # total_timeout is a wall-clock search bound, not permission to
                 # add deadlock_timeout once per child during teardown.  Process
@@ -829,6 +894,7 @@ class DporCrossProcessCoordinator:
         worker_errors: dict[int, str],
         unclean: set[int],
         total_deadline: float | None = None,
+        completed: set[int] | None = None,
     ) -> None:
         customizer = worker_set if isinstance(worker_set, IterationCustomizer) else None
         for wid, sock in socks_by_id.items():
@@ -837,7 +903,7 @@ class DporCrossProcessCoordinator:
             else:
                 msg = {"t": proto.ITER_START}
             proto.send_msg(sock, msg)
-        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline)
+        self._drive_relays(scheduler, socks_by_id, accesses, worker_errors, unclean, total_deadline, completed)
 
     def _evaluate(
         self,

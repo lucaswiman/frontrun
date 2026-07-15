@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from itertools import permutations
 from typing import TYPE_CHECKING, Any
 
+from frontrun._certificate import InconclusiveExploration
+
 if TYPE_CHECKING:
     from frontrun._sql_anomaly import SqlAnomaly
 
@@ -138,7 +140,15 @@ class InterleavingResult:
     Returned by :func:`frontrun.explore`.
 
     Attributes:
-        property_holds: True if the invariant held under all tested interleavings.
+        property_holds: Tri-state verdict.  ``True`` is a pass *certificate*
+            (at least one interleaving completed, every worker body ran, no
+            coverage-degrading event) — it can only be produced by
+            :func:`frontrun._certificate.certify_pass`.  ``False`` means a
+            failure was found and implies a counterexample/failure record
+            exists.  ``None`` means the exploration was inconclusive (no
+            evidence either way — e.g. a budget expired before any
+            interleaving completed); see ``inconclusive_reason``.  ``None``
+            is falsy, so ``if result.property_holds:`` stays fail-closed.
         counterexample: First schedule that violated the invariant (if any).
         num_explored: How many interleavings were tested.
         unique_interleavings: Number of distinct schedule orderings observed.
@@ -174,9 +184,13 @@ class InterleavingResult:
             ``None`` when the
             invariant held or for thread/async execution (which encodes the
             failure in ``explanation`` only).
+        inconclusive_reason: Machine-readable cause (and remedy) when
+            ``property_holds`` is ``None`` — e.g. "total_timeout=0.01s elapsed
+            before any interleaving completed; increase total_timeout".
+            ``None`` for pass/fail verdicts.
     """
 
-    property_holds: bool
+    property_holds: bool | None
     counterexample: list[int] | Schedule | None = None
     num_explored: int = 0
     unique_interleavings: int = 0
@@ -188,17 +202,38 @@ class InterleavingResult:
     races_detected: bool = False
     exhausted: bool | None = None
     failure_kind: str | None = None
+    inconclusive_reason: str | None = None
 
-    def assert_holds(self, msg_prefix: str = "") -> None:
-        """Raise AssertionError with the race explanation if the invariant failed.
+    def assert_holds(self, msg_prefix: str = "", *, allow_inconclusive: bool = False) -> None:
+        """Raise unless the exploration produced a pass certificate.
 
         Prefer this over ``assert result.property_holds, result.explanation``.
 
         Args:
-            msg_prefix: Optional string prepended to the explanation in the
-                AssertionError message.  Useful for identifying which assertion
-                failed when multiple calls appear in one test.
+            msg_prefix: Optional string prepended to the message.  Useful for
+                identifying which assertion failed when multiple calls appear
+                in one test.
+            allow_inconclusive: Opt into the weaker claim "no failure found":
+                do not raise when the result is inconclusive
+                (``property_holds=None``).  A genuine failure still raises.
+
+        Raises:
+            AssertionError: A counterexample was found (``property_holds`` is
+                ``False``); the message carries the explanation.
+            InconclusiveExploration: The exploration was inconclusive
+                (``property_holds`` is ``None``) and ``allow_inconclusive``
+                was not set; the message names cause and remedy.
         """
+        if self.property_holds is None:
+            if allow_inconclusive:
+                return
+            reason = (
+                self.inconclusive_reason
+                or self.explanation
+                or "exploration completed no interleavings and recorded no cause"
+            )
+            message = reason if "inconclusive" in reason.lower() else f"inconclusive: {reason}"
+            raise InconclusiveExploration(f"{msg_prefix}{message}" if msg_prefix else message)
         if not self.property_holds:
             explanation = self.explanation or ""
             raise AssertionError(f"{msg_prefix}{explanation}" if msg_prefix else explanation)
@@ -216,6 +251,8 @@ class InterleavingResult:
         ]
         if self.races_detected:
             parts.append("races_detected=True")
+        if self.inconclusive_reason is not None:
+            parts.append(f"inconclusive_reason={self.inconclusive_reason!r}")
         return f"InterleavingResult({', '.join(parts)})"
 
 

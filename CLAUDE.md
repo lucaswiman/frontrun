@@ -19,6 +19,15 @@ The anchoring use case is the **Python free-threading (no-GIL) transition**: onc
 
 **Explicitly out of scope:** scheduling *unmodified / non-Python* workers via wire-level interception (the removed `LD_PRELOAD` PoC, or a DSN-level protocol-aware proxy). That is a black-box, Jepsen-shaped problem — observing histories for consistency violations rather than proving a specific interleaving — and belongs in a *separate* tool. Such a tool could reuse frontrun's Rust DPOR engine (the reusable seam: vector clocks, sleep sets, wakeup tree, row-lock reasoning are product-agnostic), but the interception layer and the product shape are different. Don't grow frontrun toward it.
 
+### Soundness principles
+
+The full statement lives in `docs/design-principles.rst` (rendered in the Sphinx docs) — read it before touching result construction, access identity, or exhaustiveness claims. The short form:
+
+- **Fail closed.** `property_holds=True` is a certificate requiring positive evidence (≥1 interleaving executed, worker bodies actually ran, no coverage-degrading events) — never a default or an error-path fallthrough. Results are tri-state: pass / fail (implies a counterexample) / inconclusive (`property_holds=None`, with a reason — e.g. user-set budget exhausted before any execution). `assert_holds()` raises on both non-pass verdicts with distinct exception types; accepting inconclusive requires explicit opt-in at the call site. Internally contradictory evidence (claimed executions but no worker ever ran) is a frontrun internal error, not a verdict.
+- **Over-merging allowed, under-merging forbidden.** Semantic access identity (SQL rows/tables, Redis key scopes, lock objects) is coarse by default: unknown or unparseable operations are conservative global writes. Narrowing to a specific row/key requires positive evidence (command-table entry, successful parse). Under-merging silently prunes real races → false pass.
+- **Honest exhaustiveness.** `exhausted=True` means full coverage under the stated model. Any truncating bound, skipped branch, or divergence between the engine's planned schedule and the physical execution demotes it to False ("no failure found within bounds").
+- **Oracles over review.** Soundness is defended by differential oracles (DPOR vs exhaustive enumeration / Mazurkiewicz trace counts; virtual-vs-real clock) and mutation tests attacking the certification gate. A soundness fix isn't done until a test fails on the old behavior.
+
 ## Project layout
 
 - `frontrun/` — Python package (pure Python + compiled `_dpor` extension)
@@ -51,6 +60,8 @@ Use the Makefile to build virtualenvs. Prefer working in the **3.14** virtualenv
 - Virtualenvs live at `.venv-3.14t/`, `.venv-3.10/`, `.venv-3.14/`
 - Run tools via e.g. `.venv-3.14/bin/pytest`, `.venv-3.14/bin/python`
 - Use `frontrun` CLI to run commands with I/O interception: `frontrun pytest -v tests/`
+
+> **Anthropic cloud sandbox caveat (remote sessions only):** In Anthropic's *managed cloud* sandbox (Claude Code on the web / remote sessions — recognizable by the `/root/.ccr` egress proxy), Python 3.14 is currently unavailable: no system 3.14 interpreter is installed and the proxy blocks uv's interpreter download from GitHub releases, so `make build-dpor-3.14` and `make rebuild` fail with a 403. **Only in that environment**, fall back to 3.13 as the testing default (`make build-dpor-3.13 build-io`, `make test-3.13`, `make build-integration-3.13`) and leave 3.14/3.14t verification to CI. Local sandboxes (e.g. the Docker dev container on macOS) have all versions — the usual 3.14 preference applies there.
 
 ## Running tests
 
