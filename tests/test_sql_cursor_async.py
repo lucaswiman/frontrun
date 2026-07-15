@@ -935,3 +935,41 @@ async def test_executemany_insert_records_uncaptured() -> None:
         )
     finally:
         _sql_insert_tracker.clear_insert_tracker()
+
+
+# ---------------------------------------------------------------------------
+# asyncpg PreparedStatement patching (SQLAlchemy asyncpg dialect blind spot)
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncpgPreparedStatementPatching:
+    """SQLAlchemy's asyncpg dialect executes every statement through
+    ``Connection.prepare()`` → ``PreparedStatement.fetch()``.  Those methods
+    (and the cursor factories) must be patched, or the SQL never reaches
+    ``_report_sql_access`` and DPOR certifies racy code as clean.
+    """
+
+    def test_patch_wraps_prepared_statement_and_cursor_methods(self) -> None:
+        asyncpg = pytest.importorskip("asyncpg")
+        from asyncpg import prepared_stmt as ps_mod
+
+        ps_cls = ps_mod.PreparedStatement
+        method_names = [
+            name
+            for name in ("fetch", "fetchmany", "fetchrow", "fetchval", "executemany", "cursor")
+            if hasattr(ps_cls, name)
+        ]
+        ps_originals = {name: getattr(ps_cls, name) for name in method_names}
+        conn_cursor_orig = asyncpg.Connection.cursor
+
+        patch_sql_async()
+        try:
+            for name, orig in ps_originals.items():
+                assert getattr(ps_cls, name) is not orig, f"PreparedStatement.{name} must be patched"
+            assert asyncpg.Connection.cursor is not conn_cursor_orig, "Connection.cursor must be patched"
+        finally:
+            unpatch_sql_async()
+
+        for name, orig in ps_originals.items():
+            assert getattr(ps_cls, name) is orig, f"PreparedStatement.{name} must be restored on unpatch"
+        assert asyncpg.Connection.cursor is conn_cursor_orig, "Connection.cursor must be restored on unpatch"
