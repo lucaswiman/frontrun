@@ -806,3 +806,40 @@ def test_unproducible_schedule_marker_name_raises():
         ThreadCoordinator(Schedule([Step("t1", "no such name")]))
     with pytest.raises(ValueError, match="marker name"):
         ThreadCoordinator(Schedule([Step("t1", "")]))
+
+
+class TestTraceExecutorFailsClosedOnDeferredBody:
+    """TraceExecutor.run must not report success when a sync body was deferred."""
+
+    def test_sync_lambda_returning_coroutine_fails_closed(self):
+        """A lambda wrapping a coroutine call classifies as sync and used to
+        discard the coroutine: run() returned successfully having executed
+        nothing (docs example examples.rst 'async bank + markers via lambdas').
+        """
+
+        class AsyncCounter:
+            def __init__(self) -> None:
+                self.value = 0
+
+            async def incr(self) -> None:
+                # frontrun: incr
+                self.value += 1
+
+        counter = AsyncCounter()
+        schedule = Schedule([Step("t1", "incr")])
+        executor = TraceExecutor(schedule)
+        with pytest.raises(TypeError, match="deferred body was not executed"):
+            executor.run({"t1": lambda: counter.incr()}, timeout=5.0)  # noqa: PLW0108
+        assert counter.value == 0
+
+    def test_sync_generator_returning_worker_fails_closed(self):
+        def gen_worker():
+            def gen():
+                yield
+
+            return gen()
+
+        schedule = Schedule([Step("t1", "never")])
+        executor = TraceExecutor(schedule)
+        with pytest.raises(TypeError, match="deferred body was not executed"):
+            executor.run({"t1": gen_worker}, timeout=5.0)
