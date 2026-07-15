@@ -611,6 +611,53 @@ def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
         _reset_async_lock_state()
 
 
+@pytest.mark.parametrize("clock", ["real", "virtual"])
+def test_condition_notify_counterexample_replays_exactly(clock: str) -> None:
+    """A notified waiter must remain eligible for its recorded replay slot."""
+    require_active("test_async_condition_notify_counterexample_replay")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.cond = asyncio.Condition()
+            self.ready = False
+            self.value = 0
+
+    async def waiter(state: State) -> None:
+        async with state.cond:
+            while not state.ready:
+                await state.cond.wait()
+        value = state.value
+        await asyncio.sleep(0)
+        state.value = value + 1
+
+    async def notifier(state: State) -> None:
+        async with state.cond:
+            state.ready = True
+            state.cond.notify()
+        value = state.value
+        await asyncio.sleep(0)
+        state.value = value + 1
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[waiter, notifier],
+            invariant=lambda state: state.value == 2,
+            strategy="dpor",
+            clock=clock,
+            max_executions=50,
+            reproduce_on_failure=10,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.num_explored == 2
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
 # ---------------------------------------------------------------------------
 # Synthesized replay deadlock vs. abort-woken cooperative waiters
 # ---------------------------------------------------------------------------
