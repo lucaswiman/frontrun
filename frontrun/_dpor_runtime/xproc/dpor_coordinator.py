@@ -503,6 +503,18 @@ class DporCrossProcessCoordinator:
         # thread-mode InterleavingResult.failures — with stop_on_first=False
         # later failing schedules must not be discarded.
         failures: list[tuple[int, list[int]]] = []
+        # Sticky across executions within this exploration, reset per explore()
+        # call: True once any execution's scheduler observed a row-lock-blocked
+        # redirect (issue #250). The engine step for the waiter was already
+        # committed via before_sync_retry when acquire_row_locks handed
+        # execution to the lock holder, so the engine's schedule and the
+        # physical execution can diverge at row-lock boundaries and follow-on
+        # races in derived executions can be suppressed. Used ONLY to demote
+        # the coverage claim (exhausted) fail-closed — never ok/failure
+        # reporting. The proper fix (defer engine-step commitment until
+        # row-lock arbitration decides) is a scheduler-protocol change tracked
+        # in issue #250.
+        row_lock_redirected = False
         try:
             for step in dpor_exploration_iter(
                 engine=engine,
@@ -587,6 +599,12 @@ class DporCrossProcessCoordinator:
                     # broader (a generic TypeError from launch machinery) is a
                     # bug and must propagate rather than be mislabeled.
                     return replace(_serialization_failure(exc, num_explored + 1), failures=failures)
+                # Latch before evaluation so the demotion survives no matter
+                # how this execution is scored (the per-execution scheduler is
+                # discarded below; the exception paths above already return
+                # exhausted=False results).
+                if scheduler._row_lock_redirected:
+                    row_lock_redirected = True
                 num_explored += 1
 
                 result = self._evaluate(
@@ -649,6 +667,15 @@ class DporCrossProcessCoordinator:
                     exhausted = False
                 elif deadline is not None and time.monotonic() > deadline:
                     exhausted = False
+            if row_lock_redirected:
+                # A row-lock-blocked redirect desynchronized at least one
+                # execution's engine trace from its physical statement order
+                # (issue #250), so derived executions may have been pruned:
+                # even when the engine reports the search tree fully explored,
+                # coverage cannot be certified. Demote only the coverage claim
+                # — ok/failure reporting for the executions that did run is
+                # untouched (fail-closed).
+                exhausted = False
             if first_failure is not None:
                 return replace(first_failure, iterations=num_explored, exhausted=exhausted, failures=failures)
             return CrossProcessResult(ok=True, iterations=num_explored, exhausted=exhausted)

@@ -209,10 +209,20 @@ class DporScheduler:
         # holders instead, preventing the scheduler from cycling
         # indefinitely between a blocked thread and its holder.
         self._row_lock_blocked: dict[int, int] = {}
-        # A redirect means the current cross-process protocol may already have
-        # committed an engine step for a statement that did not physically run.
-        # The coordinator fails closed rather than returning that inexact trace
-        # as a constructive proof or an exhausted pass.
+        # Sticky for this scheduler's run (one execution): set whenever
+        # acquire_row_locks() finds the modeled row lock held by another
+        # thread and hands execution to the holder. Both callers commit the
+        # waiter's engine step (before_sync_retry) BEFORE that arbitration —
+        # the xproc relay ACQUIRE_LOCKS path and the in-process SQL path
+        # (_sql_cursor._dpor_schedule_and_suppress_sync) alike — so the
+        # engine's schedule trace and the physical statement order can
+        # diverge at row-lock boundaries, and derived executions seeded from
+        # the desynced trace may be silently pruned (issue #250; observed
+        # engine trace [0,1,1,0,0,1,1,1] vs physical serial 0,0,0,1,1,1).
+        # Until the protocol fix (defer engine-step commitment until row-lock
+        # arbitration decides) lands, exploration drivers read this flag and
+        # fail closed: the xproc coordinator refuses to certify the trace and
+        # both drivers demote their exhaustiveness claim.
         self._row_lock_redirected = False
 
         # Last path_id snapshot from _schedule_next, used to attribute
@@ -1391,7 +1401,15 @@ class DporScheduler:
                     if holder == thread_id:
                         already_held = True
                         break
-                    # Another thread holds this row lock — check for cycle first
+                    # Another thread holds this row lock — check for cycle first.
+                    # Fail-closed marker (issue #250): the engine step for this
+                    # waiter was already committed (before_sync_retry) before we
+                    # discovered the lock is held, and execution is about to be
+                    # redirected to the holder. The engine's committed schedule
+                    # and the physical execution can diverge from here on, so
+                    # the run's coverage claim (exhausted) must be demoted by
+                    # whoever drives the exploration. Sticky per scheduler run;
+                    # coordinators aggregate it across executions.
                     self._row_lock_redirected = True
                     if graph is not None:
                         cycle = graph.add_waiting(thread_id, lock_int_id, kind="row_lock")

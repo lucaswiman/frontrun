@@ -390,6 +390,20 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
 
                 result.num_explored += 1
 
+                # Fail closed on the coverage claim (issue #250): a worker
+                # blocked on a modeled row lock after its engine step was
+                # already committed (before_sync_retry in
+                # _sql_cursor._dpor_schedule_and_suppress_sync runs before
+                # acquire_row_locks can redirect to the holder), so the
+                # engine's schedule and the physical execution can diverge at
+                # row-lock boundaries and derived executions may be silently
+                # pruned. Thread mode normally leaves ``exhausted`` unset
+                # (None); demote it to an explicit False — sticky for the
+                # rest of this exploration since ``result`` is never reset —
+                # without touching property_holds/failure reporting.
+                if scheduler._row_lock_redirected:
+                    result.exhausted = False
+
                 # Check for deadlock before running the invariant — a deadlock
                 # means the program never completed, so the invariant can never be
                 # satisfied.  Report it as a property violation with a clear message.
