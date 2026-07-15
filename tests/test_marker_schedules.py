@@ -425,3 +425,62 @@ class TestExploreMarkerInterleavingsAssertionError:
         assert result.explanation == "ValueError: worker crashed"
         assert result.failures is not None
         assert len(result.failures) == 3
+
+class TestExploreMarkerInterleavingsFailClosed:
+    """Deferred worker bodies must fail closed instead of certifying vacuously."""
+
+    def test_generator_returning_worker_fails_closed(self):
+        """A worker whose body is deferred inside a generator must not certify a pass.
+
+        The generator body would violate the invariant if it ever ran; silently
+        discarding it previously produced a vacuous property_holds=True.
+        """
+
+        class State:
+            def __init__(self) -> None:
+                self.value = 0
+
+            def bump(self) -> None:
+                self.value += 1  # frontrun: bump
+
+        def gen_worker(s: State):
+            def _body():
+                s.value += 100
+                yield
+
+            return _body()
+
+        result = explore_marker_interleavings(
+            setup=State,
+            threads={
+                "gen": (gen_worker, []),
+                "bump": (lambda s: s.bump(), ["bump"]),
+            },
+            invariant=lambda s: s.value == 1,
+        )
+        assert not result.property_holds
+        assert "deferred body was not executed" in (result.explanation or "")
+
+    def test_async_worker_in_sync_explorer_fails_closed(self):
+        """An async-def worker passed to the sync marker explorer must not certify a pass."""
+
+        class State:
+            def __init__(self) -> None:
+                self.value = 0
+
+            def bump(self) -> None:
+                self.value += 1  # frontrun: bump
+
+        async def async_worker(s: State) -> None:
+            s.value += 100
+
+        result = explore_marker_interleavings(
+            setup=State,
+            threads={
+                "async": (async_worker, []),
+                "bump": (lambda s: s.bump(), ["bump"]),
+            },
+            invariant=lambda s: s.value == 1,
+        )
+        assert not result.property_holds
+        assert "deferred body was not executed" in (result.explanation or "")
