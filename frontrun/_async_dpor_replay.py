@@ -239,6 +239,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                             self._error = SchedulerTimeoutError(
                                 f"Replay deadlock: task {task_id} sleeping until t={deadline} was never woken"
                             )
+                            self._on_error_set()
                             self._condition.notify_all()
                             return
                     while not (self._finished or self._error) and self._current_task != task_id:
@@ -252,6 +253,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                             self._error = SchedulerTimeoutError(
                                 f"Replay deadlock: task {task_id} woke from sleep but was never scheduled"
                             )
+                            self._on_error_set()
                             self._condition.notify_all()
                             return
                     if not (self._finished or self._error):
