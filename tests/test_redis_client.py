@@ -223,6 +223,23 @@ def test_bytes_flushall_command_reports_server_scope() -> None:
     assert ("redis:server-keyspace:server=redis:source:6379", "write") in events
 
 
+def test_coredis_command_request_reports_serialized_command_and_key() -> None:
+    """coredis 6 passes one CommandRequest instead of command + arguments."""
+    events: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        connection_pool=SimpleNamespace(connection_kwargs={"host": "source", "port": 6379, "db": 0})
+    )
+    request = SimpleNamespace(name=b"SET", serialized_arguments=(b"key", b"value"))
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        parsed = _redis_client._parse_and_report_execute_command((request,), client)
+    finally:
+        set_io_reporter(None)
+
+    assert parsed == ("SET", (b"key", b"value"), True)
+    assert ("redis:key:db=redis:source:6379/0", "write") in events
+
+
 def test_bytes_pipeline_move_command_reports_destination_scope() -> None:
     """Pipeline byte command tokens must retain cross-database destination dependencies."""
     events: list[tuple[str, str]] = []

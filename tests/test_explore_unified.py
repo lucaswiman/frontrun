@@ -80,6 +80,38 @@ def test_explore_sync_dpor_passes_for_correct_code():
     assert result.property_holds
 
 
+def test_explore_rejects_deferred_setup_body() -> None:
+    """A sync exploration must not certify without executing async setup."""
+
+    async def setup() -> Counter:
+        return Counter()
+
+    with pytest.raises(TypeError, match="setup.*deferred body was not executed"):
+        frontrun.explore(
+            setup=setup,
+            workers=[lambda _state: None],
+            invariant=lambda _state: True,
+            strategy="dpor",
+            max_executions=1,
+        )
+
+
+def test_explore_rejects_deferred_invariant_body() -> None:
+    """An async invariant result must not be treated as truthy without awaiting."""
+
+    async def invariant(_state: Counter) -> bool:
+        return False
+
+    with pytest.raises(TypeError, match="invariant.*deferred body was not executed"):
+        frontrun.explore(
+            setup=Counter,
+            workers=[lambda _state: None],
+            invariant=invariant,
+            strategy="dpor",
+            max_executions=1,
+        )
+
+
 def test_explore_sync_random_strategy():
     """explore(strategy='random') finds the lost-update race."""
     result = frontrun.explore(

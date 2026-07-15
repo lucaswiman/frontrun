@@ -660,6 +660,47 @@ def test_condition_notify_counterexample_replays_exactly(clock: str) -> None:
     assert result.reproduction_successes == 10
 
 
+@pytest.mark.parametrize("clock", ["real", "virtual"])
+def test_queue_wake_does_not_hide_post_put_race(clock: str) -> None:
+    """Queue handoff orders the item transfer, not both workers' later I/O."""
+    require_active("test_async_queue_wake_post_put_race")
+    import frontrun
+
+    class State:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[str] = asyncio.Queue()
+            self.value = 0
+
+    async def consumer(state: State) -> None:
+        await state.queue.get()
+        value = state.value
+        await asyncio.sleep(0)
+        state.value = value + 1
+
+    async def producer(state: State) -> None:
+        await state.queue.put("ready")
+        value = state.value
+        await asyncio.sleep(0)
+        state.value = value + 1
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=State,
+            workers=[consumer, producer],
+            invariant=lambda state: state.value == 2,
+            strategy="dpor",
+            clock=clock,
+            max_executions=50,
+            reproduce_on_failure=10,
+            detect_io=False,
+        )
+    )
+
+    assert not result.property_holds
+    assert result.reproduction_attempts == 10
+    assert result.reproduction_successes == 10
+
+
 # ---------------------------------------------------------------------------
 # Synthesized replay deadlock vs. abort-woken cooperative waiters
 # ---------------------------------------------------------------------------
