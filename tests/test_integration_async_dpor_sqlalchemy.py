@@ -305,9 +305,7 @@ class TestAsyncpgPreparedStatementReporting:
 
                 async def increment(_state: object) -> None:
                     async with engine.connect() as conn:
-                        row = (
-                            await conn.execute(text("SELECT value FROM async_sa_counter WHERE id = 1"))
-                        ).fetchone()
+                        row = (await conn.execute(text("SELECT value FROM async_sa_counter WHERE id = 1"))).fetchone()
                         assert row is not None
                         await await_point()
                         await conn.execute(
