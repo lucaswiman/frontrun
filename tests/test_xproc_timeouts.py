@@ -245,9 +245,10 @@ def test_dpor_total_timeout_bounds_initial_worker_connection() -> None:
     elapsed = time.monotonic() - start
 
     assert elapsed < 0.15, f"total_timeout=0.02 was not honored during worker connection ({elapsed:.3f}s)"
-    assert result.ok
+    assert result.ok is None
     assert result.iterations == 0
     assert result.exhausted is False
+    assert "total_timeout" in (result.truncation or "")
 
 
 # ---------------------------------------------------------------------------
