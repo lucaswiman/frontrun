@@ -1,13 +1,59 @@
 Quick Start
 ===========
 
-This guide covers the basics using **trace markers** --- the simplest approach.
-For automatic race finding without manual markers, see :doc:`dpor_guide` (systematic
-exploration) or :doc:`approaches` (bytecode exploration).
-
-
-Triggering a Race Condition
+Finding a race automatically
 ----------------------------
+
+The front door is :func:`frontrun.explore`: hand it a way to build shared
+state, some workers, and an invariant, and DPOR systematically explores every
+meaningfully different thread interleaving until one breaks the invariant or
+all of them are proven safe. No annotations needed:
+
+.. code-block:: python
+
+   import frontrun
+
+   class Counter:
+       def __init__(self):
+           self.value = 0
+
+       def increment(self):
+           temp = self.value
+           self.value = temp + 1
+
+   def test_increment_is_atomic():
+       result = frontrun.explore(
+           setup=Counter,
+           workers=Counter.increment,
+           count=2,
+           invariant=lambda c: c.value == 2,
+       )
+       result.assert_holds()
+
+Run it through the ``frontrun`` CLI wrapper --- plain ``pytest`` skips
+``frontrun.explore()`` tests (see :doc:`installation`):
+
+.. code-block:: bash
+
+   frontrun pytest test_counter.py
+
+The failure output names the conflicting accesses, shows the interleaved
+source-line trace, and replays the counterexample schedule to confirm it
+reproduces deterministically. See :doc:`dpor_guide` for the practical guide,
+and :doc:`approaches` for the other exploration strategies (random bytecode
+exploration, marker schedule exploration).
+
+The rest of this guide covers **trace markers** --- the fully manual approach,
+for when you already know the interleaving you're after and want to pin it
+down as a deterministic regression test. If your workers are separate OS
+processes contending on a shared database or Redis rather than threads, see
+:doc:`cross_process`. If the race you're hunting involves timeouts, retries,
+or TTL expiry, see :doc:`virtual_clock` (``clock="virtual"`` /
+``clock="explored"``).
+
+
+Triggering a Race Condition with Trace Markers
+-----------------------------------------------
 
 .. code-block:: python
 

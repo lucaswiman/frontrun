@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.bytecode - Frontrun 0.6.0 documentation</title>
+        <title>frontrun.bytecode - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -194,7 +194,9 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -203,10 +205,11 @@
 <li class="toctree-l1"><a class="reference internal" href="../../orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -286,6 +289,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">contextmanager</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">TypeVar</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._certificate</span><span class="w"> </span><span class="kn">import</span> <span class="n">PassEvidence</span><span class="p">,</span> <span class="n">certify_pass</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._cooperative</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">clear_context</span><span class="p">,</span>
     <span class="n">patch_locks</span><span class="p">,</span>
@@ -297,6 +301,7 @@
     <span class="n">unpatch_sleep</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._deadlock</span><span class="w"> </span><span class="kn">import</span> <span class="n">DeadlockError</span><span class="p">,</span> <span class="n">SchedulerAbort</span><span class="p">,</span> <span class="n">install_wait_for_graph</span><span class="p">,</span> <span class="n">uninstall_wait_for_graph</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._dpor_core</span><span class="w"> </span><span class="kn">import</span> <span class="n">VirtualClockPort</span><span class="p">,</span> <span class="n">noop_on_wake</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._io_detection</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">patch_io</span><span class="p">,</span>
     <span class="n">set_dpor_scheduler</span><span class="p">,</span>
@@ -323,15 +328,35 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceFilter</span> <span class="k">as</span> <span class="n">_TraceFilter</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">set_active_trace_filter</span> <span class="k">as</span> <span class="n">_set_active_trace_filter</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">should_trace_file</span> <span class="k">as</span> <span class="n">_should_trace_file</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._virtual_clock</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">ClockConfig</span><span class="p">,</span>
+    <span class="n">ClockMode</span><span class="p">,</span>
+    <span class="n">VirtualClock</span><span class="p">,</span>
+    <span class="n">clock_scope</span><span class="p">,</span>
+    <span class="n">warn_if_captured_time_reference</span><span class="p">,</span>
+<span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.cli</span><span class="w"> </span><span class="kn">import</span> <span class="n">require_active</span> <span class="k">as</span> <span class="n">_require_frontrun_env</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">InterleavingResult</span><span class="p">,</span>
+    <span class="n">_call_sync_setup</span><span class="p">,</span>
     <span class="n">check_invariant</span><span class="p">,</span>
     <span class="n">check_serializability_violation</span><span class="p">,</span>
 <span class="p">)</span>
 
 <span class="c1"># Type variable for the shared state passed between setup and thread functions</span>
 <span class="n">T</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;T&quot;</span><span class="p">)</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">_WorkerExecutionError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Internal wrapper distinguishing worker crashes from setup failures.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cause</span><span class="p">:</span> <span class="ne">Exception</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">cause</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cause</span> <span class="o">=</span> <span class="n">cause</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">_MaxOpsExhaustedError</span><span class="p">(</span><span class="ne">TimeoutError</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;The scheduler cap was reached before the worker trace completed.&quot;&quot;&quot;</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">OpcodeScheduler</span><span class="p">:</span>
@@ -361,11 +386,25 @@
         <span class="n">deadlock_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
         <span class="n">max_ops</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
         <span class="n">trace_recorder</span><span class="p">:</span> <span class="n">TraceRecorder</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">virtual_clock</span><span class="p">:</span> <span class="n">VirtualClock</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">clock_mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;real&quot;</span><span class="p">,</span>
+        <span class="n">clock_diagnostics</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>  <span class="c1"># mutable copy for dynamic extension</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">num_threads</span> <span class="o">=</span> <span class="n">num_threads</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span> <span class="o">=</span> <span class="n">deadlock_timeout</span>
+        <span class="c1"># Virtual clock (ideas/virtual_clock.md).  Random exploration has no</span>
+        <span class="c1"># DPOR engine, so the clock advance rules live directly here:</span>
+        <span class="c1"># - a schedule entry for a sleeping thread is skipped (&quot;virtual&quot;) or</span>
+        <span class="c1">#   advances the clock to that thread&#39;s deadline (&quot;explored&quot; — the</span>
+        <span class="c1">#   random sampler&#39;s &quot;maybe advance time&quot; branch);</span>
+        <span class="c1"># - when every live thread is deadline-blocked, the clock autojumps</span>
+        <span class="c1">#   to the earliest deadline (see sleep_until).</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span> <span class="o">=</span> <span class="n">virtual_clock</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">clock_mode</span> <span class="o">=</span> <span class="n">clock_mode</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_clock_diagnostics</span> <span class="o">=</span> <span class="n">clock_diagnostics</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops</span> <span class="o">=</span> <span class="n">max_ops</span> <span class="k">if</span> <span class="n">max_ops</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="nb">len</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span> <span class="o">*</span> <span class="mi">10</span> <span class="o">+</span> <span class="mi">10000</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops_exhausted</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="c1"># Deterministic RNG for dynamic schedule extension.  Seeded from the</span>
         <span class="c1"># initial schedule so the extension is reproducible for a given run</span>
         <span class="c1"># (and replay re-uses the already-recorded self.schedule list anyway).</span>
@@ -373,6 +412,18 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">=</span> <span class="mi">0</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">real_lock</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span> <span class="o">=</span> <span class="n">real_condition</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="p">)</span>
+        <span class="c1"># Shared virtual-clock protocol.  Random exploration has no DPOR engine,</span>
+        <span class="c1"># so the block/unblock/sync callbacks default to no-ops; the port still</span>
+        <span class="c1"># owns the single DeadlineCoordinator and the blocking-spin flags.</span>
+        <span class="c1"># ``_deadlines`` / ``_spin_waiters`` alias the port&#39;s state so the rest</span>
+        <span class="c1"># of the scheduler is unchanged.  The spin flags matter because an</span>
+        <span class="c1"># untimed spinner otherwise blocks the &quot;every live thread is</span>
+        <span class="c1"># deadline-blocked&quot; autojump forever (see sleep_until); entries clear on</span>
+        <span class="c1"># release/set so a freshly-unblocked spinner re-probes before counting</span>
+        <span class="c1"># as hopeless.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span> <span class="o">=</span> <span class="n">VirtualClockPort</span><span class="p">(</span><span class="n">condition</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">coordinator</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_spin_waiters</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">spin_waiters</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_error</span><span class="p">:</span> <span class="ne">Exception</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_threads_done</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
@@ -388,6 +439,8 @@
 <span class="sd">        threads are done or the max_ops cap was reached.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops</span><span class="p">:</span>
+            <span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">t</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_threads_done</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">num_threads</span><span class="p">)):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops_exhausted</span> <span class="o">=</span> <span class="kc">True</span>
             <span class="k">return</span> <span class="kc">False</span>
         <span class="n">active</span> <span class="o">=</span> <span class="p">[</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">num_threads</span><span class="p">)</span> <span class="k">if</span> <span class="n">t</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_threads_done</span><span class="p">]</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">active</span><span class="p">:</span>
@@ -395,10 +448,15 @@
         <span class="c1"># Only add entries up to the max_ops cap to prevent overshoot.</span>
         <span class="n">remaining</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops</span> <span class="o">-</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">remaining</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">active</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops_exhausted</span> <span class="o">=</span> <span class="kc">True</span>
             <span class="k">return</span> <span class="kc">False</span>
         <span class="n">appended</span> <span class="o">=</span> <span class="n">burst_round</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_extend_rng</span><span class="p">,</span> <span class="n">active</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">appended</span><span class="p">[:</span><span class="n">remaining</span><span class="p">])</span>
         <span class="k">return</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_blocks_clock_progress</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">blocks_clock_progress</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">wait_for_turn</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Block until it&#39;s this thread&#39;s turn. Returns False when done.&quot;&quot;&quot;</span>
@@ -419,6 +477,60 @@
                     <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">+=</span> <span class="mi">1</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
                     <span class="k">continue</span>
+
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">is_sleeping</span><span class="p">(</span><span class="n">scheduled_tid</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">clock_mode</span> <span class="o">==</span> <span class="s2">&quot;explored&quot;</span><span class="p">:</span>
+                        <span class="c1"># &quot;Maybe advance&quot;: the random schedule picked a</span>
+                        <span class="c1"># sleeping thread, so let time pass toward its</span>
+                        <span class="c1"># deadline; the woken thread then consumes this entry.</span>
+                        <span class="c1"># Each speculative hop is clamped to the *earliest*</span>
+                        <span class="c1"># pending deadline so an earlier timed wait fires at</span>
+                        <span class="c1"># its own clock value, never at a later sleeper&#39;s</span>
+                        <span class="c1"># target.  A clamped hop cannot wake the scheduled</span>
+                        <span class="c1"># sleeper, so it also consumes the sleeper&#39;s contiguous</span>
+                        <span class="c1"># run of entries: leaving them would re-advance to the</span>
+                        <span class="c1"># next deadline under this same lock hold, before the</span>
+                        <span class="c1"># just-woken waiter could be granted a single turn to</span>
+                        <span class="c1"># observe its own timeout.</span>
+                        <span class="n">sleep_deadline</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">sleep_deadline</span><span class="p">(</span><span class="n">scheduled_tid</span><span class="p">)</span>
+                        <span class="k">if</span> <span class="n">sleep_deadline</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                            <span class="c1"># A perpetual sleep is blocked but cannot advance</span>
+                            <span class="c1"># virtual time. Skip this unusable schedule slot.</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">+=</span> <span class="mi">1</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+                            <span class="k">continue</span>
+                        <span class="n">next_deadline</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">next_deadline</span><span class="p">()</span>
+                        <span class="k">assert</span> <span class="n">next_deadline</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>  <span class="c1"># sleep_deadline is pending</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_advance_clock_to</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">next_deadline</span><span class="p">,</span> <span class="n">sleep_deadline</span><span class="p">))</span>
+                        <span class="k">if</span> <span class="n">next_deadline</span> <span class="o">&lt;</span> <span class="n">sleep_deadline</span><span class="p">:</span>
+                            <span class="c1"># A clamped hop can&#39;t wake the scheduled sleeper, so</span>
+                            <span class="c1"># consume its contiguous run of entries (see above).</span>
+                            <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">)</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_index</span><span class="p">]</span> <span class="o">==</span> <span class="n">scheduled_tid</span><span class="p">:</span>
+                                <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">+=</span> <span class="mi">1</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="c1"># Autojump semantics: a sleeping thread cannot run</span>
+                        <span class="c1"># before the clock advances; skip its slot.</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">+=</span> <span class="mi">1</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+                    <span class="k">continue</span>
+
+                <span class="k">if</span> <span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                    <span class="ow">and</span> <span class="n">scheduled_tid</span> <span class="o">==</span> <span class="n">thread_id</span>
+                    <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">in_timed_wait</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
+                    <span class="ow">and</span> <span class="nb">all</span><span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_blocks_clock_progress</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+                        <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">num_threads</span><span class="p">)</span>
+                        <span class="k">if</span> <span class="n">t</span> <span class="o">!=</span> <span class="n">thread_id</span> <span class="ow">and</span> <span class="n">t</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_threads_done</span>
+                    <span class="p">)</span>
+                <span class="p">):</span>
+                    <span class="c1"># This thread spins on a timed lock acquire and every</span>
+                    <span class="c1"># other live thread is deadline-blocked: nothing can</span>
+                    <span class="c1"># release the lock before time passes, so advance to the</span>
+                    <span class="c1"># earliest pending deadline (which may be our own).</span>
+                    <span class="n">deadline</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">next_deadline</span><span class="p">()</span>
+                    <span class="k">if</span> <span class="n">deadline</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_advance_clock_to</span><span class="p">(</span><span class="n">deadline</span><span class="p">)</span>
 
                 <span class="k">if</span> <span class="n">scheduled_tid</span> <span class="o">==</span> <span class="n">thread_id</span><span class="p">:</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">+=</span> <span class="mi">1</span>
@@ -446,7 +558,166 @@
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Mark a thread as finished.&quot;&quot;&quot;</span>
         <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_threads_done</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">cancel</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_spin_waiters</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">thread_id</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+
+    <span class="c1"># -- Virtual clock support (see class docstring fields) ---------------</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_advance_clock_to</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Jump the clock to *target* and wake every due deadline.</span>
+
+<span class="sd">        Caller must hold ``self._condition``.  The shared port drops each due</span>
+<span class="sd">        deadline from the coordinator and pops the due actor&#39;s spin flag.  That</span>
+<span class="sd">        spin-flag pop is load-bearing: a virtual timed wait registers a</span>
+<span class="sd">        &quot;timeout&quot; deadline AND a ``_spin_waiters`` flag (see</span>
+<span class="sd">        ``_cooperative._spin_hook_for_wait``); its deadline firing means</span>
+<span class="sd">        &quot;re-probe before being counted as blocked again&quot;, so without clearing</span>
+<span class="sd">        the flag the autojump loop in ``sleep_until`` would keep seeing it as</span>
+<span class="sd">        blocked and advance straight to the next deadline, making the wait</span>
+<span class="sd">        observe more elapsed virtual time than its own timeout.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">clock</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span>
+        <span class="k">if</span> <span class="n">clock</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">advance_clock_to</span><span class="p">(</span><span class="n">clock</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="n">noop_on_wake</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">sleep_until</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">deadline</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">duration</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Block *thread_id* until the virtual clock reaches *deadline*.</span>
+
+<span class="sd">        With ``duration=`` the deadline is computed under ``_condition`` (the</span>
+<span class="sd">        lock all clock advances hold), so a concurrent explored-mode advance</span>
+<span class="sd">        cannot land between the caller&#39;s ``now()`` read and the registration</span>
+<span class="sd">        and instantly expire the sleep.</span>
+
+<span class="sd">        Wakes when another thread&#39;s scheduling advances the clock past the</span>
+<span class="sd">        deadline, or — when every live thread is deadline-blocked — by</span>
+<span class="sd">        autojumping to the earliest pending deadline directly.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">deadline</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">duration</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;sleep_until needs either deadline= or duration= (with a virtual clock)&quot;</span><span class="p">)</span>
+                <span class="n">deadline</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span><span class="o">.</span><span class="n">now</span><span class="p">()</span> <span class="o">+</span> <span class="n">duration</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">add_sleep</span><span class="p">(</span><span class="n">thread_id</span><span class="p">,</span> <span class="n">deadline</span><span class="p">,</span> <span class="n">wake_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">is_sleeping</span><span class="p">(</span><span class="n">thread_id</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_error</span><span class="p">:</span>
+                        <span class="k">return</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span><span class="p">:</span>
+                        <span class="c1"># Schedule/op budget exhausted (wait_for_turn hit the</span>
+                        <span class="c1"># max_ops cap): no more turns are granted, but the</span>
+                        <span class="c1"># sleep must still resolve virtually.  Advance to this</span>
+                        <span class="c1"># sleeper&#39;s deadline — firing earlier due deadlines in</span>
+                        <span class="c1"># order — instead of returning with the clock frozen,</span>
+                        <span class="c1"># which would silently truncate the sleep and report a</span>
+                        <span class="c1"># phantom TTL/timeout counterexample.</span>
+                        <span class="n">sleep_deadline</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">sleep_deadline</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
+                        <span class="k">if</span> <span class="n">sleep_deadline</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_error</span> <span class="o">=</span> <span class="ne">TimeoutError</span><span class="p">(</span>
+                                <span class="sa">f</span><span class="s2">&quot;Deadlock: thread </span><span class="si">{</span><span class="n">thread_id</span><span class="si">}</span><span class="s2"> is blocked on a perpetual virtual sleep&quot;</span>
+                            <span class="p">)</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+                            <span class="k">return</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_advance_clock_to</span><span class="p">(</span><span class="n">sleep_deadline</span><span class="p">)</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+                        <span class="k">return</span>
+                    <span class="n">alive</span> <span class="o">=</span> <span class="p">[</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">num_threads</span><span class="p">)</span> <span class="k">if</span> <span class="n">t</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_threads_done</span><span class="p">]</span>
+                    <span class="n">blocked</span> <span class="o">=</span> <span class="p">[</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">alive</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_blocks_clock_progress</span><span class="p">(</span><span class="n">t</span><span class="p">)]</span>
+                    <span class="k">if</span> <span class="n">alive</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">blocked</span><span class="p">)</span> <span class="o">==</span> <span class="nb">len</span><span class="p">(</span><span class="n">alive</span><span class="p">):</span>
+                        <span class="c1"># Every live thread is asleep, in a timed wait, or</span>
+                        <span class="c1"># spinning on a resource nothing can release before</span>
+                        <span class="c1"># time passes: only the clock can move.</span>
+                        <span class="n">next_deadline</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">next_deadline</span><span class="p">()</span>
+                        <span class="k">if</span> <span class="n">next_deadline</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_advance_clock_to</span><span class="p">(</span><span class="n">next_deadline</span><span class="p">)</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+                            <span class="k">continue</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="p">):</span>
+                        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_error</span><span class="p">:</span>
+                            <span class="k">continue</span>  <span class="c1"># dispatch via the loop-top checks</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_error</span> <span class="o">=</span> <span class="ne">TimeoutError</span><span class="p">(</span>
+                            <span class="sa">f</span><span class="s2">&quot;Deadlock: thread </span><span class="si">{</span><span class="n">thread_id</span><span class="si">}</span><span class="s2"> sleeping until t=</span><span class="si">{</span><span class="n">deadline</span><span class="si">}</span><span class="s2"> was never woken&quot;</span>
+                        <span class="p">)</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+                        <span class="k">return</span>
+            <span class="k">finally</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">cancel_sleep</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">advance_clock_after_finish</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">deadline</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Advance the clock to a timed wait&#39;s deadline after schedule exhaustion.</span>
+
+<span class="sd">        Called by cooperative timed waits (via</span>
+<span class="sd">        ``_cooperative._finish_virtual_timed_wait``) once ``_finished`` is set:</span>
+<span class="sd">        no more turns are granted, but a registered virtual timeout must still</span>
+<span class="sd">        elapse on the virtual clock rather than degrading to a real wait with</span>
+<span class="sd">        the clock frozen.  Fires earlier due deadlines in order (see</span>
+<span class="sd">        :meth:`_advance_clock_to`).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_advance_clock_to</span><span class="p">(</span><span class="n">deadline</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">note_blocking_spin</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">waiting</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">timed_wait</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Flag *thread_id* as spinning on an untimed cooperative wait.</span>
+
+<span class="sd">        Cooperative primitives set the flag after a failed probe and clear it</span>
+<span class="sd">        once they acquire (or give up); release/set of the resource clears it</span>
+<span class="sd">        via :meth:`note_spin_release` so the spinner re-probes before being</span>
+<span class="sd">        counted as blocked by the autojump check in :meth:`sleep_until`.</span>
+<span class="sd">        ``timed_wait=True`` flags are refused once their deadline has fired</span>
+<span class="sd">        (see :meth:`VirtualClockPort.note_blocking_spin`).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">note_blocking_spin</span><span class="p">(</span><span class="n">thread_id</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">,</span> <span class="n">waiting</span><span class="p">,</span> <span class="n">timed_wait</span><span class="o">=</span><span class="n">timed_wait</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">note_spin_release</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Clear spin flags for *resource_id* (it may now be acquirable).&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">note_spin_release</span><span class="p">(</span><span class="n">resource_id</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">add_timed_wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">deadline</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Register a virtual deadline for a timed lock acquire.</span>
+
+<span class="sd">        With ``timeout=`` the deadline is computed under the scheduler&#39;s</span>
+<span class="sd">        serialising lock (see ``VirtualClockPort.add_timed_wait``); returns it.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">add_timed_wait</span><span class="p">(</span><span class="n">thread_id</span><span class="p">,</span> <span class="n">deadline</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span> <span class="n">clock</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">remove_timed_wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Deregister a timed-acquire deadline (acquired or gave up).&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">remove_timed_wait</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">clear_engine_block</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op: the random scheduler has no engine-level blocked state.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">acquire_row_locks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">resource_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op DPOR-compat stub: random exploration models no SQL row locks.</span>
+
+<span class="sd">        ``_acquire_pending_row_locks`` calls this when the OpcodeScheduler is</span>
+<span class="sd">        registered as the DPOR context (in-transaction SQL under</span>
+<span class="sd">        ``explore_random``).  Returning an empty list (rather than ``None``)</span>
+<span class="sd">        records nothing as held, which is correct because nothing is modeled.</span>
+<span class="sd">        Mirrors ``async_shuffler.OpcodeShuffler.acquire_row_locks`` and keeps</span>
+<span class="sd">        the signature compatible with ``DporScheduler.acquire_row_locks``.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">[]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">release_row_locks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">resources</span><span class="p">:</span> <span class="nb">object</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op DPOR-compat stub: random exploration models no SQL row locks.</span>
+
+<span class="sd">        Called by ``_release_dpor_row_locks`` (including the SQL error handler).</span>
+<span class="sd">        Mirrors ``async_shuffler.OpcodeShuffler.release_row_locks``.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">give_up_timed_wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Deregister a timed-acquire deadline on give-up.</span>
+
+<span class="sd">        Mirror of :meth:`DporScheduler.give_up_timed_wait`.  The random</span>
+<span class="sd">        scheduler has no engine-level blocked state (the port&#39;s ``unblock`` /</span>
+<span class="sd">        ``on_give_up`` callbacks are no-ops), so this only drops the deadline;</span>
+<span class="sd">        there is no false-positive window to close here.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_clock_port</span><span class="o">.</span><span class="n">give_up_timed_wait</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">report_error</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">error</span><span class="p">:</span> <span class="ne">Exception</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Report an error and unblock all threads.&quot;&quot;&quot;</span>
@@ -489,7 +760,8 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span> <span class="o">=</span> <span class="n">scheduler</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">detect_io</span> <span class="o">=</span> <span class="n">detect_io</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">threads</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">errors</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">errors</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="ne">BaseException</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">worker_originated_errors</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="ne">BaseException</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_lock_patched</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_io_patched</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_sleep_patched</span> <span class="o">=</span> <span class="kc">False</span>
@@ -510,7 +782,7 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">_lock_patched</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_patch_sleep</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Replace time.sleep with a cooperative no-op.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Replace time.sleep with the cooperative scheduler hook.&quot;&quot;&quot;</span>
         <span class="n">patch_sleep</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_sleep_patched</span> <span class="o">=</span> <span class="kc">True</span>
 
@@ -536,6 +808,8 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">_io_patched</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">patch_scope</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">patch_sleep</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PatchScope</span><span class="p">:</span>
+        <span class="c1"># The time.* patch is owned by the caller&#39;s clock_scope, held once</span>
+        <span class="c1"># across setup/run/invariant, rather than churned here per phase.</span>
         <span class="n">scope</span> <span class="o">=</span> <span class="n">PatchScope</span><span class="p">()</span>
         <span class="n">scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_patch_locks</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unpatch_locks</span><span class="p">)</span>
         <span class="n">scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_patch_io</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unpatch_io</span><span class="p">)</span>
@@ -570,6 +844,8 @@
             <span class="k">return</span> <span class="n">tid</span>  <span class="c1"># type: ignore[no-any-return]</span>
 
         <span class="k">def</span><span class="w"> </span><span class="nf">_on_opcode</span><span class="p">(</span><span class="n">code</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">offset</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">frame</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">tid</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_clock_diagnostics</span><span class="p">:</span>
+                <span class="n">warn_if_captured_time_reference</span><span class="p">(</span><span class="n">frame</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">recorder</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="n">recorder</span><span class="o">.</span><span class="n">record_from_opcode</span><span class="p">(</span><span class="n">tid</span><span class="p">,</span> <span class="n">frame</span><span class="p">)</span>
             <span class="n">scheduler</span><span class="o">.</span><span class="n">wait_for_turn</span><span class="p">(</span><span class="n">tid</span><span class="p">)</span>
@@ -671,9 +947,17 @@
                 <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
         <span class="k">except</span> <span class="n">SchedulerAbort</span><span class="p">:</span>
             <span class="k">pass</span>  <span class="c1"># scheduler already has the error; just exit cleanly</span>
-        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="k">except</span> <span class="ne">BaseException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>  <span class="c1"># noqa: BLE001</span>
+            <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="p">,</span> <span class="s2">&quot;_error&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">e</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">worker_originated_errors</span><span class="p">[</span><span class="n">thread_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">e</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">errors</span><span class="p">[</span><span class="n">thread_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">e</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">report_error</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">e</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">report_error</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="c1"># Worker BaseExceptions do not cross the thread boundary on</span>
+                <span class="c1"># their own. Wake peers with an ordinary scheduler error;</span>
+                <span class="c1"># run() re-raises the original object on the driver thread.</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">report_error</span><span class="p">(</span><span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;worker </span><span class="si">{</span><span class="n">thread_id</span><span class="si">}</span><span class="s2"> terminated with </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">))</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
@@ -765,6 +1049,13 @@
     <span class="n">deadlock_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
     <span class="n">trace_recorder</span><span class="p">:</span> <span class="n">TraceRecorder</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">patch_sleep</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="n">clock</span><span class="p">:</span> <span class="n">ClockMode</span> <span class="o">=</span> <span class="s2">&quot;real&quot;</span><span class="p">,</span>
+    <span class="n">_virtual_clock</span><span class="p">:</span> <span class="n">VirtualClock</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">clock_diagnostics</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">_max_ops</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">_worker_errors_as_findings</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">_recorded_schedule</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">_workers_entered</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Run one interleaving and return the state object.</span>
 
@@ -781,33 +1072,72 @@
 <span class="sd">        trace_recorder: Optional recorder for capturing trace events.</span>
 <span class="sd">            When provided, records shared-state accesses for later</span>
 <span class="sd">            formatting into human-readable explanations.</span>
+<span class="sd">        clock: ``&quot;real&quot;`` (default), ``&quot;virtual&quot;`` (autojump virtual clock),</span>
+<span class="sd">            or ``&quot;explored&quot;`` (schedule entries landing on a sleeping thread</span>
+<span class="sd">            advance the clock — the random &quot;maybe advance time&quot; branch).</span>
+<span class="sd">        _virtual_clock: Internal — the clock instance to drive, so callers</span>
+<span class="sd">            (``explore_random``) can evaluate invariants against it.</span>
 
 <span class="sd">    Returns:</span>
 <span class="sd">        The state object after execution.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">clock_config</span> <span class="o">=</span> <span class="n">ClockConfig</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="n">clock</span><span class="p">,</span> <span class="n">diagnostics</span><span class="o">=</span><span class="n">clock_diagnostics</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">)</span>
+    <span class="n">clock</span> <span class="o">=</span> <span class="n">clock_config</span><span class="o">.</span><span class="n">mode</span>
+    <span class="k">if</span> <span class="n">_virtual_clock</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">clock</span> <span class="o">==</span> <span class="s2">&quot;real&quot;</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;_virtual_clock requires clock=&#39;virtual&#39; or clock=&#39;explored&#39;&quot;</span><span class="p">)</span>
+    <span class="n">virtual_clock</span> <span class="o">=</span> <span class="n">_virtual_clock</span> <span class="k">if</span> <span class="n">_virtual_clock</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">clock_config</span><span class="o">.</span><span class="n">new_clock</span><span class="p">()</span>
     <span class="n">scheduler</span> <span class="o">=</span> <span class="n">OpcodeScheduler</span><span class="p">(</span>
-        <span class="n">schedule</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">threads</span><span class="p">),</span> <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span> <span class="n">trace_recorder</span><span class="o">=</span><span class="n">trace_recorder</span>
+        <span class="n">schedule</span><span class="p">,</span>
+        <span class="nb">len</span><span class="p">(</span><span class="n">threads</span><span class="p">),</span>
+        <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span>
+        <span class="n">trace_recorder</span><span class="o">=</span><span class="n">trace_recorder</span><span class="p">,</span>
+        <span class="n">virtual_clock</span><span class="o">=</span><span class="n">virtual_clock</span><span class="p">,</span>
+        <span class="n">clock_mode</span><span class="o">=</span><span class="n">clock</span><span class="p">,</span>
+        <span class="n">clock_diagnostics</span><span class="o">=</span><span class="n">clock_diagnostics</span><span class="p">,</span>
+        <span class="n">max_ops</span><span class="o">=</span><span class="n">_max_ops</span> <span class="ow">or</span> <span class="mi">0</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">runner</span> <span class="o">=</span> <span class="n">BytecodeShuffler</span><span class="p">(</span><span class="n">scheduler</span><span class="p">,</span> <span class="n">detect_io</span><span class="o">=</span><span class="n">detect_io</span><span class="p">)</span>
 
-    <span class="c1"># Patch locks BEFORE setup() so any locks created there are cooperative</span>
-    <span class="k">with</span> <span class="n">runner</span><span class="o">.</span><span class="n">patch_scope</span><span class="p">(</span><span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">):</span>
-        <span class="n">state</span> <span class="o">=</span> <span class="n">setup</span><span class="p">()</span>
+    <span class="c1"># The clock_scope owns the time.* patch for the whole run (setup + workers);</span>
+    <span class="c1"># patch_locks BEFORE setup() so any locks created there are cooperative.</span>
+    <span class="k">with</span> <span class="n">clock_scope</span><span class="p">(</span><span class="n">virtual_clock</span><span class="p">),</span> <span class="n">runner</span><span class="o">.</span><span class="n">patch_scope</span><span class="p">(</span><span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">):</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="n">_call_sync_setup</span><span class="p">(</span><span class="n">setup</span><span class="p">)</span>
 
-        <span class="k">def</span><span class="w"> </span><span class="nf">make_thread_func</span><span class="p">(</span><span class="n">thread_func</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="kc">None</span><span class="p">],</span> <span class="n">thread_state</span><span class="p">:</span> <span class="n">T</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]:</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">_reject_deferred_sync_result</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">make_thread_func</span><span class="p">(</span><span class="n">idx</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">thread_func</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="kc">None</span><span class="p">],</span> <span class="n">thread_state</span><span class="p">:</span> <span class="n">T</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]:</span>
             <span class="k">def</span><span class="w"> </span><span class="nf">thread_wrapper</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">thread_func</span><span class="p">(</span><span class="n">thread_state</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">_workers_entered</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="c1"># Pass-certificate evidence: this worker&#39;s body was entered.</span>
+                    <span class="n">_workers_entered</span><span class="p">[</span><span class="n">idx</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+                <span class="n">result</span> <span class="o">=</span> <span class="n">thread_func</span><span class="p">(</span><span class="n">thread_state</span><span class="p">)</span>
+                <span class="n">_reject_deferred_sync_result</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">thread_func</span><span class="p">)</span>
 
             <span class="k">return</span> <span class="n">thread_wrapper</span>
 
-        <span class="n">funcs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[</span><span class="n">make_thread_func</span><span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">threads</span><span class="p">]</span>
+        <span class="n">funcs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[</span><span class="n">make_thread_func</span><span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">t</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">threads</span><span class="p">)]</span>
         <span class="n">timed_out</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="n">runner</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">funcs</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
-        <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
+        <span class="k">except</span> <span class="ne">TimeoutError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">runner</span><span class="o">.</span><span class="n">worker_originated_errors</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">_worker_errors_as_findings</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">_WorkerExecutionError</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+                <span class="k">raise</span>
             <span class="k">if</span> <span class="n">debug</span><span class="p">:</span>
                 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Timed out with </span><span class="si">{</span><span class="n">timeout</span><span class="si">=}</span><span class="s2"> on </span><span class="si">{</span><span class="n">schedule</span><span class="si">=}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
             <span class="n">timed_out</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="k">except</span> <span class="n">DeadlockError</span><span class="p">:</span>
+            <span class="k">raise</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_max_ops_exhausted</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">_MaxOpsExhaustedError</span><span class="p">(</span><span class="s2">&quot;run_with_schedule exhausted max_ops before workers completed&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+            <span class="k">if</span> <span class="n">_worker_errors_as_findings</span> <span class="ow">and</span> <span class="n">runner</span><span class="o">.</span><span class="n">errors</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">_WorkerExecutionError</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+            <span class="k">raise</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">_recorded_schedule</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">_recorded_schedule</span><span class="p">[:]</span> <span class="o">=</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">schedule</span>
         <span class="c1"># Re-raise DeadlockError so callers (e.g. reproduction logic) can</span>
         <span class="c1"># detect that a deadlock occurred during replay.</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span><span class="p">,</span> <span class="n">DeadlockError</span><span class="p">):</span>
@@ -817,6 +1147,8 @@
         <span class="c1"># threads may still be mutating.  Evaluating an invariant on such a</span>
         <span class="c1"># half-finished racing state is meaningless (finding 9d).  Callers in</span>
         <span class="c1"># exploration loops catch this and skip the schedule as inconclusive.</span>
+        <span class="k">if</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">_max_ops_exhausted</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">_MaxOpsExhaustedError</span><span class="p">(</span><span class="s2">&quot;run_with_schedule exhausted max_ops before workers completed&quot;</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">timed_out</span> <span class="ow">or</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span><span class="p">,</span> <span class="ne">TimeoutError</span><span class="p">):</span>
             <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;run_with_schedule timed out after </span><span class="si">{</span><span class="n">timeout</span><span class="si">}</span><span class="s2">s; worker threads did not complete&quot;</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">state</span>
@@ -842,6 +1174,8 @@
     <span class="n">patch_sleep</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">serializable_invariant</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">error_on_any_race</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">clock</span><span class="p">:</span> <span class="n">ClockMode</span> <span class="o">=</span> <span class="s2">&quot;real&quot;</span><span class="p">,</span>
+    <span class="n">clock_diagnostics</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">InterleavingResult</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Search for interleavings that violate an invariant.</span>
 
@@ -865,7 +1199,10 @@
 <span class="sd">        threads: Callables that each receive the state as their argument.</span>
 <span class="sd">        invariant: Predicate on the state. Returns True if the property holds.</span>
 <span class="sd">        max_attempts: How many random interleavings to try.</span>
-<span class="sd">        max_ops: Maximum schedule length per attempt.</span>
+<span class="sd">        max_ops: Maximum randomly sampled schedule-prefix length per attempt.</span>
+<span class="sd">            If workers need more turns to finish, the scheduler extends the</span>
+<span class="sd">            prefix deterministically and records those turns in any returned</span>
+<span class="sd">            counterexample.</span>
 <span class="sd">        timeout_per_run: Timeout for each individual run.</span>
 <span class="sd">        seed: Optional RNG seed for reproducibility.</span>
 <span class="sd">        detect_io: Automatically detect socket/file I/O and treat them</span>
@@ -889,6 +1226,19 @@
 <span class="sd">            trace in addition to user code.  By default, code in</span>
 <span class="sd">            site-packages is skipped.  Use this to include specific</span>
 <span class="sd">            installed packages, e.g. ``[&quot;django_*&quot;, &quot;mylib.*&quot;]``.</span>
+<span class="sd">        patch_sleep: If True (default), ``time.sleep`` yields to the</span>
+<span class="sd">            scheduler instead of blocking.  Required for ``clock != &quot;real&quot;``.</span>
+<span class="sd">        serializable_invariant: Check serializability against sequential</span>
+<span class="sd">            runs.  Cannot be combined with a virtual clock.</span>
+<span class="sd">        error_on_any_race: Not supported here — requires the DPOR strategy.</span>
+<span class="sd">        clock: ``&quot;real&quot;`` (default), ``&quot;virtual&quot;`` (autojump virtual clock:</span>
+<span class="sd">            time reads are virtual, sleeps cost zero wall time and jump the</span>
+<span class="sd">            clock when nothing else can run), or ``&quot;explored&quot;`` (schedule</span>
+<span class="sd">            entries landing on a sleeping thread advance the clock, so the</span>
+<span class="sd">            random sampler also explores early timer firings).  See</span>
+<span class="sd">            :doc:`/virtual_clock`.</span>
+<span class="sd">        clock_diagnostics: With a virtual clock, warn when traced worker frames</span>
+<span class="sd">            hold captured real ``time.*`` clock-read functions.</span>
 
 <span class="sd">    Returns:</span>
 <span class="sd">        InterleavingResult with the outcome.  The ``unique_interleavings``</span>
@@ -896,8 +1246,15 @@
 <span class="sd">        providing a lower bound on exploration coverage.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">_require_frontrun_env</span><span class="p">(</span><span class="s2">&quot;explore_random&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">max_attempts</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;max_attempts must be positive&quot;</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">error_on_any_race</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;error_on_any_race requires DPOR (use frontrun.explore with strategy=&#39;dpor&#39; instead)&quot;</span><span class="p">)</span>
+    <span class="n">clock_config</span> <span class="o">=</span> <span class="n">ClockConfig</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="n">clock</span><span class="p">,</span> <span class="n">diagnostics</span><span class="o">=</span><span class="n">clock_diagnostics</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span>
+        <span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">,</span>
+        <span class="n">serializable_invariant</span><span class="o">=</span><span class="n">serializable_invariant</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">clock</span> <span class="o">=</span> <span class="n">clock_config</span><span class="o">.</span><span class="n">mode</span>
     <span class="k">if</span> <span class="n">trace_packages</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">_set_active_trace_filter</span><span class="p">(</span><span class="n">_TraceFilter</span><span class="p">(</span><span class="n">trace_packages</span><span class="p">))</span>
     <span class="k">try</span><span class="p">:</span>
@@ -907,12 +1264,17 @@
 
         <span class="n">rng</span> <span class="o">=</span> <span class="n">random</span><span class="o">.</span><span class="n">Random</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span>
         <span class="n">num_threads</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">threads</span><span class="p">)</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="n">InterleavingResult</span><span class="p">(</span><span class="n">property_holds</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">num_explored</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+        <span class="c1"># Verdict-less accumulator: the pass verdict is only stamped by</span>
+        <span class="c1"># certify_pass() at the end, from evidence gathered below.</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">InterleavingResult</span><span class="p">(</span><span class="n">property_holds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">num_explored</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+        <span class="n">workers_entered</span> <span class="o">=</span> <span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">*</span> <span class="n">num_threads</span>
         <span class="n">seen_schedule_hashes</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
         <span class="n">total_deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="n">total_timeout</span> <span class="k">if</span> <span class="n">total_timeout</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
 
-        <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">max_attempts</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">_attempt</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">max_attempts</span><span class="p">):</span>
             <span class="k">if</span> <span class="n">total_deadline</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">&gt;</span> <span class="n">total_deadline</span><span class="p">:</span>
+                <span class="c1"># A pre-expired budget explores nothing: the final result is</span>
+                <span class="c1"># then inconclusive, never a vacuous pass.</span>
                 <span class="k">break</span>
             <span class="n">schedule</span> <span class="o">=</span> <span class="n">random_round_robin_schedule</span><span class="p">(</span><span class="n">rng</span><span class="p">,</span> <span class="n">num_threads</span><span class="p">,</span> <span class="n">max_ops</span><span class="p">)</span>
 
@@ -920,6 +1282,7 @@
             <span class="k">if</span> <span class="n">debug</span><span class="p">:</span>
                 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Running with </span><span class="si">{</span><span class="n">schedule</span><span class="si">=}</span><span class="s2"> </span><span class="si">{</span><span class="n">threads</span><span class="si">=}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
             <span class="n">recorder</span> <span class="o">=</span> <span class="n">TraceRecorder</span><span class="p">()</span>
+            <span class="n">attempt_clock</span> <span class="o">=</span> <span class="n">clock_config</span><span class="o">.</span><span class="n">new_clock</span><span class="p">()</span>
             <span class="k">try</span><span class="p">:</span>
                 <span class="n">state</span> <span class="o">=</span> <span class="n">run_with_schedule</span><span class="p">(</span>
                     <span class="n">schedule</span><span class="p">,</span>
@@ -931,6 +1294,12 @@
                     <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span>
                     <span class="n">trace_recorder</span><span class="o">=</span><span class="n">recorder</span><span class="p">,</span>
                     <span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">,</span>
+                    <span class="n">clock</span><span class="o">=</span><span class="n">clock</span><span class="p">,</span>
+                    <span class="n">_virtual_clock</span><span class="o">=</span><span class="n">attempt_clock</span><span class="p">,</span>
+                    <span class="n">clock_diagnostics</span><span class="o">=</span><span class="n">clock_diagnostics</span><span class="p">,</span>
+                    <span class="n">_worker_errors_as_findings</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                    <span class="n">_recorded_schedule</span><span class="o">=</span><span class="n">schedule</span><span class="p">,</span>
+                    <span class="n">_workers_entered</span><span class="o">=</span><span class="n">workers_entered</span><span class="p">,</span>
                 <span class="p">)</span>
             <span class="k">except</span> <span class="n">DeadlockError</span> <span class="k">as</span> <span class="n">dl_err</span><span class="p">:</span>
                 <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
@@ -942,16 +1311,44 @@
                     <span class="sa">f</span><span class="s2">&quot;Deadlock detected after </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2"> interleaving(s).</span><span class="se">\n\n</span><span class="si">{</span><span class="n">dl_err</span><span class="o">.</span><span class="n">cycle_description</span><span class="si">}</span><span class="s2">&quot;</span>
                 <span class="p">)</span>
                 <span class="k">return</span> <span class="n">result</span>
-            <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
-                <span class="c1"># The run did not complete within timeout_per_run; worker</span>
-                <span class="c1"># threads may still be mutating the state.  Skip this schedule</span>
-                <span class="c1"># as inconclusive rather than evaluating the invariant on a</span>
-                <span class="c1"># half-finished racing state (finding 9d).</span>
-                <span class="k">if</span> <span class="n">debug</span><span class="p">:</span>
-                    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Skipping timed-out schedule: </span><span class="si">{</span><span class="n">schedule</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">_MaxOpsExhaustedError</span><span class="p">:</span>
                 <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
                 <span class="n">seen_schedule_hashes</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">schedule</span><span class="p">)))</span>
-                <span class="k">continue</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span> <span class="o">=</span> <span class="kc">None</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">inconclusive_reason</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Random exploration exhausted max_ops=</span><span class="si">{</span><span class="n">max_ops</span><span class="si">}</span><span class="s2"> on attempt </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2">. &quot;</span>
+                    <span class="s2">&quot;The completed run is inconclusive because scheduling control ended before the worker trace; &quot;</span>
+                    <span class="s2">&quot;increase max_ops to claim a passing exploration.&quot;</span>
+                <span class="p">)</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">inconclusive_reason</span>
+                <span class="k">return</span> <span class="n">result</span>
+            <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
+                <span class="c1"># Python threads cannot be killed safely. The partial state is</span>
+                <span class="c1"># inconclusive, and survivors may keep mutating globals, so no</span>
+                <span class="c1"># later attempt in this exploration is trustworthy.</span>
+                <span class="k">if</span> <span class="n">debug</span><span class="p">:</span>
+                    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Aborting after timed-out schedule: </span><span class="si">{</span><span class="n">schedule</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="n">seen_schedule_hashes</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">schedule</span><span class="p">)))</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span> <span class="o">=</span> <span class="kc">None</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">inconclusive_reason</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Random exploration timed out before workers completed on attempt </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2">. &quot;</span>
+                    <span class="s2">&quot;The search is inconclusive because Python threads cannot be killed safely; increase &quot;</span>
+                    <span class="s2">&quot;timeout_per_run/deadlock_timeout or remove unmanaged blocking from explored workers.&quot;</span>
+                <span class="p">)</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">inconclusive_reason</span>
+                <span class="k">return</span> <span class="n">result</span>
+            <span class="k">except</span> <span class="n">_WorkerExecutionError</span> <span class="k">as</span> <span class="n">worker_err</span><span class="p">:</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="n">seen_schedule_hashes</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">schedule</span><span class="p">)))</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span> <span class="o">=</span> <span class="kc">False</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
+                <span class="n">cause</span> <span class="o">=</span> <span class="n">worker_err</span><span class="o">.</span><span class="n">cause</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;Worker crash in execution </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">cause</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">cause</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="k">return</span> <span class="n">result</span>
             <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
             <span class="n">seen_schedule_hashes</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">schedule</span><span class="p">)))</span>
 
@@ -970,7 +1367,8 @@
                     <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="n">explanation</span>
                     <span class="k">return</span> <span class="n">result</span>
 
-            <span class="n">invariant_failed</span><span class="p">,</span> <span class="n">assertion_msg</span> <span class="o">=</span> <span class="n">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+            <span class="k">with</span> <span class="n">clock_scope</span><span class="p">(</span><span class="n">attempt_clock</span><span class="p">):</span>
+                <span class="n">invariant_failed</span><span class="p">,</span> <span class="n">assertion_msg</span> <span class="o">=</span> <span class="n">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">invariant_failed</span><span class="p">:</span>
                 <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span> <span class="o">=</span> <span class="kc">False</span>
                 <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
@@ -981,6 +1379,7 @@
                     <span class="n">successes</span> <span class="o">=</span> <span class="mi">0</span>
                     <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">reproduce_on_failure</span><span class="p">):</span>
                         <span class="k">try</span><span class="p">:</span>
+                            <span class="n">replay_clock</span> <span class="o">=</span> <span class="n">clock_config</span><span class="o">.</span><span class="n">new_clock</span><span class="p">()</span>
                             <span class="n">replay_state</span> <span class="o">=</span> <span class="n">run_with_schedule</span><span class="p">(</span>
                                 <span class="n">schedule</span><span class="p">,</span>
                                 <span class="n">setup</span><span class="p">,</span>
@@ -989,8 +1388,12 @@
                                 <span class="n">detect_io</span><span class="o">=</span><span class="n">detect_io</span><span class="p">,</span>
                                 <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span>
                                 <span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">,</span>
+                                <span class="n">clock</span><span class="o">=</span><span class="n">clock</span><span class="p">,</span>
+                                <span class="n">_virtual_clock</span><span class="o">=</span><span class="n">replay_clock</span><span class="p">,</span>
+                                <span class="n">clock_diagnostics</span><span class="o">=</span><span class="n">clock_diagnostics</span><span class="p">,</span>
                             <span class="p">)</span>
-                            <span class="n">replay_failed</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="n">replay_state</span><span class="p">)</span>
+                            <span class="k">with</span> <span class="n">clock_scope</span><span class="p">(</span><span class="n">replay_clock</span><span class="p">):</span>
+                                <span class="n">replay_failed</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="n">replay_state</span><span class="p">)</span>
                             <span class="k">if</span> <span class="n">replay_failed</span><span class="p">:</span>
                                 <span class="n">successes</span> <span class="o">+=</span> <span class="mi">1</span>
                         <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
@@ -1013,7 +1416,20 @@
                 <span class="k">return</span> <span class="n">result</span>
 
         <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">result</span>
+        <span class="c1"># Every failure path above returned early, so no failure was found:</span>
+        <span class="c1"># certify (or honestly refuse to certify) the pass.  Zero executions</span>
+        <span class="c1"># can only mean the total_timeout budget was already spent.</span>
+        <span class="k">return</span> <span class="n">certify_pass</span><span class="p">(</span>
+            <span class="n">result</span><span class="o">=</span><span class="n">result</span><span class="p">,</span>
+            <span class="n">evidence</span><span class="o">=</span><span class="n">PassEvidence</span><span class="p">(</span>
+                <span class="n">executions</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="p">,</span>
+                <span class="n">workers_executed</span><span class="o">=</span><span class="n">workers_entered</span><span class="p">,</span>
+                <span class="n">vacuous_reason</span><span class="o">=</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;total_timeout=</span><span class="si">{</span><span class="n">total_timeout</span><span class="si">!r}</span><span class="s2">s elapsed before any interleaving completed; &quot;</span>
+                    <span class="s2">&quot;increase total_timeout or reduce the workload&quot;</span>
+                <span class="p">),</span>
+            <span class="p">),</span>
+        <span class="p">)</span>
     <span class="k">finally</span><span class="p">:</span>
         <span class="n">_set_active_trace_filter</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span></div>
 
@@ -1075,7 +1491,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

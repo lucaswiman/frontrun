@@ -3,10 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="DPOR in Practice" href="dpor_guide.html"><link rel="prev" title="Quick Start" href="quickstart.html">
+<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Case Studies: Races in Real, Unmodified Libraries" href="case_studies.html"><link rel="prev" title="Design Principles" href="design-principles.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>How Frontrun Works - Frontrun 0.6.0 documentation</title>
+        <title>How Frontrun Works - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1 current current-page"><a class="current reference internal" href="#">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -567,6 +570,48 @@ testing.</p></li>
 <strong>all</strong> problematic interleavings, not just the one counterexample.</p></li>
 </ol>
 </section>
+<section id="cross-process-exploration">
+<h2>Cross-Process Exploration<a class="headerlink" href="#cross-process-exploration" title="Link to this heading">¶</a></h2>
+<p>The four approaches above interleave concurrency <em>within one Python process</em>.
+Cross-process exploration extends the DPOR approach to <strong>separate Python
+processes</strong> that contend on shared <em>external</em> state (SQL and Redis). Each worker
+runs frontrun’s SQL/Redis interception and coordinates with a parent over a
+socket; the Rust DPOR engine drives the search at external-access granularity,
+pruning equivalent interleavings and detecting cross-worker
+<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">FOR</span> <span class="pre">UPDATE</span></code> deadlocks.</p>
+<p><a class="reference internal" href="api_reference.html#frontrun.explore" title="frontrun.explore"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code></a> mirrors the thread/async interface with
+<code class="docutils literal notranslate"><span class="pre">execution=&quot;process&quot;</span></code>. Workers are serialised with dill (install the
+<code class="docutils literal notranslate"><span class="pre">process</span></code> extra), so closures and lambdas work too; <code class="docutils literal notranslate"><span class="pre">setup()</span></code> returns a
+picklable handle to the external state (e.g. a DB URL),
+passed to each <code class="docutils literal notranslate"><span class="pre">worker(state)</span></code> and to <code class="docutils literal notranslate"><span class="pre">invariant(state)</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
+
+<span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
+    <span class="n">setup</span><span class="o">=</span><span class="n">make_state</span><span class="p">,</span>          <span class="c1"># returns a picklable handle (e.g. a SQLite path)</span>
+    <span class="n">workers</span><span class="o">=</span><span class="n">increment</span><span class="p">,</span>         <span class="c1"># module-level callable(state)</span>
+    <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">state</span><span class="p">:</span> <span class="n">read</span><span class="p">(</span><span class="n">state</span><span class="p">)</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="n">execution</span><span class="o">=</span><span class="s2">&quot;process&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The lower-level <a class="reference internal" href="api_reference.html#frontrun.explore_processes" title="frontrun.explore_processes"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore_processes()</span></code></a> spawns
+<a class="reference internal" href="api_reference.html#frontrun.Subprocess" title="frontrun.Subprocess"><code class="xref py py-class docutils literal notranslate"><span class="pre">frontrun.Subprocess</span></code></a> targets (<code class="docutils literal notranslate"><span class="pre">&quot;module:callable&quot;</span></code> + args) as real OS
+processes and offers <code class="docutils literal notranslate"><span class="pre">strategy=&quot;dpor&quot;</span></code> (default) or <code class="docutils literal notranslate"><span class="pre">&quot;exhaustive&quot;</span></code>, plus
+<code class="docutils literal notranslate"><span class="pre">reuse_workers=True</span></code> to keep workers alive across iterations. See
+<a class="reference internal" href="cross_process.html"><span class="doc">Cross-Process Exploration</span></a> for the full guide.</p>
+</section>
+<section id="virtual-clock">
+<h2>Virtual Clock<a class="headerlink" href="#virtual-clock" title="Link to this heading">¶</a></h2>
+<p>Timeout, retry, and TTL races need time itself to be schedulable.
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore(...,</span> <span class="pre">clock=&quot;virtual&quot;)</span></code> gives each execution a
+scheduler-owned virtual clock (sleeps cost zero wall time, TTL expiry is
+reachable, timed lock acquires are deterministic), and <code class="docutils literal notranslate"><span class="pre">clock=&quot;explored&quot;</span></code>
+makes the clock advance a scheduling choice so DPOR can prove “the timer
+fired between your read and your write”.  Works with both strategies, sync
+and async.  See <a class="reference internal" href="virtual_clock.html"><span class="doc">Virtual clock: timeout, retry, and TTL races</span></a> for the full guide.</p>
+</section>
 <section id="automatic-i-o-detection">
 <h2>Automatic I/O Detection<a class="headerlink" href="#automatic-i-o-detection" title="Link to this heading">¶</a></h2>
 <p>Both the bytecode explorer and DPOR automatically detect socket and file
@@ -583,6 +628,16 @@ report resource accesses to the scheduler.</p>
 (<code class="docutils literal notranslate"><span class="pre">host:port</span></code>) or the file’s resolved path. Two threads accessing the
 same endpoint or file are treated as conflicting; different endpoints are
 independent.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The async <em>random</em> strategy is narrower: there <code class="docutils literal notranslate"><span class="pre">detect_io</span></code> only gates
+SQL driver patching (<code class="docutils literal notranslate"><span class="pre">detect_io=True</span></code> implies <code class="docutils literal notranslate"><span class="pre">detect_sql=True</span></code>);
+socket, file, and Redis detection are not available on that path. The
+defaults also differ between entry points — <code class="docutils literal notranslate"><span class="pre">frontrun.explore(...,</span>
+<span class="pre">strategy=&quot;random&quot;)</span></code> with async workers patches SQL drivers by default
+(<code class="docutils literal notranslate"><span class="pre">detect_io</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">True</span></code>), while the standalone
+<a class="reference internal" href="api_reference.html#frontrun.explore_async_random" title="frontrun.explore_async_random"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore_async_random()</span></code></a> defaults to <code class="docutils literal notranslate"><span class="pre">detect_sql=False</span></code>.</p>
+</div>
 <section id="c-level-i-o-interception">
 <span id="c-level-io-interception"></span><h3>C-Level I/O Interception<a class="headerlink" href="#c-level-i-o-interception" title="Link to this heading">¶</a></h3>
 <p>When run under the <code class="docutils literal notranslate"><span class="pre">frontrun</span></code> CLI, a native <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code> library
@@ -618,17 +673,27 @@ frontrun<span class="w"> </span>python<span class="w"> </span>examples/orm_race.
 </section>
 <section id="prefer-assert-holds-over-manual-asserts">
 <h2>Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts<a class="headerlink" href="#prefer-assert-holds-over-manual-asserts" title="Link to this heading">¶</a></h2>
-<p>All exploration functions return an <a class="reference internal" href="api_reference.html#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><code class="xref py py-class docutils literal notranslate"><span class="pre">InterleavingResult</span></code></a>.
+<p>All exploration functions return an <a class="reference internal" href="api_reference.html#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><code class="xref py py-class docutils literal notranslate"><span class="pre">InterleavingResult</span></code></a>
+with a tri-state <code class="docutils literal notranslate"><span class="pre">property_holds</span></code> verdict: <code class="docutils literal notranslate"><span class="pre">True</span></code> (a certified pass),
+<code class="docutils literal notranslate"><span class="pre">False</span></code> (a failure was found — always with a counterexample/failure record),
+or <code class="docutils literal notranslate"><span class="pre">None</span></code> (inconclusive: no evidence either way, e.g. a budget expired before
+any interleaving completed; <code class="docutils literal notranslate"><span class="pre">inconclusive_reason</span></code> names cause and remedy).
 Use <a class="reference internal" href="api_reference.html#frontrun.common.InterleavingResult.assert_holds" title="frontrun.common.InterleavingResult.assert_holds"><code class="xref py py-meth docutils literal notranslate"><span class="pre">assert_holds()</span></code></a> to check the result
-in a single call — it raises <code class="docutils literal notranslate"><span class="pre">AssertionError</span></code> (with the full race explanation)
-on failure and returns <code class="docutils literal notranslate"><span class="pre">None</span></code> on success:</p>
+in a single call — it returns <code class="docutils literal notranslate"><span class="pre">None</span></code> on a certified pass and raises a distinct
+exception for each non-pass verdict: <code class="docutils literal notranslate"><span class="pre">AssertionError</span></code> (with the full race
+explanation) on failure, and <code class="xref py py-class docutils literal notranslate"><span class="pre">frontrun.InconclusiveExploration</span></code> when the
+exploration was inconclusive:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span><span class="n">setup</span><span class="o">=</span><span class="n">setup</span><span class="p">,</span> <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">t1</span><span class="p">,</span> <span class="n">t2</span><span class="p">],</span> <span class="n">invariant</span><span class="o">=</span><span class="n">invariant</span><span class="p">)</span>
-<span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>   <span class="c1"># raises with explanation when property_holds is False</span>
+<span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>   <span class="c1"># raises unless the exploration certified a pass</span>
 </pre></div>
 </div>
+<p>A test that deliberately accepts the weaker “no failure found” claim (e.g. a
+tightly budgeted smoke lane) opts in by name at the call site with
+<code class="docutils literal notranslate"><span class="pre">result.assert_holds(allow_inconclusive=True)</span></code> — genuine failures still raise.</p>
 <p>This is preferable to <code class="docutils literal notranslate"><span class="pre">assert</span> <span class="pre">result.property_holds,</span> <span class="pre">result.explanation</span></code>
-because it works correctly under pytest’s assertion rewriting and requires no
-memory burden on the caller to supply the message argument.</p>
+because it works correctly under pytest’s assertion rewriting, distinguishes an
+inconclusive run from a found race, and requires no memory burden on the caller
+to supply the message argument.</p>
 </section>
 </section>
 
@@ -637,23 +702,23 @@ memory burden on the caller to supply the message argument.</p>
       <footer>
         
         <div class="related-pages">
-          <a class="next-page" href="dpor_guide.html">
+          <a class="next-page" href="case_studies.html">
               <div class="page-info">
                 <div class="context">
                   <span>Next</span>
                 </div>
-                <div class="title">DPOR in Practice</div>
+                <div class="title">Case Studies: Races in Real, Unmodified Libraries</div>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
-          <a class="prev-page" href="quickstart.html">
+          <a class="prev-page" href="design-principles.html">
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
               <div class="page-info">
                 <div class="context">
                   <span>Previous</span>
                 </div>
                 
-                <div class="title">Quick Start</div>
+                <div class="title">Design Principles</div>
                 
               </div>
             </a>
@@ -692,6 +757,8 @@ memory burden on the caller to supply the message argument.</p>
 <li><a class="reference internal" href="#bytecode-instrumentation">Bytecode Instrumentation</a></li>
 <li><a class="reference internal" href="#trace-markers">Trace Markers</a></li>
 <li><a class="reference internal" href="#marker-schedule-exploration">Marker Schedule Exploration</a></li>
+<li><a class="reference internal" href="#cross-process-exploration">Cross-Process Exploration</a></li>
+<li><a class="reference internal" href="#virtual-clock">Virtual Clock</a></li>
 <li><a class="reference internal" href="#automatic-i-o-detection">Automatic I/O Detection</a><ul>
 <li><a class="reference internal" href="#c-level-i-o-interception">C-Level I/O Interception</a></li>
 </ul>
@@ -708,7 +775,7 @@ memory burden on the caller to supply the message argument.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

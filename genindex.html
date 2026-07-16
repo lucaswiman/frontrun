@@ -4,7 +4,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="#"><link rel="search" title="Search" href="search.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 --><title>Index - Frontrun 0.6.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 --><title>Index - Frontrun 0.7.0 documentation</title>
 <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -160,7 +160,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -181,7 +181,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -193,7 +193,9 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -202,10 +204,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -241,7 +244,7 @@
           
 <section class="genindex-section">
   <h1 id="index">Index</h1>
-  <div class="genindex-jumpbox"><a href="#_"><strong>_</strong></a> | <a href="#A"><strong>A</strong></a> | <a href="#B"><strong>B</strong></a> | <a href="#C"><strong>C</strong></a> | <a href="#D"><strong>D</strong></a> | <a href="#E"><strong>E</strong></a> | <a href="#F"><strong>F</strong></a> | <a href="#G"><strong>G</strong></a> | <a href="#H"><strong>H</strong></a> | <a href="#I"><strong>I</strong></a> | <a href="#L"><strong>L</strong></a> | <a href="#M"><strong>M</strong></a> | <a href="#N"><strong>N</strong></a> | <a href="#O"><strong>O</strong></a> | <a href="#P"><strong>P</strong></a> | <a href="#Q"><strong>Q</strong></a> | <a href="#R"><strong>R</strong></a> | <a href="#S"><strong>S</strong></a> | <a href="#T"><strong>T</strong></a> | <a href="#U"><strong>U</strong></a> | <a href="#W"><strong>W</strong></a></div>
+  <div class="genindex-jumpbox"><a href="#_"><strong>_</strong></a> | <a href="#A"><strong>A</strong></a> | <a href="#B"><strong>B</strong></a> | <a href="#C"><strong>C</strong></a> | <a href="#D"><strong>D</strong></a> | <a href="#E"><strong>E</strong></a> | <a href="#F"><strong>F</strong></a> | <a href="#G"><strong>G</strong></a> | <a href="#H"><strong>H</strong></a> | <a href="#I"><strong>I</strong></a> | <a href="#K"><strong>K</strong></a> | <a href="#L"><strong>L</strong></a> | <a href="#M"><strong>M</strong></a> | <a href="#N"><strong>N</strong></a> | <a href="#O"><strong>O</strong></a> | <a href="#P"><strong>P</strong></a> | <a href="#Q"><strong>Q</strong></a> | <a href="#R"><strong>R</strong></a> | <a href="#S"><strong>S</strong></a> | <a href="#T"><strong>T</strong></a> | <a href="#U"><strong>U</strong></a> | <a href="#V"><strong>V</strong></a> | <a href="#W"><strong>W</strong></a></div>
 </section>
 <section id="_" class="genindex-section">
   <h2>_</h2>
@@ -269,16 +272,22 @@
         </ul></li>
         <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.acquire_row_locks">acquire_row_locks() (frontrun.async_shuffler.AwaitScheduler method)</a>
 </li>
-        <li><a href="api_reference.html#frontrun.trace_markers.all_marker_schedules">all_marker_schedules() (in module frontrun.trace_markers)</a>, <a href="api_reference.html#id25">[1]</a>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.add_timeout_deadline">add_timeout_deadline() (frontrun.async_scheduler.InterleavedLoop method)</a>
+
+        <ul>
+          <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.add_timeout_deadline">(frontrun.async_shuffler.AwaitScheduler method)</a>
+</li>
+        </ul></li>
+        <li><a href="api_reference.html#frontrun.trace_markers.all_marker_schedules">all_marker_schedules() (in module frontrun.trace_markers)</a>, <a href="api_reference.html#id28">[1]</a>
 </li>
         <li><a href="api_reference.html#frontrun.common.any_async">any_async() (in module frontrun.common)</a>
 </li>
         <li><a href="api_reference.html#frontrun.common.InterleavingResult.assert_holds">assert_holds() (frontrun.common.InterleavingResult method)</a>
 </li>
-        <li><a href="api_reference.html#frontrun.contrib.django.async_django_dpor">async_django_dpor() (in module frontrun.contrib.django)</a>
-</li>
     </ul></td>
     <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.contrib.django.async_django_dpor">async_django_dpor() (in module frontrun.contrib.django)</a>
+</li>
         <li><a href="api_reference.html#frontrun.async_trace_markers.async_frontrun">async_frontrun() (in module frontrun.async_trace_markers)</a>
 </li>
         <li><a href="api_reference.html#frontrun.contrib.sqlalchemy.async_sqlalchemy_dpor">async_sqlalchemy_dpor() (in module frontrun.contrib.sqlalchemy)</a>
@@ -347,6 +356,8 @@
 </li>
         <li><a href="api_reference.html#frontrun.common.InterleavingResult.counterexample">counterexample (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id3">[1]</a>
 </li>
+        <li><a href="api_reference.html#frontrun.CrossProcessResult">CrossProcessResult (class in frontrun)</a>
+</li>
     </ul></td>
   </tr></table>
 </section>
@@ -383,6 +394,8 @@
 </li>
         <li><a href="api_reference.html#frontrun.common.Step.execution_name">execution_name (frontrun.common.Step attribute)</a>, <a href="api_reference.html#id0">[1]</a>
 </li>
+        <li><a href="api_reference.html#frontrun.common.InterleavingResult.exhausted">exhausted (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id11">[1]</a>
+</li>
         <li><a href="api_reference.html#frontrun.common.InterleavingResult.explanation">explanation (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id7">[1]</a>
 </li>
     </ul></td>
@@ -395,7 +408,9 @@
           <li><a href="api_reference.html#frontrun.async_shuffler.explore_async_random">(in module frontrun.async_shuffler)</a>
 </li>
         </ul></li>
-        <li><a href="api_reference.html#frontrun.trace_markers.explore_marker_interleavings">explore_marker_interleavings() (in module frontrun.trace_markers)</a>, <a href="api_reference.html#id26">[1]</a>
+        <li><a href="api_reference.html#frontrun.trace_markers.explore_marker_interleavings">explore_marker_interleavings() (in module frontrun.trace_markers)</a>, <a href="api_reference.html#id29">[1]</a>
+</li>
+        <li><a href="api_reference.html#frontrun.explore_processes">explore_processes() (in module frontrun)</a>
 </li>
         <li><a href="api_reference.html#frontrun.explore_random">explore_random() (in module frontrun)</a>
 </li>
@@ -407,6 +422,8 @@
   <h2>F</h2>
   <table style="width: 100%" class="indextable genindextable"><tr>
     <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.common.InterleavingResult.failure_kind">failure_kind (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id12">[1]</a>
+</li>
         <li><a href="api_reference.html#frontrun.common.InterleavingResult.failures">failures (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id6">[1]</a>
 </li>
         <li><a href="api_reference.html#frontrun._trace_format.SourceLineEvent.filename">filename (frontrun._trace_format.SourceLineEvent attribute)</a>
@@ -479,6 +496,8 @@
           <li><a href="api_reference.html#module-frontrun.trace_markers">module</a>
 </li>
         </ul></li>
+        <li><a href="api_reference.html#frontrun.async_scheduler.frontrun_wait_for">frontrun_wait_for() (in module frontrun.async_scheduler)</a>
+</li>
         <li><a href="api_reference.html#frontrun._trace_format.SourceLineEvent.function_name">function_name (frontrun._trace_format.SourceLineEvent attribute)</a>
 
         <ul>
@@ -523,6 +542,8 @@
   <h2>I</h2>
   <table style="width: 100%" class="indextable genindextable"><tr>
     <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.common.InterleavingResult.inconclusive_reason">inconclusive_reason (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id13">[1]</a>
+</li>
         <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop">InterleavedLoop (class in frontrun.async_scheduler)</a>
 </li>
     </ul></td>
@@ -531,6 +552,20 @@
 </li>
         <li><a href="api_reference.html#frontrun.trace_markers.ThreadCoordinator.is_finished">is_finished() (frontrun.trace_markers.ThreadCoordinator method)</a>
 </li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="K" class="genindex-section">
+  <h2>K</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.kick_stalled_schedule">kick_stalled_schedule() (frontrun.async_scheduler.InterleavedLoop method)</a>
+
+        <ul>
+          <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.kick_stalled_schedule">(frontrun.async_shuffler.AwaitScheduler method)</a>
+</li>
+        </ul></li>
     </ul></td>
   </tr></table>
 </section>
@@ -557,7 +592,7 @@
 </li>
         <li><a href="api_reference.html#frontrun.trace_markers.TraceExecutor.marker_registry">marker_registry (frontrun.trace_markers.TraceExecutor property)</a>
 </li>
-        <li><a href="api_reference.html#frontrun.trace_markers.marker_schedule_strategy">marker_schedule_strategy() (in module frontrun.trace_markers)</a>, <a href="api_reference.html#id24">[1]</a>
+        <li><a href="api_reference.html#frontrun.trace_markers.marker_schedule_strategy">marker_schedule_strategy() (in module frontrun.trace_markers)</a>, <a href="api_reference.html#id27">[1]</a>
 </li>
         <li><a href="api_reference.html#frontrun.trace_markers.MarkerRegistry">MarkerRegistry (class in frontrun.trace_markers)</a>
 </li>
@@ -610,14 +645,18 @@
           <li><a href="api_reference.html#frontrun._trace_format.TraceEvent.obj_type_name">(frontrun._trace_format.TraceEvent attribute)</a>
 </li>
         </ul></li>
-    </ul></td>
-    <td style="width: 33%; vertical-align: top;"><ul>
         <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.on_proceed">on_proceed() (frontrun.async_scheduler.InterleavedLoop method)</a>
 
         <ul>
           <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.on_proceed">(frontrun.async_shuffler.AwaitScheduler method)</a>
 </li>
         </ul></li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.on_task_resumed">on_task_resumed() (frontrun.async_scheduler.InterleavedLoop method)</a>
+</li>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.on_task_suspended">on_task_suspended() (frontrun.async_scheduler.InterleavedLoop method)</a>
+</li>
         <li><a href="api_reference.html#frontrun._trace_format.TraceEvent.opcode">opcode (frontrun._trace_format.TraceEvent attribute)</a>
 </li>
     </ul></td>
@@ -628,16 +667,22 @@
   <h2>P</h2>
   <table style="width: 100%" class="indextable genindextable"><tr>
     <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.park_timed_wait">park_timed_wait() (frontrun.async_scheduler.InterleavedLoop method)</a>
+
+        <ul>
+          <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.park_timed_wait">(frontrun.async_shuffler.AwaitScheduler method)</a>
+</li>
+        </ul></li>
         <li><a href="api_reference.html#frontrun._trace_format.ConflictInfo.pattern">pattern (frontrun._trace_format.ConflictInfo attribute)</a>
 </li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
         <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.pause">pause() (frontrun.async_scheduler.InterleavedLoop method)</a>
 
         <ul>
           <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.pause">(frontrun.async_shuffler.AwaitScheduler method)</a>
 </li>
         </ul></li>
-    </ul></td>
-    <td style="width: 33%; vertical-align: top;"><ul>
         <li><a href="api_reference.html#frontrun.common.InterleavingResult.property_holds">property_holds (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id2">[1]</a>
 </li>
     </ul></td>
@@ -668,14 +713,24 @@
 </li>
         <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.release_row_locks">release_row_locks() (frontrun.async_shuffler.AwaitScheduler method)</a>
 </li>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.remove_timeout_deadline">remove_timeout_deadline() (frontrun.async_scheduler.InterleavedLoop method)</a>
+
+        <ul>
+          <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.remove_timeout_deadline">(frontrun.async_shuffler.AwaitScheduler method)</a>
+</li>
+        </ul></li>
         <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.report_and_wait">report_and_wait() (frontrun.async_shuffler.AwaitScheduler method)</a>
 </li>
         <li><a href="api_reference.html#frontrun.trace_markers.ThreadCoordinator.report_error">report_error() (frontrun.trace_markers.ThreadCoordinator method)</a>
 </li>
-        <li><a href="api_reference.html#frontrun.common.InterleavingResult.reproduction_attempts">reproduction_attempts (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id8">[1]</a>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.report_task_access">report_task_access() (frontrun.async_scheduler.InterleavedLoop method)</a>
 </li>
     </ul></td>
     <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.report_task_sync">report_task_sync() (frontrun.async_scheduler.InterleavedLoop method)</a>
+</li>
+        <li><a href="api_reference.html#frontrun.common.InterleavingResult.reproduction_attempts">reproduction_attempts (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id8">[1]</a>
+</li>
         <li><a href="api_reference.html#frontrun.common.InterleavingResult.reproduction_successes">reproduction_successes (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id9">[1]</a>
 </li>
         <li><a href="api_reference.html#frontrun.async_trace_markers.AsyncTraceExecutor.reset">reset() (frontrun.async_trace_markers.AsyncTraceExecutor method)</a>
@@ -712,6 +767,8 @@
 </li>
         <li><a href="api_reference.html#frontrun.async_shuffler.schedule_strategy">schedule_strategy() (in module frontrun.async_shuffler)</a>
 </li>
+        <li><a href="api_reference.html#frontrun.async_scheduler.SchedulerTimeoutError">SchedulerTimeoutError</a>
+</li>
         <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.should_proceed">should_proceed() (frontrun.async_scheduler.InterleavedLoop method)</a>
 
         <ul>
@@ -719,6 +776,8 @@
 </li>
         </ul></li>
         <li><a href="trace_filtering.html#frontrun._tracing.TraceFilter.should_trace_file">should_trace_file() (frontrun._tracing.TraceFilter method)</a>
+</li>
+        <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.sleep_until">sleep_until() (frontrun.async_shuffler.AwaitScheduler method)</a>
 </li>
     </ul></td>
     <td style="width: 33%; vertical-align: top;"><ul>
@@ -733,6 +792,8 @@
         <li><a href="api_reference.html#frontrun.common.Step">Step (class in frontrun.common)</a>
 </li>
         <li><a href="api_reference.html#frontrun._trace_format.TraceEvent.step_index">step_index (frontrun._trace_format.TraceEvent attribute)</a>
+</li>
+        <li><a href="api_reference.html#frontrun.Subprocess">Subprocess (class in frontrun)</a>
 </li>
         <li><a href="api_reference.html#frontrun._trace_format.ConflictInfo.summary">summary (frontrun._trace_format.ConflictInfo attribute)</a>
 </li>
@@ -781,6 +842,24 @@
         <li><a href="api_reference.html#frontrun.common.InterleavingResult.unique_interleavings">unique_interleavings (frontrun.common.InterleavingResult attribute)</a>, <a href="api_reference.html#id5">[1]</a>
 </li>
     </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.unpark_timed_wait">unpark_timed_wait() (frontrun.async_scheduler.InterleavedLoop method)</a>
+
+        <ul>
+          <li><a href="api_reference.html#frontrun.async_shuffler.AwaitScheduler.unpark_timed_wait">(frontrun.async_shuffler.AwaitScheduler method)</a>
+</li>
+        </ul></li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="V" class="genindex-section">
+  <h2>V</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.virtual_clock">virtual_clock (frontrun.async_scheduler.InterleavedLoop attribute)</a>
+</li>
+    </ul></td>
   </tr></table>
 </section>
 
@@ -793,6 +872,8 @@
     </ul></td>
     <td style="width: 33%; vertical-align: top;"><ul>
         <li><a href="api_reference.html#frontrun.trace_markers.ThreadCoordinator.wait_for_turn">wait_for_turn() (frontrun.trace_markers.ThreadCoordinator method)</a>
+</li>
+        <li><a href="api_reference.html#frontrun.async_scheduler.InterleavedLoop.wait_until_scheduled_after_block">wait_until_scheduled_after_block() (frontrun.async_scheduler.InterleavedLoop method)</a>
 </li>
     </ul></td>
   </tr></table>
@@ -830,7 +911,7 @@
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

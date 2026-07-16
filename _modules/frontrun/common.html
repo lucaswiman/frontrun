@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.common - Frontrun 0.6.0 documentation</title>
+        <title>frontrun.common - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -194,7 +194,9 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -203,10 +205,11 @@
 <li class="toctree-l1"><a class="reference internal" href="../../orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -250,8 +253,23 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">itertools</span><span class="w"> </span><span class="kn">import</span> <span class="n">permutations</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span><span class="p">,</span> <span class="n">Any</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._certificate</span><span class="w"> </span><span class="kn">import</span> <span class="n">InconclusiveExploration</span>
+
 <span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._sql_anomaly</span><span class="w"> </span><span class="kn">import</span> <span class="n">SqlAnomaly</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_is_async_callable</span><span class="p">(</span><span class="n">fn</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True if calling *fn* produces a coroutine.</span>
+
+<span class="sd">    Handles plain ``async def`` functions as well as callable *objects* whose</span>
+<span class="sd">    ``__call__`` is a coroutine function (e.g. an async worker passed as a</span>
+<span class="sd">    class instance), which ``inspect.iscoroutinefunction`` does not detect</span>
+<span class="sd">    when applied to the instance itself.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">iscoroutinefunction</span><span class="p">(</span><span class="n">fn</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">True</span>
+    <span class="k">return</span> <span class="n">inspect</span><span class="o">.</span><span class="n">iscoroutinefunction</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">fn</span><span class="p">,</span> <span class="s2">&quot;__call__&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span>
 
 
 <div class="viewcode-block" id="any_async">
@@ -262,8 +280,37 @@
 <span class="sd">    Non-callables are ignored so callers can pass dicts of ``name -&gt; value``</span>
 <span class="sd">    directly.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="n">inspect</span><span class="o">.</span><span class="n">iscoroutinefunction</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span> <span class="k">for</span> <span class="n">fn</span> <span class="ow">in</span> <span class="n">fns</span> <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">fn</span><span class="p">))</span></div>
+    <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="n">_is_async_callable</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span> <span class="k">for</span> <span class="n">fn</span> <span class="ow">in</span> <span class="n">fns</span> <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">fn</span><span class="p">))</span></div>
 
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_reject_deferred_sync_result</span><span class="p">(</span>  <span class="c1"># pyright: ignore[reportUnusedFunction]  # imported by sync strategy runners</span>
+    <span class="n">result</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">worker</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">role</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;sync worker&quot;</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Fail closed when a synchronous callback returns unexecuted code.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isawaitable</span><span class="p">(</span><span class="n">result</span><span class="p">):</span>
+        <span class="n">close</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="s2">&quot;close&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">close</span><span class="p">):</span>
+            <span class="n">close</span><span class="p">()</span>
+        <span class="n">kind</span> <span class="o">=</span> <span class="s2">&quot;an awaitable&quot;</span>
+    <span class="k">elif</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isasyncgen</span><span class="p">(</span><span class="n">result</span><span class="p">):</span>
+        <span class="n">kind</span> <span class="o">=</span> <span class="s2">&quot;an async generator&quot;</span>
+    <span class="k">elif</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isgenerator</span><span class="p">(</span><span class="n">result</span><span class="p">):</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+        <span class="n">kind</span> <span class="o">=</span> <span class="s2">&quot;a generator&quot;</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">result</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;__qualname__&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">or</span> <span class="nb">repr</span><span class="p">(</span><span class="n">worker</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
+        <span class="sa">f</span><span class="s2">&quot;explore(): </span><span class="si">{</span><span class="n">role</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> returned </span><span class="si">{</span><span class="n">kind</span><span class="si">}</span><span class="s2">; its deferred body was not executed. &quot;</span>
+        <span class="s2">&quot;Use an `async def` worker with execution=&#39;thread&#39; for awaitables, and execute generator bodies inside the &quot;</span>
+        <span class="s2">&quot;worker before returning.&quot;</span>
+    <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_call_sync_setup</span><span class="p">(</span><span class="n">setup</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Call a synchronous setup hook and reject a deferred body.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">_reject_deferred_sync_result</span><span class="p">(</span><span class="n">setup</span><span class="p">(),</span> <span class="n">setup</span><span class="p">,</span> <span class="n">role</span><span class="o">=</span><span class="s2">&quot;setup&quot;</span><span class="p">)</span>
 
 
 <div class="viewcode-block" id="check_invariant">
@@ -277,7 +324,8 @@
 <span class="sd">    slot so callers can fold it into their result&#39;s ``explanation``.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="k">return</span> <span class="p">(</span><span class="ow">not</span> <span class="n">invariant</span><span class="p">(</span><span class="n">state</span><span class="p">),</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="n">_reject_deferred_sync_result</span><span class="p">(</span><span class="n">invariant</span><span class="p">(</span><span class="n">state</span><span class="p">),</span> <span class="n">invariant</span><span class="p">,</span> <span class="n">role</span><span class="o">=</span><span class="s2">&quot;invariant&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">(</span><span class="ow">not</span> <span class="n">value</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
     <span class="k">except</span> <span class="ne">AssertionError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
         <span class="k">return</span> <span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">))</span></div>
 
@@ -357,15 +405,25 @@
 <span class="sd">    Returned by :func:`frontrun.explore`.</span>
 
 <span class="sd">    Attributes:</span>
-<span class="sd">        property_holds: True if the invariant held under all tested interleavings.</span>
+<span class="sd">        property_holds: Tri-state verdict.  ``True`` is a pass *certificate*</span>
+<span class="sd">            (at least one interleaving completed, every worker body ran, no</span>
+<span class="sd">            coverage-degrading event) — it can only be produced by</span>
+<span class="sd">            :func:`frontrun._certificate.certify_pass`.  ``False`` means a</span>
+<span class="sd">            failure was found and implies a counterexample/failure record</span>
+<span class="sd">            exists.  ``None`` means the exploration was inconclusive (no</span>
+<span class="sd">            evidence either way — e.g. a budget expired before any</span>
+<span class="sd">            interleaving completed); see ``inconclusive_reason``.  ``None``</span>
+<span class="sd">            is falsy, so ``if result.property_holds:`` stays fail-closed.</span>
 <span class="sd">        counterexample: First schedule that violated the invariant (if any).</span>
 <span class="sd">        num_explored: How many interleavings were tested.</span>
 <span class="sd">        unique_interleavings: Number of distinct schedule orderings observed.</span>
 <span class="sd">            Provides a lower bound on interleaving-space coverage.  Relevant</span>
 <span class="sd">            for random bytecode exploration; DPOR always explores distinct</span>
 <span class="sd">            interleavings so this equals ``num_explored``.</span>
-<span class="sd">        failures: All failing (execution_number, schedule) pairs.  Only</span>
-<span class="sd">            populated by DPOR when ``stop_on_first=False``.</span>
+<span class="sd">        failures: All failing (execution_number, schedule) pairs.  Populated</span>
+<span class="sd">            by DPOR (thread and process execution); holds every failing</span>
+<span class="sd">            execution when ``stop_on_first=False``, otherwise at most the</span>
+<span class="sd">            first.</span>
 <span class="sd">        explanation: Human-readable explanation of the race condition, showing</span>
 <span class="sd">            interleaved source lines and the conflict pattern. None if no</span>
 <span class="sd">            race was found.</span>
@@ -376,9 +434,28 @@
 <span class="sd">        sql_anomaly: Classified SQL isolation anomaly (if any SQL I/O events</span>
 <span class="sd">            were recorded).  A :class:`~frontrun._sql_anomaly.SqlAnomaly`</span>
 <span class="sd">            instance, or None if the failure did not involve SQL.</span>
+<span class="sd">        exhausted: Whether the search space was fully covered.  Populated by</span>
+<span class="sd">            ``execution=&quot;process&quot;`` (from</span>
+<span class="sd">            :class:`~frontrun.CrossProcessResult` ``.exhausted``); ``None``</span>
+<span class="sd">            means the mode that produced this result does not report it</span>
+<span class="sd">            (thread/async execution currently leaves it unset).  A</span>
+<span class="sd">            preemption-bounded DPOR search (the default,</span>
+<span class="sd">            ``preemption_bound=2``) never claims ``True`` — full coverage</span>
+<span class="sd">            requires ``preemption_bound=None``.</span>
+<span class="sd">        failure_kind: Structured category of the failure for</span>
+<span class="sd">            ``execution=&quot;process&quot;`` — one of ``&quot;invariant&quot;``,</span>
+<span class="sd">            ``&quot;worker_error&quot;``, ``&quot;deadlock&quot;``, ``&quot;timeout&quot;``,</span>
+<span class="sd">            ``&quot;nondeterministic&quot;``, ``&quot;step_limit&quot;``, ``&quot;branch_limit&quot;``.</span>
+<span class="sd">            ``None`` when the</span>
+<span class="sd">            invariant held or for thread/async execution (which encodes the</span>
+<span class="sd">            failure in ``explanation`` only).</span>
+<span class="sd">        inconclusive_reason: Machine-readable cause (and remedy) when</span>
+<span class="sd">            ``property_holds`` is ``None`` — e.g. &quot;total_timeout=0.01s elapsed</span>
+<span class="sd">            before any interleaving completed; increase total_timeout&quot;.</span>
+<span class="sd">            ``None`` for pass/fail verdicts.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="n">property_holds</span><span class="p">:</span> <span class="nb">bool</span>
+    <span class="n">property_holds</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span>
     <span class="n">counterexample</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="n">Schedule</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">num_explored</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">unique_interleavings</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
@@ -388,19 +465,42 @@
     <span class="n">reproduction_successes</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">sql_anomaly</span><span class="p">:</span> <span class="n">SqlAnomaly</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">races_detected</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="n">exhausted</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">failure_kind</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">inconclusive_reason</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 
 <div class="viewcode-block" id="InterleavingResult.assert_holds">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.common.InterleavingResult.assert_holds">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">assert_holds</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg_prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Raise AssertionError with the race explanation if the invariant failed.</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">assert_holds</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg_prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">allow_inconclusive</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Raise unless the exploration produced a pass certificate.</span>
 
 <span class="sd">        Prefer this over ``assert result.property_holds, result.explanation``.</span>
 
 <span class="sd">        Args:</span>
-<span class="sd">            msg_prefix: Optional string prepended to the explanation in the</span>
-<span class="sd">                AssertionError message.  Useful for identifying which assertion</span>
-<span class="sd">                failed when multiple calls appear in one test.</span>
+<span class="sd">            msg_prefix: Optional string prepended to the message.  Useful for</span>
+<span class="sd">                identifying which assertion failed when multiple calls appear</span>
+<span class="sd">                in one test.</span>
+<span class="sd">            allow_inconclusive: Opt into the weaker claim &quot;no failure found&quot;:</span>
+<span class="sd">                do not raise when the result is inconclusive</span>
+<span class="sd">                (``property_holds=None``).  A genuine failure still raises.</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">            AssertionError: A counterexample was found (``property_holds`` is</span>
+<span class="sd">                ``False``); the message carries the explanation.</span>
+<span class="sd">            InconclusiveExploration: The exploration was inconclusive</span>
+<span class="sd">                (``property_holds`` is ``None``) and ``allow_inconclusive``</span>
+<span class="sd">                was not set; the message names cause and remedy.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">property_holds</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">allow_inconclusive</span><span class="p">:</span>
+                <span class="k">return</span>
+            <span class="n">reason</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">inconclusive_reason</span>
+                <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">explanation</span>
+                <span class="ow">or</span> <span class="s2">&quot;exploration completed no interleavings and recorded no cause&quot;</span>
+            <span class="p">)</span>
+            <span class="n">message</span> <span class="o">=</span> <span class="n">reason</span> <span class="k">if</span> <span class="s2">&quot;inconclusive&quot;</span> <span class="ow">in</span> <span class="n">reason</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="k">else</span> <span class="sa">f</span><span class="s2">&quot;inconclusive: </span><span class="si">{</span><span class="n">reason</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="k">raise</span> <span class="n">InconclusiveExploration</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">msg_prefix</span><span class="si">}{</span><span class="n">message</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="n">msg_prefix</span> <span class="k">else</span> <span class="n">message</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">property_holds</span><span class="p">:</span>
             <span class="n">explanation</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">explanation</span> <span class="ow">or</span> <span class="s2">&quot;&quot;</span>
             <span class="k">raise</span> <span class="ne">AssertionError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">msg_prefix</span><span class="si">}{</span><span class="n">explanation</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="n">msg_prefix</span> <span class="k">else</span> <span class="n">explanation</span><span class="p">)</span></div>
@@ -419,6 +519,8 @@
         <span class="p">]</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">races_detected</span><span class="p">:</span>
             <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;races_detected=True&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">inconclusive_reason</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;inconclusive_reason=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">inconclusive_reason</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
         <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;InterleavingResult(</span><span class="si">{</span><span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span><span class="si">}</span><span class="s2">)&quot;</span></div>
 
 
@@ -448,7 +550,7 @@
         <span class="n">state_hash</span> <span class="o">=</span> <span class="nb">repr</span>
     <span class="n">valid</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">for</span> <span class="n">perm</span> <span class="ow">in</span> <span class="n">permutations</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">thread_funcs</span><span class="p">))):</span>
-        <span class="n">s</span> <span class="o">=</span> <span class="n">setup</span><span class="p">()</span>
+        <span class="n">s</span> <span class="o">=</span> <span class="n">_call_sync_setup</span><span class="p">(</span><span class="n">setup</span><span class="p">)</span>
         <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">perm</span><span class="p">:</span>
             <span class="n">thread_funcs</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">s</span><span class="p">)</span>
         <span class="n">valid</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">state_hash</span><span class="p">(</span><span class="n">s</span><span class="p">))</span>
@@ -471,7 +573,7 @@
         <span class="n">state_hash</span> <span class="o">=</span> <span class="nb">repr</span>
     <span class="n">valid</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">for</span> <span class="n">perm</span> <span class="ow">in</span> <span class="n">permutations</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">task_funcs</span><span class="p">))):</span>
-        <span class="n">s</span> <span class="o">=</span> <span class="n">setup</span><span class="p">()</span>
+        <span class="n">s</span> <span class="o">=</span> <span class="n">_call_sync_setup</span><span class="p">(</span><span class="n">setup</span><span class="p">)</span>
         <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">perm</span><span class="p">:</span>
             <span class="k">await</span> <span class="n">task_funcs</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">s</span><span class="p">)</span>
         <span class="n">valid</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">state_hash</span><span class="p">(</span><span class="n">s</span><span class="p">))</span>
@@ -552,7 +654,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Installation" href="installation.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Frontrun 0.6.0 documentation</title>
+        <title>Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="#"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="#"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="#">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -257,7 +260,9 @@
 passes 95% of the time is worse than a test that always fails, because it
 breeds false confidence. Frontrun replaces timing-dependent thread interleaving
 with deterministic scheduling, so race conditions either always happen or
-never happen.</p>
+never happen. Free-threaded Python (3.13t, 3.14t) raises the stakes: races the
+GIL kept narrow become real, and frontrun — which supports free-threaded
+builds — exists to enumerate those interleavings and prove which one is buggy.</p>
 <p>Four approaches, in order of decreasing interpretability:</p>
 <ol class="arabic simple">
 <li><p><strong>DPOR</strong> — systematic exploration of every meaningfully different
@@ -270,16 +275,25 @@ space than bytecode exploration, with completeness guarantees.</p></li>
 <li><p><strong>Trace markers</strong> — comment-based synchronization points for reproducing
 a known race window.</p></li>
 </ol>
+<p>The DPOR engine also drives <strong>cross-process exploration</strong>: the same
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore(...)</span></code> interface applied to separate Python processes that
+contend on shared external state (SQL and Redis).</p>
+<p>Time itself can be scheduled: with <code class="docutils literal notranslate"><span class="pre">clock=&quot;virtual&quot;</span></code> sleeps cost zero wall
+time and TTL expiry becomes reachable, and with <code class="docutils literal notranslate"><span class="pre">clock=&quot;explored&quot;</span></code> timer
+firings are explored against other operations like any other interleaving
+choice — see <a class="reference internal" href="virtual_clock.html"><span class="doc">Virtual clock: timeout, retry, and TTL races</span></a>.</p>
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="installation.html#optional-extras">Optional extras</a></li>
 <li class="toctree-l2"><a class="reference internal" href="installation.html#cli-setup">CLI Setup</a></li>
 <li class="toctree-l2"><a class="reference internal" href="installation.html#pytest-plugin">Pytest Plugin</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="quickstart.html#triggering-a-race-condition">Triggering a Race Condition</a></li>
+<li class="toctree-l2"><a class="reference internal" href="quickstart.html#finding-a-race-automatically">Finding a race automatically</a></li>
+<li class="toctree-l2"><a class="reference internal" href="quickstart.html#triggering-a-race-condition-with-trace-markers">Triggering a Race Condition with Trace Markers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#how-trace-markers-work">How Trace Markers Work</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#creating-schedules">Creating Schedules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#running-with-controlled-interleaving">Running with Controlled Interleaving</a></li>
@@ -287,13 +301,31 @@ a known race window.</p></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#prefer-assert-holds-over-manual-asserts">Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="design-principles.html#the-deliverable-is-a-constructive-proof">The deliverable is a constructive proof</a></li>
+<li class="toctree-l2"><a class="reference internal" href="design-principles.html#white-box-not-black-box">White-box, not black-box</a></li>
+<li class="toctree-l2"><a class="reference internal" href="design-principles.html#fail-closed-a-pass-is-a-certificate-not-a-default">Fail closed: a pass is a certificate, not a default</a></li>
+<li class="toctree-l2"><a class="reference internal" href="design-principles.html#dependencies-over-approximate-never-under-approximate">Dependencies: over-approximate, never under-approximate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="design-principles.html#honest-exhaustiveness">Honest exhaustiveness</a></li>
+<li class="toctree-l2"><a class="reference internal" href="design-principles.html#oracles-over-review">Oracles over review</a></li>
+<li class="toctree-l2"><a class="reference internal" href="design-principles.html#one-owner-per-low-level-facility">One owner per low-level facility</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#dpor-systematic-exploration">DPOR (Systematic Exploration)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#bytecode-instrumentation">Bytecode Instrumentation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#trace-markers">Trace Markers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#marker-schedule-exploration">Marker Schedule Exploration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="approaches.html#cross-process-exploration">Cross-Process Exploration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="approaches.html#virtual-clock">Virtual Clock</a></li>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#automatic-i-o-detection">Automatic I/O Detection</a></li>
 <li class="toctree-l2"><a class="reference internal" href="approaches.html#prefer-assert-holds-over-manual-asserts">Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="case_studies.html#sendgrid-a-reused-api-client-corrupts-one-request-s-headers-with-another-s">sendgrid: a reused API client corrupts one request’s headers with another’s</a></li>
+<li class="toctree-l2"><a class="reference internal" href="case_studies.html#python-socketio-a-lost-room-registration-under-async-mode-threading">python-socketio: a lost room registration under <code class="docutils literal notranslate"><span class="pre">async_mode='threading'</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="case_studies.html#reading-these-traces">Reading these traces</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a><ul>
@@ -307,6 +339,7 @@ a known race window.</p></li>
 <li class="toctree-l2"><a class="reference internal" href="dpor_guide.html#orm-helpers-django-dpor-and-sqlalchemy-dpor">ORM helpers: <code class="docutils literal notranslate"><span class="pre">django_dpor</span></code> and <code class="docutils literal notranslate"><span class="pre">sqlalchemy_dpor</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="dpor_guide.html#redis-key-level-detection">Redis key-level detection</a></li>
 <li class="toctree-l2"><a class="reference internal" href="dpor_guide.html#prefer-assert-holds-over-manual-asserts">Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="dpor_guide.html#workers-in-separate-processes">Workers in separate processes</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a><ul>
@@ -325,7 +358,7 @@ a known race window.</p></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="vector-clocks.html#the-happens-before-relation">The happens-before relation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="vector-clocks.html#the-versionvec-data-structure">The <code class="docutils literal notranslate"><span class="pre">VersionVec</span></code> data structure</a></li>
-<li class="toctree-l2"><a class="reference internal" href="vector-clocks.html#three-clocks-per-thread">Three clocks per thread</a></li>
+<li class="toctree-l2"><a class="reference internal" href="vector-clocks.html#two-clocks-per-thread">Two clocks per thread</a></li>
 <li class="toctree-l2"><a class="reference internal" href="vector-clocks.html#synchronization-events-and-clock-updates">Synchronization events and clock updates</a></li>
 <li class="toctree-l2"><a class="reference internal" href="vector-clocks.html#worked-examples">Worked examples</a></li>
 <li class="toctree-l2"><a class="reference internal" href="vector-clocks.html#how-race-detection-drives-dpor">How race detection drives DPOR</a></li>
@@ -376,6 +409,25 @@ a known race window.</p></li>
 <li class="toctree-l2"><a class="reference internal" href="redis.html#activation">Activation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="redis.html#command-coverage-verification">Command coverage verification</a></li>
 <li class="toctree-l2"><a class="reference internal" href="redis.html#known-limitations">Known limitations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="redis.html#see-also">See also</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="cross_process.html#which-entry-point">Which entry point?</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cross_process.html#execution-process-the-ergonomic-mirror"><code class="docutils literal notranslate"><span class="pre">execution=&quot;process&quot;</span></code> — the ergonomic mirror</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cross_process.html#explore-processes-the-lower-level-entry"><code class="docutils literal notranslate"><span class="pre">explore_processes()</span></code> — the lower-level entry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cross_process.html#strategies-and-worker-reuse">Strategies and worker reuse</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cross_process.html#deadlock-detection">Deadlock detection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cross_process.html#redis-workers">Redis workers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cross_process.html#running-the-tests">Running the tests</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="virtual_clock.html#what-a-virtual-clock-changes">What a virtual clock changes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="virtual_clock.html#clock-explored-timer-firings-as-interleaving-choices"><code class="docutils literal notranslate"><span class="pre">clock=&quot;explored&quot;</span></code>: timer firings as interleaving choices</a></li>
+<li class="toctree-l2"><a class="reference internal" href="virtual_clock.html#semantics-and-limitations">Semantics and limitations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="virtual_clock.html#hazard-virtual-derived-deadlines-in-raw-loop-timer-apis">Hazard: virtual-derived deadlines in raw loop-timer APIs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="virtual_clock.html#how-it-works">How it works</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a><ul>
@@ -399,6 +451,8 @@ a known race window.</p></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="api_reference.html#module-frontrun.common">Common Data Structures</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api_reference.html#unified-exploration-entry-points">Unified Exploration Entry Points</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api_reference.html#virtual-clock">Virtual Clock</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api_reference.html#cross-process-exploration">Cross-Process Exploration</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api_reference.html#module-frontrun.trace_markers">Trace Markers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api_reference.html#marker-schedule-exploration">Marker Schedule Exploration</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api_reference.html#module-frontrun.async_trace_markers">Async Trace Markers</a></li>
@@ -408,62 +462,36 @@ a known race window.</p></li>
 <li class="toctree-l2"><a class="reference internal" href="api_reference.html#module-frontrun.contrib.django">ORM Helpers (contrib)</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#key-findings">Key Findings</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#table-of-contents">Table of Contents</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#tpool-wildpool">1. TPool (WildPool)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#threadpoolctl">2. threadpoolctl</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#cachetools">3. cachetools</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#pydispatcher">4. PyDispatcher</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#pydis">5. pydis</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#pybreaker">6. pybreaker</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#urllib3">7. urllib3</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#sqlalchemy-pool">8. SQLAlchemy (pool)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#amqtt">9. amqtt</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#pykka">10. pykka</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#cachetools-exploration">11. cachetools (exploration)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#tenacity-exploration">12. tenacity (exploration)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="CASE_STUDIES.html#summary">Summary</a></li>
-</ul>
-</li>
 </ul>
 </div>
 <section id="getting-started">
 <h2>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">¶</a></h2>
-<p>The simplest entry point is <strong>trace markers</strong> — comment-based synchronization
-points that let you force a specific execution order:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">Schedule</span><span class="p">,</span> <span class="n">Step</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceExecutor</span>
+<p>The front door is <a class="reference internal" href="api_reference.html#frontrun.explore" title="frontrun.explore"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code></a> — point it at shared state, some
+workers, and an invariant, and DPOR explores every meaningfully different
+interleaving, no annotations needed:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="mi">0</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">increment</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="n">temp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>  <span class="c1"># frontrun: read_value</span>
-        <span class="n">temp</span> <span class="o">+=</span> <span class="mi">1</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span>  <span class="c1"># frontrun: write_value</span>
+        <span class="n">temp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>
 
-<span class="k">def</span><span class="w"> </span><span class="nf">test_counter_lost_update</span><span class="p">():</span>
-    <span class="n">counter</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">()</span>
-    <span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread1&quot;</span><span class="p">,</span> <span class="s2">&quot;read_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread2&quot;</span><span class="p">,</span> <span class="s2">&quot;read_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread1&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread2&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">),</span>
-    <span class="p">])</span>
-
-    <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
-    <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-        <span class="s2">&quot;thread1&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
-        <span class="s2">&quot;thread2&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
-    <span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
-
-    <span class="k">assert</span> <span class="n">counter</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">1</span>  <span class="c1"># One increment lost</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">test_increment_is_atomic</span><span class="p">():</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
+        <span class="n">setup</span><span class="o">=</span><span class="n">Counter</span><span class="p">,</span>
+        <span class="n">workers</span><span class="o">=</span><span class="n">Counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>  <span class="c1"># fails with the exact racy interleaving</span>
 </pre></div>
 </div>
-<p>For automatic race finding without manual markers, see <a class="reference internal" href="dpor_guide.html"><span class="doc">DPOR in Practice</span></a> (systematic)
-or <a class="reference internal" href="approaches.html"><span class="doc">How Frontrun Works</span></a> (random bytecode exploration).</p>
+<p>Start with <a class="reference internal" href="quickstart.html"><span class="doc">Quick Start</span></a>, then <a class="reference internal" href="dpor_guide.html"><span class="doc">DPOR in Practice</span></a> for systematic race
+finding. For races frontrun has found in real, unmodified PyPI packages, see
+<a class="reference internal" href="case_studies.html"><span class="doc">Case Studies: Races in Real, Unmodified Libraries</span></a>.</p>
 </section>
 </section>
 <section id="indices-and-tables">
@@ -534,7 +562,7 @@ or <a class="reference internal" href="approaches.html"><span class="doc">How Fr
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

@@ -4,7 +4,7 @@ Vector Clocks and Happens-Before
 This page gives a self-contained explanation of the **vector clock**
 mechanism that underpins Frontrun's DPOR race detection.  It covers the
 theory (the happens-before partial order), the data structure
-(``VersionVec``), the three per-thread clocks and why each exists, and
+(``VersionVec``), the two per-thread clocks and why each exists, and
 worked examples showing exactly how races are detected --- or suppressed
 --- by synchronization.
 
@@ -111,10 +111,10 @@ contiguous ``Vec<u32>`` indexed by thread ID.  The four key operations are:
    This means thread IDs need not be known up front.
 
 
-Three clocks per thread
------------------------
+Two clocks per thread
+---------------------
 
-Each thread in the DPOR engine maintains **three** vector clocks:
+Each thread in the DPOR engine maintains **two** vector clocks:
 
 .. list-table::
    :header-rows: 1
@@ -137,11 +137,6 @@ Each thread in the DPOR engine maintains **three** vector clocks:
        Omits lock edges so I/O accesses from different threads *always*
        appear potentially concurrent --- catches TOCTOU races that
        lock-aware tracking would suppress.
-   * - ``causality``
-     - *Not* incremented on scheduling steps
-     - Lock acquire, thread spawn, thread join
-     - General causal ordering. Propagates synchronization knowledge without
-       conflating it with scheduling steps.
 
 
 Why two happens-before clocks?
@@ -191,8 +186,7 @@ The engine processes four synchronization events, each updating the clocks:
 Lock release
 ~~~~~~~~~~~~
 
-The releasing thread's ``dpor_vv`` (and ``causality``) clock is stored on
-the lock:
+The releasing thread's ``dpor_vv`` clock is stored on the lock:
 
 .. math::
 
@@ -227,9 +221,9 @@ The child thread inherits the parent's clocks:
 
    V_{\text{child}} \leftarrow V_{\text{child}} \sqcup V_{\text{parent}}
 
-This applies to all three clocks (``dpor_vv``, ``io_vv``, ``causality``).
-All of the parent's operations before the spawn happen-before the child's
-first operation.
+This applies to both clocks (``dpor_vv`` and ``io_vv``).  All of the
+parent's operations before the spawn happen-before the child's first
+operation.
 
 Thread join
 ~~~~~~~~~~~
@@ -240,8 +234,8 @@ The joining thread absorbs the joined thread's clocks:
 
    V_t \leftarrow V_t \sqcup V_{t'}
 
-Again, all three clocks are updated.  Everything the joined thread did
-now happens-before the joiner's subsequent operations.
+Again, both clocks are updated.  Everything the joined thread did now
+happens-before the joiner's subsequent operations.
 
 
 Worked examples
@@ -465,8 +459,8 @@ iterates over all components).
 **Per synchronization event**: :math:`O(T)` for the ``join`` operation
 (component-wise maximum of two vectors).
 
-**Space per thread**: :math:`O(T)` for each of the three vector clocks
-(three ``Vec<u32>`` of length :math:`T`).
+**Space per thread**: :math:`O(T)` for each of the two vector clocks
+(two ``Vec<u32>`` of length :math:`T`).
 
 For programs with many threads, the per-access cost scales linearly.  In
 practice, concurrency tests rarely exceed ~10 threads, making the overhead

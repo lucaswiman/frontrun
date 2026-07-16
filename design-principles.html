@@ -3,10 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Quick Start" href="quickstart.html"><link rel="prev" title="Frontrun Documentation" href="index.html">
+<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="How Frontrun Works" href="approaches.html"><link rel="prev" title="Quick Start" href="quickstart.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Installation - Frontrun 0.7.0 documentation</title>
+        <title>Design Principles - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -193,9 +193,9 @@
 <div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
   <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul class="current">
-<li class="toctree-l1 current current-page"><a class="current reference internal" href="#">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
-<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
+<li class="toctree-l1 current current-page"><a class="current reference internal" href="#">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
 <li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
@@ -231,12 +231,12 @@
         </a>
         <div class="content-icon-container">
           <div class="view-this-page">
-  <a class="muted-link" href="https://github.com/lucaswiman/frontrun/blob/main/docs/installation.rst?plain=true" title="View this page">
+  <a class="muted-link" href="https://github.com/lucaswiman/frontrun/blob/main/docs/design-principles.rst?plain=true" title="View this page">
     <svg><use href="#svg-eye"></use></svg>
     <span class="visually-hidden">View this page</span>
   </a>
 </div><div class="edit-this-page">
-  <a class="muted-link" href="https://github.com/lucaswiman/frontrun/edit/main/docs/installation.rst" rel="edit" title="Edit this page">
+  <a class="muted-link" href="https://github.com/lucaswiman/frontrun/edit/main/docs/design-principles.rst" rel="edit" title="Edit this page">
     <svg><use href="#svg-pencil"></use></svg>
     <span class="visually-hidden">Edit this page</span>
   </a>
@@ -253,58 +253,190 @@
           </label>
         </div>
         <article role="main" id="furo-main-content">
-          <section id="installation">
-<h1>Installation<a class="headerlink" href="#installation" title="Link to this heading">¶</a></h1>
-<p>Frontrun requires Python 3.10 or later.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>frontrun
-</pre></div>
-</div>
-<section id="optional-extras">
-<h2>Optional extras<a class="headerlink" href="#optional-extras" title="Link to this heading">¶</a></h2>
-<p>The ergonomic <code class="docutils literal notranslate"><span class="pre">frontrun.explore(execution=&quot;process&quot;)</span></code> entry point serialises
-worker callables and <code class="docutils literal notranslate"><span class="pre">setup()</span></code> state with <a class="reference external" href="https://pypi.org/project/dill/">dill</a>, shipped as the <code class="docutils literal notranslate"><span class="pre">process</span></code> extra:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;frontrun[process]&quot;</span>
-</pre></div>
-</div>
-<p>The lower-level <code class="docutils literal notranslate"><span class="pre">frontrun.explore_processes()</span></code> entry point uses importable
-module targets and JSON-serialisable arguments, so it does not require dill.</p>
+          <section id="design-principles">
+<h1>Design Principles<a class="headerlink" href="#design-principles" title="Link to this heading">¶</a></h1>
+<p>Frontrun is a <strong>white-box</strong> concurrency tester: it runs <em>your</em> code and
+controls its scheduling from the inside.  The deliverable is a
+<strong>constructive proof</strong> — a deterministic, replayable, DPOR-minimized
+schedule that says “run these operations in this exact order and the
+invariant fails.”  Everything below follows from taking that deliverable
+seriously.  Anything that weakens <em>determinism</em>, <em>replayability</em>, or
+<em>exactness of the counterexample</em> is working against the core, no matter
+how much convenience it buys.</p>
+<p>These principles are binding on contributors (human and agent alike):
+when a change conflicts with one of them, the change is wrong, not the
+principle.</p>
+<section id="the-deliverable-is-a-constructive-proof">
+<h2>The deliverable is a constructive proof<a class="headerlink" href="#the-deliverable-is-a-constructive-proof" title="Link to this heading">¶</a></h2>
+<p>A frontrun failure is not “the test got flaky” — it is a specific
+interleaving, expressed as a schedule, that deterministically violates
+the invariant.  That is the entire value proposition: it distinguishes a
+real logic bug from a timeout artifact, and it hands the developer the
+canonical minimal interleaving that causes the bug.</p>
+<p>Consequences:</p>
+<ul class="simple">
+<li><p>Exploration must be <strong>deterministic</strong>: the same inputs and the same
+schedule must produce the same execution.  Sources of nondeterminism
+(wall-clock time, unordered iteration, PRNGs) are either controlled or
+excluded from the scheduling-relevant path.</p></li>
+<li><p>Counterexamples must be <strong>replayable</strong>: a reported failing schedule is
+a claim that re-running it reproduces the failure.</p></li>
+<li><p>Counterexamples should be <strong>minimal</strong>: DPOR’s partial-order reduction
+exists so the reported schedule contains only scheduling decisions
+that matter.</p></li>
+</ul>
 </section>
-<section id="cli-setup">
-<h2>CLI Setup<a class="headerlink" href="#cli-setup" title="Link to this heading">¶</a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">frontrun</span></code> CLI command is installed automatically with the package.
-It wraps any command with I/O interception:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>frontrun<span class="w"> </span>pytest<span class="w"> </span>-vv<span class="w"> </span>tests/<span class="w">            </span><span class="c1"># run pytest with I/O interception</span>
-frontrun<span class="w"> </span>python<span class="w"> </span>examples/orm_race.py<span class="w">  </span><span class="c1"># run a script with I/O interception</span>
-</pre></div>
-</div>
-<section id="building-the-i-o-library">
-<h3>Building the I/O Library<a class="headerlink" href="#building-the-i-o-library" title="Link to this heading">¶</a></h3>
-<p>For C-level I/O interception (required for opaque database drivers, Redis
-clients, etc.), build the native <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code> library:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>build-io<span class="w">    </span><span class="c1"># requires Rust toolchain</span>
-</pre></div>
-</div>
-<p>This compiles <code class="docutils literal notranslate"><span class="pre">libfrontrun_io.so</span></code> (Linux) or <code class="docutils literal notranslate"><span class="pre">libfrontrun_io.dylib</span></code>
-(macOS) and copies it into the <code class="docutils literal notranslate"><span class="pre">frontrun</span></code> package directory where the
-CLI can find it.</p>
+<section id="white-box-not-black-box">
+<h2>White-box, not black-box<a class="headerlink" href="#white-box-not-black-box" title="Link to this heading">¶</a></h2>
+<p>Frontrun instruments code from the inside — workers import frontrun’s
+patching, which is what preserves <em>semantic access identity</em> (knowing
+that two operations touch the same lock, row, or key) and
+<em>step-completion</em> (knowing an operation finished before scheduling the
+next).  Cross-process SQL/Redis exploration extends the same model to
+contention on shared rows rather than shared memory; the workers are
+still instrumented Python processes.</p>
+<p>Scheduling <em>unmodified or non-Python</em> workers via wire-level
+interception is explicitly out of scope.  That is a black-box,
+Jepsen-shaped problem — observing histories for consistency violations
+rather than proving a specific interleaving — and belongs in a
+separate tool (which could reuse the Rust DPOR engine, but not
+frontrun’s product shape).  Don’t grow frontrun toward it.</p>
+</section>
+<section id="fail-closed-a-pass-is-a-certificate-not-a-default">
+<h2>Fail closed: a pass is a certificate, not a default<a class="headerlink" href="#fail-closed-a-pass-is-a-certificate-not-a-default" title="Link to this heading">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">property_holds=True</span></code> is a <strong>positive claim</strong>: “the explored
+interleavings ran, the invariant was checked, and it held.”  It must
+never be the value a result takes by default, by omission, or by an
+error path that forgot to report.</p>
+<p>A pass certificate requires positive evidence:</p>
+<ul class="simple">
+<li><p>at least one interleaving actually executed (a run that explored zero
+interleavings is vacuous, and a vacuous pass is a frontrun bug, not a
+pass);</p></li>
+<li><p>the worker bodies actually executed — a worker that silently never
+ran cannot certify anything about the code it was supposed to run;</p></li>
+<li><p>no coverage-degrading event occurred (tracer failures, suppressed
+exceptions, instrumentation gaps) without being reflected in the
+result.</p></li>
+</ul>
+<p>When frontrun cannot tell whether exploration was sound, the honest
+answer is <em>inconclusive</em> or a demoted claim — never a clean pass.
+False failures are annoying; false passes are the one thing a testing
+tool must not produce.</p>
+<section id="three-verdicts-not-two">
+<h3>Three verdicts, not two<a class="headerlink" href="#three-verdicts-not-two" title="Link to this heading">¶</a></h3>
+<p>A result therefore carries one of three verdicts:</p>
+<ul class="simple">
+<li><p><strong>Pass</strong> — the certificate above: at least one interleaving
+executed, worker bodies ran, no coverage-degrading events.</p></li>
+<li><p><strong>Fail</strong> — a counterexample exists.  A fail verdict <em>implies</em> a
+counterexample; vacuous runs must never be shoehorned into it.</p></li>
+<li><p><strong>Inconclusive</strong> — no evidence either way, with a machine-readable
+reason (e.g. the timeout elapsed before the first interleaving
+completed, or an iteration budget of zero).</p></li>
+</ul>
+<p>Users can legitimately force a vacuous run — a very short timeout, a
+zero iteration budget.  That is still <em>inconclusive</em>, not a pass and
+not a frontrun bug: <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> raises on <strong>both</strong> non-pass
+verdicts, with distinct exception types, and the inconclusive error
+names the cause and the remedy in one line.  The failure mode this
+guards against is the CI job whose budget silently degrades until it is
+testing nothing while staying green.  A test that wants a
+budget-bounded smoke lane where zero work is acceptable must opt into
+the weaker claim <em>by name at the call site</em> (e.g.
+<code class="docutils literal notranslate"><span class="pre">assert_holds(allow_inconclusive=True)</span></code> or a separately named
+<code class="docutils literal notranslate"><span class="pre">assert_no_failure_found()</span></code>) so the test reads as the weaker claim it
+makes.</p>
+<p>Encoding: <code class="docutils literal notranslate"><span class="pre">property_holds</span></code> is <code class="docutils literal notranslate"><span class="pre">bool</span> <span class="pre">|</span> <span class="pre">None</span></code> with <code class="docutils literal notranslate"><span class="pre">None</span></code> meaning
+inconclusive.  This is fail-closed for existing callers for free —
+<code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">result.property_holds:</span></code> treats <code class="docutils literal notranslate"><span class="pre">None</span></code> as falsy — while
+preserving the guarantee that <code class="docutils literal notranslate"><span class="pre">False</span></code> implies a counterexample.</p>
+<p>One distinction stays sharp: user-induced vacuity is a legitimate
+inconclusive; <strong>internally contradictory</strong> evidence is not.  A result
+claiming explored interleavings whose evidence shows no worker body
+ever ran is a frontrun internal error and raises as such immediately
+— it never reaches a verdict at all.</p>
 </section>
 </section>
-<section id="pytest-plugin">
-<h2>Pytest Plugin<a class="headerlink" href="#pytest-plugin" title="Link to this heading">¶</a></h2>
-<p>Installing frontrun registers a pytest plugin via the <code class="docutils literal notranslate"><span class="pre">pytest11</span></code> entry point.
-The plugin patches <code class="docutils literal notranslate"><span class="pre">threading.Lock</span></code>, <code class="docutils literal notranslate"><span class="pre">threading.RLock</span></code>, <code class="docutils literal notranslate"><span class="pre">queue.Queue</span></code>,
-and related primitives with cooperative versions <strong>before test collection</strong>.</p>
-<p>Patching is <strong>on by default when running under the ``frontrun`` CLI</strong>.
-When running plain <code class="docutils literal notranslate"><span class="pre">pytest</span></code> without the CLI, patching is off unless
-explicitly requested:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>frontrun<span class="w"> </span>pytest<span class="w">                    </span><span class="c1"># cooperative lock patching is active (auto)</span>
-pytest<span class="w"> </span>--frontrun-patch-locks<span class="w">      </span><span class="c1"># explicitly enable without CLI</span>
-pytest<span class="w"> </span>--no-frontrun-patch-locks<span class="w">   </span><span class="c1"># explicitly disable even under CLI</span>
-</pre></div>
-</div>
-<p>Tests that use <code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> or <code class="docutils literal notranslate"><span class="pre">frontrun.explore_random()</span></code> will be
-automatically skipped when run without the frontrun CLI, preventing
-confusing failures when the environment isn’t properly set up.</p>
+<section id="dependencies-over-approximate-never-under-approximate">
+<h2>Dependencies: over-approximate, never under-approximate<a class="headerlink" href="#dependencies-over-approximate-never-under-approximate" title="Link to this heading">¶</a></h2>
+<p>DPOR is sound only if every real dependency between operations is
+visible to the engine.  The governing rule for semantic access identity
+(which rows a SQL statement touches, which keys a Redis command reads or
+writes, which object a lock guards) is:</p>
+<blockquote>
+<div><p><strong>Over-merging is allowed; under-merging is forbidden.</strong></p>
+</div></blockquote>
+<p>Treating two independent operations as conflicting (over-merging) costs
+performance: the engine explores interleavings that were in fact
+equivalent.  Treating two conflicting operations as independent
+(under-merging) costs soundness: a real race is pruned from the search
+space and frontrun reports a false pass.</p>
+<p>Consequences:</p>
+<ul class="simple">
+<li><p>Identity extraction is <strong>coarse by default</strong>.  An unrecognized command,
+an unparseable statement, or an ambiguous scope is modeled as a
+conservative global write — it conflicts with everything.</p></li>
+<li><p><strong>Narrowing requires positive evidence.</strong>  An access is scoped down to
+a specific row, key, or table only when a command-table entry or a
+successful parse affirmatively says the operation touches nothing
+else.  “Probably only touches this key” is not evidence.</p></li>
+<li><p>The command tables themselves are tested for <strong>scope completeness</strong>:
+every command a client can send either has an explicit, audited scope
+entry or falls through to the coarse default.</p></li>
+</ul>
+</section>
+<section id="honest-exhaustiveness">
+<h2>Honest exhaustiveness<a class="headerlink" href="#honest-exhaustiveness" title="Link to this heading">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">exhausted=True</span></code> means “the search space was fully covered under the
+stated model” — it upgrades “no failure found” to “no failure exists
+(at this granularity).”  That claim is only as good as its weakest
+link, so any event that degrades coverage demotes it:</p>
+<ul class="simple">
+<li><p>hitting an iteration, depth, or time bound;</p></li>
+<li><p>divergence between the schedule the engine planned and the execution
+that physically occurred (e.g. a worker redirected by a row-lock
+conflict mid-step);</p></li>
+<li><p>any skipped, truncated, or abandoned branch.</p></li>
+</ul>
+<p>A demoted result still reports what was explored — “no failure found
+within bounds” is useful and honest.  Claiming exhaustion after a
+truncated search is a false proof.</p>
+</section>
+<section id="oracles-over-review">
+<h2>Oracles over review<a class="headerlink" href="#oracles-over-review" title="Link to this heading">¶</a></h2>
+<p>Soundness is defended by <strong>mechanisms and differential oracles</strong>, not by
+rounds of code review.  Review samples the bug population; an oracle
+checks an invariant on every run.  The oracles frontrun maintains:</p>
+<ul class="simple">
+<li><p><strong>DPOR vs. exhaustive enumeration</strong> — on small generated programs,
+the DPOR engine must find exactly the set of outcomes that brute-force
+enumeration finds, and the number of explored interleavings must match
+the Mazurkiewicz trace count.</p></li>
+<li><p><strong>Virtual vs. real clock differential</strong> — a program certified as
+pass under the virtual clock must not fail under the real clock.
+(The reverse is fine: the virtual clock legitimately reaches states,
+like TTL expiry, that real time rarely hits.)</p></li>
+<li><p><strong>Mutation and fault-injection tests on the certification gate</strong> —
+each historically observed soundness bug (vacuous pass, over-claimed
+exhaustion, silently unexecuted worker) is resurrected as a mutation
+the test suite must kill.  A soundness fix without a test that fails
+on the old behavior is not done.</p></li>
+</ul>
+<p>When a new class of soundness bug is found, the fix includes extending
+an oracle or adding a mutation test — otherwise the class will
+reappear.</p>
+</section>
+<section id="one-owner-per-low-level-facility">
+<h2>One owner per low-level facility<a class="headerlink" href="#one-owner-per-low-level-facility" title="Link to this heading">¶</a></h2>
+<p>Global interpreter facilities are owned by exactly one module, and
+everyone else goes through its API.  <code class="docutils literal notranslate"><span class="pre">sys.settrace</span></code> /
+<code class="docutils literal notranslate"><span class="pre">sys.monitoring</span></code> / <code class="docutils literal notranslate"><span class="pre">f_trace_opcodes</span></code> belong to
+<code class="docutils literal notranslate"><span class="pre">frontrun/_opcode_observer.py</span></code>; new exploration strategies register as
+<code class="docutils literal notranslate"><span class="pre">Strategy</span></code> / <code class="docutils literal notranslate"><span class="pre">AsyncStrategy</span></code> adapters in <code class="docutils literal notranslate"><span class="pre">frontrun/_strategy.py</span></code>
+rather than adding dispatch branches.  Single ownership is what keeps
+version-specific choices (like 3.14t routing through <code class="docutils literal notranslate"><span class="pre">sys.monitoring</span></code>)
+in one place and keeps two subsystems from fighting over the same hook.</p>
 </section>
 </section>
 
@@ -313,23 +445,23 @@ confusing failures when the environment isn’t properly set up.</p>
       <footer>
         
         <div class="related-pages">
-          <a class="next-page" href="quickstart.html">
+          <a class="next-page" href="approaches.html">
               <div class="page-info">
                 <div class="context">
                   <span>Next</span>
                 </div>
-                <div class="title">Quick Start</div>
+                <div class="title">How Frontrun Works</div>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
-          <a class="prev-page" href="index.html">
+          <a class="prev-page" href="quickstart.html">
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
               <div class="page-info">
                 <div class="context">
                   <span>Previous</span>
                 </div>
                 
-                <div class="title">Home</div>
+                <div class="title">Quick Start</div>
                 
               </div>
             </a>
@@ -363,13 +495,17 @@ confusing failures when the environment isn’t properly set up.</p>
         <div class="toc-tree-container">
           <div class="toc-tree">
             <ul>
-<li><a class="reference internal" href="#">Installation</a><ul>
-<li><a class="reference internal" href="#optional-extras">Optional extras</a></li>
-<li><a class="reference internal" href="#cli-setup">CLI Setup</a><ul>
-<li><a class="reference internal" href="#building-the-i-o-library">Building the I/O Library</a></li>
+<li><a class="reference internal" href="#">Design Principles</a><ul>
+<li><a class="reference internal" href="#the-deliverable-is-a-constructive-proof">The deliverable is a constructive proof</a></li>
+<li><a class="reference internal" href="#white-box-not-black-box">White-box, not black-box</a></li>
+<li><a class="reference internal" href="#fail-closed-a-pass-is-a-certificate-not-a-default">Fail closed: a pass is a certificate, not a default</a><ul>
+<li><a class="reference internal" href="#three-verdicts-not-two">Three verdicts, not two</a></li>
 </ul>
 </li>
-<li><a class="reference internal" href="#pytest-plugin">Pytest Plugin</a></li>
+<li><a class="reference internal" href="#dependencies-over-approximate-never-under-approximate">Dependencies: over-approximate, never under-approximate</a></li>
+<li><a class="reference internal" href="#honest-exhaustiveness">Honest exhaustiveness</a></li>
+<li><a class="reference internal" href="#oracles-over-review">Oracles over review</a></li>
+<li><a class="reference internal" href="#one-owner-per-low-level-facility">One owner per low-level facility</a></li>
 </ul>
 </li>
 </ul>

@@ -173,10 +173,9 @@ on synchronization events (lock acquire/release, thread spawn/join).  Two
 accesses race when they are to the same object, at least one is a write,
 and their vector clocks are *concurrent* (neither dominates).
 
-Each thread actually carries three clocks: ``dpor_vv`` (lock-aware, for
-shared-memory races), ``io_vv`` (lock-oblivious, for TOCTOU/I/O races),
-and ``causality`` (general causal ordering).  See :doc:`vector-clocks` for
-the full explanation with worked examples.
+Each thread actually carries two clocks: ``dpor_vv`` (lock-aware, for
+shared-memory races) and ``io_vv`` (lock-oblivious, for TOCTOU/I/O races).
+See :doc:`vector-clocks` for the full explanation with worked examples.
 
 
 Search Strategies
@@ -192,7 +191,7 @@ DFS (depth-first search)
 
 .. code-block:: python
 
-   strategy = "dfs"
+   search = "dfs"   # or search=None — DFS is the default
 
 Always picks the **minimum** thread ID among wakeup tree roots.
 Deterministic, no seed parameter.  This is the default from Algorithm 2 of
@@ -214,8 +213,7 @@ BitReversal
 
 .. code-block:: python
 
-   strategy = "bit_reversal"
-   search_seed = 42
+   search = "bit-reversal:42"   # or "bit-reversal" for seed 0
 
 Uses a `van der Corput
 <https://en.wikipedia.org/wiki/Van_der_Corput_sequence>`_-style
@@ -244,8 +242,7 @@ RoundRobin
 
 .. code-block:: python
 
-   strategy = "round_robin"
-   search_seed = 0
+   search = "round-robin"   # or "round-robin:7" to set the seed
 
 Cycles through available threads with a rotating offset:
 
@@ -268,8 +265,7 @@ Stride
 
 .. code-block:: python
 
-   strategy = "stride"
-   search_seed = 7
+   search = "stride:7"   # or "stride" for seed 0
 
 Picks every *s*-th sibling, where *s* is derived from the seed and chosen
 **coprime** to the branching factor *n*:
@@ -294,7 +290,7 @@ ConflictFirst
 
 .. code-block:: python
 
-   strategy = "conflict_first"
+   search = "conflict-first"
 
 Always picks the **maximum** thread ID --- the reverse of DFS.
 
@@ -380,28 +376,30 @@ when used with ``stop_on_first=True``.
 API usage
 ---------
 
-The search strategy is set via the ``search_strategy`` and ``search_seed``
-parameters to ``frontrun.explore()``:
+The search strategy is set via the ``search`` parameter to
+``frontrun.explore()`` --- a single string, with the optional seed appended
+after a colon.  Unknown spellings raise ``ValueError`` (note the hyphens:
+``"bit-reversal"``, not ``"bit_reversal"``).  This is distinct from the
+``strategy`` parameter, which selects the exploration approach
+(``"dpor"`` / ``"random"``):
 
 .. code-block:: python
 
    import frontrun
 
    # Default: DFS
-   results = frontrun.explore(fn, workers=[t0, t1])
+   result = frontrun.explore(setup=Counter, workers=[t0, t1], invariant=inv)
 
-   # BitReversal with seed
-   results = frontrun.explore(
-       fn, workers=[t0, t1],
-       search_strategy="bit_reversal",
-       search_seed=42,
+   # BitReversal with seed 42
+   result = frontrun.explore(
+       setup=Counter, workers=[t0, t1], invariant=inv,
+       search="bit-reversal:42",
    )
 
    # Stop on first bug with RoundRobin
-   results = frontrun.explore(
-       fn, workers=[t0, t1],
-       search_strategy="round_robin",
-       search_seed=0,
+   result = frontrun.explore(
+       setup=Counter, workers=[t0, t1], invariant=inv,
+       search="round-robin",
        stop_on_first=True,
    )
 

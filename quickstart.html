@@ -3,10 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="How Frontrun Works" href="approaches.html"><link rel="prev" title="Installation" href="installation.html">
+<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Design Principles" href="design-principles.html"><link rel="prev" title="Installation" href="installation.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Quick Start - Frontrun 0.6.0 documentation</title>
+        <title>Quick Start - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1 current current-page"><a class="current reference internal" href="#">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -252,11 +255,52 @@
         <article role="main" id="furo-main-content">
           <section id="quick-start">
 <h1>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">¶</a></h1>
-<p>This guide covers the basics using <strong>trace markers</strong> — the simplest approach.
-For automatic race finding without manual markers, see <a class="reference internal" href="dpor_guide.html"><span class="doc">DPOR in Practice</span></a> (systematic
-exploration) or <a class="reference internal" href="approaches.html"><span class="doc">How Frontrun Works</span></a> (bytecode exploration).</p>
-<section id="triggering-a-race-condition">
-<h2>Triggering a Race Condition<a class="headerlink" href="#triggering-a-race-condition" title="Link to this heading">¶</a></h2>
+<section id="finding-a-race-automatically">
+<h2>Finding a race automatically<a class="headerlink" href="#finding-a-race-automatically" title="Link to this heading">¶</a></h2>
+<p>The front door is <a class="reference internal" href="api_reference.html#frontrun.explore" title="frontrun.explore"><code class="xref py py-func docutils literal notranslate"><span class="pre">frontrun.explore()</span></code></a>: hand it a way to build shared
+state, some workers, and an invariant, and DPOR systematically explores every
+meaningfully different thread interleaving until one breaks the invariant or
+all of them are proven safe. No annotations needed:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">increment</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">temp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">test_increment_is_atomic</span><span class="p">():</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
+        <span class="n">setup</span><span class="o">=</span><span class="n">Counter</span><span class="p">,</span>
+        <span class="n">workers</span><span class="o">=</span><span class="n">Counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Run it through the <code class="docutils literal notranslate"><span class="pre">frontrun</span></code> CLI wrapper — plain <code class="docutils literal notranslate"><span class="pre">pytest</span></code> skips
+<code class="docutils literal notranslate"><span class="pre">frontrun.explore()</span></code> tests (see <a class="reference internal" href="installation.html"><span class="doc">Installation</span></a>):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>frontrun<span class="w"> </span>pytest<span class="w"> </span>test_counter.py
+</pre></div>
+</div>
+<p>The failure output names the conflicting accesses, shows the interleaved
+source-line trace, and replays the counterexample schedule to confirm it
+reproduces deterministically. See <a class="reference internal" href="dpor_guide.html"><span class="doc">DPOR in Practice</span></a> for the practical guide,
+and <a class="reference internal" href="approaches.html"><span class="doc">How Frontrun Works</span></a> for the other exploration strategies (random bytecode
+exploration, marker schedule exploration).</p>
+<p>The rest of this guide covers <strong>trace markers</strong> — the fully manual approach,
+for when you already know the interleaving you’re after and want to pin it
+down as a deterministic regression test. If your workers are separate OS
+processes contending on a shared database or Redis rather than threads, see
+<a class="reference internal" href="cross_process.html"><span class="doc">Cross-Process Exploration</span></a>. If the race you’re hunting involves timeouts, retries,
+or TTL expiry, see <a class="reference internal" href="virtual_clock.html"><span class="doc">Virtual clock: timeout, retry, and TTL races</span></a> (<code class="docutils literal notranslate"><span class="pre">clock=&quot;virtual&quot;</span></code> /
+<code class="docutils literal notranslate"><span class="pre">clock=&quot;explored&quot;</span></code>).</p>
+</section>
+<section id="triggering-a-race-condition-with-trace-markers">
+<h2>Triggering a Race Condition with Trace Markers<a class="headerlink" href="#triggering-a-race-condition-with-trace-markers" title="Link to this heading">¶</a></h2>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">Schedule</span><span class="p">,</span> <span class="n">Step</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceExecutor</span>
 
@@ -450,12 +494,12 @@ when multiple assertions appear in one test:</p>
       <footer>
         
         <div class="related-pages">
-          <a class="next-page" href="approaches.html">
+          <a class="next-page" href="design-principles.html">
               <div class="page-info">
                 <div class="context">
                   <span>Next</span>
                 </div>
-                <div class="title">How Frontrun Works</div>
+                <div class="title">Design Principles</div>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
@@ -501,7 +545,8 @@ when multiple assertions appear in one test:</p>
           <div class="toc-tree">
             <ul>
 <li><a class="reference internal" href="#">Quick Start</a><ul>
-<li><a class="reference internal" href="#triggering-a-race-condition">Triggering a Race Condition</a></li>
+<li><a class="reference internal" href="#finding-a-race-automatically">Finding a race automatically</a></li>
+<li><a class="reference internal" href="#triggering-a-race-condition-with-trace-markers">Triggering a Race Condition with Trace Markers</a></li>
 <li><a class="reference internal" href="#how-trace-markers-work">How Trace Markers Work</a></li>
 <li><a class="reference internal" href="#creating-schedules">Creating Schedules</a></li>
 <li><a class="reference internal" href="#running-with-controlled-interleaving">Running with Controlled Interleaving</a></li>
@@ -518,7 +563,7 @@ when multiple assertions appear in one test:</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

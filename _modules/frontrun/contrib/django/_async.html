@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../../../genindex.html"><link rel="search" title="Search" href="../../../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.contrib.django._async - Frontrun 0.6.0 documentation</title>
+        <title>frontrun.contrib.django._async - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../../../index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="../../../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -194,7 +194,9 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../../../installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -203,10 +205,11 @@
 <li class="toctree-l1"><a class="reference internal" href="../../../../orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../../../CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -315,6 +318,7 @@
         <span class="n">detect_sql</span><span class="o">=</span><span class="n">detect_sql</span><span class="p">,</span>
         <span class="n">trace_packages</span><span class="o">=</span><span class="n">resolved_packages</span><span class="p">,</span>
         <span class="n">lock_timeout</span><span class="o">=</span><span class="n">lock_timeout</span><span class="p">,</span>
+        <span class="n">_bridge_sync_io</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
         <span class="o">**</span><span class="n">kwargs</span><span class="p">,</span>
     <span class="p">)</span></div>
 
@@ -350,7 +354,7 @@
       
     </aside>
   </div>
-</div><script src="../../../../_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="../../../../_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="../../../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../../../_static/scripts/furo.js?v=46bd48cc"></script>

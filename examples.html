@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="SQLAlchemy Lost-Update Race Condition" href="orm_race.html"><link rel="prev" title="Search Strategies" href="search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Examples - Frontrun 0.6.0 documentation</title>
+        <title>Examples - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -292,12 +295,14 @@ The second write overwrites the first, losing one transfer:</p>
 </section>
 <section id="correct-synchronization-with-locks">
 <h2>Correct Synchronization with Locks<a class="headerlink" href="#correct-synchronization-with-locks" title="Link to this heading">¶</a></h2>
-<p>The same code with a lock eliminates the race. Frontrun’s trace markers
-still control the scheduling, but the lock serializes the critical section
-regardless of which thread arrives first:</p>
+<p>The same code with a lock eliminates the race. Marker schedules are the
+wrong tool to prove it: the marker executor serializes execution between
+markers, so a thread that blocks on the lock while its peer is paused at a
+marker stalls the schedule (the run fails with a <code class="docutils literal notranslate"><span class="pre">TimeoutError</span></code> rather
+than certifying anything). Use DPOR instead — it understands lock blocking
+and explores every meaningfully different interleaving:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">Schedule</span><span class="p">,</span> <span class="n">Step</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceExecutor</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">SyncedBankAccount</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">balance</span><span class="o">=</span><span class="mi">0</span><span class="p">):</span>
@@ -306,27 +311,15 @@ regardless of which thread arrives first:</p>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">transfer</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">amount</span><span class="p">):</span>
         <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">lock</span><span class="p">:</span>
-            <span class="n">current</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">balance</span>  <span class="c1"># frontrun: read_balance</span>
-            <span class="n">new_balance</span> <span class="o">=</span> <span class="n">current</span> <span class="o">+</span> <span class="n">amount</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">balance</span> <span class="o">=</span> <span class="n">new_balance</span>  <span class="c1"># frontrun: write_balance</span>
-        <span class="k">return</span> <span class="n">new_balance</span>
+            <span class="n">current</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">balance</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">balance</span> <span class="o">=</span> <span class="n">current</span> <span class="o">+</span> <span class="n">amount</span>
 
-<span class="n">account</span> <span class="o">=</span> <span class="n">SyncedBankAccount</span><span class="p">(</span><span class="n">balance</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
-
-<span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;transfer1&quot;</span><span class="p">,</span> <span class="s2">&quot;read_balance&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;transfer2&quot;</span><span class="p">,</span> <span class="s2">&quot;read_balance&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;transfer1&quot;</span><span class="p">,</span> <span class="s2">&quot;write_balance&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;transfer2&quot;</span><span class="p">,</span> <span class="s2">&quot;write_balance&quot;</span><span class="p">),</span>
-<span class="p">])</span>
-
-<span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-    <span class="s2">&quot;transfer1&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
-    <span class="s2">&quot;transfer2&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
-<span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
-
-<span class="k">assert</span> <span class="n">account</span><span class="o">.</span><span class="n">balance</span> <span class="o">==</span> <span class="mi">200</span>  <span class="c1"># both transfers applied correctly</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
+    <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">SyncedBankAccount</span><span class="p">(</span><span class="n">balance</span><span class="o">=</span><span class="mi">100</span><span class="p">),</span>
+    <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="k">lambda</span> <span class="n">a</span><span class="p">:</span> <span class="n">a</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span> <span class="k">lambda</span> <span class="n">a</span><span class="p">:</span> <span class="n">a</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">)],</span>
+    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">a</span><span class="p">:</span> <span class="n">a</span><span class="o">.</span><span class="n">balance</span> <span class="o">==</span> <span class="mi">200</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>  <span class="c1"># passes: the lock serializes the critical section</span>
 </pre></div>
 </div>
 </section>
@@ -422,7 +415,9 @@ state in C extensions), but the error traces are less interpretable:</p>
 <section id="async-concurrency-control">
 <h2>Async Concurrency Control<a class="headerlink" href="#async-concurrency-control" title="Link to this heading">¶</a></h2>
 <p>Async trace markers let you control interleaving at <code class="docutils literal notranslate"><span class="pre">await</span></code> boundaries:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceExecutor</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceExecutor</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">Schedule</span><span class="p">,</span> <span class="n">Step</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">AsyncBankAccount</span><span class="p">:</span>
@@ -453,13 +448,19 @@ state in C extensions), but the error traces are less interpretable:</p>
 
 <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
 <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-    <span class="s2">&quot;task1&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
-    <span class="s2">&quot;task2&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
+    <span class="s2">&quot;task1&quot;</span><span class="p">:</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">,</span> <span class="mi">50</span><span class="p">),</span>
+    <span class="s2">&quot;task2&quot;</span><span class="p">:</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">,</span> <span class="mi">50</span><span class="p">),</span>
 <span class="p">})</span>
 
 <span class="k">assert</span> <span class="n">account</span><span class="o">.</span><span class="n">balance</span> <span class="o">==</span> <span class="mi">150</span>  <span class="c1"># one transfer lost</span>
 </pre></div>
 </div>
+<p>Pass coroutine-returning callables (<code class="docutils literal notranslate"><span class="pre">functools.partial</span></code> over the async
+method, or the bound method itself for zero-argument calls) so the executor
+recognizes them as async tasks.  A plain <code class="docutils literal notranslate"><span class="pre">lambda</span></code> wrapping the coroutine
+call is classified as a <em>sync</em> worker; the returned coroutine would never be
+awaited, and <code class="docutils literal notranslate"><span class="pre">TraceExecutor</span></code> fails closed with a <code class="docutils literal notranslate"><span class="pre">TypeError</span></code> rather than
+reporting success without executing anything.</p>
 </section>
 <section id="interactive-html-exploration-reports">
 <h2>Interactive HTML Exploration Reports<a class="headerlink" href="#interactive-html-exploration-reports" title="Link to this heading">¶</a></h2>
@@ -541,10 +542,10 @@ operations are protected by a lock, DPOR explores far fewer interleavings
 because the only meaningful ordering question is <em>which thread acquires the
 lock first</em>.  Compare the racy report against the locked report to see this
 directly.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">stop_on_first=False</span></code> parameter (used in all the examples above) tells
-DPOR to continue exploring after the first failure.  The default
-<code class="docutils literal notranslate"><span class="pre">stop_on_first=True</span></code> stops as soon as a violation is found, which is usually
-what you want in a test suite.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">stop_on_first=False</span></code> parameter (used by the <code class="docutils literal notranslate"><span class="pre">examples/dpor_*.py</span></code>
+scripts) tells DPOR to continue exploring after the first failure.  The
+default <code class="docutils literal notranslate"><span class="pre">stop_on_first=True</span></code> stops as soon as a violation is found, which
+is usually what you want in a test suite.</p>
 </section>
 </section>
 <section id="real-world-case-study-sqlalchemy-orm">
@@ -633,7 +634,7 @@ interception via <code class="docutils literal notranslate"><span class="pre">LD
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

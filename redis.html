@@ -3,10 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Trace Filtering" href="trace_filtering.html"><link rel="prev" title="SQL Conflict Detection – Technical Details" href="sql-technical-details.html">
+<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Cross-Process Exploration" href="cross_process.html"><link rel="prev" title="SQL Conflict Detection – Technical Details" href="sql-technical-details.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Redis Conflict Detection – Technical Details - Frontrun 0.6.0 documentation</title>
+        <title>Redis Conflict Detection – Technical Details - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1 current current-page"><a class="current reference internal" href="#">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -275,7 +278,8 @@ the two threads touch completely different keys.</p>
 <p>With Redis detection enabled, the data flows through three stages:</p>
 <p><strong>Stage 1 – Command classification</strong> (<code class="docutils literal notranslate"><span class="pre">_redis_parsing.py</span></code>).
 <code class="docutils literal notranslate"><span class="pre">parse_redis_access(command,</span> <span class="pre">args)</span></code> returns <code class="docutils literal notranslate"><span class="pre">(read_keys,</span> <span class="pre">write_keys,</span>
-<span class="pre">is_transaction_control)</span></code>.  The parser covers all major Redis command groups:</p>
+<span class="pre">is_transaction_control,</span> <span class="pre">keyspace)</span></code> — the last field flags keyspace-wide
+commands like <code class="docutils literal notranslate"><span class="pre">FLUSHDB</span></code>.  The parser covers all major Redis command groups:</p>
 <ul class="simple">
 <li><p>String commands: <code class="docutils literal notranslate"><span class="pre">GET</span></code> (read), <code class="docutils literal notranslate"><span class="pre">SET</span></code> (write), <code class="docutils literal notranslate"><span class="pre">INCR</span></code>/<code class="docutils literal notranslate"><span class="pre">INCRBY</span></code> (read+write),
 <code class="docutils literal notranslate"><span class="pre">GETSET</span></code>/<code class="docutils literal notranslate"><span class="pre">GETDEL</span></code> (read+write), <code class="docutils literal notranslate"><span class="pre">MGET</span></code> (read, multiple keys), <code class="docutils literal notranslate"><span class="pre">MSET</span></code>
@@ -314,12 +318,13 @@ back to a conservative read+write classification on all its key arguments.</p>
 <li><p>Suppresses the coarser endpoint-level socket I/O report for this call
 (sets a thread-local flag that the socket monkey-patch checks).</p></li>
 <li><p>Calls the real <code class="docutils literal notranslate"><span class="pre">execute_command()</span></code> to execute the command on Redis.</p></li>
-<li><p>Reports each read key as <code class="docutils literal notranslate"><span class="pre">IoKind.Read</span></code> on resource ID
-<code class="docutils literal notranslate"><span class="pre">redis:&lt;key&gt;&#64;&lt;host&gt;:&lt;port&gt;</span></code> and each write key as <code class="docutils literal notranslate"><span class="pre">IoKind.Write</span></code> via the
-active <code class="docutils literal notranslate"><span class="pre">IOReporter</span></code>.</p></li>
+<li><p>Reports each read key as a <code class="docutils literal notranslate"><span class="pre">&quot;read&quot;</span></code> and each write key as a <code class="docutils literal notranslate"><span class="pre">&quot;write&quot;</span></code>
+via the active <code class="docutils literal notranslate"><span class="pre">IOReporter</span></code> callback, on resource ID
+<code class="docutils literal notranslate"><span class="pre">redis:&lt;key&gt;:db=redis:&lt;host&gt;:&lt;port&gt;/&lt;db&gt;</span></code>.</p></li>
 </ol>
-<p>The <code class="docutils literal notranslate"><span class="pre">&#64;&lt;host&gt;:&lt;port&gt;</span></code> suffix means keys on different Redis servers are always
-independent, even if they have the same name.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">:db=</span></code> suffix scopes each key to its server <em>and</em> database number, so
+keys on different Redis servers (or different logical databases of the same
+server) are always independent, even if they have the same name.</p>
 <p><strong>Stage 3 – DPOR engine</strong> (same Rust engine as for bytecode and SQL).
 The engine receives <code class="docutils literal notranslate"><span class="pre">(thread_id,</span> <span class="pre">resource_id,</span> <span class="pre">access_kind)</span></code> tuples and tracks
 them with vector clocks exactly as it does for Python-level attribute accesses.
@@ -352,13 +357,14 @@ DPOR backtrack points from connection management code.</p>
 </section>
 <section id="pipeline-support">
 <h2>Pipeline support<a class="headerlink" href="#pipeline-support" title="Link to this heading">¶</a></h2>
-<p>Each command in a redis-py pipeline is intercepted individually as the pipeline
-is built.  The commands are batched and sent to Redis in one round trip, but
-DPOR sees each command’s read/write set separately and can explore interleaving
-at the command level.</p>
+<p>Each command in a redis-py pipeline is intercepted individually when
+<code class="docutils literal notranslate"><span class="pre">pipe.execute()</span></code> runs (the wrapper walks the accumulated command stack).
+The commands are batched and sent to Redis in one round trip, but DPOR sees
+each command’s read/write set separately and can explore interleaving at the
+command level.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">pipe</span> <span class="o">=</span> <span class="n">r</span><span class="o">.</span><span class="n">pipeline</span><span class="p">()</span>
-<span class="n">pipe</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;balance&quot;</span><span class="p">)</span>        <span class="c1"># reported as Read on &quot;redis:balance@...&quot;</span>
-<span class="n">pipe</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;balance&quot;</span><span class="p">,</span> <span class="mi">200</span><span class="p">)</span>   <span class="c1"># reported as Write on &quot;redis:balance@...&quot;</span>
+<span class="n">pipe</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;balance&quot;</span><span class="p">)</span>        <span class="c1"># reported as a read on &quot;redis:balance:db=...&quot;</span>
+<span class="n">pipe</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;balance&quot;</span><span class="p">,</span> <span class="mi">200</span><span class="p">)</span>   <span class="c1"># reported as a write on &quot;redis:balance:db=...&quot;</span>
 <span class="n">pipe</span><span class="o">.</span><span class="n">execute</span><span class="p">()</span>
 </pre></div>
 </div>
@@ -435,9 +441,26 @@ A <code class="docutils literal notranslate"><span class="pre">PUBLISH</span></c
 <li><p><strong>Async DPOR excess paths</strong>: when both opcode-level tracing and Redis
 key-level detection are active, shared Python state (e.g. a shared counter
 object) may still produce additional backtrack points beyond those from Redis
-keys alone.  See <code class="docutils literal notranslate"><span class="pre">ideas/KNOWN_ISSUES.md</span></code> for details.</p></li>
-<li><p><strong>coredis async client</strong>: supported but less tested than <code class="docutils literal notranslate"><span class="pre">redis.asyncio</span></code>.</p></li>
+keys alone.</p></li>
+<li><p><strong>coredis async client</strong>: supported but less tested than <code class="docutils literal notranslate"><span class="pre">redis.asyncio</span></code>.
+Subscription setup through coredis’ private Pub/Sub transport is not
+intercepted; use redis-py when exploring publish-vs-subscribe ordering.</p></li>
+<li><p><strong>Unix-socket server identity</strong>: frontrun authenticates with configured
+credentials and uses <code class="docutils literal notranslate"><span class="pre">CONFIG</span> <span class="pre">GET</span> <span class="pre">port</span></code> (falling back to <code class="docutils literal notranslate"><span class="pre">INFO</span> <span class="pre">SERVER</span></code>)
+to match a Unix-socket client with TCP clients for the same Redis server. If
+the server denies both queries, exploration fails closed instead of treating
+the Unix path as an independent server and potentially missing conflicts.</p></li>
+<li><p><strong>Pipelined ``SELECT`` failures</strong>: because Redis can execute an initial
+<code class="docutils literal notranslate"><span class="pre">SELECT</span></code> before a later pipeline command fails, frontrun conservatively
+keeps both the previous and selected databases as possible pool state. This
+can add paths after a failed pipeline, but cannot hide a dependency.</p></li>
 </ul>
+</section>
+<section id="see-also">
+<h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">¶</a></h2>
+<p>The same Redis key-level detection drives <strong>cross-process</strong> exploration when the
+contending workers are separate Python processes rather than threads; see
+<a class="reference internal" href="cross_process.html"><span class="doc">Cross-Process Exploration</span></a>.</p>
 </section>
 </section>
 
@@ -446,12 +469,12 @@ keys alone.  See <code class="docutils literal notranslate"><span class="pre">id
       <footer>
         
         <div class="related-pages">
-          <a class="next-page" href="trace_filtering.html">
+          <a class="next-page" href="cross_process.html">
               <div class="page-info">
                 <div class="context">
                   <span>Next</span>
                 </div>
-                <div class="title">Trace Filtering</div>
+                <div class="title">Cross-Process Exploration</div>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
@@ -504,6 +527,7 @@ keys alone.  See <code class="docutils literal notranslate"><span class="pre">id
 <li><a class="reference internal" href="#activation">Activation</a></li>
 <li><a class="reference internal" href="#command-coverage-verification">Command coverage verification</a></li>
 <li><a class="reference internal" href="#known-limitations">Known limitations</a></li>
+<li><a class="reference internal" href="#see-also">See also</a></li>
 </ul>
 </li>
 </ul>
@@ -515,7 +539,7 @@ keys alone.  See <code class="docutils literal notranslate"><span class="pre">id
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

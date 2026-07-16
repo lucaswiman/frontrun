@@ -354,6 +354,55 @@ The three marker-level tools are complementary:
    **all** problematic interleavings, not just the one counterexample.
 
 
+Cross-Process Exploration
+-------------------------
+
+The four approaches above interleave concurrency *within one Python process*.
+Cross-process exploration extends the DPOR approach to **separate Python
+processes** that contend on shared *external* state (SQL and Redis). Each worker
+runs frontrun's SQL/Redis interception and coordinates with a parent over a
+socket; the Rust DPOR engine drives the search at external-access granularity,
+pruning equivalent interleavings and detecting cross-worker
+``SELECT FOR UPDATE`` deadlocks.
+
+:func:`frontrun.explore` mirrors the thread/async interface with
+``execution="process"``. Workers are serialised with dill (install the
+``process`` extra), so closures and lambdas work too; ``setup()`` returns a
+picklable handle to the external state (e.g. a DB URL),
+passed to each ``worker(state)`` and to ``invariant(state)``:
+
+.. code-block:: python
+
+   import frontrun
+
+   result = frontrun.explore(
+       setup=make_state,          # returns a picklable handle (e.g. a SQLite path)
+       workers=increment,         # module-level callable(state)
+       count=2,
+       invariant=lambda state: read(state) == 2,
+       execution="process",
+   )
+   result.assert_holds()
+
+The lower-level :func:`frontrun.explore_processes` spawns
+:class:`frontrun.Subprocess` targets (``"module:callable"`` + args) as real OS
+processes and offers ``strategy="dpor"`` (default) or ``"exhaustive"``, plus
+``reuse_workers=True`` to keep workers alive across iterations. See
+:doc:`cross_process` for the full guide.
+
+
+Virtual Clock
+-------------
+
+Timeout, retry, and TTL races need time itself to be schedulable.
+``frontrun.explore(..., clock="virtual")`` gives each execution a
+scheduler-owned virtual clock (sleeps cost zero wall time, TTL expiry is
+reachable, timed lock acquires are deterministic), and ``clock="explored"``
+makes the clock advance a scheduling choice so DPOR can prove "the timer
+fired between your read and your write".  Works with both strategies, sync
+and async.  See :doc:`virtual_clock` for the full guide.
+
+
 Automatic I/O Detection
 -------------------------
 
@@ -372,6 +421,16 @@ Resource identity is derived from the socket's peer address
 (``host:port``) or the file's resolved path. Two threads accessing the
 same endpoint or file are treated as conflicting; different endpoints are
 independent.
+
+.. note::
+
+   The async *random* strategy is narrower: there ``detect_io`` only gates
+   SQL driver patching (``detect_io=True`` implies ``detect_sql=True``);
+   socket, file, and Redis detection are not available on that path. The
+   defaults also differ between entry points — ``frontrun.explore(...,
+   strategy="random")`` with async workers patches SQL drivers by default
+   (``detect_io`` defaults to ``True``), while the standalone
+   :func:`frontrun.explore_async_random` defaults to ``detect_sql=False``.
 
 .. _c-level-io-interception:
 
@@ -419,14 +478,25 @@ engine for conflict analysis.
 Prefer ``assert_holds()`` over manual asserts
 ---------------------------------------------
 
-All exploration functions return an :class:`~frontrun.common.InterleavingResult`.
+All exploration functions return an :class:`~frontrun.common.InterleavingResult`
+with a tri-state ``property_holds`` verdict: ``True`` (a certified pass),
+``False`` (a failure was found — always with a counterexample/failure record),
+or ``None`` (inconclusive: no evidence either way, e.g. a budget expired before
+any interleaving completed; ``inconclusive_reason`` names cause and remedy).
 Use :meth:`~frontrun.common.InterleavingResult.assert_holds` to check the result
-in a single call — it raises ``AssertionError`` (with the full race explanation)
-on failure and returns ``None`` on success::
+in a single call — it returns ``None`` on a certified pass and raises a distinct
+exception for each non-pass verdict: ``AssertionError`` (with the full race
+explanation) on failure, and :class:`frontrun.InconclusiveExploration` when the
+exploration was inconclusive::
 
    result = frontrun.explore(setup=setup, workers=[t1, t2], invariant=invariant)
-   result.assert_holds()   # raises with explanation when property_holds is False
+   result.assert_holds()   # raises unless the exploration certified a pass
+
+A test that deliberately accepts the weaker "no failure found" claim (e.g. a
+tightly budgeted smoke lane) opts in by name at the call site with
+``result.assert_holds(allow_inconclusive=True)`` — genuine failures still raise.
 
 This is preferable to ``assert result.property_holds, result.explanation``
-because it works correctly under pytest's assertion rewriting and requires no
-memory burden on the caller to supply the message argument.
+because it works correctly under pytest's assertion rewriting, distinguishes an
+inconclusive run from a found race, and requires no memory burden on the caller
+to supply the message argument.

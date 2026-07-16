@@ -47,15 +47,17 @@ The second write overwrites the first, losing one transfer:
 Correct Synchronization with Locks
 ------------------------------------
 
-The same code with a lock eliminates the race. Frontrun's trace markers
-still control the scheduling, but the lock serializes the critical section
-regardless of which thread arrives first:
+The same code with a lock eliminates the race. Marker schedules are the
+wrong tool to prove it: the marker executor serializes execution between
+markers, so a thread that blocks on the lock while its peer is paused at a
+marker stalls the schedule (the run fails with a ``TimeoutError`` rather
+than certifying anything). Use DPOR instead — it understands lock blocking
+and explores every meaningfully different interleaving:
 
 .. code-block:: python
 
    import threading
-   from frontrun.common import Schedule, Step
-   from frontrun.trace_markers import TraceExecutor
+   import frontrun
 
    class SyncedBankAccount:
        def __init__(self, balance=0):
@@ -64,27 +66,15 @@ regardless of which thread arrives first:
 
        def transfer(self, amount):
            with self.lock:
-               current = self.balance  # frontrun: read_balance
-               new_balance = current + amount
-               self.balance = new_balance  # frontrun: write_balance
-           return new_balance
+               current = self.balance
+               self.balance = current + amount
 
-   account = SyncedBankAccount(balance=100)
-
-   schedule = Schedule([
-       Step("transfer1", "read_balance"),
-       Step("transfer2", "read_balance"),
-       Step("transfer1", "write_balance"),
-       Step("transfer2", "write_balance"),
-   ])
-
-   executor = TraceExecutor(schedule)
-   executor.run({
-       "transfer1": lambda: account.transfer(50),
-       "transfer2": lambda: account.transfer(50),
-   }, timeout=5.0)
-
-   assert account.balance == 200  # both transfers applied correctly
+   result = frontrun.explore(
+       setup=lambda: SyncedBankAccount(balance=100),
+       workers=[lambda a: a.transfer(50), lambda a: a.transfer(50)],
+       invariant=lambda a: a.balance == 200,
+   )
+   result.assert_holds()  # passes: the lock serializes the critical section
 
 
 Automatic Race Finding with DPOR
@@ -193,6 +183,8 @@ Async trace markers let you control interleaving at ``await`` boundaries:
 
 .. code-block:: python
 
+   import functools
+
    from frontrun import TraceExecutor
    from frontrun.common import Schedule, Step
 
@@ -224,11 +216,18 @@ Async trace markers let you control interleaving at ``await`` boundaries:
 
    executor = TraceExecutor(schedule)
    executor.run({
-       "task1": lambda: account.transfer(50),
-       "task2": lambda: account.transfer(50),
+       "task1": functools.partial(account.transfer, 50),
+       "task2": functools.partial(account.transfer, 50),
    })
 
    assert account.balance == 150  # one transfer lost
+
+Pass coroutine-returning callables (``functools.partial`` over the async
+method, or the bound method itself for zero-argument calls) so the executor
+recognizes them as async tasks.  A plain ``lambda`` wrapping the coroutine
+call is classified as a *sync* worker; the returned coroutine would never be
+awaited, and ``TraceExecutor`` fails closed with a ``TypeError`` rather than
+reporting success without executing anything.
 
 
 Interactive HTML Exploration Reports
@@ -322,10 +321,10 @@ because the only meaningful ordering question is *which thread acquires the
 lock first*.  Compare the racy report against the locked report to see this
 directly.
 
-The ``stop_on_first=False`` parameter (used in all the examples above) tells
-DPOR to continue exploring after the first failure.  The default
-``stop_on_first=True`` stops as soon as a violation is found, which is usually
-what you want in a test suite.
+The ``stop_on_first=False`` parameter (used by the ``examples/dpor_*.py``
+scripts) tells DPOR to continue exploring after the first failure.  The
+default ``stop_on_first=True`` stops as soon as a violation is found, which
+is usually what you want in a test suite.
 
 
 Real-World Case Study: SQLAlchemy ORM

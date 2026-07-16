@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.trace_markers - Frontrun 0.6.0 documentation</title>
+        <title>frontrun.trace_markers - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -194,7 +194,9 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -203,10 +205,11 @@
 <li class="toctree-l1"><a class="reference internal" href="../../orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -272,6 +275,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._certificate</span><span class="w"> </span><span class="kn">import</span> <span class="n">PassEvidence</span><span class="p">,</span> <span class="n">certify_pass</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._marker_coordination</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">MARKER_PATTERN</span><span class="p">,</span>
     <span class="n">MarkerRegistry</span><span class="p">,</span>
@@ -279,7 +283,16 @@
     <span class="n">finalize_marker_executor_run</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._trace_marker_runtime</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_trace_function</span><span class="p">,</span> <span class="n">run_traced_callable</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">InterleavingResult</span><span class="p">,</span> <span class="n">Schedule</span><span class="p">,</span> <span class="n">Step</span><span class="p">,</span> <span class="n">any_async</span><span class="p">,</span> <span class="n">check_invariant</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">InterleavingResult</span><span class="p">,</span>
+    <span class="n">Schedule</span><span class="p">,</span>
+    <span class="n">Step</span><span class="p">,</span>
+    <span class="n">_call_sync_setup</span><span class="p">,</span>
+    <span class="n">_is_async_callable</span><span class="p">,</span>
+    <span class="n">_reject_deferred_sync_result</span><span class="p">,</span>
+    <span class="n">any_async</span><span class="p">,</span>
+    <span class="n">check_invariant</span><span class="p">,</span>
+<span class="p">)</span>
 
 <span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span>
     <span class="s2">&quot;MARKER_PATTERN&quot;</span><span class="p">,</span>
@@ -314,14 +327,20 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span> <span class="o">=</span> <span class="n">ThreadCoordinator</span><span class="p">(</span><span class="n">schedule</span><span class="p">,</span> <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">marker_registry</span> <span class="o">=</span> <span class="n">MarkerRegistry</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">threads</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">thread_errors</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">thread_errors</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="ne">BaseException</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_create_trace_function</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">execution_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]:</span>  <span class="c1"># type: ignore[return-value]</span>
         <span class="k">return</span> <span class="n">build_trace_function</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">marker_registry</span><span class="p">,</span>
             <span class="n">execution_name</span><span class="p">,</span>
-            <span class="n">include_previous_line</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="c1"># Standalone-line markers (a `# frontrun: name` comment on its own</span>
+            <span class="c1"># line) never emit their own `line` event, so they only fire via the</span>
+            <span class="c1"># prev-line branch.  Enable it — matching the async executor — so</span>
+            <span class="c1"># documented standalone markers gate the following line.  The branch</span>
+            <span class="c1"># itself guards against firing on skipped executable lines, so inline</span>
+            <span class="c1"># markers are unaffected.</span>
+            <span class="n">include_previous_line</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
         <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_thread_wrapper</span><span class="p">(</span>
@@ -343,7 +362,10 @@
             <span class="n">coordinator</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">coordinator</span><span class="p">,</span>
             <span class="n">execution_name</span><span class="o">=</span><span class="n">execution_name</span><span class="p">,</span>
             <span class="n">trace_function</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_create_trace_function</span><span class="p">(</span><span class="n">execution_name</span><span class="p">),</span>
-            <span class="n">body</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">target</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">),</span>
+            <span class="c1"># Fail closed if the body returns a coroutine/generator: a sync</span>
+            <span class="c1"># classification (e.g. a lambda wrapping a coroutine call) would</span>
+            <span class="c1"># otherwise discard it and report success without executing it.</span>
+            <span class="n">body</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">_reject_deferred_sync_result</span><span class="p">(</span><span class="n">target</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">),</span> <span class="n">target</span><span class="p">),</span>
             <span class="n">error_sink</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">thread_errors</span><span class="p">,</span>
         <span class="p">)</span>
 
@@ -513,7 +535,7 @@
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sync</span><span class="o">.</span><span class="n">threads</span>
 
     <span class="nd">@property</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">thread_errors</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">]:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">thread_errors</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="ne">BaseException</span><span class="p">]:</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sync</span><span class="o">.</span><span class="n">thread_errors</span>
 
     <span class="nd">@property</span>
@@ -581,14 +603,29 @@
             <span class="n">a</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="n">t_args</span>
             <span class="n">kw</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="n">t_kwargs</span>
 
-            <span class="k">def</span><span class="w"> </span><span class="nf">_wrap</span><span class="p">(</span>
+            <span class="k">if</span> <span class="n">_is_async_callable</span><span class="p">(</span><span class="n">fn</span><span class="p">):</span>
+
+                <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_wrap_async</span><span class="p">(</span>
+                    <span class="n">_fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="n">fn</span><span class="p">,</span>
+                    <span class="n">_a</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="n">a</span><span class="p">,</span>
+                    <span class="n">_kw</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="n">kw</span><span class="p">,</span>
+                <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="k">await</span> <span class="n">_fn</span><span class="p">(</span><span class="o">*</span><span class="n">_a</span><span class="p">,</span> <span class="o">**</span><span class="n">_kw</span><span class="p">)</span>
+
+                <span class="n">wrapped</span><span class="p">[</span><span class="n">execution_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">_wrap_async</span>
+                <span class="k">continue</span>
+
+            <span class="k">def</span><span class="w"> </span><span class="nf">_wrap_sync</span><span class="p">(</span>
                 <span class="n">_fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="n">fn</span><span class="p">,</span>
                 <span class="n">_a</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="n">a</span><span class="p">,</span>
                 <span class="n">_kw</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="n">kw</span><span class="p">,</span>
-            <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">_fn</span><span class="p">(</span><span class="o">*</span><span class="n">_a</span><span class="p">,</span> <span class="o">**</span><span class="n">_kw</span><span class="p">)</span>
+            <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+                <span class="c1"># Preserve the return value so TraceExecutor&#39;s outer</span>
+                <span class="c1"># fail-closed check can reject deferred coroutine/generator</span>
+                <span class="c1"># bodies instead of certifying a run that executed nothing.</span>
+                <span class="k">return</span> <span class="n">_fn</span><span class="p">(</span><span class="o">*</span><span class="n">_a</span><span class="p">,</span> <span class="o">**</span><span class="n">_kw</span><span class="p">)</span>
 
-            <span class="n">wrapped</span><span class="p">[</span><span class="n">execution_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">_wrap</span>
+            <span class="n">wrapped</span><span class="p">[</span><span class="n">execution_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">_wrap_sync</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">wrapped</span><span class="p">[</span><span class="n">execution_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">target</span>
 
@@ -755,28 +792,37 @@
     <span class="n">num_explored</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">failures</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">Schedule</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="n">first_explanation</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="c1"># Pass-certificate evidence: each worker&#39;s body entered at least once.</span>
+    <span class="n">workers_entered</span> <span class="o">=</span> <span class="nb">dict</span><span class="o">.</span><span class="n">fromkeys</span><span class="p">(</span><span class="n">threads</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
 
     <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">schedule</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">schedules</span><span class="p">):</span>
-        <span class="n">state</span> <span class="o">=</span> <span class="n">setup</span><span class="p">()</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="n">_call_sync_setup</span><span class="p">(</span><span class="n">setup</span><span class="p">)</span>
         <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">,</span> <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">)</span>
 
         <span class="n">runners</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="k">for</span> <span class="n">exec_name</span><span class="p">,</span> <span class="p">(</span><span class="n">target_fn</span><span class="p">,</span> <span class="n">_markers</span><span class="p">)</span> <span class="ow">in</span> <span class="n">threads</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
 
-            <span class="k">def</span><span class="w"> </span><span class="nf">_make_runner</span><span class="p">(</span><span class="n">s</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">state</span><span class="p">,</span> <span class="n">fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="n">target_fn</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">fn</span><span class="p">(</span><span class="n">s</span><span class="p">)</span>
+            <span class="k">def</span><span class="w"> </span><span class="nf">_make_runner</span><span class="p">(</span><span class="n">s</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">state</span><span class="p">,</span> <span class="n">fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="n">target_fn</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">exec_name</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">workers_entered</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+                <span class="n">_reject_deferred_sync_result</span><span class="p">(</span><span class="n">fn</span><span class="p">(</span><span class="n">s</span><span class="p">),</span> <span class="n">fn</span><span class="p">)</span>
 
             <span class="n">runners</span><span class="p">[</span><span class="n">exec_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">_make_runner</span>
 
         <span class="k">try</span><span class="p">:</span>
             <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">runners</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
-        <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
-            <span class="c1"># Schedule stall — treat as non-violation and skip</span>
+            <span class="k">if</span> <span class="n">executor</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">current_step</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">)</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">executor</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">completed</span><span class="p">:</span>
+                <span class="n">remaining</span> <span class="o">=</span> <span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">[</span><span class="n">executor</span><span class="o">.</span><span class="n">coordinator</span><span class="o">.</span><span class="n">current_step</span> <span class="p">:]</span>
+                <span class="n">step_strs</span> <span class="o">=</span> <span class="p">[</span><span class="sa">f</span><span class="s2">&quot;Step(</span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">execution_name</span><span class="si">!r}</span><span class="s2">, </span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">marker_name</span><span class="si">!r}</span><span class="s2">)&quot;</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">remaining</span><span class="p">]</span>
+                <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Schedule incomplete: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">remaining</span><span class="p">)</span><span class="si">}</span><span class="s2"> step(s) were never reached: </span><span class="si">{</span><span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">step_strs</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="p">)</span>
+        <span class="k">except</span> <span class="ne">TimeoutError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="c1"># An unexecuted schedule proves nothing. Surface it as a failing</span>
+            <span class="c1"># exploration instead of claiming exhaustive marker coverage.</span>
             <span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
-            <span class="k">continue</span>
-        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
-            <span class="c1"># Thread raised an exception — treat as invariant violation</span>
-            <span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="n">explanation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;TimeoutError: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="k">if</span> <span class="n">first_explanation</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">first_explanation</span> <span class="o">=</span> <span class="n">explanation</span>
             <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">i</span><span class="p">,</span> <span class="n">schedule</span><span class="p">))</span>
             <span class="k">if</span> <span class="n">stop_on_first</span><span class="p">:</span>
                 <span class="k">return</span> <span class="n">InterleavingResult</span><span class="p">(</span>
@@ -784,6 +830,23 @@
                     <span class="n">counterexample</span><span class="o">=</span><span class="n">schedule</span><span class="p">,</span>
                     <span class="n">num_explored</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
                     <span class="n">unique_interleavings</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
+                    <span class="n">explanation</span><span class="o">=</span><span class="n">explanation</span><span class="p">,</span>
+                <span class="p">)</span>
+            <span class="k">continue</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="c1"># Thread exceptions are violations, just like failed invariants.</span>
+            <span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="n">explanation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span> <span class="k">else</span> <span class="nb">type</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span>
+            <span class="k">if</span> <span class="n">first_explanation</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">first_explanation</span> <span class="o">=</span> <span class="n">explanation</span>
+            <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">i</span><span class="p">,</span> <span class="n">schedule</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">stop_on_first</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">InterleavingResult</span><span class="p">(</span>
+                    <span class="n">property_holds</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+                    <span class="n">counterexample</span><span class="o">=</span><span class="n">schedule</span><span class="p">,</span>
+                    <span class="n">num_explored</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
+                    <span class="n">unique_interleavings</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
+                    <span class="n">explanation</span><span class="o">=</span><span class="n">explanation</span><span class="p">,</span>
                 <span class="p">)</span>
             <span class="k">continue</span>
 
@@ -791,7 +854,11 @@
 
         <span class="n">invariant_failed</span><span class="p">,</span> <span class="n">assertion_msg</span> <span class="o">=</span> <span class="n">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">invariant_failed</span><span class="p">:</span>
-            <span class="n">explanation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;AssertionError: </span><span class="si">{</span><span class="n">assertion_msg</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="n">assertion_msg</span> <span class="k">else</span> <span class="kc">None</span>
+            <span class="n">explanation</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;AssertionError: </span><span class="si">{</span><span class="n">assertion_msg</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="k">if</span> <span class="n">assertion_msg</span>
+                <span class="k">else</span> <span class="sa">f</span><span class="s2">&quot;Invariant violated under marker schedule: </span><span class="si">{</span><span class="n">schedule</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
             <span class="k">if</span> <span class="n">first_explanation</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="n">first_explanation</span> <span class="o">=</span> <span class="n">explanation</span>
             <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">i</span><span class="p">,</span> <span class="n">schedule</span><span class="p">))</span>
@@ -814,10 +881,20 @@
             <span class="n">explanation</span><span class="o">=</span><span class="n">first_explanation</span><span class="p">,</span>
         <span class="p">)</span>
 
-    <span class="k">return</span> <span class="n">InterleavingResult</span><span class="p">(</span>
-        <span class="n">property_holds</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-        <span class="n">num_explored</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
-        <span class="n">unique_interleavings</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
+    <span class="k">return</span> <span class="n">certify_pass</span><span class="p">(</span>
+        <span class="n">result</span><span class="o">=</span><span class="n">InterleavingResult</span><span class="p">(</span>
+            <span class="n">property_holds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+            <span class="n">num_explored</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
+            <span class="n">unique_interleavings</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
+        <span class="p">),</span>
+        <span class="n">evidence</span><span class="o">=</span><span class="n">PassEvidence</span><span class="p">(</span>
+            <span class="n">executions</span><span class="o">=</span><span class="n">num_explored</span><span class="p">,</span>
+            <span class="n">workers_executed</span><span class="o">=</span><span class="p">[</span><span class="n">workers_entered</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">threads</span><span class="p">],</span>
+            <span class="n">vacuous_reason</span><span class="o">=</span><span class="p">(</span>
+                <span class="s2">&quot;no marker interleaving was executed; declare at least one marker per thread &quot;</span>
+                <span class="s2">&quot;so schedules can be generated&quot;</span>
+            <span class="p">),</span>
+        <span class="p">),</span>
     <span class="p">)</span></div>
 
 </pre></div>
@@ -852,7 +929,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

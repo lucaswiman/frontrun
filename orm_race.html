@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="SQL Conflict Detection – Technical Details" href="sql-technical-details.html"><link rel="prev" title="Examples" href="examples.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>SQLAlchemy Lost-Update Race Condition - Frontrun 0.6.0 documentation</title>
+        <title>SQLAlchemy Lost-Update Race Condition - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1 current current-page"><a class="current reference internal" href="#">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -423,8 +426,9 @@ a way that triggers the database-level race. It doesn’t need to
 <em>understand</em> the conflict to stumble into it.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">frontrun.explore</span></code> calls in Demos 2 and 3 manage connections manually
-(<code class="docutils literal notranslate"><span class="pre">engine.dispose()</span></code> in <code class="docutils literal notranslate"><span class="pre">setup</span></code>, one <code class="docutils literal notranslate"><span class="pre">Session</span></code> per worker). The
+<p>The exploration calls in Demos 2 (<code class="docutils literal notranslate"><span class="pre">frontrun.explore_random</span></code>) and 3
+(<code class="docutils literal notranslate"><span class="pre">frontrun.explore</span></code>) manage sessions manually (a fresh <code class="docutils literal notranslate"><span class="pre">Session</span></code> per
+worker, state reset in <code class="docutils literal notranslate"><span class="pre">setup</span></code>). The
 <a class="reference internal" href="api_reference.html#module-frontrun.contrib.sqlalchemy" title="frontrun.contrib.sqlalchemy"><code class="xref py py-mod docutils literal notranslate"><span class="pre">frontrun.contrib.sqlalchemy</span></code></a> module provides a <code class="docutils literal notranslate"><span class="pre">sqlalchemy_dpor</span></code>
 helper that handles this boilerplate automatically. See
 <a class="reference internal" href="dpor_guide.html"><span class="doc">DPOR in Practice</span></a> for details.</p>
@@ -627,7 +631,7 @@ frontrun<span class="w"> </span>.venv-3.10/bin/python<span class="w"> </span>exa
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

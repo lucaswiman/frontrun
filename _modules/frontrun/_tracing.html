@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun._tracing - Frontrun 0.6.0 documentation</title>
+        <title>frontrun._tracing - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +161,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +182,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -194,7 +194,9 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -203,10 +205,11 @@
 <li class="toctree-l1"><a class="reference internal" href="../../orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -282,7 +285,12 @@
 <span class="sd">    path separators to dots.  Returns ``None`` for non-``.py`` files or</span>
 <span class="sd">    files outside site-packages.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">for</span> <span class="n">skip_dir</span> <span class="ow">in</span> <span class="n">_SKIP_DIRS</span><span class="p">:</span>
+    <span class="c1"># Longest prefix wins: on stock layouts a stdlib dir and its site-packages</span>
+    <span class="c1"># child are both in _SKIP_DIRS, so a file can match two prefixes.  Sorting</span>
+    <span class="c1"># by length (descending) makes the mapping deterministic and picks the most</span>
+    <span class="c1"># specific package name — iterating the frozenset directly would depend on</span>
+    <span class="c1"># PYTHONHASHSEED and silently break trace_packages filtering run-to-run.</span>
+    <span class="k">for</span> <span class="n">skip_dir</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">_SKIP_DIRS</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="nb">len</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
         <span class="k">if</span> <span class="n">filename</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">skip_dir</span><span class="p">):</span>
             <span class="n">rel</span> <span class="o">=</span> <span class="n">filename</span><span class="p">[</span><span class="nb">len</span><span class="p">(</span><span class="n">skip_dir</span><span class="p">)</span> <span class="p">:]</span>
             <span class="k">if</span> <span class="n">rel</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">sep</span><span class="p">):</span>
@@ -414,25 +422,33 @@
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_is_cmdline_mode</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True if the current process was started with ``python -c``.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True if the program came from ``python -c`` or stdin.</span>
+
+<span class="sd">    ``python -c`` leaves ``__main__`` without ``__file__``; a program piped</span>
+<span class="sd">    via stdin (``python -`` / ``python &lt; script.py``) sets ``__file__`` to</span>
+<span class="sd">    the pseudo-filename ``&quot;&lt;stdin&gt;&quot;``.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">main</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;__main__&quot;</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">main</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">&quot;__file__&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">main</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">False</span>
+    <span class="k">return</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">&quot;__file__&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">&quot;__file__&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;&lt;stdin&gt;&quot;</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">is_cmdline_user_code</span><span class="p">(</span><span class="n">filename</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">f_globals</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Check whether *filename* is user code from a ``python -c`` invocation.</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Check whether *filename* is user code from ``python -c`` or stdin.</span>
 
-<span class="sd">    When Python is started with ``-c``, user-defined functions have</span>
-<span class="sd">    ``co_filename == &quot;&lt;string&gt;&quot;`` and their ``f_globals`` (or</span>
+<span class="sd">    When Python is started with ``-c`` (or the program is piped via stdin /</span>
+<span class="sd">    typed at the REPL), user-defined functions have ``co_filename ==</span>
+<span class="sd">    &quot;&lt;string&gt;&quot;`` (``&quot;&lt;stdin&gt;&quot;`` for stdin) and their ``f_globals`` (or</span>
 <span class="sd">    ``__globals__``) is ``__main__.__dict__``.  This function returns</span>
 <span class="sd">    ``True`` for exactly that combination, allowing the trace callbacks</span>
 <span class="sd">    to treat such code as user code rather than library-exec&#39;d code.</span>
 
-<span class="sd">    Returns ``False`` for non-``&lt;string&gt;`` filenames, for ``&lt;string&gt;``</span>
+<span class="sd">    Returns ``False`` for other filenames, for ``&lt;string&gt;``/``&lt;stdin&gt;``</span>
 <span class="sd">    code whose globals don&#39;t belong to ``__main__``, or when the process</span>
 <span class="sd">    was started as a normal script (``__main__`` has a ``__file__``).</span>
 <span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">if</span> <span class="n">filename</span> <span class="o">!=</span> <span class="s2">&quot;&lt;string&gt;&quot;</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">filename</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;&lt;string&gt;&quot;</span><span class="p">,</span> <span class="s2">&quot;&lt;stdin&gt;&quot;</span><span class="p">):</span>
         <span class="k">return</span> <span class="kc">False</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_cmdline_mode</span><span class="p">():</span>
         <span class="k">return</span> <span class="kc">False</span>
@@ -472,7 +488,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

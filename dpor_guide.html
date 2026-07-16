@@ -3,10 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="DPOR: Dynamic Partial Order Reduction" href="dpor.html"><link rel="prev" title="How Frontrun Works" href="approaches.html">
+<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="DPOR: Dynamic Partial Order Reduction" href="dpor.html"><link rel="prev" title="Case Studies: Races in Real, Unmodified Libraries" href="case_studies.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>DPOR in Practice - Frontrun 0.6.0 documentation</title>
+        <title>DPOR in Practice - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1 current current-page"><a class="current reference internal" href="#">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -467,8 +470,8 @@ total executions matters, DFS is the best choice.</p>
 <code class="docutils literal notranslate"><span class="pre">frontrun.explore_random</span></code>):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@dataclass</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">InterleavingResult</span><span class="p">:</span>
-    <span class="n">property_holds</span><span class="p">:</span> <span class="nb">bool</span>                              <span class="c1"># True if invariant held everywhere</span>
-    <span class="n">counterexample</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>           <span class="c1"># first failing schedule</span>
+    <span class="n">property_holds</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span>                       <span class="c1"># tri-state verdict (see below)</span>
+    <span class="n">counterexample</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="n">Schedule</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># first failing schedule</span>
     <span class="n">num_explored</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>                             <span class="c1"># total interleavings tried</span>
     <span class="n">unique_interleavings</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>                     <span class="c1"># distinct schedules (= num_explored for DPOR)</span>
     <span class="n">failures</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]]]</span> <span class="o">=</span> <span class="o">...</span>       <span class="c1"># all (execution_num, schedule) pairs</span>
@@ -476,8 +479,22 @@ total executions matters, DFS is the best choice.</p>
     <span class="n">reproduction_attempts</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>                    <span class="c1"># number of replay attempts</span>
     <span class="n">reproduction_successes</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>                   <span class="c1"># how many replays reproduced the failure</span>
     <span class="n">sql_anomaly</span><span class="p">:</span> <span class="n">SqlAnomaly</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>             <span class="c1"># classified SQL isolation anomaly (if any)</span>
+    <span class="n">inconclusive_reason</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>            <span class="c1"># cause + remedy when property_holds is None</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">property_holds</span></code> carries one of <strong>three verdicts</strong> (see
+<a class="reference internal" href="design-principles.html"><span class="doc">Design Principles</span></a>):</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">True</span></code> — a pass <em>certificate</em>: at least one interleaving actually
+executed, every worker body ran, and no coverage-degrading event occurred.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">False</span></code> — a failure was found; <code class="docutils literal notranslate"><span class="pre">False</span></code> always implies a
+counterexample/failure record exists.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">None</span></code> — the exploration was <em>inconclusive</em>: no evidence either way (for
+example a <code class="docutils literal notranslate"><span class="pre">total_timeout</span></code> that expired before any interleaving completed,
+or every execution timing out mid-run).  <code class="docutils literal notranslate"><span class="pre">inconclusive_reason</span></code> names the
+cause and the remedy.  <code class="docutils literal notranslate"><span class="pre">None</span></code> is falsy, so
+<code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">result.property_holds:</span></code> remains fail-closed for existing callers.</p></li>
+</ul>
 <p><code class="docutils literal notranslate"><span class="pre">counterexample</span></code> is a list of thread IDs representing the order in
 which threads were scheduled. For example, <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">0,</span> <span class="pre">1,</span> <span class="pre">1]</span></code> means thread 0
 ran for two steps, then thread 1 ran for two steps.</p>
@@ -768,7 +785,7 @@ buffered and reported atomically.</p></li>
 </ul>
 <p><strong>What is independent (no conflict, no extra interleavings):</strong></p>
 <ul class="simple">
-<li><p>Two reads on the same key (e.g. two <a href="#id1"><span class="problematic" id="id2">``</span></a>GET``s).</p></li>
+<li><p>Two reads on the same key (e.g. two <code class="docutils literal notranslate"><span class="pre">GET</span></code> commands).</p></li>
 <li><p>Any operations on <em>different</em> keys, even on the same Redis server.</p></li>
 <li><p>Server-level commands (<code class="docutils literal notranslate"><span class="pre">PING</span></code>, <code class="docutils literal notranslate"><span class="pre">INFO</span></code>, <code class="docutils literal notranslate"><span class="pre">CONFIG</span></code>, etc.) that carry no
 key-level semantics.</p></li>
@@ -778,8 +795,11 @@ key-level semantics.</p></li>
 <section id="prefer-assert-holds-over-manual-asserts">
 <h2>Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts<a class="headerlink" href="#prefer-assert-holds-over-manual-asserts" title="Link to this heading">¶</a></h2>
 <p><code class="xref py py-meth docutils literal notranslate"><span class="pre">InterleavingResult.assert_holds()</span></code> is the recommended way to check a DPOR
-result in a test.  It raises <code class="docutils literal notranslate"><span class="pre">AssertionError</span></code> with the full race explanation
-when the invariant failed, and does nothing on success:</p>
+result in a test.  It raises on <strong>both</strong> non-pass verdicts, with distinct
+exception types: <code class="docutils literal notranslate"><span class="pre">AssertionError</span></code> with the full race explanation when a
+counterexample was found, and <code class="xref py py-class docutils literal notranslate"><span class="pre">frontrun.InconclusiveExploration</span></code> (whose
+message names the cause and remedy) when the exploration was inconclusive.  It
+does nothing on a certified pass:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span><span class="n">setup</span><span class="o">=</span><span class="n">setup</span><span class="p">,</span> <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">thread1</span><span class="p">,</span> <span class="n">thread2</span><span class="p">],</span> <span class="n">invariant</span><span class="o">=</span><span class="n">invariant</span><span class="p">)</span>
 <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>          <span class="c1"># preferred</span>
 <span class="c1"># instead of: assert result.property_holds, result.explanation</span>
@@ -789,6 +809,18 @@ when the invariant failed, and does nothing on success:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">(</span><span class="n">msg_prefix</span><span class="o">=</span><span class="s2">&quot;transfer race: &quot;</span><span class="p">)</span>
 </pre></div>
 </div>
+<p>A budget-bounded smoke lane that accepts the weaker claim “no failure found”
+must opt in by name at the call site:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">(</span><span class="n">allow_inconclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># inconclusive is tolerated; failures still raise</span>
+</pre></div>
+</div>
+</section>
+<section id="workers-in-separate-processes">
+<h2>Workers in separate processes<a class="headerlink" href="#workers-in-separate-processes" title="Link to this heading">¶</a></h2>
+<p>If your workers are separate OS processes contending on a shared database or
+Redis (rather than threads in one process), the same DPOR engine drives the
+search via <code class="docutils literal notranslate"><span class="pre">frontrun.explore(...,</span> <span class="pre">execution=&quot;process&quot;)</span></code>. See
+<a class="reference internal" href="cross_process.html"><span class="doc">Cross-Process Exploration</span></a>.</p>
 </section>
 </section>
 
@@ -806,14 +838,14 @@ when the invariant failed, and does nothing on success:</p>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
-          <a class="prev-page" href="approaches.html">
+          <a class="prev-page" href="case_studies.html">
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
               <div class="page-info">
                 <div class="context">
                   <span>Previous</span>
                 </div>
                 
-                <div class="title">How Frontrun Works</div>
+                <div class="title">Case Studies: Races in Real, Unmodified Libraries</div>
                 
               </div>
             </a>
@@ -863,6 +895,7 @@ when the invariant failed, and does nothing on success:</p>
 </li>
 <li><a class="reference internal" href="#redis-key-level-detection">Redis key-level detection</a></li>
 <li><a class="reference internal" href="#prefer-assert-holds-over-manual-asserts">Prefer <code class="docutils literal notranslate"><span class="pre">assert_holds()</span></code> over manual asserts</a></li>
+<li><a class="reference internal" href="#workers-in-separate-processes">Workers in separate processes</a></li>
 </ul>
 </li>
 </ul>
@@ -874,7 +907,7 @@ when the invariant failed, and does nothing on success:</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

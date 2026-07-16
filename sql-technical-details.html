@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Redis Conflict Detection – Technical Details" href="redis.html"><link rel="prev" title="SQLAlchemy Lost-Update Race Condition" href="orm_race.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>SQL Conflict Detection – Technical Details - Frontrun 0.6.0 documentation</title>
+        <title>SQL Conflict Detection – Technical Details - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor.html">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1 current current-page"><a class="current reference internal" href="#">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -275,10 +278,13 @@ can actually race, because the two statements touch different rows on
 different tables.</p>
 <p>With SQL detection enabled, the data flows through six stages:</p>
 <p><strong>Stage 1 – SQL parsing</strong> (<code class="docutils literal notranslate"><span class="pre">_sql_parsing.py</span></code>).
-<code class="docutils literal notranslate"><span class="pre">parse_sql_access(sql)</span></code> returns <code class="docutils literal notranslate"><span class="pre">(read_tables,</span> <span class="pre">write_tables,</span>
-<span class="pre">lock_intent,</span> <span class="pre">tx_op)</span></code>.  A regex fast-path handles ~90% of ORM-generated
-SQL (single-table SELECT/INSERT/UPDATE/DELETE).  Complex SQL (CTEs,
-subqueries, UNION, MERGE) falls back to sqlglot for full AST analysis.
+<code class="docutils literal notranslate"><span class="pre">parse_sql_access(sql)</span></code> returns a <code class="docutils literal notranslate"><span class="pre">SqlAccessResult</span></code> whose main fields
+are <code class="docutils literal notranslate"><span class="pre">read_tables</span></code>, <code class="docutils literal notranslate"><span class="pre">write_tables</span></code>, <code class="docutils literal notranslate"><span class="pre">lock_intent</span></code>, and <code class="docutils literal notranslate"><span class="pre">tx_op</span></code>
+(plus <code class="docutils literal notranslate"><span class="pre">temporal_clauses</span></code>, <code class="docutils literal notranslate"><span class="pre">delete_tables</span></code>, and the parsed <code class="docutils literal notranslate"><span class="pre">ast</span></code>).
+All statements go through sqlglot for full AST analysis; string-based
+handling exists only for constructs sqlglot cannot parse (<code class="docutils literal notranslate"><span class="pre">LOCK</span> <span class="pre">TABLE</span></code>,
+<code class="docutils literal notranslate"><span class="pre">SAVEPOINT</span></code>, <code class="docutils literal notranslate"><span class="pre">PREPARE</span></code>, and similar).  Statements that fail to parse
+entirely return empty sets, falling back to endpoint-level detection.
 Transaction control statements (BEGIN, COMMIT, ROLLBACK, SAVEPOINT) are
 detected and returned as <code class="docutils literal notranslate"><span class="pre">tx_op</span></code> with no table sets.</p>
 <p><strong>Stage 2 – Parameter resolution</strong> (<code class="docutils literal notranslate"><span class="pre">_sql_params.py</span></code>).
@@ -312,7 +318,8 @@ and DELETE map to both <code class="docutils literal notranslate"><span class="p
 FOR UPDATE maps to <code class="docutils literal notranslate"><span class="pre">Write</span></code>.  The Rust engine’s
 <code class="docutils literal notranslate"><span class="pre">ObjectState::dependent_accesses</span></code> implements the standard conflict
 rules: Read-Read is independent, everything else (RW, WR, WW) conflicts.</p>
-<p><strong>Stage 6 – Endpoint suppression</strong> (<code class="docutils literal notranslate"><span class="pre">_sql_cursor.py</span></code>).
+<p><strong>Stage 6 – Endpoint suppression</strong> (<code class="docutils literal notranslate"><span class="pre">_sql_endpoint_suppression.py</span></code>,
+invoked from <code class="docutils literal notranslate"><span class="pre">_sql_cursor.py</span></code>).
 While the original <code class="docutils literal notranslate"><span class="pre">cursor.execute()</span></code> runs, a context manager sets
 <code class="docutils literal notranslate"><span class="pre">_sql_suppress</span> <span class="pre">=</span> <span class="pre">True</span></code> in thread-local storage and adds the OS thread
 ID to a shared <code class="docutils literal notranslate"><span class="pre">_suppress_tids</span></code> set.  This prevents the coarser
@@ -661,7 +668,7 @@ OSDI 2023.</p></li>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

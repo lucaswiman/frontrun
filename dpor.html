@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Vector Clocks and Happens-Before" href="vector-clocks.html"><link rel="prev" title="DPOR in Practice" href="dpor_guide.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>DPOR: Dynamic Partial Order Reduction - Frontrun 0.6.0 documentation</title>
+        <title>DPOR: Dynamic Partial Order Reduction - Frontrun 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.6.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.6.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -195,7 +195,9 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-principles.html">Design Principles</a></li>
 <li class="toctree-l1"><a class="reference internal" href="approaches.html">How Frontrun Works</a></li>
+<li class="toctree-l1"><a class="reference internal" href="case_studies.html">Case Studies: Races in Real, Unmodified Libraries</a></li>
 <li class="toctree-l1"><a class="reference internal" href="dpor_guide.html">DPOR in Practice</a></li>
 <li class="toctree-l1 current current-page"><a class="current reference internal" href="#">DPOR: Dynamic Partial Order Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="vector-clocks.html">Vector Clocks and Happens-Before</a></li>
@@ -204,10 +206,11 @@
 <li class="toctree-l1"><a class="reference internal" href="orm_race.html">SQLAlchemy Lost-Update Race Condition</a></li>
 <li class="toctree-l1"><a class="reference internal" href="sql-technical-details.html">SQL Conflict Detection – Technical Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="redis.html">Redis Conflict Detection – Technical Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cross_process.html">Cross-Process Exploration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="virtual_clock.html">Virtual clock: timeout, retry, and TTL races</a></li>
 <li class="toctree-l1"><a class="reference internal" href="trace_filtering.html">Trace Filtering</a></li>
 <li class="toctree-l1"><a class="reference internal" href="internals.html">How It Works Under the Hood</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
-<li class="toctree-l1"><a class="reference internal" href="CASE_STUDIES.html">Frontrun Case Studies: Concurrency Bug Detection</a></li>
 </ul>
 
 </div>
@@ -335,10 +338,9 @@ trace where <span class="math notranslate nohighlight">\(W_1(x)\)</span> precede
 <span id="dpor-happens-before"></span><h3>Happens-before and vector clocks<a class="headerlink" href="#happens-before-and-vector-clocks" title="Link to this heading">¶</a></h3>
 <div class="admonition seealso">
 <p class="admonition-title">See also</p>
-<p><a class="reference internal" href="vector-clocks.html"><span class="doc">Vector Clocks and Happens-Before</span></a> for a comprehensive treatment including the three
-per-thread clocks (<code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code>, <code class="docutils literal notranslate"><span class="pre">io_vv</span></code>, <code class="docutils literal notranslate"><span class="pre">causality</span></code>), the
-<code class="docutils literal notranslate"><span class="pre">VersionVec</span></code> implementation, and worked examples with and without
-synchronization.</p>
+<p><a class="reference internal" href="vector-clocks.html"><span class="doc">Vector Clocks and Happens-Before</span></a> for a comprehensive treatment including the two
+per-thread clocks (<code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code>, <code class="docutils literal notranslate"><span class="pre">io_vv</span></code>), the <code class="docutils literal notranslate"><span class="pre">VersionVec</span></code>
+implementation, and worked examples with and without synchronization.</p>
 </div>
 <p>Two operations are <em>concurrent</em> if neither <a class="reference external" href="https://en.wikipedia.org/wiki/Happened-before">happens before</a> the other. The happens-before
 relation <span class="math notranslate nohighlight">\(\to\)</span> is the smallest partial order satisfying:</p>
@@ -389,15 +391,17 @@ Used when synchronization transfers causal knowledge between threads.</p>
 </dl>
 <p>Each thread carries <em>two</em> vector clocks:</p>
 <dl class="simple">
-<dt><code class="docutils literal notranslate"><span class="pre">causality</span></code></dt><dd><p>Tracks the program’s semantic happens-before relation. Updated when
-synchronization primitives (locks, joins, spawns) transfer ordering
-information between threads.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code></dt><dd><p>Tracks the happens-before relation the scheduler can rely on.
+Incremented each time the thread is scheduled, and merged (via the
+component-wise-max <code class="docutils literal notranslate"><span class="pre">join</span></code> operation) when synchronization primitives
+(locks, spawns, joins) transfer ordering information between threads.
+This is the clock used for DPOR dependency detection — it tells us
+whether two scheduling decisions were causally ordered or concurrent.</p>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code></dt><dd><p>Tracks the scheduler’s branch decisions. Incremented each time the thread
-is scheduled, and merged (via the same component-wise-max <code class="docutils literal notranslate"><span class="pre">join</span></code>
-operation) on synchronization events just like <code class="docutils literal notranslate"><span class="pre">causality</span></code>. This is the
-clock used for DPOR dependency detection — it tells us whether two
-scheduling decisions were causally ordered or concurrent.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">io_vv</span></code></dt><dd><p>A second clock used for I/O conflict detection. It propagates across
+spawn and join but deliberately ignores lock synchronization, so two
+I/O operations on the same endpoint are still treated as racing even
+when the surrounding Python code happens to be ordered by a lock.</p>
 </dd>
 </dl>
 </section>
@@ -443,8 +447,8 @@ conflicting operations.</p>
 </section>
 <section id="synchronization-events">
 <h3>Synchronization events<a class="headerlink" href="#synchronization-events" title="Link to this heading">¶</a></h3>
-<p>Synchronization primitives update the <code class="docutils literal notranslate"><span class="pre">causality</span></code> (and <code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code>) clocks so
-that accesses ordered by proper synchronization are not flagged as conflicts:</p>
+<p>Synchronization primitives update the <code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code> clock so that accesses
+ordered by proper synchronization are not flagged as conflicts:</p>
 <dl>
 <dt><strong>Lock acquire</strong></dt><dd><p>The acquiring thread joins the vector clock that was stored when the lock
 was last released:</p>
@@ -454,23 +458,24 @@ was last released:</p>
 </div>
 <p>This establishes that the acquire happens after the previous release.</p>
 </dd>
-<dt><strong>Lock release</strong></dt><dd><p>The releasing thread’s current causality clock is stored on the lock for
+<dt><strong>Lock release</strong></dt><dd><p>The releasing thread’s current <code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code> clock is stored on the lock for
 future acquirers:</p>
 <div class="math-wrapper docutils container">
 <div class="math notranslate nohighlight">
 \[V_{\text{lock}} \leftarrow V_t\]</div>
 </div>
 </dd>
-<dt><strong>Thread join</strong></dt><dd><p>The joining thread joins both the causality and DPOR clocks of the joined
-thread. All of the joined thread’s operations now happen before the
+<dt><strong>Thread join</strong></dt><dd><p>The joining thread joins both the <code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code> and <code class="docutils literal notranslate"><span class="pre">io_vv</span></code> clocks of the
+joined thread. All of the joined thread’s operations now happen before the
 joiner’s subsequent operations:</p>
 <div class="math-wrapper docutils container">
 <div class="math notranslate nohighlight">
 \[V_t \leftarrow V_t \sqcup V_{t'}\]</div>
 </div>
 </dd>
-<dt><strong>Thread spawn</strong></dt><dd><p>The child thread inherits the parent’s causality and DPOR clocks. The
-parent’s operations before the spawn happen before the child’s operations:</p>
+<dt><strong>Thread spawn</strong></dt><dd><p>The child thread inherits the parent’s <code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code> and <code class="docutils literal notranslate"><span class="pre">io_vv</span></code> clocks.
+The parent’s operations before the spawn happen before the child’s
+operations:</p>
 <div class="math-wrapper docutils container">
 <div class="math notranslate nohighlight">
 \[V_{\text{child}} \leftarrow V_{\text{child}} \sqcup V_{\text{parent}}\]</div>
@@ -674,7 +679,7 @@ has shown that most concurrency bugs surface with very few preemptions —
 found that a bound of 2 is sufficient to catch the vast majority of bugs in
 practice.</p>
 <p>When a backtrack point would create a preemption that exceeds the bound, the
-engine falls back to <code class="docutils literal notranslate"><span class="pre">add_conservative_backtrack</span></code>: it walks backward through
+engine falls back to <code class="docutils literal notranslate"><span class="pre">add_conservative_wakeup</span></code>: it walks backward through
 earlier branches looking for a point where the same thread can be explored
 without exceeding the preemption budget. This maintains soundness within the
 bounded exploration — every execution with at most <em>k</em> preemptions that
@@ -870,10 +875,10 @@ before subscripting.</p>
 <code class="docutils literal notranslate"><span class="pre">dependent_accesses(kind)</span></code> returns all prior accesses that conflict with
 the new access for race detection.</p>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">thread.rs</span></code> — Thread state</dt><dd><p><code class="docutils literal notranslate"><span class="pre">Thread</span></code> holds two vector clocks (<code class="docutils literal notranslate"><span class="pre">causality</span></code> and <code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code>) plus
-<code class="docutils literal notranslate"><span class="pre">io_vv</span></code> (for I/O operations, which omit lock-based happens-before so
-that I/O always appears concurrent). <code class="docutils literal notranslate"><span class="pre">ThreadStatus</span></code> is the per-branch
-status enum used by the exploration tree.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">thread.rs</span></code> — Thread state</dt><dd><p><code class="docutils literal notranslate"><span class="pre">Thread</span></code> holds two vector clocks: <code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code> (scheduling/dependency
+detection) and <code class="docutils literal notranslate"><span class="pre">io_vv</span></code> (for I/O operations, which omits lock-based
+happens-before so that I/O always appears concurrent). <code class="docutils literal notranslate"><span class="pre">ThreadStatus</span></code>
+is the per-branch status enum used by the exploration tree.</p>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">wakeup_tree.rs</span></code> — Wakeup trees</dt><dd><p><code class="docutils literal notranslate"><span class="pre">WakeupTree</span></code> and <code class="docutils literal notranslate"><span class="pre">WakeupNode</span></code>: an ordered tree of thread-ID sequences
 for exploring alternative interleavings (Definition 6.1, JACM’17 p.21–22).
@@ -1088,7 +1093,7 @@ library that inspired this implementation.</p></li>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=8fa8b3e9"></script>
+</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>
