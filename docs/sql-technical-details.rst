@@ -366,6 +366,22 @@ INSERTs to the same table.
 or add a ``RETURNING`` clause to your INSERTs.
 
 
+Conservative Identity and Parsing Fallbacks
+--------------------------------------------
+
+Frontrun deliberately prefers extra dependencies to missed dependencies:
+
+- SQL operations that are bytes, another opaque object, or not completely
+  parseable are reported as a database-wide write.  This can add paths, but an
+  unrecognized operation can never disappear from the dependency graph.
+- Generic PostgreSQL/MySQL server identity uses the normalized driver, port,
+  and database name but omits the configured host.  Host aliases and Unix/TCP
+  endpoints for one server therefore unify safely.  Two genuinely distinct
+  servers with the same driver, port, and database name also unify and may add
+  paths; this over-merge is intentional until frontrun exposes a positively
+  identified server-instance override.
+
+
 References
 ----------
 
