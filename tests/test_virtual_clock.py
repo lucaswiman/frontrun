@@ -1536,6 +1536,42 @@ def test_noop_clock_actor_step_is_omitted_from_replay_schedule() -> None:
     assert execution.schedule_trace == [0]
 
 
+def test_timed_wait_clock_preference_is_set_under_engine_lock() -> None:
+    """The Rust engine cannot be mutated outside the free-threading guard."""
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    class RecordingLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self.held = False
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+            self.held = True
+
+        def __exit__(self, *_args: object) -> None:
+            self.held = False
+            self._lock.release()
+
+    lock = RecordingLock()
+
+    class Engine(_FakeEngine):
+        def prefer_next_thread(self, _thread_id: int) -> None:
+            assert lock.held, "prefer_next_thread mutated the engine outside _engine_lock"
+
+    scheduler = DporScheduler(
+        Engine(),
+        _FakeExecution([0, 99]),
+        num_threads=1,
+        engine_lock=lock,
+        virtual_clock=VirtualClock(),
+        clock_mode="explored",
+        clock_actor_id=99,
+    )
+
+    scheduler.add_timed_wait(0, timeout=1.0, resource=object())
+
+
 def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
     """Deterministic regression for the replay force-expiry bug.
 
