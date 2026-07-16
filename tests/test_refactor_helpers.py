@@ -712,6 +712,25 @@ class _StubStableIds:
         self.resets += 1
 
 
+def test_stable_object_preregistration_uses_dict_insertion_order_not_key_repr() -> None:
+    """Object-key repr (often containing an address) must not renumber anchors."""
+    from frontrun._opcode_observer import StableObjectIds
+
+    class Key:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def __repr__(self) -> str:
+            return self.label
+
+    first = _StubStableIds()
+    second = _StubStableIds()
+    stable_ids = StableObjectIds()
+    stable_ids.pre_register({Key("z-last-by-repr"): first, Key("a-first-by-repr"): second})
+
+    assert stable_ids.get(first) < stable_ids.get(second)
+
+
 def test_dpor_exploration_iter_yields_one_step_per_execution() -> None:
     from frontrun._dpor_core import dpor_exploration_iter
 
