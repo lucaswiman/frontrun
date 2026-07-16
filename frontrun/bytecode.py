@@ -36,7 +36,6 @@ Example — find a race condition with random schedule exploration:
     >>> assert result.property_holds, result.explanation  # fails — lost update!
 """
 
-import math
 import random
 import sys
 import threading
@@ -96,7 +95,8 @@ from frontrun.common import (
     InterleavingResult,
     _call_sync_setup,
     check_invariant,
-    check_serializability_violation,
+    record_serializability_violation,
+    validate_random_exploration_params,
 )
 
 # Type variable for the shared state passed between setup and thread functions
@@ -1006,13 +1006,12 @@ def explore_random(
         providing a lower bound on exploration coverage.
     """
     _require_frontrun_env("explore_random")
-    if max_attempts <= 0:
-        raise ValueError("max_attempts must be positive")
-    if total_timeout is not None and (total_timeout <= 0 or not math.isfinite(total_timeout)):
-        raise ValueError(f"total_timeout must be positive and finite or None, got {total_timeout!r}")
-    if error_on_any_race:
-        raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
+    clock_config = validate_random_exploration_params(
+        max_attempts=max_attempts,
+        total_timeout=total_timeout,
+        error_on_any_race=error_on_any_race,
+        clock=clock,
+        clock_diagnostics=clock_diagnostics,
         patch_sleep=patch_sleep,
         serializable_invariant=serializable_invariant,
     )
@@ -1118,16 +1117,15 @@ def explore_random(
                 ensure_no_uncaptured_inserts()
 
             # --- serializable_invariant check ---
-            if serial_valid_states is not None:
-                explanation = check_serializability_violation(
-                    state, serial_valid_states, serial_hash_fn, result.num_explored
-                )
-                if explanation is not None:
-                    result.property_holds = False
-                    result.counterexample = schedule
-                    result.unique_interleavings = len(seen_schedule_hashes)
-                    result.explanation = explanation
-                    return result
+            if record_serializability_violation(
+                result,
+                state=state,
+                serial_valid_states=serial_valid_states,
+                serial_hash_fn=serial_hash_fn,
+                schedule=schedule,
+                unique_interleavings=len(seen_schedule_hashes),
+            ):
+                return result
 
             with clock_scope(attempt_clock):
                 invariant_failed, assertion_msg = check_invariant(invariant, state)
