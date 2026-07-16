@@ -284,3 +284,53 @@ def test_accept_hello_restores_full_per_frame_timeout(monkeypatch: pytest.Monkey
     assert accepted is sock
     assert worker_id == 0
     assert sock.timeouts == [0.25, 1.0]
+
+
+def test_accept_hello_live_restores_budget_after_accept_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A startup retry must not leave later frames with the shrinking remainder."""
+    from frontrun._dpor_runtime.xproc import coordinator
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+
+        def settimeout(self, timeout: float) -> None:
+            self.timeouts.append(timeout)
+
+    class FakeListener:
+        def __init__(self) -> None:
+            self.timeout: float | None = 7.0
+
+        def gettimeout(self) -> float | None:
+            return self.timeout
+
+        def settimeout(self, timeout: float | None) -> None:
+            self.timeout = timeout
+
+    sock = FakeSocket()
+    attempts = 0
+
+    def fake_accept_hello(_listener: object, timeout: float) -> tuple[FakeSocket, int]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError
+        # Mirror accept_hello(): it restores the timeout it was passed, which
+        # is only the shrinking startup remainder on this retry.
+        sock.settimeout(timeout)
+        return sock, 0
+
+    times = iter([10.0, 10.0, 10.6, 10.6])
+    monkeypatch.setattr(coordinator.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(coordinator, "accept_hello", fake_accept_hello)
+
+    accepted, worker_id = coordinator.accept_hello_live(
+        FakeListener(),  # type: ignore[arg-type]
+        object(),  # not a LivenessProbe; only retry budgeting matters here
+        [],
+        connect_budget=1.0,
+    )
+
+    assert accepted is sock
+    assert worker_id == 0
+    assert sock.timeouts == pytest.approx([0.4, 1.0])
