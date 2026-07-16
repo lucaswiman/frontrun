@@ -464,6 +464,30 @@ def test_finalize_marker_executor_run_detects_partial_schedule() -> None:
         )
 
 
+def test_finalize_marker_executor_run_rejects_zero_consumed_steps() -> None:
+    from frontrun._marker_coordination import ThreadCoordinator, finalize_marker_executor_run
+    from frontrun.common import Schedule, Step
+
+    coord = ThreadCoordinator(Schedule([Step(execution_name="t1", marker_name="never_reached")]))
+
+    with pytest.raises(TimeoutError, match="Schedule incomplete.*never_reached"):
+        finalize_marker_executor_run(
+            threads=[],
+            timeout=None,
+            task_errors={},
+            coordinator=coord,
+            timeout_message=lambda alive: "unused",
+        )
+
+
+def test_trace_executor_task_errors_annotation_accepts_baseexceptions() -> None:
+    from typing import get_type_hints
+
+    from frontrun.trace_markers import TraceExecutor
+
+    assert get_type_hints(TraceExecutor.task_errors.fget)["return"] == dict[str, BaseException]  # type: ignore[union-attr]
+
+
 # ---------------------------------------------------------------------------
 # Target 1: shared record_dpor_failure helper
 # ---------------------------------------------------------------------------
