@@ -364,8 +364,9 @@ def test_canary_safe_program_certifies_under_all_clocks() -> None:
 
 
 def test_safe_program_virtual_clock_count_is_stable() -> None:
-    counts = [_explore_dpor(_SAFE_LOCKED, "virtual", reproduce=0).num_explored for _ in range(100)]
-    assert counts == [4] * 100
+    for iteration in range(100):
+        result = _explore_dpor(_SAFE_LOCKED, "virtual", reproduce=0)
+        assert result.num_explored == 4, f"iteration {iteration} explored {result.num_explored} traces instead of 4"
 
 
 def test_canary_autojump_narrowing_is_the_documented_semantics() -> None:
