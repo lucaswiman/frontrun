@@ -860,6 +860,39 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
     assert engine._next_calls == 3, "the engine must not plan another execution after the deadline expires"
 
 
+def test_dpor_exploration_iter_does_not_run_schedule_planned_after_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow next_execution() must not authorize another over-budget run."""
+    from frontrun._dpor_core import concurrency, dpor_exploration_iter
+
+    fake_now = [0.0]
+    monkeypatch.setattr(concurrency.time, "monotonic", lambda: fake_now[0])
+
+    class SlowPlanningEngine(_StubEngine):
+        def next_execution(self) -> bool:
+            result = super().next_execution()
+            fake_now[0] = 2.0
+            return result
+
+    engine = SlowPlanningEngine(num_executions=2)
+    lock = _RecordingLock()
+    engine.current_lock = lock
+
+    seen = list(
+        dpor_exploration_iter(
+            engine=engine,
+            engine_lock=lock,
+            stable_ids=_StubStableIds(),
+            total_deadline=1.0,
+        )
+    )
+
+    assert [step.index for step in seen] == [1]
+    assert engine._begin_calls == 1
+    assert engine._next_calls == 1
+
+
 def test_dpor_exploration_iter_works_with_real_threading_lock() -> None:
     """A real threading.Lock is accepted (sync DPOR's engine_lock)."""
     from frontrun._dpor_core import dpor_exploration_iter

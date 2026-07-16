@@ -21,7 +21,8 @@ def test_installation_explains_when_the_native_io_library_needs_building() -> No
     installation = _read("docs/installation.rst")
 
     assert "Binary wheels already bundle" in installation
-    assert "source checkout or source distribution" in installation
+    assert "When installing from a source checkout, build" in installation
+    assert "source distribution, build" not in installation
 
 
 def test_trace_filter_example_uses_the_running_interpreters_site_packages() -> None:
