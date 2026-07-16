@@ -119,6 +119,7 @@ class DporScheduler:
             unblock=self._port_engine_unblock,
             sync=self._sync_clock_actor_locked,
             on_give_up=self._scrub_lock_waiters,
+            on_timed_wait_added_locked=self._prefer_clock_actor_locked,
             on_added=self._perform_owed_clock_advance,
         )
         self._deadlines = self._clock_port.coordinator
@@ -302,6 +303,14 @@ class DporScheduler:
         """
         sync_clock_actor(self.execution, self._clock_actor_id, self._clock_mode, self._has_pending_deadlines())
 
+    def _prefer_clock_actor_locked(self) -> None:
+        """Prioritize a newly armed explored timeout while holding ``_engine_lock``."""
+        if self._clock_mode != "explored" or self._clock_actor_id is None:
+            return
+        prefer = getattr(self.engine, "prefer_next_thread", None)
+        if prefer is not None:
+            prefer(self._clock_actor_id)
+
     def _advance_virtual_clock_locked(self) -> bool:
         """Perform one clock-actor step: jump to the earliest deadline.
 
@@ -391,10 +400,6 @@ class DporScheduler:
         registered = self._clock_port.add_timed_wait(
             thread_id, deadline, timeout=timeout, clock=self.virtual_clock, wake_id=wake_id
         )
-        if self._clock_mode == "explored" and self._clock_actor_id is not None:
-            prefer = getattr(self.engine, "prefer_next_thread", None)
-            if prefer is not None:
-                prefer(self._clock_actor_id)
         return registered
 
     def remove_timed_wait(self, thread_id: int) -> None:
