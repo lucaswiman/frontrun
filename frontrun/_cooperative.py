@@ -206,7 +206,10 @@ def _timed_acquire_state(
             # its serialising lock, so a concurrent explored-mode clock
             # advance landing between a caller-side now() read and the
             # registration cannot hand back an already-expired deadline.
-            deadline = add_timed_wait(thread_id, timeout=timeout, resource=resource)
+            if resource is None:
+                deadline = add_timed_wait(thread_id, timeout=timeout)
+            else:
+                deadline = add_timed_wait(thread_id, timeout=timeout, resource=resource)
             return deadline, None, clock
         return _real_monotonic() + timeout, None, None
     return None, get_wait_for_graph(), None
