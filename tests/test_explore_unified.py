@@ -837,6 +837,29 @@ def test_random_rejects_zero_attempts() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "option"),
+    [
+        ({"max_executions": 0}, "max_executions"),
+        ({"max_executions": -1}, "max_executions"),
+        ({"max_branches": 0}, "max_branches"),
+        ({"max_branches": -1}, "max_branches"),
+        ({"preemption_bound": -1}, "preemption_bound"),
+        ({"total_timeout": 0.0}, "total_timeout"),
+        ({"total_timeout": -1.0}, "total_timeout"),
+        ({"total_timeout": float("inf")}, "total_timeout"),
+    ],
+)
+def test_dpor_rejects_invalid_limits_consistently(kwargs: dict[str, Any], option: str) -> None:
+    with pytest.raises(ValueError, match=option):
+        frontrun.explore(
+            setup=object,
+            workers=[lambda _state: None],
+            invariant=lambda _state: True,
+            **kwargs,
+        )
+
+
 def test_explore_process_rejects_async_workers_in_mixed_list_eagerly():
     """execution='process' runs sync code only, so a worker list containing
     any async worker (mixed or not) is rejected eagerly."""
