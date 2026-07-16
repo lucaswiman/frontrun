@@ -255,3 +255,31 @@ def test_accept_hello_treats_pre_hello_death_as_connection_failure() -> None:
         client2.close()
     finally:
         listener.close()
+
+
+def test_accept_hello_restores_full_per_frame_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HELLO latency must not consume the later per-frame silence budget."""
+    from frontrun._dpor_runtime.xproc import coordinator, protocol as proto
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+
+        def settimeout(self, timeout: float) -> None:
+            self.timeouts.append(timeout)
+
+    sock = FakeSocket()
+
+    class FakeListener:
+        def accept(self):
+            return sock, None
+
+    times = iter([10.0, 10.75])
+    monkeypatch.setattr(coordinator.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(proto, "recv_msg", lambda _sock: {"t": proto.HELLO, "w": 0})
+
+    accepted, worker_id = coordinator.accept_hello(FakeListener(), timeout=1.0)  # type: ignore[arg-type]
+
+    assert accepted is sock
+    assert worker_id == 0
+    assert sock.timeouts == [0.25, 1.0]

@@ -830,6 +830,7 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
         )
     )
     assert len(seen) == 4
+    assert engine._next_calls == 3, "the engine must not plan another execution after the deadline expires"
 
 
 def test_dpor_exploration_iter_works_with_real_threading_lock() -> None:
