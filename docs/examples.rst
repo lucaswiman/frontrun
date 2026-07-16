@@ -305,11 +305,11 @@ making it easy to pinpoint exactly which access caused the conflict.
 
 Run any example directly to regenerate its report::
 
-    python examples/dpor_bank_transfer.py my_report.html
-    python examples/dpor_bank_transfer_locked.py my_report.html
-    python examples/dpor_sqlite_counter.py my_report.html
-    python examples/dpor_sqlite_counter.py my_report.html fixed
-    python examples/dpor_dining_philosophers.py my_report.html
+    frontrun python examples/dpor_bank_transfer.py my_report.html
+    frontrun python examples/dpor_bank_transfer_locked.py my_report.html
+    frontrun python examples/dpor_sqlite_counter.py my_report.html
+    frontrun python examples/dpor_sqlite_counter.py my_report.html fixed
+    frontrun python examples/dpor_dining_philosophers.py my_report.html
 
 
 Locking and path reduction

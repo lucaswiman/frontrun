@@ -116,15 +116,19 @@ and inspect ``TraceFilter`` objects directly:
 
 .. code-block:: python
 
+   import site
+   from pathlib import Path
+
    from frontrun._tracing import TraceFilter
 
    filt = TraceFilter(trace_packages=["django_*", "mylib.*"])
+   site_packages = Path(site.getsitepackages()[0])
 
    # Test whether a specific file would be traced:
-   filt.should_trace_file("/path/to/site-packages/django_filters/views.py")
+   filt.should_trace_file(str(site_packages / "django_filters" / "views.py"))
    # -> True
 
-   filt.should_trace_file("/path/to/site-packages/requests/api.py")
+   filt.should_trace_file(str(site_packages / "requests" / "api.py"))
    # -> False
 
 Files that are always excluded regardless of ``trace_packages``:

@@ -32,11 +32,15 @@ It wraps any command with I/O interception:
    frontrun pytest -vv tests/            # run pytest with I/O interception
    frontrun python examples/orm_race.py  # run a script with I/O interception
 
-Building the I/O Library
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Building the I/O Library from source
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For C-level I/O interception (required for opaque database drivers, Redis
-clients, etc.), build the native ``LD_PRELOAD`` library:
+Binary wheels already bundle the native I/O interception library. No Rust
+toolchain or separate build step is needed after a normal ``pip install``.
+
+When installing from a source checkout or source distribution, build the
+native ``LD_PRELOAD`` library for C-level I/O interception (required for opaque
+database drivers, Redis clients, etc.):
 
 .. code-block:: bash
 

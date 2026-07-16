@@ -38,14 +38,14 @@ The test fails, and the failure message is the deliverable — a causal trace of
 ```
 Race condition found after 2 interleavings.
 
-  Write-write conflict: threads 0 and 1 both wrote to value.
+  Lost update: threads 0 and 1 both read value before either wrote it back.
 
   Thread 0 | counter.py:7             temp = self.value
            | [read Counter.value]
-  Thread 0 | counter.py:8             self.value = temp + 1
-           | [write Counter.value]
   Thread 1 | counter.py:7             temp = self.value
            | [read Counter.value]
+  Thread 0 | counter.py:8             self.value = temp + 1
+           | [write Counter.value]
   Thread 1 | counter.py:8             self.value = temp + 1
            | [write Counter.value]
 
@@ -134,7 +134,7 @@ def test_counter_is_atomic():
 This fails with output like:
 
 ```
-Race condition found after 1 interleavings.
+Race condition found after 2 interleavings.
 
   Lost update: threads 0 and 1 both read value before either wrote it back.
 
@@ -258,6 +258,9 @@ def test_redis_counter_race(redis_port):
 ```
 
 **Async DPOR** — `detect_io=True` covers Redis in async too:
+
+Seed `counter` to `0` before exploration (and reset it between independent
+test runs), just as the synchronous example's `setup` does.
 
 ```python
 import frontrun
