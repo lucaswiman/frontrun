@@ -127,6 +127,8 @@ def _cleanup_sql_patch() -> Generator[None, None, None]:
     _io_tls._tx_buffer = []
     _io_tls._tx_savepoints = {}
     _io_tls._pending_row_locks = []
+    if hasattr(_io_tls, "_tx_connection"):
+        delattr(_io_tls, "_tx_connection")
 
 
 # ---------------------------------------------------------------------------

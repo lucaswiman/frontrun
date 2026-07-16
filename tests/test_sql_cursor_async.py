@@ -98,6 +98,8 @@ def _cleanup_async_sql_patch() -> Generator[None, None, None]:
         _io_tls._in_transaction = False
     if hasattr(_io_tls, "_tx_buffer"):
         _io_tls._tx_buffer = []
+    if hasattr(_io_tls, "_tx_connection"):
+        delattr(_io_tls, "_tx_connection")
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +142,42 @@ async def test_patch_wraps_aiosqlite_connection_transaction_methods(monkeypatch:
 
     assert "COMMIT" in seen
     assert "ROLLBACK" in seen
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_connection_transaction_methods_finalize_modeled_state() -> None:
+    """Physical TX success flushes/clears the matching modeled transaction."""
+    from frontrun._io_detection import tx_store
+
+    patch_sql_async()
+    conn = await aiosqlite.connect(":memory:")
+    store = tx_store()
+    events: list[tuple[str, str]] = []
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        store._in_transaction = True
+        store._is_autobegin = False
+        store._tx_connection = conn
+        store._tx_buffer = [("sql:t", "write")]
+        store._tx_savepoints = {}
+        await conn.commit()
+        assert events == [("sql:t", "write")]
+        assert store._in_transaction is False
+        assert not hasattr(store, "_tx_connection")
+
+        events.clear()
+        store._in_transaction = True
+        store._is_autobegin = False
+        store._tx_connection = conn
+        store._tx_buffer = [("sql:t", "write")]
+        store._tx_savepoints = {}
+        await conn.rollback()
+        assert events == []
+        assert store._in_transaction is False
+        assert not hasattr(store, "_tx_connection")
+    finally:
+        set_io_reporter(None)
+        await conn.close()
 
 
 def test_unpatch_restores_originals() -> None:
