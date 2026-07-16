@@ -75,6 +75,10 @@ class _RelayDporScheduler(DporScheduler):
         return
 
 
+class _RelayNoProgressError(TimeoutError):
+    """Relay watchdog expiry after a connected execution stopped progressing."""
+
+
 def _setup_relay_tls(scheduler: DporScheduler, worker_id: int) -> list[tuple[int, str, bool]]:
     """Install the minimal per-thread state ``DporScheduler`` reads for this relay.
 
@@ -615,6 +619,20 @@ class DporCrossProcessCoordinator:
                     exhausted = False
                     truncation = str(exc)
                     break
+                except _RelayNoProgressError:
+                    # The workers connected and an execution began, but the
+                    # relay watchdog had to abort it.  Diagnose from the
+                    # scheduler's latched TimeoutError so this is reported as
+                    # an execution timeout with its schedule, not as a startup
+                    # / transport connection failure.
+                    num_explored += 1
+                    result = self._evaluate(
+                        execution, scheduler, engine_lock, invariant, worker_errors, accesses, num_explored
+                    )
+                    assert result is not None
+                    if result.failing_schedule is not None:
+                        failures.append((num_explored, list(result.failing_schedule)))
+                    return replace(result, failures=failures)
                 except (TimeoutError, OSError) as exc:
                     return replace(_connection_failure(exc, num_explored + 1), failures=failures)
                 except WorkerSerializationError as exc:
@@ -797,7 +815,7 @@ class DporCrossProcessCoordinator:
                 break
             if now - progress[0] > no_progress_budget:
                 names = ", ".join(t.name for t in pending)
-                timeout_error = TimeoutError(
+                timeout_error = _RelayNoProgressError(
                     f"cross-process relay thread(s) {names} made no progress within "
                     f"{no_progress_budget}s and did not terminate; aborting to avoid a "
                     f"concurrent-engine data race"
@@ -963,9 +981,6 @@ class DporCrossProcessCoordinator:
                 "closed instead of certifying the result",
                 "nondeterministic",
             )
-        if worker_errors:
-            wid = min(worker_errors)
-            return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")
         # A scheduler fallback TimeoutError means the run free-ran unscheduled
         # (unmodeled DB-level blocking, or a statement slower than
         # deadlock_timeout). Its final state describes no DPOR schedule, so the
@@ -980,6 +995,9 @@ class DporCrossProcessCoordinator:
                 "workload is just slow.",
                 "timeout",
             )
+        if worker_errors:
+            wid = min(worker_errors)
+            return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")
         if not invariant():
             return _fail("invariant violated", "invariant")
         return None
