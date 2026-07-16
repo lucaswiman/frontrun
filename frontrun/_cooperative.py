@@ -566,7 +566,12 @@ class CooperativeLock:
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
         reserved_turn = False
-        if before_sync_retry is not None:
+        # A virtual clock derives runnable/blocked state from cooperative
+        # probes, so release must not race a contender's physical probe after
+        # the scheduler handoff.  Real-clock DPOR does not use that blockedness
+        # model; adding a release boundary there exposes library-internal locks
+        # (notably SQLAlchemy/driver locks) as redundant trace dimensions.
+        if getattr(scheduler, "virtual_clock", None) is not None and before_sync_retry is not None:
             assert thread_id is not None
             assert after_sync_retry is not None
             reserved_turn = before_sync_retry(thread_id)
