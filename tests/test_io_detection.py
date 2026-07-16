@@ -435,8 +435,15 @@ def test_io_reporter_is_per_thread():
 # ---------------------------------------------------------------------------
 
 
-def test_profile_func_detects_socket_send():
-    """The profile function detects C-level socket.send calls."""
+def test_profile_func_smoke_on_socket_send():
+    """Smoke test: the C-call profile function runs around socket send/recv.
+
+    Detection is best-effort. The profiler only reports a socket it can find in
+    the calling frame's ``self``/locals, and C-level socket calls made through a
+    module-level reference (as here) do not expose the socket that way, so no
+    events are recorded. This pins that behavior and verifies the profiler does
+    not crash on real C-level socket I/O.
+    """
     log = IOLog()
     prof = make_io_profile_func(log)
 
@@ -460,11 +467,9 @@ def test_profile_func_detects_socket_send():
     finally:
         sys.setprofile(None)
 
-    # Profile function should have detected the C calls
-    # Note: detection depends on frame locals having the socket object
-    # The profile function is best-effort; it may or may not detect
-    # depending on whether the socket is visible in locals
-    # We just verify it doesn't crash
+    # Best-effort: the socket is not exposed to the profiler here, so no events.
+    assert log.events == []
+
     client.close()
     conn.close()
     server.close()
@@ -477,10 +482,8 @@ def test_profile_func_detects_socket_send():
 
 def test_bytecode_shuffler_with_socket_io():
     """BytecodeShuffler treats IO operations as scheduling points."""
+    from frontrun._trace_format import TraceRecorder
     from frontrun.bytecode import BytecodeShuffler, OpcodeScheduler
-
-    io_events: list[tuple[str, str]] = []
-    io_lock = threading.Lock()
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -490,7 +493,8 @@ def test_bytecode_shuffler_with_socket_io():
 
     try:
         schedule = [0, 1] * 100
-        scheduler = OpcodeScheduler(schedule, num_threads=2)
+        recorder = TraceRecorder()
+        scheduler = OpcodeScheduler(schedule, num_threads=2, trace_recorder=recorder)
         runner = BytecodeShuffler(scheduler, detect_io=True)
         runner._patch_io()
 
@@ -505,12 +509,16 @@ def test_bytecode_shuffler_with_socket_io():
 
         try:
             runner.run([thread_func, thread_func])
-        except (TimeoutError, Exception):
-            pass  # May timeout due to scheduling constraints; that's fine
         finally:
             runner._unpatch_io()
     finally:
         server.close()
+
+    # detect_io=True makes each socket read/write force a scheduling point and
+    # record an IO trace event, so both kinds of socket IO show up in the trace.
+    io_events = [ev for ev in recorder.events if ev.opcode == "IO"]
+    assert io_events, "expected socket IO to be recorded as scheduling points"
+    assert {ev.access_type for ev in io_events} == {"read", "write"}
 
 
 def test_explore_random_with_io():

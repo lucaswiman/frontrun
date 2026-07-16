@@ -86,23 +86,19 @@ def _check_thread_cleanup(request):
     Also prints diagnostic info about daemon threads that are still alive (these won't
     block exit but may indicate tests that create intentionally deadlocked threads).
     """
-    # Record threads before test
     initial_threads = set(threading.enumerate())
 
     yield
 
-    # Check for lingering threads after test
     final_threads = set(threading.enumerate())
     new_threads = final_threads - initial_threads
 
-    # Separate into daemon and non-daemon threads (excluding main thread)
     main_thread = threading.main_thread()
     alive_threads = [t for t in new_threads if t != main_thread and t.is_alive()]
 
     daemon_threads = [t for t in alive_threads if t.daemon]
     non_daemon_threads = [t for t in alive_threads if not t.daemon]
 
-    # Print diagnostic info for all alive threads
     if alive_threads:
         print(f"\n[THREAD CLEANUP] Test: {request.node.nodeid}")
         for t in alive_threads:
