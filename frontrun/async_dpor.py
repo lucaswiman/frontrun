@@ -127,7 +127,7 @@ from frontrun._opcode_observer import (
     uninstall_thread_opcode_trace,
 )
 from frontrun._sql_cursor import clear_sql_metadata, get_lock_timeout, set_lock_timeout
-from frontrun._sql_insert_tracker import check_uncaptured_inserts
+from frontrun._sql_insert_tracker import ensure_no_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope
 from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import get_active_trace_filter as _get_active_trace_filter
@@ -1753,7 +1753,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                             return result
 
                     if warn_nondeterministic_sql:
-                        check_uncaptured_inserts()
+                        ensure_no_uncaptured_inserts()
 
                     # --- error_on_any_race: treat unsynchronized races as failures ---
                     if error_on_any_race and not is_deadlock and task_error is None:

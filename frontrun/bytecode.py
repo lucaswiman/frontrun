@@ -78,7 +78,7 @@ from frontrun._random_schedules import (
     random_round_robin_schedule,
 )
 from frontrun._sql_cursor import patch_sql, unpatch_sql
-from frontrun._sql_insert_tracker import check_uncaptured_inserts, clear_insert_tracker
+from frontrun._sql_insert_tracker import clear_insert_tracker, ensure_no_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout, run_thread_group
 from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
 from frontrun._tracing import TraceFilter as _TraceFilter
@@ -783,7 +783,6 @@ def controlled_interleaving(schedule: list[int], num_threads: int = 2):
 
     Args:
         schedule: List of thread indices controlling opcode execution order.
-        num_threads: Number of threads.
 
     Yields:
         BytecodeShuffler runner.
@@ -1116,7 +1115,7 @@ def explore_random(
             seen_schedule_hashes.add(hash(tuple(schedule)))
 
             if warn_nondeterministic_sql:
-                check_uncaptured_inserts()
+                ensure_no_uncaptured_inserts()
 
             # --- serializable_invariant check ---
             if serial_valid_states is not None:

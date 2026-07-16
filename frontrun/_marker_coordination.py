@@ -157,15 +157,7 @@ class MarkerRegistry:
             self._scanned_files.add(filename)
 
     def get_marker(self, filename: str, lineno: int) -> str | None:
-        """Get the marker name for a specific file location.
-
-        Args:
-            filename: The source file path
-            lineno: The line number
-
-        Returns:
-            The marker name if found, None otherwise
-        """
+        """Return the marker name for a source location, or None."""
         return self._markers.get((filename, lineno))
 
 

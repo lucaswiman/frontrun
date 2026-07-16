@@ -476,7 +476,7 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                         return result
 
                 if warn_nondeterministic_sql:
-                    check_uncaptured_inserts()
+                    ensure_no_uncaptured_inserts()
 
                 # --- error_on_any_race: treat unsynchronized races as failures ---
                 if error_on_any_race and _evaluate_invariant:

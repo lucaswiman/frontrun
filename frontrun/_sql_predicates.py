@@ -213,12 +213,10 @@ def extract_row_level_access(sql: str, *, ast: Any | None = None) -> list[list[E
 
             row_preds: list[EqualityPredicate] = []
             for col, val_expr in zip(columns, tuple_expr.expressions):
+                # Non-literal values (e.g. function call NOW()) are skipped for row-level
                 value = _literal_value(val_expr)
                 if value is not None:
                     row_preds.append(EqualityPredicate(col, value))
-                else:
-                    # Non-literal (e.g. function call NOW()) — skip this column for row-level
-                    pass
             if row_preds:
                 rows.append(row_preds)
 

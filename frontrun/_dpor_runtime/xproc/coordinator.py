@@ -143,7 +143,7 @@ def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket
     return sock, worker_id
 
 
-def check_worker_id(worker_id: int, num_workers: int, taken: Collection[int], sock: socket.socket) -> None:
+def validate_worker_id(worker_id: int, num_workers: int, taken: Collection[int], sock: socket.socket) -> None:
     """Validate a HELLO-announced worker id against the expected dense range.
 
     A duplicate id would silently overwrite the previous worker's connection
@@ -472,7 +472,7 @@ class CrossProcessCoordinator:
             try:
                 for _ in range(self.num_workers):
                     sock, wid = accept_hello_live(listener, worker_set, handles, self.deadlock_timeout)
-                    check_worker_id(wid, self.num_workers, conns, sock)
+                    validate_worker_id(wid, self.num_workers, conns, sock)
                     conn = _Conn(wid, sock)
                     conns[wid] = conn
                     self._advance(conn, accesses, registry)

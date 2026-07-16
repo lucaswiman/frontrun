@@ -115,7 +115,7 @@ def get_uncaptured_tables() -> set[str]:
         return _state.uncaptured_tables.copy()
 
 
-def check_uncaptured_inserts() -> None:
+def ensure_no_uncaptured_inserts() -> None:
     """Raise :class:`~frontrun.common.NondeterministicSQLError` if any INSERTs had uncaptured IDs."""
     tables = get_uncaptured_tables()
     if tables:

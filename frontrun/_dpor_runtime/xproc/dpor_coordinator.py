@@ -47,7 +47,7 @@ from .coordinator import (
     _launch_error,
     accept_hello_live,
     bind_coordination_listener,
-    check_worker_id,
+    validate_worker_id,
     worker_targets,
 )
 from .launch import WorkerSerializationError
@@ -575,7 +575,7 @@ class DporCrossProcessCoordinator:
                                 deadline,
                                 self.total_timeout,
                             )
-                            check_worker_id(wid, self.num_workers, persistent_socks, sock)
+                            validate_worker_id(wid, self.num_workers, persistent_socks, sock)
                             persistent_socks[wid] = sock
                         persistent_poisoned = False
                     except _TotalTimeoutExpiredError as exc:
@@ -878,7 +878,7 @@ class DporCrossProcessCoordinator:
                         total_deadline,
                         self.total_timeout,
                     )
-                    check_worker_id(wid, self.num_workers, socks_by_id, sock)
+                    validate_worker_id(wid, self.num_workers, socks_by_id, sock)
                     socks_by_id[wid] = sock
             except _TotalTimeoutExpiredError:
                 # Startup is part of the total search budget.  Retire partial

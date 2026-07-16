@@ -600,7 +600,6 @@ async def controlled_interleaving(schedule: list[int], num_tasks: int = 2) -> As
 
     Args:
         schedule: List of task indices controlling await-point execution order.
-        num_tasks: Number of tasks.
 
     Yields:
         AsyncShuffler runner.
