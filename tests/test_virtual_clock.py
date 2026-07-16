@@ -2024,14 +2024,6 @@ def test_invariant_sleep_is_virtual_not_wall_clock() -> None:
     assert wall < 4.0, f"invariant sleep ran on the wall clock ({wall:.1f}s elapsed)"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known gap (round-2 review): a timeout-kind deadline firing carries no engine-visible "
-    "event (scheduler.py _on_clock_wake 'timeout' branch), so it commutes with every worker step "
-    "and DPOR never seeds the 'timeout beats the zero-virtual-time holder's release' branch — "
-    "unlike sleep wakes, which report release/acquire edges. Tracked in "
-    "ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md #10.",
-)
 def test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder() -> None:
     # Desired: with clock="explored", "the timeout fired before the holder
     # released" is a legitimate interleaving (distinct final state — the timed
