@@ -40,10 +40,12 @@ build-dpor-%: .venv-%/activate $(DPOR_RUST_SOURCES)
 
 # Build the LD_PRELOAD I/O interception library (pure Rust cdylib, no Python).
 # Copies the built .so into the frontrun package so the CLI can find it.
+# crates/io is a standalone workspace (see crates/io/Cargo.toml and issue #246),
+# so it is built by manifest path and its artifacts land under crates/io/target.
 build-io: $(IO_RUST_SOURCES)
-	cargo build --release -p frontrun-io
-	cp target/release/libfrontrun_io.so frontrun/libfrontrun_io.so 2>/dev/null || \
-	cp target/release/libfrontrun_io.dylib frontrun/libfrontrun_io.dylib 2>/dev/null || true
+	cargo build --release --manifest-path crates/io/Cargo.toml
+	cp crates/io/target/release/libfrontrun_io.so frontrun/libfrontrun_io.so 2>/dev/null || \
+	cp crates/io/target/release/libfrontrun_io.dylib frontrun/libfrontrun_io.dylib 2>/dev/null || true
 
 # Build integration test venv with redis, requests, sqlalchemy, django, psycopg2
 build-integration-%: build-dpor-%
@@ -118,6 +120,6 @@ screenshot: build-dpor-3.14 build-io
 
 clean: docs-clean
 	rm -rf __pycache__ .pytest_cache .eggs *.egg-info dist build .uv-cache .venv $(addprefix .venv-,$(PYTHON_VERSIONS))
-	rm -rf target .cargo-cache
+	rm -rf target crates/io/target .cargo-cache
 	rm -f frontrun/libfrontrun_io.so frontrun/libfrontrun_io.dylib
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

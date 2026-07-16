@@ -1,6 +1,11 @@
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
-build-backend = "maturin"
+# In-tree backend (build_backend.py) wrapping maturin. It compiles the native
+# crates/io preload library and drops it into frontrun/ before delegating to
+# maturin, so wheels built from the sdist (source installs) bundle it too. See
+# issue #246.
+build-backend = "build_backend"
+backend-path = ["."]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
@@ -8,7 +13,16 @@ manifest-path = "crates/dpor/Cargo.toml"
 module-name = "frontrun._dpor"
 python-source = "."
 include = [
+    # Ship the compiled preload library in the wheel (built by CI or by
+    # build_backend.py when building from the sdist).
     { path = "frontrun/libfrontrun_io.*", format = "wheel" },
+    # Ship the crates/io sources in the sdist so build_backend.py can compile
+    # the preload library during a source install. maturin's sdist otherwise
+    # follows only the crates/dpor manifest and omits this sibling crate.
+    { path = "crates/io/Cargo.toml", format = "sdist" },
+    { path = "crates/io/Cargo.lock", format = "sdist" },
+    { path = "crates/io/src/**/*", format = "sdist" },
+    { path = "build_backend.py", format = "sdist" },
 ]
 
 [project]

@@ -142,6 +142,7 @@ def _build_wheel_from_sdist(sdist: Path, work_dir: Path, out_dir: Path) -> Path:
     return wheels[0]
 
 
+@pytest.mark.timeout(300)
 def test_sdist_contains_io_crate_sources(tmp_path: Path) -> None:
     """The sdist must ship the crates/io sources so the wheel can build them."""
     root = _require_tooling(_repo_root())
@@ -159,6 +160,7 @@ def test_sdist_contains_io_crate_sources(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.timeout(900)
 def test_wheel_from_sdist_bundles_preload_library(tmp_path: Path) -> None:
     """A wheel built from the sdist (real PEP 517 path) contains the preload lib."""
     root = _require_tooling(_repo_root())
