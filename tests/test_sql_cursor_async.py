@@ -6,6 +6,7 @@ mechanism.  Tests mirror the structure of test_sql_cursor.py.
 
 from __future__ import annotations
 
+import inspect
 import threading
 from collections.abc import Generator
 from typing import Any
@@ -117,6 +118,29 @@ def test_patch_patches_aiosqlite_connection() -> None:
     orig_execute = aiosqlite.Connection.execute
     patch_sql_async()
     assert aiosqlite.Connection.execute is not orig_execute
+
+
+def test_async_connection_patching_preserves_aiomysql_sync_close_contract() -> None:
+    """aiomysql close() is synchronous even though commit/rollback await."""
+
+    class Connection:
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+        def close(self) -> str:
+            return "closed"
+
+    sql_cursor_async_mod._patch_async_connection_methods(Connection)
+    result = Connection().close()
+    try:
+        assert not inspect.isawaitable(result)
+        assert result == "closed"
+    finally:
+        if inspect.iscoroutine(result):
+            result.close()
 
 
 @pytest.mark.asyncio
