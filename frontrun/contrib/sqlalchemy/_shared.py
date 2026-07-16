@@ -142,7 +142,11 @@ def wrap_async_setup(engine: Any, setup: Callable[[], T]) -> Callable[[], T]:
 
         suppress_sync_reporting()
         try:
-            engine.sync_engine.dispose()
+            # Closing async-driver connections through the synchronous facade
+            # can require an await and raise MissingGreenlet.  Replacing the
+            # pool is enough to keep executions isolated; the async engine's
+            # owner remains responsible for its final awaited dispose().
+            engine.sync_engine.dispose(close=False)
             return setup()
         finally:
             unsuppress_sync_reporting()

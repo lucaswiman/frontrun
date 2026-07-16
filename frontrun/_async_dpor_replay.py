@@ -14,6 +14,7 @@ rather than the engine's ``_schedule_next``).
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 
 from frontrun import _async_cooperative
@@ -59,6 +60,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         expected_deadlock: bool = False,
     ) -> None:
         super().__init__(deadlock_timeout=deadlock_timeout)
+        self._event_loop_thread_id = threading.get_ident()
         self._condition = _real_asyncio_condition()
         self._replay_schedule = list(schedule)
         # Start at index 1 because schedule[0] is consumed as the initial _current_task.

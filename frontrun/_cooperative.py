@@ -1172,10 +1172,8 @@ class CooperativeEvent:
                     # re-probe: a set() just before the flag must win.
                     note_spin(thread_id, self._object_id, True)
                     if self._event.is_set():
-                        _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         return True
                 scheduler.wait_for_turn(thread_id)
-            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             return True
         finally:
             _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)

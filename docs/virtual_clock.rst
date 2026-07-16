@@ -168,11 +168,12 @@ Semantics and limitations
   Async ``wait_for`` / ``timeout`` / ``timeout_at`` deadlines are virtual, and
   async DPOR makes ``Event``, ``Queue`` and ``Condition`` waiters engine-visible
   with wake happens-before edges.
-* An async ``Event.set()`` issued from outside the explored tasks (a
-  loop callback or a foreign thread) is invisible to exact deadlock
-  detection; if all tasks are otherwise blocked it may be reported as a
-  deadlock.  Setters inside explored tasks — the normal case — are fully
-  tracked.
+* An async ``Event.set()`` issued from outside the explored tasks (a loop
+  callback or a foreign thread) is not an engine-visible wake. Exact-deadlock
+  detection therefore declines while a user loop timer is pending or an
+  external thread is alive, and the run falls back to the wall-clock watchdog
+  if the wake never arrives. Setters inside explored tasks — the normal case —
+  are fully tracked and remain eligible for exact deadlock detection.
 * **Captured references bypass the patch.** ``from time import monotonic``,
   ``from time import sleep``, ``from datetime import datetime``, or captured
   ``asyncio.sleep`` / ``wait_for`` / ``timeout`` objects taken before

@@ -42,6 +42,7 @@ an additional checkpoint.
 import asyncio
 import math
 import random
+import threading
 import warnings
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager, contextmanager
@@ -118,6 +119,7 @@ class AwaitScheduler(InterleavedLoop):
         extension_seed: int | None = None,
     ):
         super().__init__(deadlock_timeout=deadlock_timeout)
+        self._event_loop_thread_id = threading.get_ident()
         self.schedule = schedule
         self.num_tasks = num_tasks
         self._index = 0

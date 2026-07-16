@@ -340,9 +340,8 @@ class DporScheduler:
                 self._last_scheduled_path_id,
             )
         elif event.kind == "timeout":
-            # Timed-wait wakes deliberately carry no happens-before edge: the
-            # waiter re-reports lock_wait (re-blocking itself) before it can
-            # observe expiry, and the give-up path ends in clear_engine_block.
+            # A timed wait becomes runnable so its retry loop can observe the
+            # expired deadline and take the atomic give-up path.
             self.execution.unblock_thread(tid)
 
     def _scrub_lock_waiters(self, thread_id: int) -> None:
