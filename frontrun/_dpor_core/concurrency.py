@@ -152,7 +152,8 @@ def dpor_exploration_iter(
     3. ``engine.begin_execution()`` under ``engine_lock``.
     4. Yield to the caller, which runs the workers and inspects the
        resulting state (invariants, races, deadlocks).
-    5. ``engine.next_execution()`` under ``engine_lock``; stop when it
+    5. Stop if the total deadline expired while the body ran; otherwise call
+       ``engine.next_execution()`` under ``engine_lock`` and stop when it
        returns ``False`` (search tree exhausted).
 
     The body of the loop runs *outside* the engine lock — workers acquire
@@ -162,13 +163,17 @@ def dpor_exploration_iter(
     """
     index = 0
     while True:
-        if index > 0 and total_deadline is not None and time.monotonic() > total_deadline:
-            return
         reset_execution_state(stable_ids)
         with engine_lock:
             execution = engine.begin_execution()
         index += 1
         yield ExplorationStep(execution=execution, index=index)
+        # The baseline execution is always permitted, even when a tiny
+        # positive budget elapsed before it began.  Check only after its body
+        # (and after every subsequent body), before asking the engine to plan a
+        # schedule that the caller can no longer run.
+        if total_deadline is not None and time.monotonic() > total_deadline:
+            return
         with engine_lock:
             if not engine.next_execution():
                 return

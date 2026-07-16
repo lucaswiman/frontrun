@@ -135,6 +135,11 @@ def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket
         # explore() with the accepted socket leaked.
         sock.close()
         raise OSError(f"HELLO frame carries a non-integer worker id: {hello!r}") from None
+    # ``remaining`` is only the shared accept + HELLO handshake budget.  Once
+    # the handshake succeeds, later protocol frames get the caller's full
+    # per-frame silence budget; otherwise a slow connect permanently shortens
+    # every statement's effective deadlock timeout on the exhaustive path.
+    sock.settimeout(timeout)
     return sock, worker_id
 
 
