@@ -445,15 +445,16 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._event_blocked.discard(tid)
         self.execution.unblock_thread(tid)
 
-    def _advance_virtual_clock(self) -> None:
+    def _advance_virtual_clock(self) -> bool:
         """One clock-actor step: jump to the earliest deadline, wake sleepers."""
         clock = self.virtual_clock
         if clock is None:
-            return
-        advance_and_dispatch(
+            return False
+        due = advance_and_dispatch(
             self._deadlines, clock, None, on_sleep=self._on_clock_sleep_wake, on_timeout=self._on_clock_timeout
         )
         self._sync_clock_actor()
+        return bool(due)
 
     def add_timeout_deadline(self, task_id: int, deadline: float, token: object) -> None:
         """Register a non-sleep virtual timeout for an async wrapper."""
@@ -806,7 +807,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
             path_position = getattr(self.engine, "path_position", None)
             self._last_scheduled_path_id = path_position - 1 if path_position is not None else None
             if scheduled is not None and scheduled == self._clock_actor_id:
-                self._advance_virtual_clock()
+                if not self._advance_virtual_clock():
+                    self.execution.discard_last_schedule_step(scheduled)
                 continue
             # Shared with the sync scheduler: redirect to the lock holder when the
             # engine picks a lock-blocked task, or drop a stale entry whose holder

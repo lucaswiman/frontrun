@@ -302,7 +302,7 @@ class DporScheduler:
         """
         sync_clock_actor(self.execution, self._clock_actor_id, self._clock_mode, self._has_pending_deadlines())
 
-    def _advance_virtual_clock_locked(self) -> None:
+    def _advance_virtual_clock_locked(self) -> bool:
         """Perform one clock-actor step: jump to the earliest deadline.
 
         Caller must hold ``_engine_lock``.  Wakes every thread whose deadline
@@ -311,14 +311,15 @@ class DporScheduler:
         """
         clock = self.virtual_clock
         if clock is None:
-            return
+            return False
         # The shared port pops each due actor's spin flag; the on-wake callback
         # closes the engine/HB side.  A clock-actor pick can arrive after all
         # deadlines were canceled, in which case this is a no-op and the
         # trailing sync re-blocks the actor.  Replay accounting for no-op clock
         # actor entries is tracked in the virtual-clock hardening roadmap.
-        self._clock_port.advance_clock_to(clock, None, self._on_clock_wake)
+        due = self._clock_port.advance_clock_to(clock, None, self._on_clock_wake)
         self._sync_clock_actor_locked()
+        return bool(due)
 
     def _port_engine_block(self, thread_id: int) -> None:
         """Mark *thread_id* engine-blocked (port callback; caller holds ``_engine_lock``)."""
@@ -626,7 +627,12 @@ class DporScheduler:
                 _pp = getattr(self.engine, "path_position", None)
                 self._last_scheduled_path_id = _pp - 1 if _pp is not None else None
                 if scheduled is not None and scheduled == self._clock_actor_id:
-                    self._advance_virtual_clock_locked()
+                    if not self._advance_virtual_clock_locked():
+                        # This stale actor pick had no physical transition.
+                        # Omitting it makes replay accounting unambiguous: an
+                        # actor entry always represents a real advance (which
+                        # may be owed if replay reaches it before registration).
+                        self.execution.discard_last_schedule_step(scheduled)
                     continue
                 # Shared with the async scheduler: redirect to the lock holder when
                 # the engine picks a row-lock-blocked thread (defect #6), or drop a

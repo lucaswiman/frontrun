@@ -14,8 +14,8 @@ from frontrun._async_autopause import _scheduler_var, _task_id_var
 from frontrun._async_dpor_replay import _ReplayAsyncScheduler
 from frontrun._async_virtual_timeouts import _VirtualLoopDeadline
 from frontrun._virtual_clock import VirtualClock
-from frontrun.async_shuffler import AwaitScheduler
 from frontrun.async_scheduler import SchedulerTimeoutError
+from frontrun.async_shuffler import AwaitScheduler
 from frontrun.bytecode import run_with_schedule
 from frontrun.contrib.sqlalchemy._shared import wrap_async_setup
 

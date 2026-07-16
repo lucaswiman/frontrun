@@ -320,12 +320,11 @@ contain them, vector clocks order them (via the wake edges), and the
 replay schedulers perform the same advances at the same positions — the
 counterexample stays a deterministic, replayable proof.
 
-One known corner case can weaken the *reproduction* (never the proof
-itself): exploration may commit a clock-actor step to the trace when no
-deadline is actually due (the advance is a no-op and the actor
-re-blocks).  Replay cannot tell such a no-op entry apart from a real or
-positionally-drifted advance, so it may fire an owed advance at the next
-deadline registration and diverge from the explored run.  This is a
-replay-accounting limitation, not a false counterexample. A reproduction count
+Stale wakeup-tree choices can still select the clock actor after every deadline
+was canceled. Such a choice performs no physical transition and is omitted
+from the constructive schedule, so every recorded clock-actor entry denotes a
+real advance. If positional drift makes replay reach that entry before its
+deadline registration, replay owes exactly that real advance and performs it
+when registration arrives. A reproduction count
 below 100% is the visible symptom; inspect the original counterexample schedule
 when it occurs.

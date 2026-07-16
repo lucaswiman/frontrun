@@ -343,6 +343,13 @@ impl PyExecution {
         self.inner.runnable_threads()
     }
 
+    /// Drop a just-scheduled transition that had no physical effect.
+    fn discard_last_schedule_step(&mut self, thread_id: usize) {
+        if self.inner.schedule_trace.last() == Some(&thread_id) {
+            self.inner.schedule_trace.pop();
+        }
+    }
+
     /// Get the schedule trace (sequence of thread choices).
     #[getter]
     fn schedule_trace(&self) -> Vec<usize> {
