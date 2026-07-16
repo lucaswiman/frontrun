@@ -626,7 +626,7 @@ def test_relay_releases_row_locks_before_releasing_scheduler_turn() -> None:
         worker_end.close()
         coord_end.close()
 
-    assert scheduler.lock_turn_events[:2] == ["row-lock-release", "turn-release"]
+    assert scheduler.lock_turn_events == ["row-lock-release", "turn-release"]
 
 
 def test_relay_access_trace_follows_grants_not_socket_arrival() -> None:

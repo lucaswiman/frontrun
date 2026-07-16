@@ -379,9 +379,7 @@ def _parse_migrate_options(cmd_args: tuple[object, ...]) -> tuple[bool, dict[str
     return copy, connection_kwargs
 
 
-def _migrate_destination_scope(
-    cmd_args: tuple[object, ...], *, connection_kwargs: dict[str, Any] | None = None
-) -> str:
+def _migrate_destination_scope(cmd_args: tuple[object, ...], *, connection_kwargs: dict[str, Any] | None = None) -> str:
     """Resolve MIGRATE's TCP or port-0 Unix-socket destination scope."""
     host, port, _key, db = cmd_args[:4]
     if _redis_arg_text(port) != "0":

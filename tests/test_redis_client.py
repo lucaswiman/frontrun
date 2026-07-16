@@ -14,10 +14,16 @@ from frontrun._redis_client import _intercept_pipeline_execute, set_redis_replay
 
 
 def _capture_accesses(
-    command: str, args: tuple[object, ...], *, db: int = 0, host: str = "source"
+    command: str,
+    args: tuple[object, ...],
+    *,
+    db: int = 0,
+    host: str = "source",
+    path: str | None = None,
 ) -> list[tuple[str, str]]:
     events: list[tuple[str, str]] = []
-    client = SimpleNamespace(connection_pool=SimpleNamespace(connection_kwargs={"host": host, "port": 6379, "db": db}))
+    connection_kwargs = {"path": path, "db": db} if path is not None else {"host": host, "port": 6379, "db": db}
+    client = SimpleNamespace(connection_pool=SimpleNamespace(connection_kwargs=connection_kwargs))
     set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
     try:
         assert _redis_client._report_redis_access(command, args, client=client)
@@ -104,8 +110,7 @@ def test_migrate_unix_socket_destination_matches_direct_socket_client(tmp_path: 
     real_path = str((tmp_path / "redis.sock").resolve())
     _redis_client._unix_path_server_parts[real_path] = ("localhost", "6380")
     migrate = _capture_accesses("MIGRATE", (path, 0, "k", 2, 1000), host="source")
-    destination_write = _capture_accesses("SET", ("k", "value"), db=2, host="127.0.0.1")
-    destination_write = [(resource.replace(":6379/", ":6380/"), kind) for resource, kind in destination_write]
+    destination_write = _capture_accesses("SET", ("k", "value"), db=2, path=path)
 
     migrate_writes = {resource for resource, kind in migrate if kind == "write"}
     direct_writes = {resource for resource, kind in destination_write if kind == "write"}
@@ -129,6 +134,10 @@ def test_migrate_unix_socket_auth_parser_consumes_values_and_stops_at_keys(
     assert seen.pop() == {"password": "AUTH"}
 
     _redis_client._unix_path_server_parts.clear()
+    _redis_client._migrate_destination_scope((path, 0, "k", 2, 1000, "AUTH2", "COPY", "secret"))
+    assert seen.pop() == {"username": "COPY", "password": "secret"}
+
+    _redis_client._unix_path_server_parts.clear()
     _redis_client._migrate_destination_scope((path, 0, "", 2, 1000, "KEYS", "AUTH", "key"))
     assert seen.pop() == {}
 
@@ -143,19 +152,22 @@ def test_migrate_copy_does_not_report_source_write() -> None:
 
 
 @pytest.mark.parametrize(
-    "tail",
+    ("key", "tail", "source_keys"),
     [
-        pytest.param(("AUTH", "COPY"), id="auth-password"),
-        pytest.param(("AUTH2", "COPY", "password"), id="auth2-username"),
-        pytest.param(("AUTH2", "username", "COPY"), id="auth2-password"),
-        pytest.param(("KEYS", "COPY", "other-key"), id="keys-key"),
+        pytest.param("k", ("AUTH", "COPY"), ("k",), id="auth-password"),
+        pytest.param("k", ("AUTH2", "COPY", "password"), ("k",), id="auth2-username"),
+        pytest.param("k", ("AUTH2", "username", "COPY"), ("k",), id="auth2-password"),
+        pytest.param("", ("KEYS", "COPY", "other-key"), ("COPY", "other-key"), id="keys-key"),
     ],
 )
-def test_migrate_copy_operand_does_not_suppress_source_write(tail: tuple[object, ...]) -> None:
+def test_migrate_copy_operand_does_not_suppress_source_write(
+    key: str, tail: tuple[object, ...], source_keys: tuple[str, ...]
+) -> None:
     """Credential and key operands named COPY are not the MIGRATE COPY flag."""
-    events = _capture_accesses("MIGRATE", ("destination", 6380, "k", 3, 1000, *tail), host="source")
+    events = _capture_accesses("MIGRATE", ("destination", 6380, key, 3, 1000, *tail), host="source")
 
-    assert ("redis:k:db=redis:source:6379/0", "write") in events
+    for source_key in source_keys:
+        assert (f"redis:{source_key}:db=redis:source:6379/0", "write") in events
 
 
 def test_unresolved_unix_socket_identity_fails_closed(tmp_path: Any) -> None:

@@ -55,6 +55,18 @@ class TestPreloadBridgeKindMapping:
 
         assert get_active_sql_io_context(tid) == (None, None)
 
+    def test_clear_discards_all_sql_trace_contexts(self) -> None:
+        """Execution cleanup must not retain SQL details for reused native TIDs."""
+        tid = threading.get_native_id()
+        bridge = _PreloadBridge()
+        bridge.register_thread(os_tid=tid, dpor_id=0)
+        _set_active_sql_io_context("SELECT 1", None, "format")
+        assert get_active_sql_io_context(tid)[0] == "SQL: SELECT 1"
+
+        bridge.clear()
+
+        assert get_active_sql_io_context(tid) == (None, None)
+
     def test_suppressed_sql_write_is_dropped(self) -> None:
         """Raw SQL wire events are redundant once SQL parsing reported rows."""
         clear_permanent_suppressions()

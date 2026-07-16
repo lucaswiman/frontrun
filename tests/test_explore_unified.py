@@ -849,6 +849,7 @@ def test_random_rejects_zero_attempts() -> None:
         ({"total_timeout": 0.0}, "total_timeout"),
         ({"total_timeout": -1.0}, "total_timeout"),
         ({"total_timeout": float("inf")}, "total_timeout"),
+        ({"total_timeout": float("nan")}, "total_timeout"),
     ],
 )
 def test_dpor_rejects_invalid_limits_consistently(kwargs: dict[str, Any], option: str) -> None:
@@ -861,7 +862,7 @@ def test_dpor_rejects_invalid_limits_consistently(kwargs: dict[str, Any], option
         )
 
 
-@pytest.mark.parametrize("total_timeout", [0.0, -1.0, float("inf")])
+@pytest.mark.parametrize("total_timeout", [0.0, -1.0, float("inf"), float("nan")])
 def test_random_rejects_invalid_total_timeout(total_timeout: float) -> None:
     with pytest.raises(ValueError, match="total_timeout"):
         frontrun.explore(

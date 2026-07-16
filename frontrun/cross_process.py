@@ -16,7 +16,9 @@ Example::
         setup=reset_db,                       # runs in this process; returns a state handle
         invariant=lambda state: stock() >= 0,  # receives setup()'s handle; reads the DB here
     )
-    if not result.ok:
+    if result.ok is None:
+        raise RuntimeError(result.truncation or "cross-process exploration was inconclusive")
+    if result.ok is False:
         raise AssertionError(result.failure)
 """
 

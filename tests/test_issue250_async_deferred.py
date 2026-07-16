@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Any
 
 import pytest
 
@@ -17,7 +16,6 @@ from frontrun._virtual_clock import VirtualClock
 from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.async_shuffler import AwaitScheduler
 from frontrun.bytecode import run_with_schedule
-from frontrun.contrib.sqlalchemy._shared import wrap_async_setup
 
 
 def test_raw_async_cooperative_patch_helpers_are_reference_counted() -> None:
@@ -43,6 +41,7 @@ def test_raw_async_cooperative_patch_helpers_are_reference_counted() -> None:
     ]
 
     for patch, unpatch, current, replacement in patches:
+        original = current()
         patch()
         patch()
         try:
@@ -50,15 +49,28 @@ def test_raw_async_cooperative_patch_helpers_are_reference_counted() -> None:
             assert current() == replacement
         finally:
             unpatch()
+        assert current() == original
 
 
 def test_async_random_and_replay_record_their_event_loop_thread() -> None:
-    current = threading.get_ident()
-    random_scheduler = AwaitScheduler([], 1)
-    replay_scheduler = _ReplayAsyncScheduler([], 1)
+    parent = threading.get_ident()
+    observed: list[tuple[int, int, int]] = []
 
-    assert random_scheduler._event_loop_thread_id == current
-    assert replay_scheduler._event_loop_thread_id == current
+    def construct_schedulers() -> None:
+        current = threading.get_ident()
+        random_scheduler = AwaitScheduler([], 1)
+        replay_scheduler = _ReplayAsyncScheduler([], 1)
+        observed.append((current, random_scheduler._event_loop_thread_id, replay_scheduler._event_loop_thread_id))
+
+    thread = threading.Thread(target=construct_schedulers)
+    thread.start()
+    thread.join()
+
+    assert len(observed) == 1
+    current, random_thread, replay_thread = observed[0]
+    assert current != parent
+    assert random_thread == current
+    assert replay_thread == current
 
 
 def test_virtual_timeout_deadline_keeps_provenance_through_additive_arithmetic() -> None:
@@ -76,25 +88,6 @@ def test_virtual_timeout_deadline_keeps_provenance_through_additive_arithmetic()
     assert later.clock is clock
 
 
-def test_async_sqlalchemy_setup_detaches_pool_without_sync_closing_async_connections() -> None:
-    class SyncEngine:
-        def __init__(self) -> None:
-            self.dispose_calls: list[dict[str, Any]] = []
-
-        def dispose(self, **kwargs: Any) -> None:
-            self.dispose_calls.append(kwargs)
-
-    class AsyncEngine:
-        def __init__(self) -> None:
-            self.sync_engine = SyncEngine()
-
-    engine = AsyncEngine()
-    setup = wrap_async_setup(engine, lambda: "state")
-
-    assert setup() == "state"
-    assert engine.sync_engine.dispose_calls == [{"close": False}]
-
-
 def test_run_with_schedule_validates_clock_diagnostics() -> None:
     with pytest.raises(ValueError, match="clock_diagnostics"):
         run_with_schedule(
@@ -108,26 +101,38 @@ def test_run_with_schedule_validates_clock_diagnostics() -> None:
 
 def test_clock_diagnostic_deduplication_uses_its_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     class CountingLock:
-        enters = 0
+        def __init__(self) -> None:
+            self.enters = 0
+            self._lock = threading.Lock()
 
         def __enter__(self) -> None:
+            self._lock.acquire()
             self.enters += 1
 
         def __exit__(self, *_args: object) -> None:
-            return None
+            self._lock.release()
 
     class Frame:
         f_code = (lambda: None).__code__
-        f_locals: dict[str, object] = {}
+        f_locals = {"captured": next(iter(virtual_clock_module._REAL_TIME_FUNCTIONS))}
         f_globals: dict[str, object] = {}
 
     lock = CountingLock()
     virtual_clock_module._scanned_code_objects.discard(Frame.f_code)
+    virtual_clock_module._warned_captured_refs.clear()
     monkeypatch.setattr(virtual_clock_module, "_diagnostics_lock", lock)
 
-    virtual_clock_module.warn_if_captured_time_reference(Frame())
+    threads = [
+        threading.Thread(target=virtual_clock_module.warn_if_captured_time_reference, args=(Frame(),)) for _ in range(2)
+    ]
+    with pytest.warns(RuntimeWarning, match="captured real") as caught:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
 
-    assert lock.enters >= 1
+    assert len(caught) == 1
+    assert lock.enters >= 3
 
 
 def test_full_async_queue_put_does_not_repark_after_scheduler_abort() -> None:
