@@ -324,8 +324,8 @@ class DporScheduler:
         # The shared port pops each due actor's spin flag; the on-wake callback
         # closes the engine/HB side.  A clock-actor pick can arrive after all
         # deadlines were canceled, in which case this is a no-op and the
-        # trailing sync re-blocks the actor.  Replay accounting for no-op clock
-        # actor entries is tracked in the virtual-clock hardening roadmap.
+        # trailing sync re-blocks the actor.  The caller removes that physically
+        # empty transition from the constructive replay schedule.
         due = self._clock_port.advance_clock_to(clock, None, self._on_clock_wake)
         self._sync_clock_actor_locked()
         return bool(due)
