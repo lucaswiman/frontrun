@@ -368,13 +368,20 @@ def _migrate_destination_scope(cmd_args: tuple[object, ...]) -> str:
 
     connection_kwargs: dict[str, Any] = {}
     tail = cmd_args[5:]
-    for index, value in enumerate(tail):
-        option = _redis_arg_text(value).upper()
+    index = 0
+    while index < len(tail):
+        option = _redis_arg_text(tail[index]).upper()
+        if option == "KEYS":
+            break
         if option == "AUTH" and index + 1 < len(tail):
             connection_kwargs["password"] = tail[index + 1]
+            index += 2
         elif option == "AUTH2" and index + 2 < len(tail):
             connection_kwargs["username"] = tail[index + 1]
             connection_kwargs["password"] = tail[index + 2]
+            index += 3
+        else:
+            index += 1
     resolved_host, resolved_port = _unix_socket_server_parts(_redis_arg_text(host), connection_kwargs)
     return _format_redis_db_scope(resolved_host, resolved_port, db)
 
