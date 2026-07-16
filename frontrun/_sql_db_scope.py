@@ -34,6 +34,7 @@ __all__ = [
     "_register_connection_db_scope",
     "_stable_db_scope",
     "_table_primary_colset",
+    "_unregister_connection_db_scope",
 ]
 
 
@@ -86,6 +87,19 @@ def _register_connection_db_scope(connection: Any, identity: str) -> str:
     except AttributeError:
         pass
     return scope
+
+
+def _unregister_connection_db_scope(connection: Any) -> None:
+    """Release id-keyed metadata after a physical connection closes."""
+    key = id(connection)
+    owner = _CONNECTION_DB_SCOPE_OWNERS.get(key)
+    if owner is None or owner is connection:
+        _CONNECTION_DB_SCOPES.pop(key, None)
+        _CONNECTION_DB_SCOPE_OWNERS.pop(key, None)
+    try:
+        delattr(connection, _DB_SCOPE_ATTR)
+    except AttributeError:
+        pass
 
 
 def _normalize_db_identity(kind: str, *args: Any, **kwargs: Any) -> str | None:

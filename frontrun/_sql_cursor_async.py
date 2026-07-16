@@ -37,6 +37,7 @@ from frontrun._sql_cursor import (
     _release_dpor_row_locks,
     _report_sql_access,
     _suppress_endpoint_io,
+    _unregister_connection_db_scope,
     suppress_sql_write,
 )
 from frontrun._sql_transactions import _apply_tx_op_after_success, reset_connection_state
@@ -144,6 +145,7 @@ async def _intercept_connection_method_async(
             result = await original_method(self, *args, **kwargs)
             if getattr(tx_store(), "_tx_connection", None) is self:
                 reset_connection_state()
+            _unregister_connection_db_scope(self)
             return result
 
         deferred_tx_end: list[Any] = []

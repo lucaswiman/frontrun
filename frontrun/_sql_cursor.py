@@ -38,6 +38,7 @@ from frontrun._sql_db_scope import (
     _register_connection_db_scope,
     _stable_db_scope,
     _table_primary_colset,
+    _unregister_connection_db_scope,
 )
 from frontrun._sql_endpoint_suppression import (
     _clear_active_sql_io_context,
@@ -703,6 +704,7 @@ def _run_connection_close(method: Callable[[], Any], connection: Any) -> Any:
     result = method()
     if getattr(tx_store(), "_tx_connection", None) is connection:
         reset_connection_state()
+    _unregister_connection_db_scope(connection)
     return result
 
 
