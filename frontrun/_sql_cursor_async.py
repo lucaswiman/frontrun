@@ -165,6 +165,16 @@ async def _intercept_connection_method_async(
         )
 
 
+def _intercept_connection_close_sync(original_method: Any, self: Any, *args: Any, **kwargs: Any) -> Any:
+    """Clean up modeled state around a synchronous async-driver close method."""
+    with external_operation_scope():
+        result = original_method(self, *args, **kwargs)
+        if getattr(tx_store(), "_tx_connection", None) is self:
+            reset_connection_state()
+        _unregister_connection_db_scope(self)
+        return result
+
+
 # ---------------------------------------------------------------------------
 # Async interception
 # ---------------------------------------------------------------------------
@@ -313,7 +323,7 @@ def _patch_async_methods(
         )
 
 
-def _patch_async_connection_methods(connection_cls: Any) -> None:
+def _patch_async_connection_methods(connection_cls: Any, *, close_is_async: bool = True) -> None:
     """Patch awaitable transaction methods shared by async DBAPI drivers."""
 
     def _make_patched(orig: Any, method_name: str) -> Any:
@@ -322,7 +332,18 @@ def _patch_async_connection_methods(connection_cls: Any) -> None:
 
         return wrap_method_metadata(_patched, orig, name=method_name)
 
-    _patch_async_methods(connection_cls, ("commit", "rollback", "close"), _make_patched)
+    _patch_async_methods(connection_cls, ("commit", "rollback"), _make_patched)
+    if close_is_async:
+        _patch_async_methods(connection_cls, ("close",), _make_patched)
+    else:
+
+        def _make_close_patched(orig: Any, method_name: str) -> Any:
+            def _patched(self: Any, *args: Any, **kwargs: Any) -> Any:
+                return _intercept_connection_close_sync(orig, self, *args, **kwargs)
+
+            return wrap_method_metadata(_patched, orig, name=method_name)
+
+        _patch_async_methods(connection_cls, ("close",), _make_close_patched)
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +476,9 @@ def _patch_aiomysql() -> None:
         return
     connection_cls = getattr(connection_mod, "Connection", None)
     if connection_cls is not None:
-        _patch_async_connection_methods(connection_cls)
+        # aiomysql follows the asyncio transport convention: commit() and
+        # rollback() are coroutines, but close() is an immediate sync method.
+        _patch_async_connection_methods(connection_cls, close_is_async=False)
 
 
 # ---------------------------------------------------------------------------

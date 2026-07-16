@@ -133,7 +133,7 @@ def test_async_connection_patching_preserves_aiomysql_sync_close_contract() -> N
         def close(self) -> str:
             return "closed"
 
-    sql_cursor_async_mod._patch_async_connection_methods(Connection)
+    sql_cursor_async_mod._patch_async_connection_methods(Connection, close_is_async=False)
     result = Connection().close()
     try:
         assert not inspect.isawaitable(result)
