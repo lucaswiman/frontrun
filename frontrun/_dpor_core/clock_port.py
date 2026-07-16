@@ -210,11 +210,3 @@ class VirtualClockPort:
             or self.coordinator.in_timed_wait(actor_id)
             or actor_id in self.spin_waiters
         )
-
-    def spin_waiter_ids(self) -> list[int]:
-        """Sorted actor ids currently flagged as blocking spinners (diagnostics)."""
-        return sorted(self.spin_waiters)
-
-    def discard_spin_waiter(self, actor_id: int) -> None:
-        """Drop *actor_id*'s spin flag (caller holds the serialising lock)."""
-        self.spin_waiters.pop(actor_id, None)

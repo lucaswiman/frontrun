@@ -190,26 +190,25 @@ def test_order_violation_hypothesis(schedule):
     """
     Test order violation using Hypothesis with schedule_strategy.
 
-    Some schedules will trigger the order violation.
+    Hypothesis generates random fair schedules. The order violation
+    (use_resource observing an uninitialized resource) manifests in some but
+    not all of them; regardless of order both workers complete, so the resource
+    always ends up initialized.
     """
-    manager = BuggyResourceManagerBytecode()
+    manager = run_with_schedule(
+        schedule,
+        setup=lambda: BuggyResourceManagerBytecode(),
+        threads=[
+            lambda m: m.init_resource("hello"),
+            lambda m: m.use_resource(),
+        ],
+    )
 
-    error_raised = False
-    try:
-        run_with_schedule(
-            schedule,
-            setup=lambda: manager,
-            threads=[
-                lambda m: m.init_resource("hello"),
-                lambda m: m.use_resource(),
-            ],
-        )
-    except AttributeError:
-        error_raised = True
-
-    # The bug may or may not manifest depending on the schedule
-    # We just verify that the test runs without crashing unexpectedly
-    assert True, "Test completed"
+    # Every fair schedule runs init_resource to completion, so the resource is
+    # always initialized by the end; used_before_init records whether use won
+    # the race in this particular interleaving.
+    assert manager.resource == "hello"
+    assert manager.used_before_init in (True, False)
 
 
 # ============================================================================

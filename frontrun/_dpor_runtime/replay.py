@@ -12,6 +12,20 @@ from .runner import DporBytecodeRunner
 from .scheduler import DporScheduler, _IOAnchoredReplayScheduler, _ReplayDporScheduler
 
 
+class _WorkerExecutionError(Exception):
+    """Wraps a crash that originated inside a user worker body during replay.
+
+    Distinguishes a *user* worker crash (a legitimate "not a reproduction"
+    signal the reproduction loop should absorb) from a frontrun-internal bug in
+    the replay engine (which must propagate rather than silently lower the
+    reproduction count).
+    """
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 def _run_dpor_schedule(
     schedule: list[int],
     setup: Callable[[], T],
@@ -103,6 +117,15 @@ def _run_dpor_schedule(
             if isinstance(scheduler._error, DeadlockError):
                 raise scheduler._error
             raise
+        except Exception as exc:
+            # A crash raised from inside a user worker body is a legitimate
+            # "not a reproduction" signal.  Wrap it so the reproduction loop can
+            # absorb it while letting frontrun-internal errors (scheduler/engine
+            # bugs, clock handling, etc.) propagate unwrapped.  DeadlockError is
+            # a control signal, not a worker crash, so it is never wrapped.
+            if not isinstance(exc, DeadlockError) and any(exc is e for e in runner.worker_originated_errors.values()):
+                raise _WorkerExecutionError(exc) from exc
+            raise
         if runner.timed_out:
             # Even if timeout notification let the workers unwind during the
             # cleanup join, this replay exceeded its bound.  Its partial state
@@ -193,8 +216,8 @@ def _reproduce_dpor_counterexample(
                 # poisons the in-process harness, so never launch another
                 # attempt after it.
                 break
-            except Exception:
-                continue  # crash during replay — not a reproduction
+            except _WorkerExecutionError:
+                continue  # user worker crash during replay — not a reproduction
             if is_reproduction_run(
                 deadlocked=deadlocked, has_invariant=invariant is not None, invariant_failed=inv_failed
             ):

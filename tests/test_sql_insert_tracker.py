@@ -10,8 +10,8 @@ import pytest
 
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 from frontrun._sql_insert_tracker import (
-    check_uncaptured_inserts,
     clear_insert_tracker,
+    ensure_no_uncaptured_inserts,
     get_records,
     get_uncaptured_tables,
     record_insert,
@@ -144,16 +144,16 @@ class TestCheckUncapturedInserts:
         clear_insert_tracker()
 
     def test_no_inserts_no_error(self) -> None:
-        check_uncaptured_inserts()  # Should not raise
+        ensure_no_uncaptured_inserts()  # Should not raise
 
     def test_captured_inserts_no_error(self) -> None:
         record_insert("users", 42)
-        check_uncaptured_inserts()  # Should not raise
+        ensure_no_uncaptured_inserts()  # Should not raise
 
     def test_uncaptured_inserts_raises(self) -> None:
         record_insert("users", None)
         with pytest.raises(NondeterministicSQLError, match="users"):
-            check_uncaptured_inserts()
+            ensure_no_uncaptured_inserts()
 
 
 class TestThreadSafety:

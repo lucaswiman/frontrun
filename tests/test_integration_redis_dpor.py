@@ -626,7 +626,7 @@ class TestRedisListRaceKeyLevel:
     """Race on Redis list operations detected via key-level analysis."""
 
     def test_dpor_detects_list_lost_update(self, redis_port: int) -> None:
-        """DPOR detects race on list length check followed by pop."""
+        """DPOR detects race on list length check followed by processing."""
         port = redis_port
 
         class State:
@@ -639,12 +639,12 @@ class TestRedisListRaceKeyLevel:
 
         def worker(state: State) -> None:
             r = redis_lib.Redis(port=port, decode_responses=True)
-            # Check-then-act: read length, then pop
+            # Check-then-act: llen is a non-atomic guard, so both workers can
+            # pass it and then double-process the single task.
             if r.llen("task_queue") > 0:
-                item = r.lpop("task_queue")
-                if item is not None:
-                    processed = int(r.get("processed"))  # type: ignore[arg-type]
-                    r.set("processed", str(processed + 1))
+                r.lpop("task_queue")
+                processed = int(r.get("processed"))  # type: ignore[arg-type]
+                r.set("processed", str(processed + 1))
             r.close()
 
         def invariant(state: State) -> bool:
@@ -663,14 +663,10 @@ class TestRedisListRaceKeyLevel:
             deadlock_timeout=15.0,
             reproduce_on_failure=0,
         )
-        # Both workers see llen > 0, both pop, one gets None and increments
-        # processed anyway (or the LPOP returns None and int(None) fails).
-        # The race is in the check-then-act pattern.
-        # Actually, the lpop returns None for the second worker, so `if item is not None`
-        # prevents the increment. But both workers entered the if branch.
-        # This test may or may not fail depending on whether the race manifests
-        # as a property violation. Let's just verify DPOR explores it.
-        assert result.num_explored >= 1
+        # Both workers see llen > 0 before either pops, so both enter the branch
+        # and both increment ``processed`` — pushing it to 2 in the interleaving
+        # DPOR finds, violating the "at most 1 processed" invariant.
+        assert not result.property_holds, "DPOR should detect list check-then-act race"
 
 
 # ---------------------------------------------------------------------------

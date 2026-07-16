@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import inspect
+import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from itertools import permutations
 from typing import TYPE_CHECKING, Any
 
 from frontrun._certificate import InconclusiveExploration
+from frontrun._virtual_clock import ClockConfig, ClockMode
 
 if TYPE_CHECKING:
     from frontrun._sql_anomaly import SqlAnomaly
@@ -341,3 +343,68 @@ def check_serializability_violation(
             f"Valid sequential states: {serial_valid_states!r}"
         )
     return None
+
+
+def validate_random_exploration_params(
+    *,
+    max_attempts: int,
+    total_timeout: float | None,
+    error_on_any_race: bool,
+    clock: ClockMode,
+    clock_diagnostics: bool,
+    patch_sleep: bool,
+    serializable_invariant: object,
+) -> ClockConfig:
+    """Validate the shared input prologue for the random explorers.
+
+    Shared by ``explore_random`` (bytecode.py) and ``explore_async_random``
+    (async_shuffler.py): rejects a non-positive ``max_attempts``, a
+    non-positive/non-finite ``total_timeout``, and ``error_on_any_race``
+    (which requires DPOR), then validates the clock configuration.
+
+    Returns the validated :class:`~frontrun._virtual_clock.ClockConfig`;
+    callers read ``.mode`` for the normalized clock value.  The sync caller
+    keeps its own ``_require_frontrun_env`` guard ahead of this call.
+    """
+    if max_attempts <= 0:
+        raise ValueError("max_attempts must be positive")
+    if total_timeout is not None and (total_timeout <= 0 or not math.isfinite(total_timeout)):
+        raise ValueError(f"total_timeout must be positive and finite or None, got {total_timeout!r}")
+    if error_on_any_race:
+        raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
+    return ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
+        patch_sleep=patch_sleep,
+        serializable_invariant=serializable_invariant,
+    )
+
+
+def record_serializability_violation(
+    result: InterleavingResult,
+    *,
+    state: Any,
+    serial_valid_states: set[Any] | None,
+    serial_hash_fn: Callable[[Any], Any],
+    schedule: Any,
+    unique_interleavings: int,
+) -> bool:
+    """Fail-closed serializability check shared by both random explorers.
+
+    When a serializability violation is detected against the sequential
+    baseline, stamps the failure verdict onto *result*
+    (``property_holds=False`` + counterexample) and returns ``True`` so the
+    caller can early-return.  Returns ``False`` when there is no baseline
+    (``serial_valid_states is None``) or the state is serializable.
+
+    This is the failure path of result construction: it only ever sets
+    ``property_holds=False``, never certifies a pass.
+    """
+    if serial_valid_states is None:
+        return False
+    explanation = check_serializability_violation(state, serial_valid_states, serial_hash_fn, result.num_explored)
+    if explanation is None:
+        return False
+    result.property_holds = False
+    result.counterexample = schedule
+    result.unique_interleavings = unique_interleavings
+    result.explanation = explanation
+    return True

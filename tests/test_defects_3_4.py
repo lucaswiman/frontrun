@@ -158,7 +158,7 @@ def test_dpor_setattr_getattr_no_crash() -> None:
         preemption_bound=2,
     )
 
-    assert result is not None
+    assert result.property_holds is True
 
 
 def test_dpor_getattr_with_default_no_crash() -> None:
@@ -178,7 +178,7 @@ def test_dpor_getattr_with_default_no_crash() -> None:
         preemption_bound=2,
     )
 
-    assert result is not None
+    assert result.property_holds is True
 
 
 def test_dpor_nested_setattr_getattr_no_crash() -> None:
@@ -213,4 +213,4 @@ def test_dpor_nested_setattr_getattr_no_crash() -> None:
         preemption_bound=2,
     )
 
-    assert result is not None
+    assert result.property_holds is True

@@ -36,7 +36,6 @@ Example — find a race condition with random schedule exploration:
     >>> assert result.property_holds, result.explanation  # fails — lost update!
 """
 
-import math
 import random
 import sys
 import threading
@@ -78,7 +77,7 @@ from frontrun._random_schedules import (
     random_round_robin_schedule,
 )
 from frontrun._sql_cursor import patch_sql, unpatch_sql
-from frontrun._sql_insert_tracker import check_uncaptured_inserts, clear_insert_tracker
+from frontrun._sql_insert_tracker import clear_insert_tracker, ensure_no_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout, run_thread_group
 from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
 from frontrun._tracing import TraceFilter as _TraceFilter
@@ -96,7 +95,8 @@ from frontrun.common import (
     InterleavingResult,
     _call_sync_setup,
     check_invariant,
-    check_serializability_violation,
+    record_serializability_violation,
+    validate_random_exploration_params,
 )
 
 # Type variable for the shared state passed between setup and thread functions
@@ -783,7 +783,6 @@ def controlled_interleaving(schedule: list[int], num_threads: int = 2):
 
     Args:
         schedule: List of thread indices controlling opcode execution order.
-        num_threads: Number of threads.
 
     Yields:
         BytecodeShuffler runner.
@@ -1007,13 +1006,12 @@ def explore_random(
         providing a lower bound on exploration coverage.
     """
     _require_frontrun_env("explore_random")
-    if max_attempts <= 0:
-        raise ValueError("max_attempts must be positive")
-    if total_timeout is not None and (total_timeout <= 0 or not math.isfinite(total_timeout)):
-        raise ValueError(f"total_timeout must be positive and finite or None, got {total_timeout!r}")
-    if error_on_any_race:
-        raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
-    clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(
+    clock_config = validate_random_exploration_params(
+        max_attempts=max_attempts,
+        total_timeout=total_timeout,
+        error_on_any_race=error_on_any_race,
+        clock=clock,
+        clock_diagnostics=clock_diagnostics,
         patch_sleep=patch_sleep,
         serializable_invariant=serializable_invariant,
     )
@@ -1116,19 +1114,18 @@ def explore_random(
             seen_schedule_hashes.add(hash(tuple(schedule)))
 
             if warn_nondeterministic_sql:
-                check_uncaptured_inserts()
+                ensure_no_uncaptured_inserts()
 
             # --- serializable_invariant check ---
-            if serial_valid_states is not None:
-                explanation = check_serializability_violation(
-                    state, serial_valid_states, serial_hash_fn, result.num_explored
-                )
-                if explanation is not None:
-                    result.property_holds = False
-                    result.counterexample = schedule
-                    result.unique_interleavings = len(seen_schedule_hashes)
-                    result.explanation = explanation
-                    return result
+            if record_serializability_violation(
+                result,
+                state=state,
+                serial_valid_states=serial_valid_states,
+                serial_hash_fn=serial_hash_fn,
+                schedule=schedule,
+                unique_interleavings=len(seen_schedule_hashes),
+            ):
+                return result
 
             with clock_scope(attempt_clock):
                 invariant_failed, assertion_msg = check_invariant(invariant, state)
@@ -1154,13 +1151,21 @@ def explore_random(
                                 clock=clock,
                                 _virtual_clock=replay_clock,
                                 clock_diagnostics=clock_diagnostics,
+                                # Surface user worker crashes as a distinct wrapper
+                                # so the catch below can absorb them without also
+                                # swallowing frontrun-internal replay-engine bugs.
+                                _worker_errors_as_findings=True,
                             )
                             with clock_scope(replay_clock):
                                 replay_failed, _ = check_invariant(invariant, replay_state)
                             if replay_failed:
                                 successes += 1
-                        except Exception:
-                            pass  # timeout / crash during replay — not a reproduction
+                        except (_WorkerExecutionError, DeadlockError, TimeoutError):
+                            # user worker crash / deadlock / timeout during replay
+                            # — not a reproduction.  ``_MaxOpsExhaustedError`` is a
+                            # ``TimeoutError`` subclass, so it is covered here too.
+                            # Frontrun-internal errors are intentionally NOT caught.
+                            pass
                     result.reproduction_attempts = reproduce_on_failure
                     result.reproduction_successes = successes
 

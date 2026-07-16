@@ -47,7 +47,7 @@ from .coordinator import (
     _launch_error,
     accept_hello_live,
     bind_coordination_listener,
-    check_worker_id,
+    validate_worker_id,
     worker_targets,
 )
 from .launch import WorkerSerializationError
@@ -364,7 +364,11 @@ def _relay_loop(
             worker_errors[worker_id] = message
         try:
             scheduler.report_error(RuntimeError(message))
-        except BaseException:
+        except Exception:
+            # The relay failure is already recorded in ``worker_errors``; a
+            # secondary failure while notifying the scheduler must not mask it.
+            # Narrowed from ``BaseException`` so KeyboardInterrupt/SystemExit
+            # still propagate.
             pass
     finally:
         if holding_sync_turn:
@@ -575,7 +579,7 @@ class DporCrossProcessCoordinator:
                                 deadline,
                                 self.total_timeout,
                             )
-                            check_worker_id(wid, self.num_workers, persistent_socks, sock)
+                            validate_worker_id(wid, self.num_workers, persistent_socks, sock)
                             persistent_socks[wid] = sock
                         persistent_poisoned = False
                     except _TotalTimeoutExpiredError as exc:
@@ -878,7 +882,7 @@ class DporCrossProcessCoordinator:
                         total_deadline,
                         self.total_timeout,
                     )
-                    check_worker_id(wid, self.num_workers, socks_by_id, sock)
+                    validate_worker_id(wid, self.num_workers, socks_by_id, sock)
                     socks_by_id[wid] = sock
             except _TotalTimeoutExpiredError:
                 # Startup is part of the total search budget.  Retire partial

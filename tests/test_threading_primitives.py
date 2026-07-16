@@ -81,10 +81,12 @@ class RLockCounter:
 
 
 def test_rlock_race_condition():
-    """Test that RLock without cooperative wrapper can cause issues.
+    """Cooperative RLock serializes reentrant increments so the counter reaches 2.
 
-    Without a cooperative RLock, the blocking acquire() in C code will
-    deadlock the scheduler. This test demonstrates the race condition.
+    frontrun patches ``threading.RLock`` with its cooperative version, so the
+    reentrant acquire() yields to the scheduler instead of deadlocking in C.
+    Mutual exclusion holds under every explored interleaving, so the invariant
+    is never violated.
     """
     result = frontrun.explore_random(
         setup=lambda: RLockCounter(),
@@ -98,8 +100,7 @@ def test_rlock_race_condition():
         seed=42,
     )
 
-    # The test may pass or fail depending on scheduling, but should not crash
-    # Once cooperative RLock is implemented, this should consistently pass
+    assert result.property_holds, result.explanation
 
 
 # ---------------------------------------------------------------------------
@@ -137,10 +138,12 @@ class SemaphoreResource:
 
 
 def test_semaphore_race_condition():
-    """Test that Semaphore without cooperative wrapper can cause issues.
+    """Cooperative Semaphore(1) keeps at most one thread in the critical section.
 
-    Without a cooperative Semaphore, blocking acquire() will deadlock
-    the scheduler when the semaphore is exhausted.
+    frontrun patches ``threading.Semaphore`` with its cooperative version, so an
+    exhausted acquire() yields to the scheduler instead of deadlocking. The
+    semaphore bound is respected under every explored interleaving, so
+    ``max_in_use`` never exceeds 1.
     """
     result = frontrun.explore_random(
         setup=lambda: SemaphoreResource(max_resources=1),
@@ -154,7 +157,7 @@ def test_semaphore_race_condition():
         seed=42,
     )
 
-    # May pass or fail, but demonstrates the need for cooperative Semaphore
+    assert result.property_holds, result.explanation
 
 
 # ---------------------------------------------------------------------------
@@ -181,10 +184,12 @@ class BoundedSemaphoreResource:
 
 
 def test_bounded_semaphore_race_condition():
-    """Test that BoundedSemaphore without cooperative wrapper can cause issues.
+    """Cooperative BoundedSemaphore lets all three acquire/release pairs complete.
 
-    BoundedSemaphore is like Semaphore but raises on over-release.
-    Without cooperative wrapper, blocking acquire() will deadlock.
+    frontrun patches ``threading.BoundedSemaphore`` with its cooperative
+    version, so blocking acquire() yields instead of deadlocking. Every explored
+    interleaving completes all three acquire+increment+release cycles, so
+    ``acquired_count`` reaches 3.
     """
     result = frontrun.explore_random(
         setup=lambda: BoundedSemaphoreResource(),
@@ -199,7 +204,7 @@ def test_bounded_semaphore_race_condition():
         seed=42,
     )
 
-    # Demonstrates need for cooperative BoundedSemaphore
+    assert result.property_holds, result.explanation
 
 
 # ---------------------------------------------------------------------------
@@ -313,10 +318,12 @@ class EventCoordinator:
 
 
 def test_event_race_condition():
-    """Test that Event.wait() without cooperative wrapper can cause issues.
+    """Cooperative Event lets the waiter proceed once the setter fires.
 
-    Without a cooperative Event, wait() blocks in C code and deadlocks
-    the scheduler. The setter thread can't run to actually set the event.
+    frontrun patches ``threading.Event`` with its cooperative version, so
+    ``wait()`` yields to the scheduler instead of blocking in C. The setter can
+    run to set the event under every explored interleaving, so the single waiter
+    always proceeds exactly once.
     """
     result = frontrun.explore_random(
         setup=lambda: EventCoordinator(),
@@ -330,7 +337,7 @@ def test_event_race_condition():
         seed=42,
     )
 
-    # Demonstrates need for cooperative Event
+    assert result.property_holds, result.explanation
 
 
 # ---------------------------------------------------------------------------
@@ -366,10 +373,12 @@ class ConditionQueue:
 
 
 def test_condition_race_condition():
-    """Test that Condition.wait() without cooperative wrapper can cause issues.
+    """Cooperative Condition wakes the waiting getter after the putter notifies.
 
-    Without a cooperative Condition, wait() blocks in C code and deadlocks
-    the scheduler. The putter thread can't run to notify.
+    frontrun patches ``threading.Condition`` with its cooperative version, so
+    ``wait()`` yields to the scheduler instead of blocking in C. The putter can
+    run to notify under every explored interleaving, so both the put and the get
+    complete exactly once.
     """
     result = frontrun.explore_random(
         setup=lambda: ConditionQueue(),
@@ -383,7 +392,7 @@ def test_condition_race_condition():
         seed=42,
     )
 
-    # Demonstrates need for cooperative Condition
+    assert result.property_holds, result.explanation
 
 
 # ---------------------------------------------------------------------------
@@ -411,10 +420,12 @@ class QueueConsumer:
 
 
 def test_queue_get_race_condition():
-    """Test that Queue.get() without cooperative wrapper can cause issues.
+    """Cooperative Queue.get() blocks then resumes once the producer puts.
 
-    Without a cooperative Queue, get() blocks in C code when queue is empty,
-    deadlocking the scheduler. The producer can't run to add items.
+    frontrun patches ``queue.Queue`` with its cooperative version, so ``get()``
+    on an empty queue yields to the scheduler instead of blocking in C. The
+    producer can run to add an item under every explored interleaving, so the
+    consumer receives exactly one item.
     """
     result = frontrun.explore_random(
         setup=lambda: QueueConsumer(),
@@ -428,7 +439,7 @@ def test_queue_get_race_condition():
         seed=42,
     )
 
-    # Demonstrates need for cooperative Queue.get()
+    assert result.property_holds, result.explanation
 
 
 # ---------------------------------------------------------------------------
@@ -459,10 +470,12 @@ class QueueProducer:
 
 
 def test_queue_put_race_condition():
-    """Test that Queue.put() without cooperative wrapper can cause issues.
+    """Cooperative Queue.put() blocks on a full queue then resumes after a get.
 
-    Without a cooperative Queue, put() blocks in C code when queue is full,
-    deadlocking the scheduler. The consumer can't run to make space.
+    frontrun patches ``queue.Queue`` with its cooperative version, so ``put()``
+    on a full queue yields to the scheduler instead of blocking in C. The
+    consumer can run to make space under every explored interleaving, so both
+    producers complete and the consumer receives one item.
     """
     result = frontrun.explore_random(
         setup=lambda: QueueProducer(),
@@ -477,7 +490,7 @@ def test_queue_put_race_condition():
         seed=42,
     )
 
-    # Demonstrates need for cooperative Queue.put()
+    assert result.property_holds, result.explanation
 
 
 # ---------------------------------------------------------------------------
@@ -512,10 +525,12 @@ class MultiPrimitiveSystem:
 
 
 def test_multiple_primitives_race_condition():
-    """Test interaction of multiple threading primitives.
+    """Cooperative RLock + Event + Queue compose so the consumer sums the value.
 
-    This test combines RLock, Event, and Queue to demonstrate
-    complex race conditions when primitives are not cooperative.
+    This test combines RLock, Event, and Queue. With all three patched to their
+    cooperative versions, the consumer waits for the producer's signal, consumes
+    the queued value, and adds it under every explored interleaving, so the
+    final value is 2.
     """
     result = frontrun.explore_random(
         setup=lambda: MultiPrimitiveSystem(),
@@ -529,7 +544,7 @@ def test_multiple_primitives_race_condition():
         seed=42,
     )
 
-    # Demonstrates need for all cooperative primitives working together
+    assert result.property_holds, result.explanation
 
 
 # ---------------------------------------------------------------------------

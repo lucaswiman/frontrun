@@ -56,7 +56,7 @@ from frontrun._sql_cursor import (
     patch_sql,
     unpatch_sql,
 )
-from frontrun._sql_insert_tracker import check_uncaptured_inserts, clear_insert_tracker
+from frontrun._sql_insert_tracker import clear_insert_tracker, ensure_no_uncaptured_inserts
 from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
 from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter

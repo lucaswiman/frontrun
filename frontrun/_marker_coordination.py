@@ -157,15 +157,7 @@ class MarkerRegistry:
             self._scanned_files.add(filename)
 
     def get_marker(self, filename: str, lineno: int) -> str | None:
-        """Get the marker name for a specific file location.
-
-        Args:
-            filename: The source file path
-            lineno: The line number
-
-        Returns:
-            The marker name if found, None otherwise
-        """
+        """Return the marker name for a source location, or None."""
         return self._markers.get((filename, lineno))
 
 
@@ -263,8 +255,3 @@ class ThreadCoordinator:
         with self.condition:
             self.error = error
             self.condition.notify_all()
-
-    def is_finished(self) -> bool:
-        """Check if the schedule has completed or encountered an error."""
-        with self.condition:
-            return self.completed or self.error is not None

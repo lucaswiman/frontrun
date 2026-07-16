@@ -127,7 +127,7 @@ from frontrun._opcode_observer import (
     uninstall_thread_opcode_trace,
 )
 from frontrun._sql_cursor import clear_sql_metadata, get_lock_timeout, set_lock_timeout
-from frontrun._sql_insert_tracker import check_uncaptured_inserts
+from frontrun._sql_insert_tracker import ensure_no_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope
 from frontrun._tracing import TraceFilter as _TraceFilter
 from frontrun._tracing import get_active_trace_filter as _get_active_trace_filter
@@ -336,7 +336,6 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._bridge_sync_io = bridge_sync_io
         self._engine_lock = NoOpLock()
         self.trace_recorder = None
-        self._iter_to_container: dict[int, Any] = {}
         self._shadow_stacks: dict[int, ShadowStack] = {}
         self._opcode_handle: OpcodeTraceHandle | None = None
         self._stable_ids = stable_ids if stable_ids is not None else StableObjectIds()
@@ -1227,20 +1226,6 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 else:
                     self.engine.report_io_access(self.execution, task_id, obj_key, kind)
 
-    def report_and_wait_sync(self, task_id: int) -> None:
-        """Synchronous report-and-wait for use from SQL cursor interception.
-
-        SQL cursor patching calls ``_get_dpor_context()`` which returns
-        ``(scheduler, thread_id)``.  The sync DPOR scheduler has a
-        ``report_and_wait(frame, thread_id)`` method.  For async DPOR,
-        SQL interception needs a way to force a scheduling point
-        synchronously (the cursor patch is called from inside an await).
-        We just flush pending I/O here; the actual scheduling happens
-        at the next ``await_point()``.
-        """
-        if threading.get_ident() == self._event_loop_thread_id:
-            self._flush_pending_io(task_id)
-
     def report_and_wait(self, frame: Any, thread_id: int) -> bool:
         """Compatibility method for SQL cursor interception.
 
@@ -1262,63 +1247,6 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
 # ---------------------------------------------------------------------------
 # High-level API
 # ---------------------------------------------------------------------------
-
-
-async def run_with_schedule_dpor(
-    engine: PyDporEngine,
-    execution: PyExecution,
-    setup: Callable[[], Any],
-    tasks: list[Callable[[Any], Coroutine[Any, Any, None]]],
-    timeout: float = 5.0,
-    deadlock_timeout: float = 5.0,
-    detect_sql: bool = False,
-    detect_redis: bool = False,
-    bridge_sync_io: bool = False,
-) -> Any:
-    """Run one async DPOR execution and return the state object.
-
-    Args:
-        engine: The DPOR engine instance.
-        execution: The current execution instance from the engine.
-        setup: Returns fresh shared state.
-        tasks: Async callables that each receive the state as their argument.
-        timeout: Max seconds.
-        deadlock_timeout: Seconds to wait before declaring a deadlock.
-        detect_sql: If True, patch async DBAPI drivers for SQL tracking.
-        detect_redis: If True, patch async Redis clients for key-level
-            conflict detection.
-
-    Returns:
-        The state object after execution.
-    """
-    num_tasks = len(tasks)
-    scheduler = AsyncDporScheduler(
-        engine,
-        execution,
-        num_tasks,
-        deadlock_timeout=deadlock_timeout,
-        detect_sql=detect_sql,
-        detect_redis=detect_redis,
-    )
-
-    state = _call_sync_setup(setup)
-
-    task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
-        i: (lambda s=state, t=t: t(s))  # type: ignore[assignment]
-        for i, t in enumerate(tasks)
-    }
-
-    try:
-        await scheduler.run_all(task_funcs, timeout=timeout)  # type: ignore[arg-type]
-    except TimeoutError:
-        pass
-
-    # Mark any unfinished tasks as done in the DPOR engine
-    for i in range(num_tasks):
-        if i not in scheduler._tasks_done:
-            scheduler.finish_task(i)
-
-    return state
 
 
 def _format_async_trace(schedule: list[int], num_tasks: int) -> str:
@@ -1753,7 +1681,7 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
                             return result
 
                     if warn_nondeterministic_sql:
-                        check_uncaptured_inserts()
+                        ensure_no_uncaptured_inserts()
 
                     # --- error_on_any_race: treat unsynchronized races as failures ---
                     if error_on_any_race and not is_deadlock and task_error is None:
