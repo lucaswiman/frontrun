@@ -184,7 +184,17 @@ def accept_hello_live(
                 raise TimeoutError("workers did not connect within the deadlock timeout")
             listener.settimeout(min(0.5, remaining))
             try:
-                return accept_hello(listener, remaining)
+                sock, worker_id = accept_hello(listener, remaining)
+                # ``remaining`` shrinks after each accept retry.  It is only
+                # the startup budget for this attempt, not the silence budget
+                # inherited by later protocol frames.  Restore the caller's
+                # full budget after a successful HELLO.
+                try:
+                    sock.settimeout(connect_budget)
+                except BaseException:
+                    sock.close()
+                    raise
+                return sock, worker_id
             except (TimeoutError, OSError):
                 # accept() or the remaining shared HELLO budget timed out.
                 # any_exited / all_exited are non-destructive; the stderr-reading
