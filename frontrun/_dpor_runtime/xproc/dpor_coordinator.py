@@ -243,6 +243,7 @@ def _relay_loop(
                             scheduler.engine.register_resource_group(obj_key, group_key)
                         registered_groups.add(obj_key)
                     continue
+            released_row_locks = False
             if holding_sync_turn:
                 # The statement the last grant covered has finished executing
                 # (the worker sent its next frame); release the held turn so
@@ -257,6 +258,15 @@ def _relay_loop(
                 next_kind = msg.get("t") if msg is not None else None
                 if next_kind not in (proto.REPORT_AND_WAIT, proto.ACQUIRE_LOCKS, proto.BEFORE_IO):
                     publish_pending_accesses()
+                if next_kind == proto.RELEASE_LOCKS:
+                    # Match the in-process scheduler: releasing modeled row
+                    # locks is part of the completed physical operation and
+                    # therefore happens while this worker still owns its turn.
+                    # Handing off first opens an OS-race window in which the
+                    # next worker can observe locks that should already be
+                    # released.
+                    scheduler.release_row_locks(worker_id, msg.get("res"))
+                    released_row_locks = True
                 scheduler.after_sync_retry(worker_id)
                 holding_sync_turn = False
             if msg is None:
@@ -310,7 +320,8 @@ def _relay_loop(
                 _reply(sock, True)
                 holding_sync_turn = True
             elif kind == proto.RELEASE_LOCKS:
-                scheduler.release_row_locks(worker_id, msg.get("res"))
+                if not released_row_locks:
+                    scheduler.release_row_locks(worker_id, msg.get("res"))
             elif kind == proto.BEFORE_IO:
                 scheduler.before_io(worker_id, msg["rid"])
                 # The turn was granted iff before_io made this worker the active
