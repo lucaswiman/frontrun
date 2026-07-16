@@ -88,6 +88,40 @@ def test_explore_rejects_serializable_invariant_with_virtual_clock() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("virtual_clock", "expected_calls"),
+    [(None, []), (VirtualClock(), [("before", 7), ("after", 7)])],
+)
+def test_lock_release_reserves_scheduler_turn_only_for_virtual_clock(
+    virtual_clock: VirtualClock | None,
+    expected_calls: list[tuple[str, int]],
+) -> None:
+    from frontrun._cooperative import CooperativeLock, clear_context, set_context
+
+    calls: list[tuple[str, int]] = []
+
+    class Scheduler:
+        def __init__(self) -> None:
+            self.virtual_clock = virtual_clock
+
+        def before_sync_retry(self, thread_id: int) -> bool:
+            calls.append(("before", thread_id))
+            return True
+
+        def after_sync_retry(self, thread_id: int) -> None:
+            calls.append(("after", thread_id))
+
+    lock = CooperativeLock()
+    lock.acquire()
+    set_context(Scheduler(), 7)
+    try:
+        lock.release()
+    finally:
+        clear_context()
+
+    assert calls == expected_calls
+
+
 def test_process_execution_rejects_virtual_clock() -> None:
     with pytest.raises(ValueError, match="clock"):
         frontrun.explore(
