@@ -1554,10 +1554,12 @@ def test_timed_wait_clock_preference_is_set_under_engine_lock() -> None:
             self._lock.release()
 
     lock = RecordingLock()
+    preferred_threads: list[int] = []
 
     class Engine(_FakeEngine):
-        def prefer_next_thread(self, _thread_id: int) -> None:
+        def prefer_next_thread(self, thread_id: int) -> None:
             assert lock.held, "prefer_next_thread mutated the engine outside _engine_lock"
+            preferred_threads.append(thread_id)
 
     scheduler = DporScheduler(
         Engine(),
@@ -1570,6 +1572,8 @@ def test_timed_wait_clock_preference_is_set_under_engine_lock() -> None:
     )
 
     scheduler.add_timed_wait(0, timeout=1.0, resource=object())
+
+    assert preferred_threads == [99]
 
 
 def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:

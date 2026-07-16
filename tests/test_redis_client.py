@@ -142,6 +142,22 @@ def test_migrate_copy_does_not_report_source_write() -> None:
     assert ("redis:k:db=redis:destination:6380/3", "write") in events
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param(("AUTH", "COPY"), id="auth-password"),
+        pytest.param(("AUTH2", "COPY", "password"), id="auth2-username"),
+        pytest.param(("AUTH2", "username", "COPY"), id="auth2-password"),
+        pytest.param(("KEYS", "COPY", "other-key"), id="keys-key"),
+    ],
+)
+def test_migrate_copy_operand_does_not_suppress_source_write(tail: tuple[object, ...]) -> None:
+    """Credential and key operands named COPY are not the MIGRATE COPY flag."""
+    events = _capture_accesses("MIGRATE", ("destination", 6380, "k", 3, 1000, *tail), host="source")
+
+    assert ("redis:k:db=redis:source:6379/0", "write") in events
+
+
 def test_unresolved_unix_socket_identity_fails_closed(tmp_path: Any) -> None:
     """An unresolved socket may alias TCP, so a per-path scope is unsound."""
     client = SimpleNamespace(
