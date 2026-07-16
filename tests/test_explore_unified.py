@@ -860,6 +860,18 @@ def test_dpor_rejects_invalid_limits_consistently(kwargs: dict[str, Any], option
         )
 
 
+@pytest.mark.parametrize("total_timeout", [0.0, -1.0, float("inf")])
+def test_random_rejects_invalid_total_timeout(total_timeout: float) -> None:
+    with pytest.raises(ValueError, match="total_timeout"):
+        frontrun.explore(
+            setup=object,
+            workers=[lambda _state: None],
+            invariant=lambda _state: True,
+            strategy="random",
+            total_timeout=total_timeout,
+        )
+
+
 def test_explore_process_rejects_async_workers_in_mixed_list_eagerly():
     """execution='process' runs sync code only, so a worker list containing
     any async worker (mixed or not) is rejected eagerly."""
