@@ -57,7 +57,7 @@ def finalize_marker_executor_run(
         TimeoutError: If any worker is still alive after ``timeout``,
             using ``timeout_message`` to format the message; or if the
             schedule was partially consumed but not completed.
-        Exception: The first exception found in ``task_errors``.
+        BaseException: The first failure found in ``task_errors``.
     """
     alive = join_threads_with_deadline(threads, timeout)
     if alive:
@@ -74,17 +74,11 @@ def finalize_marker_executor_run(
     if coordinator.error is not None:
         raise coordinator.error
 
-    # If at least one step was processed (so the schedule was in use) but
-    # the full schedule wasn't completed, it means the schedule references
-    # markers that no worker reached. If zero steps were consumed, the
-    # markers were simply never hit -- which could be a different issue
-    # (wrong file, exec'd code, etc.) and is not necessarily an error for the
-    # low-level executor. The exhaustive exploration API validates step zero.
-    if (
-        coordinator.current_step > 0
-        and coordinator.current_step < len(coordinator.schedule.steps)
-        and not coordinator.completed
-    ):
+    # Any unconsumed non-empty schedule is an incomplete replay.  Zero steps
+    # is not a benign low-level special case: it commonly means the source was
+    # moved, exec'd, or otherwise failed to expose the requested marker, and a
+    # clean return would claim an exact schedule that never ran.
+    if coordinator.current_step < len(coordinator.schedule.steps) and not coordinator.completed:
         remaining = coordinator.schedule.steps[coordinator.current_step :]
         step_strs = [f"Step({s.execution_name!r}, {s.marker_name!r})" for s in remaining]
         raise TimeoutError(f"Schedule incomplete: {len(remaining)} step(s) were never reached: {', '.join(step_strs)}")
