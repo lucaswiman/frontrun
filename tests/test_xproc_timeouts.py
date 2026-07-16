@@ -143,6 +143,32 @@ def test_dpor_genuine_stall_is_diagnosed_as_timeout_not_worker_error() -> None:
     assert "deadlock_timeout" in (result.failure or "")
 
 
+def test_dpor_relay_no_progress_backstop_is_diagnosed_as_timeout() -> None:
+    """The relay watchdog is an execution timeout, not a connection failure."""
+    release = threading.Event()
+
+    def staller(proxy) -> None:
+        if not proxy.report_and_wait(None, 0):
+            return
+        release.wait(5.0)
+
+    coord = DporCrossProcessCoordinator(num_workers=1, deadlock_timeout=1.0, max_executions=1)
+    coord._relay_no_progress_budget = 0.05
+    try:
+        result = coord.explore(
+            worker_set=ThreadLauncher([staller]),
+            setup=lambda: None,
+            invariant=lambda: True,
+        )
+    finally:
+        release.set()
+        _join_worker_threads()
+
+    assert not result.ok
+    assert result.failure_kind == "timeout", f"got {result.failure_kind!r}: {result.failure!r}"
+    assert "no progress" in (result.failure or "")
+
+
 def test_dpor_worker_disconnect_still_reported_as_worker_error() -> None:
     # Control for the stall diagnosis: an actual disconnect (socket EOF) must
     # keep surfacing as a worker_error, not be re-labelled a timeout.
