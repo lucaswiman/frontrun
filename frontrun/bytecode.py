@@ -1153,13 +1153,21 @@ def explore_random(
                                 clock=clock,
                                 _virtual_clock=replay_clock,
                                 clock_diagnostics=clock_diagnostics,
+                                # Surface user worker crashes as a distinct wrapper
+                                # so the catch below can absorb them without also
+                                # swallowing frontrun-internal replay-engine bugs.
+                                _worker_errors_as_findings=True,
                             )
                             with clock_scope(replay_clock):
                                 replay_failed, _ = check_invariant(invariant, replay_state)
                             if replay_failed:
                                 successes += 1
-                        except Exception:
-                            pass  # timeout / crash during replay — not a reproduction
+                        except (_WorkerExecutionError, DeadlockError, TimeoutError):
+                            # user worker crash / deadlock / timeout during replay
+                            # — not a reproduction.  ``_MaxOpsExhaustedError`` is a
+                            # ``TimeoutError`` subclass, so it is covered here too.
+                            # Frontrun-internal errors are intentionally NOT caught.
+                            pass
                     result.reproduction_attempts = reproduce_on_failure
                     result.reproduction_successes = successes
 

@@ -1007,26 +1007,31 @@ def _process_opcode(
         if recorder is not None and obj is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=attr, obj=obj)
         if obj is not None:
+            # Only the user-touching attribute resolution is guarded: resolving
+            # ``obj.attr`` can fire a user descriptor/``__getattr__`` that raises,
+            # and that must not abort tracing.  The weak-read report below is
+            # frontrun-internal and must run UNGUARDED — swallowing a failure
+            # there would silently drop the access (under-merging → false pass).
             try:
                 val = _safe_getattr(obj, attr)
-                shadow.push(val)
-                # When the loaded value is a mutable object (but NOT a bound
-                # method), report a WEAK READ on the object itself.  This
-                # detects cases where a container is read indirectly —
-                # e.g. passed to len() or iterated — creating a conflict
-                # with C-level method WRITEs (append, add, etc.) reported
-                # by the CALL handler below.
-                #
-                # We use weak_read (not read) so that loading a dict just
-                # to subscript it doesn't conflict with STORE_SUBSCR's
-                # weak_write on disjoint keys.
-                #
-                # We skip bound methods (loading .append is not a container
-                # read) and immutable types (no mutation possible).
-                if val is not None and type(val) is not _BUILTIN_METHOD_TYPE and isinstance(val, (list, dict, set)):
-                    _report_access(engine, execution, thread_id, val, "__cmethods__", elock, sids, "weak_read")
             except Exception:
-                shadow.push(None)
+                val = None
+            shadow.push(val)
+            # When the loaded value is a mutable object (but NOT a bound
+            # method), report a WEAK READ on the object itself.  This
+            # detects cases where a container is read indirectly —
+            # e.g. passed to len() or iterated — creating a conflict
+            # with C-level method WRITEs (append, add, etc.) reported
+            # by the CALL handler below.
+            #
+            # We use weak_read (not read) so that loading a dict just
+            # to subscript it doesn't conflict with STORE_SUBSCR's
+            # weak_write on disjoint keys.
+            #
+            # We skip bound methods (loading .append is not a container
+            # read) and immutable types (no mutation possible).
+            if val is not None and type(val) is not _BUILTIN_METHOD_TYPE and isinstance(val, (list, dict, set)):
+                _report_access(engine, execution, thread_id, val, "__cmethods__", elock, sids, "weak_read")
         else:
             shadow.push(None)
         # On 3.12+, LOAD_ATTR with method flag (bit 0 of arg) pushes an extra
@@ -1074,10 +1079,14 @@ def _process_opcode(
         if recorder is not None and obj is not None:
             recorder.record(thread_id, frame, opcode=op, access_type="read", attr_name=attr, obj=obj)
         if obj is not None:
+            # Guard only the user attribute resolution (``_safe_getattr`` can
+            # invoke a non-data descriptor whose getter raises); the shadow-stack
+            # push is frontrun-internal and must not be masked.
             try:
-                shadow.push(_safe_getattr(obj, attr))
+                _method_val = _safe_getattr(obj, attr)
             except Exception:
-                shadow.push(None)
+                _method_val = None
+            shadow.push(_method_val)
         else:
             shadow.push(None)
         # Extra push for the self/NULL slot (LOAD_METHOD pushes 2 values).
@@ -1101,11 +1110,14 @@ def _process_opcode(
         if obj is None or not isinstance(obj, (_IO_WRAPPER_TYPES + _IO_CLIENT_TYPES)):
             _report_access(engine, execution, thread_id, obj, attr, elock, sids, "read")
         if obj is not None:
+            # Guard only the user attribute resolution (``_safe_getattr`` can
+            # invoke a non-data descriptor whose getter raises); the shadow-stack
+            # push is frontrun-internal and must not be masked.
             try:
                 val = _safe_getattr(obj, attr)
-                shadow.push(val)
             except Exception:
-                shadow.push(None)
+                val = None
+            shadow.push(val)
         else:
             shadow.push(None)
         shadow.push(None)  # self_or_null slot

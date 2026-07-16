@@ -364,7 +364,11 @@ def _relay_loop(
             worker_errors[worker_id] = message
         try:
             scheduler.report_error(RuntimeError(message))
-        except BaseException:
+        except Exception:
+            # The relay failure is already recorded in ``worker_errors``; a
+            # secondary failure while notifying the scheduler must not mask it.
+            # Narrowed from ``BaseException`` so KeyboardInterrupt/SystemExit
+            # still propagate.
             pass
     finally:
         if holding_sync_turn:
