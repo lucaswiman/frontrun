@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -29,6 +30,8 @@ def group_schedule_runs(schedule: list[int]) -> list[tuple[int, int]]:
 
 def make_deadline(total_timeout: float | None) -> float | None:
     """Return ``time.monotonic() + total_timeout`` or ``None`` when no timeout."""
+    if total_timeout is not None and (total_timeout <= 0 or not math.isfinite(total_timeout)):
+        raise ValueError(f"total_timeout must be positive and finite or None, got {total_timeout!r}")
     return time.monotonic() + total_timeout if total_timeout is not None else None
 
 
