@@ -74,11 +74,16 @@ def finalize_marker_executor_run(
     if coordinator.error is not None:
         raise coordinator.error
 
-    # Any unconsumed non-empty schedule is an incomplete replay.  Zero steps
-    # is not a benign low-level special case: it commonly means the source was
-    # moved, exec'd, or otherwise failed to expose the requested marker, and a
-    # clean return would claim an exact schedule that never ran.
-    if coordinator.current_step < len(coordinator.schedule.steps) and not coordinator.completed:
+    # If at least one step was processed (so the schedule was in use) but the
+    # full schedule wasn't completed, the remaining steps are an error.  The
+    # low-level executor keeps its historical zero-step behavior for dynamic
+    # ``exec`` source that linecache cannot inspect; the exhaustive exploration
+    # API validates step zero separately.
+    if (
+        coordinator.current_step > 0
+        and coordinator.current_step < len(coordinator.schedule.steps)
+        and not coordinator.completed
+    ):
         remaining = coordinator.schedule.steps[coordinator.current_step :]
         step_strs = [f"Step({s.execution_name!r}, {s.marker_name!r})" for s in remaining]
         raise TimeoutError(f"Schedule incomplete: {len(remaining)} step(s) were never reached: {', '.join(step_strs)}")

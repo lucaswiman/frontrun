@@ -38,8 +38,9 @@ def test_total_timeout_bounds_spawned_worker_cleanup() -> None:
     )
     elapsed = time.monotonic() - started
 
-    assert result.ok
+    assert result.ok is None
     assert not result.exhausted
+    assert "total_timeout" in (result.truncation or "")
     assert elapsed < 1.0, f"total_timeout=0.2 took {elapsed:.3f}s while cleaning up the worker"
 
 
