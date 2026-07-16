@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from ._shared import *
-from ._shared import _make_object_key
+from ._shared import _clear_active_sql_io_context, _make_object_key
 
 
 class _PreloadBridge:
