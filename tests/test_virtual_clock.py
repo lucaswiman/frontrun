@@ -2053,6 +2053,10 @@ def test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder() ->
         clock="explored",
         reproduce_on_failure=0,
     )
+    # Three acquire-first traces plus the two semantically distinct
+    # timeout-first/release-first orderings. Keep this exact: the regression
+    # must not be "fixed" by indiscriminately waking the clock actor.
+    assert result.num_explored == 5
     assert not result.property_holds, (
         f"the timeout branch (acquire_result=False) was never explored: {result.num_explored} interleavings"
     )

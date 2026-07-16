@@ -236,15 +236,13 @@ Semantics and limitations
   edges.  The sync limitation costs extra branches and possible false race
   reports, not missed bugs; a fix is tracked in
   ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
-* **Under ``clock="explored"``, a timeout-kind deadline (timed
-  ``lock.acquire(timeout=...)``, ``asyncio.wait_for``) does not fire against a
-  *runnable* holder.** Sleep wakes carry the release/acquire edge described
-  above, so DPOR can reorder "timer fires" around worker steps; a timeout
-  firing carries no engine-visible event, so it commutes with every worker
-  step and the "timeout beats the zero-virtual-time holder's release" branch
-  is never seeded.  Holders that sleep or block across virtual time are
-  explored correctly (the common TTL/retry shape).  A fix is tracked in
-  ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
+* **Under ``clock="explored"``, a timeout may beat a runnable lock holder.**
+  A timed ``lock.acquire(timeout=...)`` is a real schedulable race even when
+  the holder would release in zero virtual time. frontrun explores both the
+  release-first and timeout-first outcomes; code that appears "obviously
+  fast enough" on a wall clock can therefore produce an honest timeout
+  counterexample. This is deliberate explored-clock semantics, not a claim
+  about likely production latency.
 * **Under ``clock="explored"``, a woken timed wait may read a later clock
   value than its own deadline.** Every deadline *fires* at its own clock
   value, but "timer fires" and "waiter reads the clock" are separate steps

@@ -431,7 +431,14 @@ class OpcodeScheduler:
         """Clear spin flags for *resource_id* (it may now be acquirable)."""
         self._clock_port.note_spin_release(resource_id)
 
-    def add_timed_wait(self, thread_id: int, deadline: float | None = None, *, timeout: float | None = None) -> float:
+    def add_timed_wait(
+        self,
+        thread_id: int,
+        deadline: float | None = None,
+        *,
+        timeout: float | None = None,
+        resource: object | None = None,
+    ) -> float:
         """Register a virtual deadline for a timed lock acquire.
 
         With ``timeout=`` the deadline is computed under the scheduler's

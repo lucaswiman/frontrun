@@ -93,6 +93,7 @@ class VirtualClockPort:
         *,
         timeout: float | None = None,
         clock: VirtualClock | None = None,
+        wake_id: int | None = None,
     ) -> float:
         """Register a virtual deadline for a timed lock acquire.
 
@@ -109,7 +110,7 @@ class VirtualClockPort:
                     if timeout is None or clock is None:
                         raise TypeError("add_timed_wait needs either deadline= or (timeout= and clock=)")
                     deadline = clock.now() + timeout
-                self.coordinator.add_timeout(actor_id, deadline, _TIMED_WAIT_TOKEN)
+                self.coordinator.add_timeout(actor_id, deadline, _TIMED_WAIT_TOKEN, wake_id=wake_id)
                 self._sync()
             self._condition.notify_all()
         # DPOR replay may owe an actor step that arrived before this

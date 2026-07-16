@@ -341,7 +341,18 @@ class DporScheduler:
             )
         elif event.kind == "timeout":
             # A timed wait becomes runnable so its retry loop can observe the
-            # expired deadline and take the atomic give-up path.
+            # expired deadline and take the atomic give-up path. Model the
+            # firing as a failed acquire attempt on the primitive as well: it
+            # races with the holder's release, so explored-clock DPOR seeds
+            # both "release wins" and "timeout wins" outcomes.
+            if event.wake_id is not None:
+                self.engine.report_sync(
+                    self.execution,
+                    self._clock_actor_id,
+                    "lock_attempt_fail",
+                    event.wake_id,
+                    self._last_scheduled_path_id,
+                )
             self.execution.unblock_thread(tid)
 
     def _scrub_lock_waiters(self, thread_id: int) -> None:
@@ -362,13 +373,28 @@ class DporScheduler:
                     self._replay_advance_clock_to()
                     self._condition.notify_all()
 
-    def add_timed_wait(self, thread_id: int, deadline: float | None = None, *, timeout: float | None = None) -> float:
+    def add_timed_wait(
+        self,
+        thread_id: int,
+        deadline: float | None = None,
+        *,
+        timeout: float | None = None,
+        resource: object | None = None,
+    ) -> float:
         """Register a virtual deadline for a timed lock acquire.
 
         With ``timeout=`` the deadline is computed under the scheduler's
         serialising lock (see ``VirtualClockPort.add_timed_wait``); returns it.
         """
-        return self._clock_port.add_timed_wait(thread_id, deadline, timeout=timeout, clock=self.virtual_clock)
+        wake_id = self._stable_ids.get(resource) if resource is not None else None
+        registered = self._clock_port.add_timed_wait(
+            thread_id, deadline, timeout=timeout, clock=self.virtual_clock, wake_id=wake_id
+        )
+        if self._clock_mode == "explored" and self._clock_actor_id is not None:
+            prefer = getattr(self.engine, "prefer_next_thread", None)
+            if prefer is not None:
+                prefer(self._clock_actor_id)
+        return registered
 
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""

@@ -397,6 +397,18 @@ impl Path {
         current_thread: usize,
         num_threads: usize,
     ) -> Option<usize> {
+        self.schedule_preferred(runnable, current_thread, num_threads, None)
+    }
+
+    /// Schedule like [`Self::schedule`], but prefer *preferred* when creating
+    /// a new branch. Replayed branches remain authoritative.
+    pub fn schedule_preferred(
+        &mut self,
+        runnable: &[usize],
+        current_thread: usize,
+        num_threads: usize,
+        preferred: Option<usize>,
+    ) -> Option<usize> {
         if runnable.is_empty() {
             return None;
         }
@@ -418,7 +430,9 @@ impl Path {
         // to follow the sequence as constructed. The search strategy only
         // affects the initial thread choice in step(), not subsequent guided
         // choices within a multi-step wakeup sequence.
-        let (chosen, next_subtree) = if let Some(ref subtree) = self.pending_wakeup_subtree {
+        let (chosen, next_subtree) = if let Some(preferred) = preferred.filter(|tid| runnable.contains(tid)) {
+            (preferred, None)
+        } else if let Some(ref subtree) = self.pending_wakeup_subtree {
             if let Some(guided) = subtree.min_thread() {
                 if runnable.contains(&guided) {
                     let sub = subtree.subtree(guided);

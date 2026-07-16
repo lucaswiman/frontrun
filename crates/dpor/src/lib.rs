@@ -69,6 +69,12 @@ impl PyDporEngine {
         self.inner.schedule(&mut execution.inner)
     }
 
+    /// Prefer a runnable thread at the next newly-created scheduling point.
+    /// Replayed wakeup-tree choices remain authoritative.
+    fn prefer_next_thread(&mut self, thread_id: usize) {
+        self.inner.prefer_next_thread(thread_id);
+    }
+
     /// Report a shared memory access. `kind` is "read", "write", or "weak_write".
     fn report_access(
         &mut self,

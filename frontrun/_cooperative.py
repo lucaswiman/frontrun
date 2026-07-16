@@ -165,7 +165,7 @@ def _validate_lock_timeout(timeout: float) -> None:
 
 
 def _timed_acquire_state(
-    timeout: float, scheduler: Any = None, thread_id: int | None = None
+    timeout: float, scheduler: Any = None, thread_id: int | None = None, resource: object | None = None
 ) -> tuple[float | None, Any, Any]:
     """Return ``(deadline, graph, clock)`` for a contended acquire.
 
@@ -206,7 +206,7 @@ def _timed_acquire_state(
             # its serialising lock, so a concurrent explored-mode clock
             # advance landing between a caller-side now() read and the
             # registration cannot hand back an already-expired deadline.
-            deadline = add_timed_wait(thread_id, timeout=timeout)
+            deadline = add_timed_wait(thread_id, timeout=timeout, resource=resource)
             return deadline, None, clock
         return _real_monotonic() + timeout, None, None
     return None, get_wait_for_graph(), None
@@ -273,13 +273,15 @@ def _finish_virtual_timed_wait(scheduler: Any, thread_id: int, deadline: float |
     return True
 
 
-def _timed_wait_deadline(timeout: float | None, scheduler: Any, thread_id: int) -> tuple[float, Any]:
+def _timed_wait_deadline(
+    timeout: float | None, scheduler: Any, thread_id: int, resource: object | None = None
+) -> tuple[float, Any]:
     """Return ``(deadline, clock)`` for Event/Condition/Queue waits."""
     if timeout is None:
         return math.inf, None
     if timeout < 0:
         return _real_monotonic() + timeout, None
-    deadline, _, clock = _timed_acquire_state(timeout, scheduler, thread_id)
+    deadline, _, clock = _timed_acquire_state(timeout, scheduler, thread_id, resource)
     assert deadline is not None
     return deadline, clock
 
@@ -448,6 +450,14 @@ class CooperativeLock:
         scheduler, thread_id = ctx
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
+
+        # Arm the timeout before the scheduler preselects the transition after
+        # our first contended probe.  Under clock="explored" the clock actor
+        # must be runnable at that scheduling boundary; registering only after
+        # ``before_sync_retry`` let a zero-time holder's release win by fiat.
+        deadline, graph, clock = _timed_acquire_state(timeout, scheduler, thread_id, self)
+        if graph is not None:
+            _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
         if before_sync_retry is not None:
             assert after_sync_retry is not None
             if before_sync_retry(thread_id):
@@ -456,17 +466,16 @@ class CooperativeLock:
                     self._set_owner_and_report("lock_acquire")
                 after_sync_retry(thread_id)
                 if acquired:
+                    if graph is not None:
+                        graph.remove_waiting(thread_id, self._object_id)
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                     return True
         elif self._lock.acquire(blocking=False):
             self._set_owner_and_report("lock_acquire")
+            if graph is not None:
+                graph.remove_waiting(thread_id, self._object_id)
+            _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
             return True
-
-        # Register waiting edge in the wait-for graph; raises SchedulerAbort on
-        # cycle.  Skipped (graph is None) for timed acquires — see
-        # _timed_acquire_state.
-        deadline, graph, clock = _timed_acquire_state(timeout, scheduler, thread_id)
-        if graph is not None:
-            _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
 
         note_spin = _spin_note_hook(scheduler) if timeout < 0 else None
         spin_flagged = False
@@ -672,12 +681,26 @@ class CooperativeRLock:
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
 
-        # Register waiting edge in the wait-for graph; raises SchedulerAbort on
-        # cycle.  Skipped (graph is None) for timed acquires — see
-        # _timed_acquire_state.
-        deadline, graph, clock = _timed_acquire_state(timeout, scheduler, thread_id)
+        # See CooperativeLock.acquire: register before the first scheduler
+        # preselection so explored timeouts race the holder's next transition.
+        deadline, graph, clock = _timed_acquire_state(timeout, scheduler, thread_id, self)
         if graph is not None:
             _check_lock_cycle(graph, thread_id, self._object_id, scheduler)
+
+        if before_sync_retry is not None:
+            assert after_sync_retry is not None
+            if before_sync_retry(thread_id):
+                acquired = self._lock.acquire(blocking=False)
+                if acquired:
+                    self._owner = me
+                    self._count = 1
+                    self._set_owner_and_report("lock_acquire")
+                after_sync_retry(thread_id)
+                if acquired:
+                    if graph is not None:
+                        graph.remove_waiting(thread_id, self._object_id)
+                    _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
+                    return True
 
         note_spin = _spin_note_hook(scheduler) if timeout < 0 else None
         spin_flagged = False
@@ -933,7 +956,7 @@ class CooperativeSemaphore:
         before_sync_retry = getattr(scheduler, "before_sync_retry", None)
         after_sync_retry = getattr(scheduler, "after_sync_retry", None)
         deadline, _, clock = (
-            _timed_acquire_state(timeout, scheduler, thread_id) if timeout is not None else (None, None, None)
+            _timed_acquire_state(timeout, scheduler, thread_id, self) if timeout is not None else (None, None, None)
         )
         if before_sync_retry is not None:
             assert after_sync_retry is not None
@@ -1153,7 +1176,7 @@ class CooperativeEvent:
         # Bytecode/marker schedulers, and timed waits: spin-yield, probing
         # after each turn.  Under a virtual-clock scheduler, timed waits
         # register a virtual deadline so timeout branches are schedulable.
-        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
+        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id, self)
         note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
         try:
             while not self._event.is_set():
@@ -1382,7 +1405,7 @@ class CooperativeCondition:
                 # ticket exactly as the spin path would on immediate expiry.
                 served = my_ticket < self._served
                 return served
-            deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
+            deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id, self)
             note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
 
             # The spin-loop reads of _served below are intentionally
@@ -1584,7 +1607,7 @@ class CooperativeQueue:
             return self._queue.get(block=True, timeout=timeout)
 
         scheduler, thread_id = ctx
-        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
+        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id, self)
         note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
         try:
             while True:
@@ -1642,7 +1665,7 @@ class CooperativeQueue:
             return
 
         scheduler, thread_id = ctx
-        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id)
+        deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id, self)
         note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
         try:
             while True:

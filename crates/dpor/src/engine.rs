@@ -111,6 +111,7 @@ struct DeferredLockAttempt {
     thread_id: usize,
     path_id: usize,
     lock_id: u64,
+    acquired: bool,
 }
 
 pub struct DporEngine {
@@ -141,6 +142,8 @@ pub struct DporEngine {
     /// favor of deferred notdep processing. This prevents backtrack explosion
     /// from intermediate operations on unrelated tables (Defect #15).
     resource_groups: HashMap<ObjectId, u64>,
+    /// One-shot preference for the next newly-created scheduling branch.
+    preferred_thread: Option<usize>,
 }
 
 impl DporEngine {
@@ -165,6 +168,7 @@ impl DporEngine {
             deferred_lock_acquires: Vec::new(),
             deferred_lock_attempts: Vec::new(),
             resource_groups: HashMap::new(),
+            preferred_thread: None,
         }
     }
 
@@ -182,12 +186,17 @@ impl DporEngine {
             execution.aborted = true;
             return None;
         }
-        let chosen = self.path.schedule(&runnable, execution.active_thread, self.num_threads)?;
+        let preferred = self.preferred_thread.take();
+        let chosen = self.path.schedule_preferred(&runnable, execution.active_thread, self.num_threads, preferred)?;
         execution.threads[chosen].dpor_vv.increment(chosen);
         execution.threads[chosen].io_vv.increment(chosen);
         execution.active_thread = chosen;
         execution.schedule_trace.push(chosen);
         Some(chosen)
+    }
+
+    pub fn prefer_next_thread(&mut self, thread_id: usize) {
+        self.preferred_thread = Some(thread_id);
     }
 
     /// Report a shared memory access and detect races.
@@ -497,6 +506,7 @@ impl DporEngine {
                     thread_id,
                     path_id: pid,
                     lock_id,
+                    acquired,
                 });
             }
             SyncEvent::LockRelease { lock_id } => {
@@ -628,18 +638,25 @@ impl DporEngine {
             for attempt in &attempts {
                 if attempt.lock_id == release.lock_id
                     && attempt.thread_id != release.thread_id
-                    && attempt.path_id > release.path_id
                 {
-                    // The release event is attributed to the scheduling
-                    // position created *after* the holder's last traced
-                    // opcode preceding the release; the release itself
-                    // executes within the holder's preceding quantum.  To
-                    // preempt BEFORE the release actually happens, the
-                    // attempting thread must be scheduled one position
-                    // earlier (instead of the holder's final in-lock
-                    // opcode).
-                    let pid = release.path_id.saturating_sub(1);
-                    self.path.insert_wakeup(pid, attempt.thread_id, None);
+                    if attempt.path_id > release.path_id {
+                        // The release event is attributed to the scheduling
+                        // position created *after* the holder's last traced
+                        // opcode preceding the release; the release itself
+                        // executes within the holder's preceding quantum.  To
+                        // preempt BEFORE the release actually happens, the
+                        // attempting thread must be scheduled one position
+                        // earlier (instead of the holder's final in-lock
+                        // opcode).
+                        let pid = release.path_id.saturating_sub(1);
+                        self.path.insert_wakeup(pid, attempt.thread_id, None);
+                    } else if !attempt.acquired {
+                        // Explored-clock timeouts are represented as a failed
+                        // attempt by the clock actor.  When the timeout ran
+                        // first, seed the reverse order at that exact branch:
+                        // let the holder release before the deadline fires.
+                        self.path.insert_wakeup(attempt.path_id, release.thread_id, None);
+                    }
                 }
             }
         }
