@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/dpor", "crates/io"]
+# crates/io is a standalone crate with its own [workspace] table (see
+# crates/io/Cargo.toml). It is intentionally NOT a member here: maturin's sdist
+# rewrites this root manifest down to the crate it builds (crates/dpor), so a
+# sibling member would be dropped and could not be compiled from the published
+# sdist. Keeping crates/io self-contained lets the PEP 517 build (build_backend.py)
+# compile it via `cargo build --manifest-path crates/io/Cargo.toml` in both the
+# development tree and a source install. See issue #246.
+members = ["crates/dpor"]
 resolver = "2"
 
 [workspace.package]

@@ -1,6 +1,16 @@
+# Standalone crate (its own workspace). It is deliberately not a member of the
+# repo-root workspace so that it survives maturin's sdist manifest rewrite and
+# can be compiled from a published source install by build_backend.py. See the
+# note in the repo-root Cargo.toml and issue #246.
+[workspace]
+
 [package]
 name = "frontrun-io"
-version.workspace = true
+# Cosmetic: this crate ships no independent artifact metadata (the Python wheel
+# version comes from crates/dpor via the root workspace). Kept fixed so the
+# release version-injection step, which only rewrites the root Cargo.toml, does
+# not need to touch this file.
+version = "0.0.0"
 edition = "2021"
 description = "LD_PRELOAD library that intercepts libc I/O for frontrun concurrency testing"
 
