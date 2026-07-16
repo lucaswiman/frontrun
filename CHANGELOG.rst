@@ -3,6 +3,32 @@ Changelog
 
 All releases: https://github.com/lucaswiman/frontrun/releases
 
+Unreleased
+----------
+
+* **Virtual-clock exactness.** Explored clocks now cover the timeout-first and
+  release-first outcomes when a timed lock waiter races a runnable holder,
+  preserve DPOR wakeup-tree guidance, and omit physically empty clock-actor
+  steps from replay schedules. Async patch ownership, foreign-loop isolation,
+  and free-threaded engine serialization are also hardened.
+
+* **Cross-process honesty and liveness.** Startup searches with no completed
+  execution now return an inconclusive ``CrossProcessResult.ok = None``;
+  total-timeout truncation is explicit. HELLO/frame budgets, relay watchdog
+  classification, row-lock release ordering, and DPOR bound validation are
+  corrected without relaxing exploration-count assertions.
+
+* **SQL and Redis lifecycle fixes.** SQL trace contexts and database identities
+  are evicted safely, async connection commit/rollback/close methods retain
+  their driver contracts, and SQLAlchemy async pools terminate without
+  ``MissingGreenlet`` or detached-pool growth. Redis ``MIGRATE`` now handles
+  Unix-socket destinations, credentials, and ``COPY`` access modes precisely.
+
+* **Replay, marker, and packaging cleanup.** Replay anchors no longer depend on
+  address-bearing dict-key representations, high-level zero-step marker runs
+  fail closed, and deferred documentation/packaging drift from the 0.7.0 audit
+  is resolved.
+
 0.7.0 (2026-07-14)
 ------------------
 
