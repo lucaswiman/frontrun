@@ -105,9 +105,7 @@ def test_migrate_unix_socket_destination_matches_direct_socket_client(tmp_path: 
     _redis_client._unix_path_server_parts[real_path] = ("localhost", "6380")
     migrate = _capture_accesses("MIGRATE", (path, 0, "k", 2, 1000), host="source")
     destination_write = _capture_accesses("SET", ("k", "value"), db=2, host="127.0.0.1")
-    destination_write = [
-        (resource.replace(":6379/", ":6380/"), kind) for resource, kind in destination_write
-    ]
+    destination_write = [(resource.replace(":6379/", ":6380/"), kind) for resource, kind in destination_write]
 
     migrate_writes = {resource for resource, kind in migrate if kind == "write"}
     direct_writes = {resource for resource, kind in destination_write if kind == "write"}

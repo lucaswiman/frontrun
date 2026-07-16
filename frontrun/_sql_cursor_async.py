@@ -160,9 +160,7 @@ async def _intercept_connection_method_async(
         suppress_sql_write(operation)
         return await _dpor_schedule_and_suppress_async(
             reported,
-            lambda: _execute_and_finalize_tx_end(
-                lambda: original_method(self, *args, **kwargs), deferred_tx_op, self
-            ),
+            lambda: _execute_and_finalize_tx_end(lambda: original_method(self, *args, **kwargs), deferred_tx_op, self),
             release_locks_on_error=False,
         )
 
