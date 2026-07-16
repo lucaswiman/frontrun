@@ -259,7 +259,8 @@ def test_accept_hello_treats_pre_hello_death_as_connection_failure() -> None:
 
 def test_accept_hello_restores_full_per_frame_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """HELLO latency must not consume the later per-frame silence budget."""
-    from frontrun._dpor_runtime.xproc import coordinator, protocol as proto
+    from frontrun._dpor_runtime.xproc import coordinator
+    from frontrun._dpor_runtime.xproc import protocol as proto
 
     class FakeSocket:
         def __init__(self) -> None:
