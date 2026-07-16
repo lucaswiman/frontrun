@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import functools
 from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass
 from typing import Any, ParamSpec, TypeVar
 
 from frontrun import _real_threading as _rt
@@ -123,6 +124,63 @@ _async_parked_conditions: set[_CooperativeAsyncCondition] = set()
 
 
 # ---------------------------------------------------------------------------
+# Active-scheduler context (single "is async-DPOR active for this task?" gate)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _AsyncDporContext:
+    """Bundle of the scheduler state a cooperative primitive needs to engage.
+
+    Async DPOR / replay runs every task on one event-loop thread, so both the
+    scheduler and the logical ``task_id`` are contextvar-backed rather than
+    thread-backed.  A cooperative primitive only participates in exploration
+    when *all three* of {scheduler set, engine present, task_id set} hold; any
+    partial state means "no active context, fall through to stock behaviour".
+    This type makes that a single value instead of a re-open-coded conjunction.
+
+    ``_error`` is deliberately *not* folded into the presence check: it is a
+    mid-flight abort flag whose fallback differs per site (some return, some
+    raise, some skip only the sync-edge report, and ``Lock.acquire``'s
+    scheduling point ignores it entirely).  Sites read it explicitly via
+    :attr:`errored`.
+    """
+
+    scheduler: Any
+    engine: Any
+    task_id: int
+
+    @property
+    def errored(self) -> bool:
+        """Whether the scheduler has aborted (exact deadlock / watchdog timeout)."""
+        return self.scheduler._error is not None
+
+
+def _active_dpor_context() -> _AsyncDporContext | None:
+    """Return the active async-DPOR/replay context, or ``None`` if inactive.
+
+    Returns a context only when a scheduler is installed in the contextvar, it
+    carries a DPOR/replay ``engine``, and a logical ``task_id`` is set — the
+    conjunction every cooperative primitive open-coded before.  The ``engine``
+    term is always satisfiable here: these primitives run only while patched by
+    the async-DPOR path (``async_dpor._patch_asyncio_*``), whose active
+    scheduler is always the exploration or replay scheduler (both hold a
+    non-None ``engine``).  The random shuffler — the one engine-less scheduler —
+    never patches these primitives, so it never reaches this code.
+    """
+    scheduler = _scheduler_var.get()
+    if scheduler is None:
+        return None
+    engine = getattr(scheduler, "engine", None)
+    if engine is None:
+        return None
+    task_id = _task_id_var.get()
+    if task_id is None:
+        return None
+    return _AsyncDporContext(scheduler, engine, task_id)
+
+
+# ---------------------------------------------------------------------------
 # Shared state-access / wake-sync helpers (single copy, shared by all primitives)
 # ---------------------------------------------------------------------------
 
@@ -133,15 +191,14 @@ def _report_state_access(obj: object, suffix: str, kind: str) -> None:
     Shared by every cooperative primitive; ``suffix`` selects the per-type
     state object (``"__lock_state__"`` / ``"__event_state__"``).
     """
-    task_id = _task_id_var.get()
-    scheduler = _scheduler_var.get()
-    engine = getattr(scheduler, "engine", None)
-    if scheduler is None or engine is None or task_id is None or scheduler._error is not None:
+    ctx = _active_dpor_context()
+    if ctx is None or ctx.errored:
         return
+    scheduler = ctx.scheduler
     stable_ids = scheduler._stable_ids
     obj_id = stable_ids.get(obj) if stable_ids is not None else id(obj)
     key = _make_object_key(obj_id, suffix)
-    scheduler.report_task_access(task_id, key, kind)
+    scheduler.report_task_access(ctx.task_id, key, kind)
 
 
 def _async_wake_sync_id(scheduler: Any, obj: object, waiter: int) -> int:
@@ -303,18 +360,22 @@ class _CooperativeAsyncLock:
         # coroutine wrapper won't insert a redundant scheduling point
         # for the pause's own yields.
         scheduler = _scheduler_var.get()
+        ctx = _active_dpor_context()
         needs_cross_resource_pause = bool(
             scheduler is not None
             and (getattr(scheduler, "_detect_sql", False) or getattr(scheduler, "_detect_redis", False))
         )
         already_holds_lock = bool(task_id is not None and _async_task_held_locks.get(task_id))
+        # The scheduling-point decision deliberately ignores ``_error`` (unlike
+        # Queue/Condition) — its "fallback" is to acquire without pausing, not
+        # to bail.  ``ctx is not None`` is exactly the old ``scheduler is not
+        # None and task_id is not None`` here (engine is invariantly present).
         if (
-            scheduler is not None
-            and task_id is not None
+            ctx is not None
             and _in_scheduler_pause.get() == 0
             and (self._lock.locked() or already_holds_lock or needs_cross_resource_pause)
         ):
-            await scheduler.pause(task_id, ("lock_acquire", id(self)))
+            await ctx.scheduler.pause(ctx.task_id, ("lock_acquire", id(self)))
 
         lock_was_held = self._lock.locked()
         if task_id is not None and graph is not None and lock_was_held:
@@ -504,27 +565,31 @@ class _CooperativeAsyncEvent:
         self._event.clear()
 
     async def wait(self) -> bool:
-        task_id = _task_id_var.get()
-        scheduler = _scheduler_var.get()
+        ctx = _active_dpor_context()
 
         # Same scheduling point as _CooperativeAsyncLock.acquire: without it
         # the set()/wait() ordering on an already-set event is never a DPOR
         # choice (Event.wait on a set event completes synchronously).
-        if scheduler is not None and task_id is not None and _in_scheduler_pause.get() == 0:
-            await scheduler.pause(task_id, ("event_wait", id(self)))
+        if ctx is not None and _in_scheduler_pause.get() == 0:
+            await ctx.scheduler.pause(ctx.task_id, ("event_wait", id(self)))
 
         if self._event.is_set():
             _report_state_access(self, "__event_state__", "read")
             return True
         # A scheduler-detected deadlock/timeout aborts the run: tasks free-run
         # to completion (see InterleavedLoop.run_all), so waiting here would
-        # hang until the outer wall timeout.
+        # hang until the outer wall timeout.  Deliberately broader than the
+        # active-context gate below: this fires whenever a scheduler is set and
+        # has errored, even in the defensive state where no task_id is bound —
+        # so an aborted run always free-runs rather than parking.
+        scheduler = _scheduler_var.get()
         if scheduler is not None and scheduler._error is not None:
             return True
 
-        engine = getattr(scheduler, "engine", None)
-        if scheduler is None or task_id is None or engine is None:
+        if ctx is None:
             return await self._event.wait()
+        task_id = ctx.task_id
+        scheduler = ctx.scheduler
 
         # Between the is_set() probe above and block_thread below there are
         # no awaits, and async DPOR is single-threaded — no set() can slip
@@ -555,13 +620,12 @@ class _CooperativeAsyncEvent:
         )
 
     def set(self) -> None:
-        task_id = _task_id_var.get()
-        scheduler = _scheduler_var.get()
-        engine = getattr(scheduler, "engine", None)
-        if scheduler is not None and engine is not None and task_id is not None and scheduler._error is None:
+        ctx = _active_dpor_context()
+        if ctx is not None and not ctx.errored:
+            scheduler = ctx.scheduler
             _report_state_access(self, "__event_state__", "write")
             for waiter in list(self._waiters):
-                scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
+                scheduler.report_task_sync(ctx.task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
                 _unblock_primitive_waiter(scheduler, waiter)
         self._event.set()
 
@@ -616,16 +680,15 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
     def _wake_waiter(
         self,
         waiters: list[tuple[int, asyncio.Future[None]]],
-        scheduler: Any,
-        task_id: int | None,
+        ctx: _AsyncDporContext | None,
     ) -> None:
         waiter_info = self._pop_waiter(waiters)
         if waiter_info is None:
             return
         waiter, fut = waiter_info
-        if scheduler is not None and task_id is not None:
-            scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-            _unblock_primitive_waiter(scheduler, waiter)
+        if ctx is not None:
+            ctx.scheduler.report_task_sync(ctx.task_id, "lock_release", _async_wake_sync_id(ctx.scheduler, self, waiter))
+            _unblock_primitive_waiter(ctx.scheduler, waiter)
         fut.set_result(None)
 
     def _wake_all_for_abort(self) -> None:
@@ -643,25 +706,26 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
 
     def get_nowait(self) -> Any:
         item = super().get_nowait()
-        self._wake_waiter(self._frontrun_put_waiters, _scheduler_var.get(), _task_id_var.get())
+        self._wake_waiter(self._frontrun_put_waiters, _active_dpor_context())
         if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
             _async_parked_queues.discard(self)
         return item
 
     def put_nowait(self, item: Any) -> None:
         super().put_nowait(item)
-        self._wake_waiter(self._frontrun_get_waiters, _scheduler_var.get(), _task_id_var.get())
+        self._wake_waiter(self._frontrun_get_waiters, _active_dpor_context())
         if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
             _async_parked_queues.discard(self)
 
     async def get(self) -> Any:
-        task_id = _task_id_var.get()
-        scheduler = _scheduler_var.get()
-        if scheduler is None or task_id is None:
+        ctx = _active_dpor_context()
+        if ctx is None:
             return await super().get()
+        scheduler = ctx.scheduler
+        task_id = ctx.task_id
         await scheduler.pause(task_id, ("queue_get", id(self)))
         while self.empty():
-            if scheduler._error is not None:
+            if ctx.errored:
                 raise SchedulerTimeoutError("queue get aborted by scheduler")
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._frontrun_get_waiters.append((task_id, fut))
@@ -691,14 +755,15 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         return item
 
     async def put(self, item: Any) -> None:
-        task_id = _task_id_var.get()
-        scheduler = _scheduler_var.get()
-        if scheduler is None or task_id is None:
+        ctx = _active_dpor_context()
+        if ctx is None:
             await super().put(item)
             return
+        scheduler = ctx.scheduler
+        task_id = ctx.task_id
         await scheduler.pause(task_id, ("queue_put", id(self)))
         while self.full():
-            if scheduler._error is not None:
+            if ctx.errored:
                 raise SchedulerTimeoutError("queue put aborted by scheduler")
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._frontrun_put_waiters.append((task_id, fut))
@@ -766,11 +831,12 @@ class _CooperativeAsyncCondition:
     async def wait(self) -> bool:
         if not self.locked():
             raise RuntimeError("cannot wait on un-acquired lock")
-        task_id = _task_id_var.get()
-        scheduler = _scheduler_var.get()
-        if scheduler is None or task_id is None:
+        ctx = _active_dpor_context()
+        if ctx is None:
             return await self._real_condition.wait()
-        if scheduler._error is not None:
+        scheduler = ctx.scheduler
+        task_id = ctx.task_id
+        if ctx.errored:
             # Raise (mirroring Queue.get/put) instead of returning True:
             # returning completes synchronously with zero await points, so a
             # predicate loop (wait_for, or ``while not pred: await wait()``)
@@ -832,7 +898,7 @@ class _CooperativeAsyncCondition:
             on_wake=_reacquire_on_wake,
             on_finally=_reacquire_exception_safe,
         )
-        if scheduler._error is not None:
+        if ctx.errored:
             # Woken by an abort (_wake_all_for_abort), not a notify: the lock
             # was re-acquired above, so raising here keeps the stock
             # Condition.wait contract (lock held on exit) while terminating
@@ -869,15 +935,17 @@ class _CooperativeAsyncCondition:
 
         return await asyncio.wait_for(_wait_until_true(), timeout)
 
-    def _wake_cooperative_waiters(self, n: int, scheduler: Any, task_id: int | None) -> None:
+    def _wake_cooperative_waiters(self, n: int, ctx: _AsyncDporContext | None) -> None:
         woke = 0
         while self._waiters and woke < n:
             waiter, fut = self._waiters.pop(0)
             if fut.done():
                 continue
-            if scheduler is not None and task_id is not None and getattr(scheduler, "_error", None) is None:
-                scheduler.report_task_sync(task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
-                _unblock_primitive_waiter(scheduler, waiter)
+            if ctx is not None and not ctx.errored:
+                ctx.scheduler.report_task_sync(
+                    ctx.task_id, "lock_release", _async_wake_sync_id(ctx.scheduler, self, waiter)
+                )
+                _unblock_primitive_waiter(ctx.scheduler, waiter)
             fut.set_result(None)
             woke += 1
         if not self._waiters:
@@ -886,22 +954,20 @@ class _CooperativeAsyncCondition:
     def notify(self, n: int = 1) -> None:
         if not self.locked():
             raise RuntimeError("cannot notify on un-acquired lock")
-        task_id = _task_id_var.get()
-        scheduler = _scheduler_var.get()
+        ctx = _active_dpor_context()
         real_waiters = getattr(self._real_condition, "_waiters", ())
         pending_before = sum(1 for waiter_fut in real_waiters if not waiter_fut.done())
         self._real_condition.notify(n)
         pending_after = sum(1 for waiter_fut in real_waiters if not waiter_fut.done())
         budget = max(0, n - (pending_before - pending_after))
-        self._wake_cooperative_waiters(budget, scheduler, task_id)
+        self._wake_cooperative_waiters(budget, ctx)
 
     def notify_all(self) -> None:
-        task_id = _task_id_var.get()
-        scheduler = _scheduler_var.get()
+        ctx = _active_dpor_context()
         if not self.locked():
             raise RuntimeError("cannot notify on un-acquired lock")
         self._real_condition.notify_all()
-        self._wake_cooperative_waiters(len(self._waiters), scheduler, task_id)
+        self._wake_cooperative_waiters(len(self._waiters), ctx)
 
 
 def _patch_asyncio_queue_condition() -> None:
