@@ -1280,9 +1280,6 @@ class CooperativeCondition:
         # also spuriously wake an unmanaged waiter (over-waking beyond n).
         # All mutations happen while holding self._lock.
         self._real_cond_tickets: set[int] = set()
-        # Legacy counter kept for notify_all() and backward compat with
-        # any code that reads _notify_count.
-        self._notify_count = 0
         self._object_id = id(self)
         # Fallback real condition for non-managed threads (no scheduler)
         self._real_cond = real_condition(real_lock())
@@ -1339,7 +1336,6 @@ class CooperativeCondition:
             woken += 1
             if ticket in self._real_cond_tickets:
                 real_woken += 1
-        self._notify_count += woken
         return woken, real_woken
 
     def _release_save(self) -> int:

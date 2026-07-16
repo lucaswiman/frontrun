@@ -26,7 +26,6 @@ import builtins
 import contextvars
 import os
 import socket
-import sys
 import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -74,12 +73,6 @@ def set_process_dpor_context(scheduler: Any, thread_id: int, reporter: IOReporte
     """Install the xproc worker context inherited by otherwise-unset threads."""
     global _process_dpor_context
     _process_dpor_context = (scheduler, thread_id, reporter)
-
-
-def clear_process_dpor_context() -> None:
-    """Clear the xproc-only process fallback (primarily for in-process tests)."""
-    global _process_dpor_context
-    _process_dpor_context = None
 
 
 def get_io_reporter() -> IOReporter | None:
@@ -508,19 +501,3 @@ def unpatch_io() -> None:
     socket.socket.recvfrom = _real_socket_recvfrom  # type: ignore[assignment]
     builtins.open = _real_open  # type: ignore[assignment]
     _io_patched = False
-
-
-def install_io_profile(reporter: IOReporter) -> Callable[[Any, str, Any], None]:
-    """Create and install a sys.setprofile callback for the current thread.
-
-    Returns the profile function so the caller can remove it later with
-    ``sys.setprofile(None)``.
-    """
-    prof = make_io_profile_func(reporter)
-    sys.setprofile(prof)
-    return prof
-
-
-def uninstall_io_profile() -> None:
-    """Remove the current thread's sys.setprofile callback."""
-    sys.setprofile(None)

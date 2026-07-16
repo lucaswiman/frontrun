@@ -3,9 +3,9 @@
 The preload library (``libfrontrun_io.so`` / ``libfrontrun_io.dylib``)
 intercepts libc I/O functions and reports events back to Python.
 
-Two transport mechanisms are supported:
+Transport mechanism:
 
-**Pipe transport (preferred):**  :class:`IOEventDispatcher` creates an
+**Pipe transport:**  :class:`IOEventDispatcher` creates an
 ``os.pipe()``, passes the write-end fd to the preload library via
 ``FRONTRUN_IO_FD``, and reads events from the read end in a background
 thread.  Registered listener callbacks are invoked for each event as it
@@ -16,12 +16,7 @@ any given moment, the ``tid`` field on each event is sufficient to
 attribute it to the correct schedule step (no timestamp-based merging
 required).
 
-**Log-file transport (legacy):**  :func:`setup_io_log` creates a temp
-file and sets ``FRONTRUN_IO_LOG``.  After execution,
-:func:`read_io_events` parses the log.  This incurs an open/close per
-event on the Rust side and only supports batch (not streaming) reads.
-
-Event format (tab-separated, same for both transports)::
+Event format (tab-separated)::
 
     <kind>\\t<resource_id>\\t<fd>\\t<pid>\\t<tid>
 
@@ -34,7 +29,6 @@ import ctypes
 import fcntl
 import os
 import select as _select_mod
-import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -389,83 +383,3 @@ class IOEventDispatcher:
 
     def __exit__(self, *_: object) -> None:
         self.stop()
-
-
-# ---------------------------------------------------------------------------
-# Legacy file-based transport
-# ---------------------------------------------------------------------------
-
-
-def setup_io_log() -> str:
-    """Create a temporary log file and set ``FRONTRUN_IO_LOG``.
-
-    Returns the path to the log file.  Call :func:`read_io_events` after
-    execution to parse the events.
-    """
-    fd, path = tempfile.mkstemp(prefix="frontrun_io_", suffix=".log")
-    os.close(fd)
-    os.environ["FRONTRUN_IO_LOG"] = path
-    return path
-
-
-def cleanup_io_log(path: str) -> None:
-    """Remove the temporary I/O log file and unset the env var."""
-    os.environ.pop("FRONTRUN_IO_LOG", None)
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
-
-
-def read_io_events(path: str) -> list[PreloadIOEvent]:
-    """Parse I/O events from the preload library's log file.
-
-    Returns a list of :class:`PreloadIOEvent` in chronological order.
-    Skips malformed lines silently.
-    """
-    events: list[PreloadIOEvent] = []
-    try:
-        with open(path) as f:
-            for line in f:
-                event = _parse_event_line(line)
-                if event is not None:
-                    events.append(event)
-    except FileNotFoundError:
-        pass
-    return events
-
-
-def filter_user_io_events(events: list[PreloadIOEvent]) -> list[PreloadIOEvent]:
-    """Filter out Python startup / import I/O noise.
-
-    Keeps only events for:
-    - Socket connections (``socket:`` prefix)
-    - User files (not under ``/usr/``, ``/lib/``, ``site-packages/``, etc.)
-    """
-    filtered: list[PreloadIOEvent] = []
-    for ev in events:
-        resource = ev.resource_id
-        # Always keep socket events
-        if resource.startswith("socket:"):
-            filtered.append(ev)
-            continue
-        # Keep file events only for user paths
-        if resource.startswith("file:"):
-            path = resource[5:]
-            # Skip stdlib, site-packages, and other system paths
-            if any(
-                seg in path
-                for seg in (
-                    "/usr/lib/python",
-                    "/usr/local/lib/python",
-                    "site-packages/",
-                    "__pycache__",
-                    ".pyc",
-                    "/proc/",
-                    "/sys/",
-                    "/dev/",
-                )
-            ):
-                continue
-            filtered.append(ev)
-    return filtered

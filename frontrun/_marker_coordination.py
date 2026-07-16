@@ -255,8 +255,3 @@ class ThreadCoordinator:
         with self.condition:
             self.error = error
             self.condition.notify_all()
-
-    def is_finished(self) -> bool:
-        """Check if the schedule has completed or encountered an error."""
-        with self.condition:
-            return self.completed or self.error is not None

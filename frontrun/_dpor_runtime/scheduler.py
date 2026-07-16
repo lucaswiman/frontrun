@@ -182,11 +182,6 @@ class DporScheduler:
         self._active_sync_thread: int | None = None
         self._next_thread_after_sync: int | None = None
 
-        # Maps iterator id → original container object. When GET_ITER creates
-        # an iterator from a mutable container, we record the mapping so that
-        # FOR_ITER can report reads on the underlying container.
-        self._iter_to_container: dict[int, Any] = {}
-
         # Row-lock registry: resource_id → thread_id holding the lock.
         # SELECT FOR UPDATE is exclusive — only one thread can hold it at a time.
         # State and _row_lock_int_id() live in the shared RowLockRegistry;
@@ -196,9 +191,6 @@ class DporScheduler:
         # Reverse index: thread_id → set of resource_ids held by that thread.
         # Avoids O(n) scan in _release_row_locks_unlocked.
         self._task_row_locks: dict[int, set[str]] = self._row_lock_registry._task_row_locks
-        # For backward compatibility, keep a _thread_row_locks alias pointing
-        # to the same dict (was renamed to _task_row_locks to match async).
-        self._thread_row_locks: dict[int, set[str]] = self._row_lock_registry._task_row_locks
 
         # Stable integer IDs for row-lock resources (for WaitForGraph nodes).
         # Managed by self._row_lock_registry._row_lock_int_id(); no direct access needed.
@@ -871,22 +863,12 @@ class DporScheduler:
                         # Save frame info before _process_opcode clears it,
                         # in case we need to record a switch/step point.
                         _switch_frame = frame
-                        # Snapshot shadow stack before _process_opcode pops values.
-                        # For STORE_ATTR: stack is [..., value, obj] — we want value (TOS1).
-                        # For LOAD_ATTR: stack is [..., obj] — value will be on TOS after.
-                        _pre_opcode_stack = None
-                        if self._step_event_collector is not None and frame is not None:
-                            _pre_stacks = getattr(_dpor_tls, "_shadow_stacks", None)
-                            if _pre_stacks:
-                                _pre_shadow = _pre_stacks.get(id(frame))
-                                if _pre_shadow and _pre_shadow.stack:
-                                    _pre_opcode_stack = list(_pre_shadow.stack[-3:])  # last 3 elements
                         if frame is not None:
                             _process_opcode(frame, self, thread_id)
                             frame = None  # only process once
                         # Record step event for the report
                         if self._switch_point_collector is not None and _switch_frame is not None:
-                            self._capture_step_event(_switch_frame, thread_id, _pre_opcode_stack)
+                            self._capture_step_event(_switch_frame, thread_id)
                         # It's our turn. After executing one opcode, schedule next.
                         next_thread = self._schedule_next()
                         # _schedule_next saves the path position in
@@ -1144,7 +1126,7 @@ class DporScheduler:
         )
         self._switch_point_collector.append(sp)  # type: ignore[union-attr]
 
-    def _capture_step_event(self, frame: Any, thread_id: int, pre_opcode_stack: list[Any] | None = None) -> None:
+    def _capture_step_event(self, frame: Any, thread_id: int) -> None:
         """Capture a StepEvent keyed by schedule index (path_id)."""
         from frontrun._report import StepEvent, _safe_repr
 

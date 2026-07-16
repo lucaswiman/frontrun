@@ -382,23 +382,39 @@ async def test_executemany() -> None:
 
 class TestExecutemanyPatching:
     def test_patched_executemany_uses_dpor_schedule_and_suppress(self) -> None:
-        """_patched_executemany delegates DPOR scheduling to _dpor_schedule_and_suppress_async."""
+        """_patched_executemany delegates DPOR scheduling to _dpor_schedule_and_suppress_async.
+
+        The delegation is transitive: ``_patched_executemany`` calls the shared
+        ``_report_and_execute_deferred_tx`` helper (factored out of the
+        near-identical psycopg/aiomysql/asyncpg patch bodies), which in turn
+        calls ``_dpor_schedule_and_suppress_async``.
+        """
         import ast
         import inspect
 
         source = inspect.getsource(sql_cursor_async_mod)
         tree = ast.parse(source)
 
+        def _calls_name(node: ast.AST, name: str) -> bool:
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == name:
+                    return True
+            return False
+
         found = False
         for node in ast.walk(tree):
             if isinstance(node, ast.AsyncFunctionDef) and node.name == "_patched_executemany":
-                for child in ast.walk(node):
-                    if isinstance(child, ast.Call):
-                        func = child.func
-                        if isinstance(func, ast.Name) and func.id == "_dpor_schedule_and_suppress_async":
-                            found = True
-                            break
+                if _calls_name(node, "_dpor_schedule_and_suppress_async") or _calls_name(
+                    node, "_report_and_execute_deferred_tx"
+                ):
+                    found = True
+                    break
         assert found, "_patched_executemany should delegate to _dpor_schedule_and_suppress_async"
+
+        assert _calls_name(
+            ast.parse(inspect.getsource(sql_cursor_async_mod._report_and_execute_deferred_tx)),
+            "_dpor_schedule_and_suppress_async",
+        ), "_report_and_execute_deferred_tx should itself delegate to _dpor_schedule_and_suppress_async"
 
     def test_dpor_schedule_and_suppress_acquires_and_releases_row_locks(self) -> None:
         """_dpor_schedule_and_suppress_async acquires row locks and releases on exception."""
