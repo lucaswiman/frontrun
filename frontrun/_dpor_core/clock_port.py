@@ -210,4 +210,3 @@ class VirtualClockPort:
             or self.coordinator.in_timed_wait(actor_id)
             or actor_id in self.spin_waiters
         )
-

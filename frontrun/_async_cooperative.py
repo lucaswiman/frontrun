@@ -687,7 +687,9 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             return
         waiter, fut = waiter_info
         if ctx is not None:
-            ctx.scheduler.report_task_sync(ctx.task_id, "lock_release", _async_wake_sync_id(ctx.scheduler, self, waiter))
+            ctx.scheduler.report_task_sync(
+                ctx.task_id, "lock_release", _async_wake_sync_id(ctx.scheduler, self, waiter)
+            )
             _unblock_primitive_waiter(ctx.scheduler, waiter)
         fut.set_result(None)
 
