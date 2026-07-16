@@ -430,9 +430,7 @@ impl Path {
         // to follow the sequence as constructed. The search strategy only
         // affects the initial thread choice in step(), not subsequent guided
         // choices within a multi-step wakeup sequence.
-        let (chosen, next_subtree) = if let Some(preferred) = preferred.filter(|tid| runnable.contains(tid)) {
-            (preferred, None)
-        } else if let Some(ref subtree) = self.pending_wakeup_subtree {
+        let (chosen, next_subtree) = if let Some(ref subtree) = self.pending_wakeup_subtree {
             if let Some(guided) = subtree.min_thread() {
                 if runnable.contains(&guided) {
                     let sub = subtree.subtree(guided);
@@ -445,6 +443,8 @@ impl Path {
                 let c = if runnable.contains(&current_thread) { current_thread } else { runnable[0] };
                 (c, None)
             }
+        } else if let Some(preferred) = preferred.filter(|tid| runnable.contains(tid)) {
+            (preferred, None)
         } else {
             let c = if runnable.contains(&current_thread) { current_thread } else { runnable[0] };
             (c, None)
