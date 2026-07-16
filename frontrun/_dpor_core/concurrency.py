@@ -177,6 +177,11 @@ def dpor_exploration_iter(
         with engine_lock:
             if not engine.next_execution():
                 return
+        # Planning can itself consume a meaningful share of the total budget.
+        # Do not start the schedule it produced if the deadline elapsed while
+        # next_execution() was building that path.
+        if total_deadline is not None and time.monotonic() > total_deadline:
+            return
 
 
 # ---------------------------------------------------------------------------

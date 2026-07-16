@@ -46,6 +46,7 @@ except ImportError:
 
 
 __all__ = [
+    "_clear_all_active_sql_io_contexts",
     "_clear_active_sql_io_context",
     "_set_active_sql_io_context",
     "_suppress_endpoint_io",
@@ -135,6 +136,12 @@ def _clear_active_sql_io_context(tid: int | None = None) -> None:
         tid = threading.get_native_id()
     with _suppress_lock:
         _ACTIVE_SQL_IO_CONTEXTS.pop(tid, None)
+
+
+def _clear_all_active_sql_io_contexts() -> None:
+    """Forget trace-only SQL context for every retired bridge thread."""
+    with _suppress_lock:
+        _ACTIVE_SQL_IO_CONTEXTS.clear()
 
 
 def get_active_sql_io_context(tid: int) -> tuple[str | None, list[str] | None]:

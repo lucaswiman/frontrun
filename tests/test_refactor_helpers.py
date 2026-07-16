@@ -846,8 +846,8 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
     engine.current_lock = lock
     stable_ids = _StubStableIds()
 
-    # The first iteration is guaranteed without consulting the clock.  The
-    # next three yield at 0.0, 1.0, and 2.0; the 3.0 check then stops.
+    # The first iteration is guaranteed without consulting the clock. Each
+    # subsequent iteration checks after both its body and path planning.
     seen = list(
         dpor_exploration_iter(
             engine=engine,
@@ -856,8 +856,41 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
             total_deadline=2.5,
         )
     )
-    assert len(seen) == 4
-    assert engine._next_calls == 3, "the engine must not plan another execution after the deadline expires"
+    assert len(seen) == 2
+    assert engine._next_calls == 2, "the engine must not run a schedule planned after the deadline expires"
+
+
+def test_dpor_exploration_iter_does_not_run_schedule_planned_after_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow next_execution() must not authorize another over-budget run."""
+    from frontrun._dpor_core import concurrency, dpor_exploration_iter
+
+    fake_now = [0.0]
+    monkeypatch.setattr(concurrency.time, "monotonic", lambda: fake_now[0])
+
+    class SlowPlanningEngine(_StubEngine):
+        def next_execution(self) -> bool:
+            result = super().next_execution()
+            fake_now[0] = 2.0
+            return result
+
+    engine = SlowPlanningEngine(num_executions=2)
+    lock = _RecordingLock()
+    engine.current_lock = lock
+
+    seen = list(
+        dpor_exploration_iter(
+            engine=engine,
+            engine_lock=lock,
+            stable_ids=_StubStableIds(),
+            total_deadline=1.0,
+        )
+    )
+
+    assert [step.index for step in seen] == [1]
+    assert engine._begin_calls == 1
+    assert engine._next_calls == 1
 
 
 def test_dpor_exploration_iter_works_with_real_threading_lock() -> None:

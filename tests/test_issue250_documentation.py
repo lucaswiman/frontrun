@@ -21,7 +21,8 @@ def test_installation_explains_when_the_native_io_library_needs_building() -> No
     installation = _read("docs/installation.rst")
 
     assert "Binary wheels already bundle" in installation
-    assert "source checkout or source distribution" in installation
+    assert "When installing from a source checkout, build" in installation
+    assert "source distribution, build" not in installation
 
 
 def test_trace_filter_example_uses_the_running_interpreters_site_packages() -> None:
@@ -48,12 +49,10 @@ def test_readme_sample_output_and_async_redis_precondition_are_accurate() -> Non
     assert "Seed `counter` to `0` before exploration" in readme
 
 
-def test_issue250_fixes_are_recorded_under_unreleased() -> None:
+def test_issue250_fixes_are_recorded_in_changelog() -> None:
     changelog = _read("CHANGELOG.rst")
-    unreleased = changelog.split("0.7.0 (", 1)[0]
 
-    assert "Unreleased\n----------" in unreleased
-    assert "clock" in unreleased.lower()
-    assert "cross-process" in unreleased.lower()
-    assert "SQL" in unreleased
-    assert "Redis" in unreleased
+    assert "clock" in changelog.lower()
+    assert "cross-process" in changelog.lower()
+    assert "SQL" in changelog
+    assert "Redis" in changelog

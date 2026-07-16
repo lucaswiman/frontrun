@@ -133,11 +133,23 @@ def test_async_connection_patching_preserves_aiomysql_sync_close_contract() -> N
         def close(self) -> str:
             return "closed"
 
+    from frontrun._io_detection import tx_store
+
+    original_close = Connection.close
     sql_cursor_async_mod._patch_async_connection_methods(Connection, close_is_async=False)
-    result = Connection().close()
+    assert Connection.close is not original_close
+
+    connection = Connection()
+    store = tx_store()
+    store._in_transaction = True
+    store._tx_connection = connection
+    store._tx_buffer = [("sql:t", "write")]
+    result = connection.close()
     try:
         assert not inspect.isawaitable(result)
         assert result == "closed"
+        assert getattr(store, "_in_transaction", False) is False
+        assert not hasattr(store, "_tx_connection")
     finally:
         if inspect.iscoroutine(result):
             result.close()
@@ -202,6 +214,27 @@ async def test_aiosqlite_connection_transaction_methods_finalize_modeled_state()
     finally:
         set_io_reporter(None)
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_close_clears_transaction_and_database_scope() -> None:
+    from frontrun._io_detection import tx_store
+    from frontrun._sql_db_scope import _CONNECTION_DB_SCOPES, _register_connection_db_scope
+
+    patch_sql_async()
+    conn = await aiosqlite.connect(":memory:")
+    store = tx_store()
+    store._in_transaction = True
+    store._tx_connection = conn
+    store._tx_buffer = [("sql:t", "write")]
+    _register_connection_db_scope(conn, "sqlite-memory:async-close-test")
+    assert id(conn) in _CONNECTION_DB_SCOPES
+
+    await conn.close()
+
+    assert getattr(store, "_in_transaction", False) is False
+    assert not hasattr(store, "_tx_connection")
+    assert id(conn) not in _CONNECTION_DB_SCOPES
 
 
 def test_unpatch_restores_originals() -> None:

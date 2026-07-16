@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from frontrun._sql_endpoint_suppression import _clear_all_active_sql_io_contexts
+
 from ._shared import *
 from ._shared import _clear_active_sql_io_context, _make_object_key
 
@@ -51,10 +53,7 @@ class _PreloadBridge:
         # No mapped worker remains that could own a delayed SQL trace context.
         # Exploration is globally guarded, so clearing the trace-only registry
         # cannot interfere with another live bridge.
-        from frontrun._sql_endpoint_suppression import _ACTIVE_SQL_IO_CONTEXTS, _suppress_lock
-
-        with _suppress_lock:
-            _ACTIVE_SQL_IO_CONTEXTS.clear()
+        _clear_all_active_sql_io_contexts()
 
     def listener(self, event: Any) -> None:
         """IOEventDispatcher callback — buffer the event for the right thread."""

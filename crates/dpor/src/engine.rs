@@ -186,8 +186,12 @@ impl DporEngine {
             execution.aborted = true;
             return None;
         }
-        let preferred = self.preferred_thread.take();
+        let preferred = self.preferred_thread;
+        let replaying = self.path.current_position() < self.path.depth();
         let chosen = self.path.schedule_preferred(&runnable, execution.active_thread, self.num_threads, preferred)?;
+        if !replaying && preferred == Some(chosen) {
+            self.preferred_thread = None;
+        }
         execution.threads[chosen].dpor_vv.increment(chosen);
         execution.threads[chosen].io_vv.increment(chosen);
         execution.active_thread = chosen;
@@ -701,6 +705,29 @@ impl DporEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_preferred_thread_survives_replayed_prefix() {
+        let mut engine = DporEngine::new(3, None, 100, None, SearchStrategy::Dfs);
+        let mut first = engine.begin_execution();
+
+        assert_eq!(engine.schedule(&mut first), Some(0));
+        engine.process_access(&mut first, 0, 123, AccessKind::Write);
+        first.block_thread(0);
+        assert_eq!(engine.schedule(&mut first), Some(1));
+        engine.process_access(&mut first, 1, 123, AccessKind::Write);
+
+        assert!(engine.next_execution());
+        let mut replay = engine.begin_execution();
+        engine.prefer_next_thread(2);
+
+        assert_eq!(engine.schedule(&mut replay), Some(1), "the retained prefix remains authoritative");
+        assert_eq!(
+            engine.schedule(&mut replay),
+            Some(2),
+            "the preference must apply at the first newly-created scheduling point"
+        );
+    }
 
     #[test]
     fn test_two_threads_no_conflict() {

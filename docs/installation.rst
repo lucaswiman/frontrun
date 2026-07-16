@@ -37,10 +37,12 @@ Building the I/O Library from source
 
 Binary wheels already bundle the native I/O interception library. No Rust
 toolchain or separate build step is needed after a normal ``pip install``.
+Source distributions build the library during package installation and require
+a Rust toolchain, but no separate command.
 
-When installing from a source checkout or source distribution, build the
-native ``LD_PRELOAD`` library for C-level I/O interception (required for opaque
-database drivers, Redis clients, etc.):
+When installing from a source checkout, build the native ``LD_PRELOAD`` library
+for C-level I/O interception (required for opaque database drivers, Redis
+clients, etc.):
 
 .. code-block:: bash
 

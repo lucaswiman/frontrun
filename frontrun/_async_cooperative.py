@@ -87,7 +87,6 @@ _real_asyncio_queue = asyncio.Queue
 _real_asyncio_condition = asyncio.Condition
 _real_asyncio_sleep = asyncio.sleep
 
-_async_lock_patched = False
 _async_lock_patch_count = 0
 _async_event_patch_count = 0
 _async_queue_condition_patch_count = 0
@@ -507,7 +506,7 @@ def _release_task_async_locks(task_id: int) -> None:
 
 def _patch_asyncio_lock() -> None:
     """Replace asyncio.Lock with cooperative deadlock-detecting version."""
-    global _async_lock_patch_count, _async_lock_patched, _async_wait_graph  # noqa: PLW0603
+    global _async_lock_patch_count, _async_wait_graph  # noqa: PLW0603
     with _async_patch_lock:
         _async_lock_patch_count += 1
         if _async_lock_patch_count > 1:
@@ -515,12 +514,11 @@ def _patch_asyncio_lock() -> None:
         _async_wait_graph = WaitForGraph()
         _async_lock_owners.clear()
         asyncio.Lock = _CooperativeAsyncLock  # type: ignore[assignment,misc]
-        _async_lock_patched = True
 
 
 def _unpatch_asyncio_lock() -> None:
     """Restore original asyncio.Lock."""
-    global _async_lock_patch_count, _async_lock_patched, _async_wait_graph  # noqa: PLW0603
+    global _async_lock_patch_count, _async_wait_graph  # noqa: PLW0603
     with _async_patch_lock:
         if _async_lock_patch_count <= 0:
             return
@@ -530,7 +528,6 @@ def _unpatch_asyncio_lock() -> None:
         asyncio.Lock = _real_asyncio_lock  # type: ignore[assignment,misc]
         _reset_async_lock_state()
         _async_wait_graph = None
-        _async_lock_patched = False
 
 
 # ---------------------------------------------------------------------------
