@@ -1244,6 +1244,25 @@ mod tests {
         assert_eq!(path.depth(), 1);
     }
 
+    /// A local scheduling preference must not replace wakeup-tree guidance.
+    ///
+    /// The pending subtree is the suffix of a multi-step notdep sequence and
+    /// is required to reverse a previously observed race.  Dropping it to run
+    /// a newly enabled clock actor can lose that race-reversing execution.
+    #[test]
+    fn test_schedule_preference_does_not_override_pending_wakeup_sequence() {
+        let mut path = Path::new(None, SearchStrategy::Dfs);
+        let mut pending = WakeupTree::empty();
+        pending.insert(&[2]);
+        path.pending_wakeup_subtree = Some(pending);
+
+        assert_eq!(
+            path.schedule_preferred(&[0, 1, 2], 0, 3, Some(1)),
+            Some(2),
+            "the pending race-reversing sequence must remain authoritative"
+        );
+    }
+
     #[test]
     fn test_insert_wakeup_and_step() {
         let mut path = Path::new(None, SearchStrategy::Dfs);
