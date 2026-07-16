@@ -1489,6 +1489,53 @@ def _make_virtual_clock_scheduler() -> Any:
     )
 
 
+def test_noop_clock_actor_step_is_omitted_from_replay_schedule() -> None:
+    """A stale clock-actor pick with no deadline has no physical effect.
+
+    Keeping it in ``schedule_trace`` makes replay unable to distinguish this
+    no-op from an actor step that drifted ahead of a real deadline registration.
+    The constructive schedule must therefore contain only the following real
+    worker transition.
+    """
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    class Execution(_FakeExecution):
+        def __init__(self) -> None:
+            super().__init__([0, 99])
+            self.schedule_trace: list[int] = []
+
+        def discard_last_schedule_step(self, thread_id: int) -> None:
+            if self.schedule_trace and self.schedule_trace[-1] == thread_id:
+                self.schedule_trace.pop()
+
+    class Engine:
+        def __init__(self) -> None:
+            self.choices = [99]
+
+        def schedule(self, execution: Execution) -> int:
+            chosen = self.choices.pop(0) if self.choices else 0
+            execution.schedule_trace.append(chosen)
+            return chosen
+
+    execution = Execution()
+    engine = Engine()
+    scheduler = DporScheduler(
+        engine,
+        execution,
+        num_threads=1,
+        virtual_clock=VirtualClock(),
+        clock_mode="explored",
+        clock_actor_id=99,
+    )
+    execution.schedule_trace.clear()
+    engine.choices = [99]
+    # Simulate a stale wakeup-tree choice after the actor was re-enabled.
+    execution.unblock_thread(99)
+
+    assert scheduler._schedule_next() == 0
+    assert execution.schedule_trace == [0]
+
+
 def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
     """Deterministic regression for the replay force-expiry bug.
 
