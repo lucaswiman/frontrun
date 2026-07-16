@@ -25,13 +25,6 @@ Assertions:
 3.  **Failure evidence**: virtual/explored failures carry a counterexample and
     explanation, and replay reproduces them whenever attempted.
 
-Known gap (async twin of the sync finding, 2026-07): a timed event wait whose
-executed run is satisfied by another worker's ``set()`` loses its
-pending-timeout branch under ``clock="explored"`` — see
-``test_known_gap_async_explored_clock_drops_timeout_branch_of_satisfied_wait``.
-In async the real clock cannot catch this (a real ``wait_for`` timeout cannot
-be scheduled early), so the regression is asserted via monotonicity against
-the pure-timeout variant, which explored-clock DPOR *does* find.
 """
 
 from __future__ import annotations
@@ -61,13 +54,6 @@ class AsyncProgramSpec:
 
     def op_kinds(self) -> set[str]:
         return {op[0] for ops in self.workers for op in ops}
-
-    def has_known_wait_set_gap(self) -> bool:
-        """Family excluded from the no-false-certification assertion (see
-        the known-gap xfail test at the bottom of this module)."""
-        kinds = self.op_kinds()
-        return "event_wait" in kinds and "event_set" in kinds
-
 
 class _SharedState:
     def __init__(self, num_workers: int) -> None:
@@ -195,7 +181,7 @@ def _assert_failure_evidence(result: InterleavingResult, label: str, spec: Async
         )
 
 
-def _run_oracle(spec: AsyncProgramSpec, *, include_known_gap_families: bool = False) -> None:
+def _run_oracle(spec: AsyncProgramSpec) -> None:
     result_virtual = _explore_dpor(spec, "virtual")
     result_virtual_again = _explore_dpor(spec, "virtual")
 
@@ -230,7 +216,7 @@ def _run_oracle(spec: AsyncProgramSpec, *, include_known_gap_families: bool = Fa
         )
 
     # Assertion 1: no false certification against the real clock.
-    if _certified_pass(result_explored) and (include_known_gap_families or not spec.has_known_wait_set_gap()):
+    if _certified_pass(result_explored):
         result_real = _explore_dpor(spec, "real", reproduce=0)
         assert not _found_counterexample(result_real), (
             f"SOUNDNESS: async clock='explored' certified a pass (exhausted after "
@@ -350,7 +336,7 @@ def test_canary_async_autojump_narrowing_is_the_documented_semantics() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Discrepancy found by this oracle (minimized reproducer, async twin)
+# Regression found by this oracle (minimized reproducer, async twin)
 # ---------------------------------------------------------------------------
 
 _WAIT_ONLY = AsyncProgramSpec(((("event_wait", 0.01), ("incr", 0.0)), (("incr", 0.0),)))
@@ -386,23 +372,10 @@ def test_known_quirk_async_dpor_suspension_free_tasks_are_inconclusive() -> None
     assert result.property_holds, result.explanation
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Async explored-clock false certification (twin of the sync gap in test_clock_differential.py): "
-        "worker0 awaits wait_for(event.wait(), 0.01) then does a raceable increment; worker1 increments then "
-        "set()s.  Every failing interleaving of the setter-less variant above (clock actor fires the timeout "
-        "before worker1 runs, the two increments race, counter == 1) is still reachable when worker1 merely "
-        "appends a set() after its increment — yet with the set() present exploration certifies a pass after "
-        "a single execution (num_explored == 1): the pending-timeout branch is dropped once the executed "
-        "run's wait is satisfied by the wake edge.  The real clock cannot catch this one (a real wait_for "
-        "timeout cannot be scheduled early), so the assertion is monotonicity against the setter-less "
-        "variant.  Found by test_async_clock_differential.py's differential oracle, 2026-07."
-    ),
-    strict=False,
-)
-def test_known_gap_async_explored_clock_drops_timeout_branch_of_satisfied_wait() -> None:
+def test_async_explored_clock_keeps_timeout_branch_of_satisfied_wait() -> None:
     result = _explore_dpor(_WAIT_SET_GAP, "explored")
     assert not result.property_holds, (
         f"clock='explored' certified a pass after {result.num_explored} execution(s) despite the reachable "
         "wait-timeout lost-update race (found by the same engine on the setter-less variant)"
     )
+    _assert_failure_evidence(result, "clock=explored", _WAIT_SET_GAP)
