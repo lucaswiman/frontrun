@@ -846,8 +846,8 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
     engine.current_lock = lock
     stable_ids = _StubStableIds()
 
-    # The first iteration is guaranteed without consulting the clock.  The
-    # next three yield at 0.0, 1.0, and 2.0; the 3.0 check then stops.
+    # The first iteration is guaranteed without consulting the clock. Each
+    # subsequent iteration checks after both its body and path planning.
     seen = list(
         dpor_exploration_iter(
             engine=engine,
@@ -856,8 +856,8 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
             total_deadline=2.5,
         )
     )
-    assert len(seen) == 4
-    assert engine._next_calls == 3, "the engine must not plan another execution after the deadline expires"
+    assert len(seen) == 2
+    assert engine._next_calls == 2, "the engine must not run a schedule planned after the deadline expires"
 
 
 def test_dpor_exploration_iter_does_not_run_schedule_planned_after_deadline(
