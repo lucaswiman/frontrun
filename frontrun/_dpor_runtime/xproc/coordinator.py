@@ -209,7 +209,12 @@ def accept_hello_live(
 class CrossProcessResult:
     """Outcome of a cross-process exploration."""
 
-    ok: bool
+    # True: no failure in at least one completed execution. False: concrete
+    # failure. None: inconclusive because no execution completed (for example,
+    # total_timeout expired during startup).  Keeping the zero-work state
+    # distinct prevents direct explore_processes() callers from reading a
+    # vacuous ``ok=True`` as a pass.
+    ok: bool | None
     iterations: int
     # True only when the search space was genuinely fully covered: any
     # truncating bound (max_iterations / max_executions / total_timeout, or a

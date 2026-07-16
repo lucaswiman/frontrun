@@ -737,7 +737,7 @@ class DporCrossProcessCoordinator:
             if first_failure is not None:
                 return replace(first_failure, iterations=num_explored, exhausted=exhausted, failures=failures)
             return CrossProcessResult(
-                ok=True,
+                ok=True if num_explored > 0 else None,
                 iterations=num_explored,
                 exhausted=exhausted,
                 workers_executed=workers_ran,
