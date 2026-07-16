@@ -7,10 +7,11 @@ Unreleased
 ----------
 
 * **Virtual-clock exactness.** Explored clocks now cover the timeout-first and
-  release-first outcomes when a timed lock waiter races a runnable holder,
-  preserve DPOR wakeup-tree guidance, and omit physically empty clock-actor
-  steps from replay schedules. Async patch ownership, foreign-loop isolation,
-  and free-threaded engine serialization are also hardened.
+  release-first outcomes when a timed lock waiter races a runnable holder or
+  an event wait races a satisfying wake, preserve DPOR wakeup-tree guidance,
+  and omit physically empty clock-actor steps from replay schedules. Async
+  patch ownership, foreign-loop isolation, and free-threaded engine
+  serialization are also hardened.
 
 * **Cross-process honesty and liveness.** Startup searches with no completed
   execution now return an inconclusive ``CrossProcessResult.ok = None``;

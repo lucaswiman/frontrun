@@ -55,6 +55,7 @@ class AsyncProgramSpec:
     def op_kinds(self) -> set[str]:
         return {op[0] for ops in self.workers for op in ops}
 
+
 class _SharedState:
     def __init__(self, num_workers: int) -> None:
         self.counters: dict[str, int] = {KEY: 0}
