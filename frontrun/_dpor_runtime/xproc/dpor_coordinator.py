@@ -259,6 +259,7 @@ def _relay_loop(
                 if next_kind not in (proto.REPORT_AND_WAIT, proto.ACQUIRE_LOCKS, proto.BEFORE_IO):
                     publish_pending_accesses()
                 if next_kind == proto.RELEASE_LOCKS:
+                    assert msg is not None
                     # Match the in-process scheduler: releasing modeled row
                     # locks is part of the completed physical operation and
                     # therefore happens while this worker still owns its turn.
