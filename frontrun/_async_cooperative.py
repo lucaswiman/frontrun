@@ -622,6 +622,14 @@ class _CooperativeAsyncEvent:
             scheduler = ctx.scheduler
             _report_state_access(self, "__event_state__", "write")
             for waiter in list(self._waiters):
+                # A virtual wait_for timeout can fire before its cancelled
+                # inner Event.wait coroutine gets a loop turn to remove itself
+                # from this list.  The timeout handler removes the logical
+                # waiter from _event_blocked immediately; do not manufacture a
+                # later set() -> waiter happens-before edge for that stale
+                # physical waiter, or DPOR can prune the timeout-first race.
+                if waiter not in scheduler._event_blocked:
+                    continue
                 scheduler.report_task_sync(ctx.task_id, "lock_release", _async_wake_sync_id(scheduler, self, waiter))
                 _unblock_primitive_waiter(scheduler, waiter)
         self._event.set()

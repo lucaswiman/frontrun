@@ -37,13 +37,6 @@ schedule), so the soundness assertions are one-directional:
     counterexample schedule and an explanation, and its replay reproduces
     the violation whenever reproduction was attempted.
 
-Known gap found by this oracle (2026-07): a timed ``Event.wait(timeout=...)``
-whose executed run is satisfied by another worker's ``set()`` loses its
-pending-timeout branch under ``clock="explored"`` — see
-``test_known_gap_explored_clock_drops_timeout_branch_of_satisfied_event_wait``
-below.  Generated specs containing both an ``event_wait`` and an
-``event_set`` are excluded from assertion 1 until that is fixed.
-
 Certification proxy: thread-execution DPOR leaves ``InterleavingResult.
 exhausted`` as ``None``, and ``engine.next_execution()`` returns False both
 on tree exhaustion and on hitting ``max_executions``.  With
@@ -88,17 +81,6 @@ class ProgramSpec:
 
     def op_kinds(self) -> set[str]:
         return {op[0] for ops in self.workers for op in ops}
-
-    def has_known_wait_set_gap(self) -> bool:
-        """Spec family excluded from the no-false-certification assertion.
-
-        A timed ``Event.wait`` that the executed interleaving satisfies via a
-        ``set()`` currently loses its pending-timeout branch under
-        ``clock="explored"`` (false certification).  Tracked by the xfail
-        regression test at the bottom of this module.
-        """
-        kinds = self.op_kinds()
-        return "event_wait" in kinds and "event_set" in kinds
 
     def has_timed_ops(self) -> bool:
         """Ops whose cooperative wait loop was observed to leak real-time
@@ -237,7 +219,7 @@ def _assert_failure_evidence(result: InterleavingResult, label: str, spec: Progr
         )
 
 
-def _run_oracle(spec: ProgramSpec, *, include_known_gap_families: bool = False) -> None:
+def _run_oracle(spec: ProgramSpec) -> None:
     """Run the full differential oracle on one generated program."""
     result_virtual = _explore_dpor(spec, "virtual")
     result_virtual_again = _explore_dpor(spec, "virtual")
@@ -247,7 +229,7 @@ def _run_oracle(spec: ProgramSpec, *, include_known_gap_families: bool = False) 
         f"virtual-clock outcome is nondeterministic: {result_virtual.property_holds} vs "
         f"{result_virtual_again.property_holds}; spec={spec}"
     )
-    if include_known_gap_families or not spec.has_timed_ops():
+    if not spec.has_timed_ops():
         assert result_virtual.num_explored == result_virtual_again.num_explored, (
             f"virtual-clock num_explored is nondeterministic: {result_virtual.num_explored} vs "
             f"{result_virtual_again.num_explored}; spec={spec}"
@@ -277,7 +259,7 @@ def _run_oracle(spec: ProgramSpec, *, include_known_gap_families: bool = False) 
         )
 
     # Assertion 1: no false certification against the real clock.
-    if _certified_pass(result_explored) and (include_known_gap_families or not spec.has_known_wait_set_gap()):
+    if _certified_pass(result_explored):
         result_real = _explore_dpor(spec, "real", reproduce=0)
         assert not _found_counterexample(result_real), (
             f"SOUNDNESS: clock='explored' certified a pass (exhausted after "
@@ -397,7 +379,7 @@ def test_canary_autojump_narrowing_is_the_documented_semantics() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Discrepancy found by this oracle (minimized reproducer)
+# Regression found by this oracle (minimized reproducer)
 # ---------------------------------------------------------------------------
 
 _WAIT_SET_GAP = ProgramSpec(
@@ -408,26 +390,13 @@ _WAIT_SET_GAP = ProgramSpec(
 )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Explored-clock false certification: worker0 does event.wait(timeout=0.01) then an unsynchronized "
-        "increment; worker1 increments then set()s the event.  The timeout deadline is pending while worker1 "
-        "runs, so the clock actor should be schedulable to fire the timeout BEFORE worker1's set() — waking "
-        "worker0 into a lost-update race (counter == 1).  Real-clock DPOR finds exactly that counterexample "
-        "and replays it 3/3, and clock='explored' itself finds it when the set() is removed (pure-timeout "
-        "variant) — but when the executed run's wait is satisfied by set(), the pending-timeout branch is "
-        "dropped: exploration certifies a pass after a single execution (num_explored == 1, deterministic). "
-        "Wake-edge/deadline-provenance bookkeeping in the explored clock actor; found by "
-        "test_clock_differential.py's differential oracle, 2026-07."
-    ),
-    strict=False,
-)
-def test_known_gap_explored_clock_drops_timeout_branch_of_satisfied_event_wait() -> None:
+def test_explored_clock_keeps_timeout_branch_of_satisfied_event_wait() -> None:
     result_explored = _explore_dpor(_WAIT_SET_GAP, "explored")
     assert not result_explored.property_holds, (
         f"clock='explored' certified a pass after {result_explored.num_explored} execution(s) despite the "
         "reachable wait-timeout lost-update race (real-clock DPOR finds and reproduces it)"
     )
+    _assert_failure_evidence(result_explored, "clock=explored", _WAIT_SET_GAP)
 
 
 # The spec on which the oracle's determinism assertion originally tripped

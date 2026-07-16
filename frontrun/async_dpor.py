@@ -386,6 +386,14 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         """Keep the clock actor's enabledness in step with pending deadlines."""
         sync_clock_actor(self.execution, self._clock_actor_id, self._clock_mode, self._has_pending_deadlines())
 
+    def _prefer_clock_actor(self) -> None:
+        """Prioritize a newly armed explored timeout at the next new branch."""
+        if self._clock_mode != "explored" or self._clock_actor_id is None:
+            return
+        prefer = getattr(self.engine, "prefer_next_thread", None)
+        if prefer is not None:
+            prefer(self._clock_actor_id)
+
     def _set_current_task(self, task_id: int | None) -> None:
         self._current_task = task_id
         self._current_path_id = self._last_scheduled_path_id if task_id is not None else None
@@ -459,6 +467,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         """Register a non-sleep virtual timeout for an async wrapper."""
         self._deadlines.add_timeout(task_id, deadline, token)
         self._sync_clock_actor()
+        self._prefer_clock_actor()
 
     def remove_timeout_deadline(self, task_id: int, token: object) -> None:
         self._deadlines.cancel(task_id, token)
