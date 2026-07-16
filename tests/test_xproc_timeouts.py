@@ -214,9 +214,11 @@ def test_dpor_total_timeout_bounds_a_single_long_execution() -> None:
     elapsed = time.monotonic() - start
     assert elapsed < 5.0, f"total_timeout=0.5 was not honored mid-execution (returned after {elapsed:.1f}s)"
     # The in-flight execution was truncated, so the search must not claim
-    # exhaustion — and nothing failed, so the truncated run is not a failure.
+    # exhaustion. No execution completed, so the raw result is inconclusive
+    # rather than either a pass or a concrete failure.
     assert result.exhausted is False
-    assert result.ok, f"truncation misreported as failure: {result.failure!r} ({result.failure_kind})"
+    assert result.ok is None
+    assert "total_timeout" in (result.truncation or "")
 
 
 class _NeverConnectingWorkerSet:
