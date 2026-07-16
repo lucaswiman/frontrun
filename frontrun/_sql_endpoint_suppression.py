@@ -46,6 +46,7 @@ except ImportError:
 
 
 __all__ = [
+    "_clear_active_sql_io_context",
     "_set_active_sql_io_context",
     "_suppress_endpoint_io",
     "_suppress_lock",
@@ -120,6 +121,20 @@ def _set_active_sql_io_context(operation: Any, parameters: Any, paramstyle: str)
     chain = _current_user_call_chain()
     with _suppress_lock:
         _ACTIVE_SQL_IO_CONTEXTS[tid] = (summary, chain)
+
+
+def _clear_active_sql_io_context(tid: int | None = None) -> None:
+    """Forget trace-only SQL context when an OS thread leaves the bridge.
+
+    Context remains available after an individual driver call because preload
+    events arrive through an asynchronous pipe.  The bridge's thread lifetime
+    is the safe boundary: once the mapping is removed, retaining the entry can
+    only mislabel a future thread that reuses the native TID.
+    """
+    if tid is None:
+        tid = threading.get_native_id()
+    with _suppress_lock:
+        _ACTIVE_SQL_IO_CONTEXTS.pop(tid, None)
 
 
 def get_active_sql_io_context(tid: int) -> tuple[str | None, list[str] | None]:
@@ -272,3 +287,4 @@ def clear_permanent_suppressions() -> None:
         _permanently_suppressed_tids.clear()
         _suppressed_sql_endpoints.clear()
         _suppressed_sql_writes.clear()
+        _ACTIVE_SQL_IO_CONTEXTS.clear()

@@ -2173,6 +2173,8 @@ def test_detect_autobegin_callable_autocommit_method() -> None:
     finally:
         _io_tls._in_transaction = False
         _io_tls._is_autobegin = False
+        if hasattr(_io_tls, "_tx_connection"):
+            delattr(_io_tls, "_tx_connection")
 
 
 def test_detect_autobegin_callable_autocommit_on() -> None:

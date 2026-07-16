@@ -40,6 +40,7 @@ class _PreloadBridge:
             self._tid_to_dpor.pop(os_tid, None)
             if not self._tid_to_dpor:
                 self._active = False
+        _clear_active_sql_io_context(os_tid)
 
     def clear(self) -> None:
         """Clear all mappings and pending events (between executions)."""
@@ -47,6 +48,13 @@ class _PreloadBridge:
             self._tid_to_dpor.clear()
             self._pending.clear()
             self._active = False
+        # No mapped worker remains that could own a delayed SQL trace context.
+        # Exploration is globally guarded, so clearing the trace-only registry
+        # cannot interfere with another live bridge.
+        from frontrun._sql_endpoint_suppression import _ACTIVE_SQL_IO_CONTEXTS, _suppress_lock
+
+        with _suppress_lock:
+            _ACTIVE_SQL_IO_CONTEXTS.clear()
 
     def listener(self, event: Any) -> None:
         """IOEventDispatcher callback — buffer the event for the right thread."""

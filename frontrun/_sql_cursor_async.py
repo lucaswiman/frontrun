@@ -23,8 +23,8 @@ import importlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from frontrun._io_detection import external_operation_scope, tx_store
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
-from frontrun._io_detection import tx_store
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._sql_cursor import (
     _RE_INSERT_TABLE,
@@ -37,8 +37,9 @@ from frontrun._sql_cursor import (
     _release_dpor_row_locks,
     _report_sql_access,
     _suppress_endpoint_io,
+    suppress_sql_write,
 )
-from frontrun._sql_transactions import _apply_tx_op_after_success
+from frontrun._sql_transactions import _apply_tx_op_after_success, reset_connection_state
 
 # ---------------------------------------------------------------------------
 # Shared async DPOR scheduling + endpoint suppression
@@ -128,6 +129,40 @@ async def _execute_and_finalize_tx_end(
     if tx_op is not None:
         _apply_tx_op_after_success(tx_op, _connection_for_db_object(connection))
     return result
+
+
+async def _intercept_connection_method_async(
+    original_method: Any,
+    self: Any,
+    operation: str,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Model async connection commit/rollback and clean up close state."""
+    with external_operation_scope():
+        if operation == "CLOSE":
+            result = await original_method(self, *args, **kwargs)
+            if getattr(tx_store(), "_tx_connection", None) is self:
+                reset_connection_state()
+            return result
+
+        deferred_tx_end: list[Any] = []
+        reported = _report_sql_access(
+            operation,
+            None,
+            db_obj=self,
+            defer_tx_lock_release=True,
+            deferred_tx_end=deferred_tx_end,
+        )
+        deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
+        suppress_sql_write(operation)
+        return await _dpor_schedule_and_suppress_async(
+            reported,
+            lambda: _execute_and_finalize_tx_end(
+                lambda: original_method(self, *args, **kwargs), deferred_tx_op, self
+            ),
+            release_locks_on_error=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +313,18 @@ def _patch_async_methods(
         )
 
 
+def _patch_async_connection_methods(connection_cls: Any) -> None:
+    """Patch awaitable transaction methods shared by async DBAPI drivers."""
+
+    def _make_patched(orig: Any, method_name: str) -> Any:
+        async def _patched(self: Any, *args: Any, **kwargs: Any) -> Any:
+            return await _intercept_connection_method_async(orig, self, method_name.upper(), *args, **kwargs)
+
+        return wrap_method_metadata(_patched, orig, name=method_name)
+
+    _patch_async_methods(connection_cls, ("commit", "rollback", "close"), _make_patched)
+
+
 # ---------------------------------------------------------------------------
 # aiosqlite patching
 # ---------------------------------------------------------------------------
@@ -305,6 +352,7 @@ def _patch_aiosqlite() -> None:
             return wrap_method_metadata(_patched, orig, name=method_name)
 
         _patch_async_methods(target_cls, ("execute", "executemany"), _make_patched)
+    _patch_async_connection_methods(aiosqlite.Connection)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +366,10 @@ def _patch_psycopg_async() -> None:
         import psycopg  # type: ignore[import-untyped]
     except ImportError:
         return
+
+    connection_cls = getattr(psycopg, "AsyncConnection", None)
+    if connection_cls is not None:
+        _patch_async_connection_methods(connection_cls)
 
     cursor_cls = getattr(psycopg, "AsyncCursor", None)
     if cursor_cls is None:
@@ -397,6 +449,13 @@ def _patch_aiomysql() -> None:
         return wrap_method_metadata(_patched, orig, name=method_name)
 
     _patch_async_methods(cursor_cls, ("execute", "executemany"), _make_patched)
+    try:
+        connection_mod = importlib.import_module("aiomysql.connection")
+    except ImportError:
+        return
+    connection_cls = getattr(connection_mod, "Connection", None)
+    if connection_cls is not None:
+        _patch_async_connection_methods(connection_cls)
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +471,7 @@ def _patch_asyncpg() -> None:
         return
 
     conn_cls = asyncpg.Connection
+    _patch_async_connection_methods(conn_cls)
 
     # asyncpg methods all take (query, *args) — no separate params arg.
     # execute returns command tag, fetch/fetchrow/fetchval return results.

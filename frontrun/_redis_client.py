@@ -354,6 +354,31 @@ def _find_redis_option(cmd_args: tuple[object, ...], option: str) -> object | No
     return None
 
 
+def _has_redis_option(cmd_args: tuple[object, ...], option: str, *, start: int) -> bool:
+    """Return whether an option token occurs after a command's fixed fields."""
+    wanted = option.upper()
+    return any(_redis_arg_text(value).upper() == wanted for value in cmd_args[start:])
+
+
+def _migrate_destination_scope(cmd_args: tuple[object, ...]) -> str:
+    """Resolve MIGRATE's TCP or port-0 Unix-socket destination scope."""
+    host, port, _key, db = cmd_args[:4]
+    if _redis_arg_text(port) != "0":
+        return _format_redis_db_scope(host, port, db)
+
+    connection_kwargs: dict[str, Any] = {}
+    tail = cmd_args[5:]
+    for index, value in enumerate(tail):
+        option = _redis_arg_text(value).upper()
+        if option == "AUTH" and index + 1 < len(tail):
+            connection_kwargs["password"] = tail[index + 1]
+        elif option == "AUTH2" and index + 2 < len(tail):
+            connection_kwargs["username"] = tail[index + 1]
+            connection_kwargs["password"] = tail[index + 2]
+    resolved_host, resolved_port = _unix_socket_server_parts(_redis_arg_text(host), connection_kwargs)
+    return _format_redis_db_scope(resolved_host, resolved_port, db)
+
+
 # ---------------------------------------------------------------------------
 # Pipeline command parsing
 # ---------------------------------------------------------------------------
@@ -540,9 +565,11 @@ def _report_redis_access(
         key_accesses.extend(((key, "read", db_scope), (key, "write", db_scope), (key, "write", destination_scope)))
     elif upper == "MIGRATE" and len(cmd_args) >= 4:
         key_accesses.extend((key, "read", db_scope) for key in access.read_keys)
-        key_accesses.extend((key, "write", db_scope) for key in access.write_keys)
-        destination_scope = _format_redis_db_scope(cmd_args[0], cmd_args[1], cmd_args[3])
-        key_accesses.extend((key, "write", destination_scope) for key in access.write_keys)
+        migrate_keys = list(dict.fromkeys((*access.read_keys, *access.write_keys)))
+        if not _has_redis_option(cmd_args, "COPY", start=5):
+            key_accesses.extend((key, "write", db_scope) for key in migrate_keys)
+        destination_scope = _migrate_destination_scope(cmd_args)
+        key_accesses.extend((key, "write", destination_scope) for key in migrate_keys)
     elif upper in pubsub_commands:
         channel_scope = _format_redis_server_scope(scope_parts[0], scope_parts[1]) if scope_parts is not None else None
         key_accesses.extend((key, "read", channel_scope) for key in access.read_keys)

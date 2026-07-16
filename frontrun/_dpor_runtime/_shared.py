@@ -47,6 +47,7 @@ from frontrun._redis_client import (
 )
 from frontrun._sql_anomaly import classify_sql_anomaly
 from frontrun._sql_cursor import (
+    _clear_active_sql_io_context,
     clear_sql_metadata,
     get_active_sql_io_context,
     is_sql_endpoint_suppressed,

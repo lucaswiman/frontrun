@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 __all__ = [
+    "_CONNECTION_DB_SCOPE_OWNERS",
     "_CONNECTION_DB_SCOPES",
     "_DB_SCOPE_ATTR",
     "_get_connection_db_scope",
@@ -42,6 +43,11 @@ __all__ = [
 
 _DB_SCOPE_ATTR = "_frontrun_db_scope"
 _CONNECTION_DB_SCOPES: dict[int, str] = {}
+# Some DBAPI connection types (notably raw sqlite3.Connection on supported
+# Python versions) are neither weakref-able nor attribute-settable.  Keep a
+# strong owner for those id-keyed entries until clear_sql_metadata(): this
+# bounds retention to one exploration and makes address reuse impossible.
+_CONNECTION_DB_SCOPE_OWNERS: dict[int, Any] = {}
 
 
 # Global to track primary column set per (db_scope, table) for cross-column
@@ -74,7 +80,7 @@ def _register_connection_db_scope(connection: Any, identity: str) -> str:
     try:
         weakref.finalize(connection, _CONNECTION_DB_SCOPES.pop, key, None)
     except TypeError:
-        pass
+        _CONNECTION_DB_SCOPE_OWNERS[key] = connection
     try:
         setattr(connection, _DB_SCOPE_ATTR, scope)
     except AttributeError:
