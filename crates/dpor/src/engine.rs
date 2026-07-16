@@ -186,8 +186,12 @@ impl DporEngine {
             execution.aborted = true;
             return None;
         }
-        let preferred = self.preferred_thread.take();
+        let preferred = self.preferred_thread;
+        let replaying = self.path.current_position() < self.path.depth();
         let chosen = self.path.schedule_preferred(&runnable, execution.active_thread, self.num_threads, preferred)?;
+        if !replaying && preferred == Some(chosen) {
+            self.preferred_thread = None;
+        }
         execution.threads[chosen].dpor_vv.increment(chosen);
         execution.threads[chosen].io_vv.increment(chosen);
         execution.active_thread = chosen;

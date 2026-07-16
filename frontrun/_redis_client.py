@@ -354,18 +354,9 @@ def _find_redis_option(cmd_args: tuple[object, ...], option: str) -> object | No
     return None
 
 
-def _has_redis_option(cmd_args: tuple[object, ...], option: str, *, start: int) -> bool:
-    """Return whether an option token occurs after a command's fixed fields."""
-    wanted = option.upper()
-    return any(_redis_arg_text(value).upper() == wanted for value in cmd_args[start:])
-
-
-def _migrate_destination_scope(cmd_args: tuple[object, ...]) -> str:
-    """Resolve MIGRATE's TCP or port-0 Unix-socket destination scope."""
-    host, port, _key, db = cmd_args[:4]
-    if _redis_arg_text(port) != "0":
-        return _format_redis_db_scope(host, port, db)
-
+def _parse_migrate_options(cmd_args: tuple[object, ...]) -> tuple[bool, dict[str, Any]]:
+    """Parse MIGRATE options without treating credentials or keys as flags."""
+    copy = False
     connection_kwargs: dict[str, Any] = {}
     tail = cmd_args[5:]
     index = 0
@@ -373,7 +364,10 @@ def _migrate_destination_scope(cmd_args: tuple[object, ...]) -> str:
         option = _redis_arg_text(tail[index]).upper()
         if option == "KEYS":
             break
-        if option == "AUTH" and index + 1 < len(tail):
+        if option == "COPY":
+            copy = True
+            index += 1
+        elif option == "AUTH" and index + 1 < len(tail):
             connection_kwargs["password"] = tail[index + 1]
             index += 2
         elif option == "AUTH2" and index + 2 < len(tail):
@@ -382,6 +376,19 @@ def _migrate_destination_scope(cmd_args: tuple[object, ...]) -> str:
             index += 3
         else:
             index += 1
+    return copy, connection_kwargs
+
+
+def _migrate_destination_scope(
+    cmd_args: tuple[object, ...], *, connection_kwargs: dict[str, Any] | None = None
+) -> str:
+    """Resolve MIGRATE's TCP or port-0 Unix-socket destination scope."""
+    host, port, _key, db = cmd_args[:4]
+    if _redis_arg_text(port) != "0":
+        return _format_redis_db_scope(host, port, db)
+
+    if connection_kwargs is None:
+        _copy, connection_kwargs = _parse_migrate_options(cmd_args)
     resolved_host, resolved_port = _unix_socket_server_parts(_redis_arg_text(host), connection_kwargs)
     return _format_redis_db_scope(resolved_host, resolved_port, db)
 
@@ -573,9 +580,10 @@ def _report_redis_access(
     elif upper == "MIGRATE" and len(cmd_args) >= 4:
         key_accesses.extend((key, "read", db_scope) for key in access.read_keys)
         migrate_keys = list(dict.fromkeys((*access.read_keys, *access.write_keys)))
-        if not _has_redis_option(cmd_args, "COPY", start=5):
+        copy, connection_kwargs = _parse_migrate_options(cmd_args)
+        if not copy:
             key_accesses.extend((key, "write", db_scope) for key in migrate_keys)
-        destination_scope = _migrate_destination_scope(cmd_args)
+        destination_scope = _migrate_destination_scope(cmd_args, connection_kwargs=connection_kwargs)
         key_accesses.extend((key, "write", destination_scope) for key in migrate_keys)
     elif upper in pubsub_commands:
         channel_scope = _format_redis_server_scope(scope_parts[0], scope_parts[1]) if scope_parts is not None else None
