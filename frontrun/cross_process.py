@@ -72,7 +72,7 @@ def _to_interleaving_result(result: CrossProcessResult) -> Any:
     from frontrun._certificate import PassEvidence, certify_pass
     from frontrun.common import InterleavingResult
 
-    if result.ok:
+    if result.ok is not False:
         return certify_pass(
             result=InterleavingResult(
                 property_holds=None,

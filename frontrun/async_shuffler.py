@@ -42,6 +42,7 @@ an additional checkpoint.
 import asyncio
 import math
 import random
+import threading
 import warnings
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager, contextmanager
@@ -118,6 +119,7 @@ class AwaitScheduler(InterleavedLoop):
         extension_seed: int | None = None,
     ):
         super().__init__(deadlock_timeout=deadlock_timeout)
+        self._event_loop_thread_id = threading.get_ident()
         self.schedule = schedule
         self.num_tasks = num_tasks
         self._index = 0
@@ -754,6 +756,8 @@ async def explore_async_random(
     """
     if max_attempts <= 0:
         raise ValueError("max_attempts must be positive")
+    if total_timeout is not None and (total_timeout <= 0 or not math.isfinite(total_timeout)):
+        raise ValueError(f"total_timeout must be positive and finite or None, got {total_timeout!r}")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
     clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(

@@ -168,7 +168,7 @@ release/acquire edges; `Condition` / `Queue` wakes do not.
 the way `Event` does (the `event_wake_sync_id` pattern), eliminating the false
 race branches. Needs stable wake ids and replay compatibility.
 
-## 10. `clock="explored"` never fires a timeout-kind deadline against a runnable holder
+## 10. ~~`clock="explored"` never fires a timeout-kind deadline against a runnable holder~~ (resolved)
 
 **Symptom.** Under `clock="explored"`, "timer fires before the holder's next
 step" is explored for *sleep* deadlines but not for *timeout*-kind deadlines
@@ -190,17 +190,12 @@ timeout step commute with every worker step, so no reversal is ever seeded —
 verified independent of `preemption_bound` (2, 10, None all explore the same
 3 interleavings for the two-worker repro).
 
-**Fix direction.** The firing must be made *dependent* on the operations that
-can beat it — most naturally the holder's `lock_release` on the same resource
-(the timeout and the release genuinely race: distinct final states). Options:
-report a sync event from the actor on the timed-wait's `wake_sync_id` at fire
-time paired with an acquire-half on the waiter's give-up path (mirroring the
-sleep-wake pattern, but requiring the timed-acquire retry loop to
-distinguish "woke to retry" from "woke to expire"), or report a synthetic
-access by the actor to the contended lock's object id. Either changes
-engine-visible semantics of every timed wait, so it needs wakeup-tree /
-replay validation (and the TLA spec) — deferred rather than patched
-pre-release.
+**Resolution.** Timed waits now register before the scheduler preselects the
+holder's next transition. In explored mode the newly-enabled clock actor gets
+a one-shot preference on a new engine branch, its firing is modeled as a
+failed attempt on the stable primitive identity, and deferred release
+backtracking seeds the reverse release-first order. The regression asserts the
+exact five semantic traces so the fix cannot hide indiscriminate extra wakes.
 
 ## 11. Autojump races live unmanaged threads on timed waits (2026-07-12 audit)
 

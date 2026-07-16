@@ -112,6 +112,60 @@ def test_django_sync_wrapper_preserves_deferred_worker_return():
     assert wrapper(None) is deferred
 
 
+def test_sqlalchemy_async_setup_recycles_pool_without_sync_closing() -> None:
+    """Async-driver connections cannot be closed through sync_engine.dispose()."""
+    from types import SimpleNamespace
+
+    from frontrun.contrib.sqlalchemy._shared import wrap_async_setup
+
+    calls: list[bool] = []
+
+    def dispose(*, close: bool = True) -> None:
+        calls.append(close)
+        if close:
+            raise RuntimeError("MissingGreenlet")
+
+    engine = SimpleNamespace(sync_engine=SimpleNamespace(dispose=dispose))
+    wrapped = wrap_async_setup(engine, lambda: "state")
+
+    assert wrapped() == "state"
+    assert calls == [False]
+
+
+def test_sqlalchemy_async_setup_terminates_adapted_pool_without_awaiting() -> None:
+    """Async dialect termination is sync-safe and bounds old-pool lifetime."""
+    from types import SimpleNamespace
+
+    from frontrun.contrib.sqlalchemy._shared import wrap_async_setup
+
+    calls: list[tuple[str, object]] = []
+    connection = object()
+
+    class Dialect:
+        has_terminate = True
+
+        def do_close(self, dbapi_connection: object) -> None:
+            raise RuntimeError(f"MissingGreenlet closing {dbapi_connection!r}")
+
+        def do_terminate(self, dbapi_connection: object) -> None:
+            calls.append(("terminate", dbapi_connection))
+
+    class SyncEngine:
+        dialect = Dialect()
+
+        def dispose(self, *, close: bool = True) -> None:
+            calls.append(("dispose", close))
+            if close:
+                self.dialect.do_close(connection)
+
+    engine = SimpleNamespace(sync_engine=SyncEngine())
+    wrapped = wrap_async_setup(engine, lambda: "state")
+
+    assert wrapped() == "state"
+    assert calls == [("dispose", True), ("terminate", connection)]
+    assert engine.sync_engine.dialect.do_close.__func__ is Dialect.do_close
+
+
 def test_sqlite3_custom_factory_traced():
     """sqlite3.connect(factory=CustomConnection) must still trace SQL."""
     import sqlite3

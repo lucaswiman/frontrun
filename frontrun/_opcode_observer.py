@@ -459,7 +459,8 @@ class StableObjectIds:
 
         * ``__dict__`` attributes — sorted by attribute name.
         * ``list`` / ``tuple`` — index order.
-        * ``dict`` — values ordered by ``repr`` of their keys.
+        * ``dict`` — value insertion order (part of Python's language-level
+          mapping contract and therefore stable for deterministic ``setup``).
         * ``set`` / ``frozenset`` — **skipped** (iteration order is not
           deterministic across processes), so their elements register lazily.
 
@@ -497,7 +498,12 @@ class StableObjectIds:
         if isinstance(obj, (list, tuple)):
             queue.extend(obj)
         elif isinstance(obj, dict):
-            queue.extend(obj[key] for key in sorted(obj.keys(), key=repr))
+            # Never sort by key repr: the default object repr embeds a memory
+            # address, so two otherwise-identical setup graphs can assign
+            # different instance suffixes to replay anchors.  Dict insertion
+            # order is language-defined and is the deterministic setup()
+            # contract already required by exploration/replay.
+            queue.extend(obj.values())
         # set/frozenset deliberately omitted: iteration order is not stable
         # across processes, so registering their elements here would itself
         # be schedule-independent but process-dependent; leave them lazy.

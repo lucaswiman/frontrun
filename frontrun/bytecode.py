@@ -36,6 +36,7 @@ Example — find a race condition with random schedule exploration:
     >>> assert result.property_holds, result.explanation  # fails — lost update!
 """
 
+import math
 import random
 import sys
 import threading
@@ -430,7 +431,14 @@ class OpcodeScheduler:
         """Clear spin flags for *resource_id* (it may now be acquirable)."""
         self._clock_port.note_spin_release(resource_id)
 
-    def add_timed_wait(self, thread_id: int, deadline: float | None = None, *, timeout: float | None = None) -> float:
+    def add_timed_wait(
+        self,
+        thread_id: int,
+        deadline: float | None = None,
+        *,
+        timeout: float | None = None,
+        resource: object | None = None,
+    ) -> float:
         """Register a virtual deadline for a timed lock acquire.
 
         With ``timeout=`` the deadline is computed under the scheduler's
@@ -1001,6 +1009,8 @@ def explore_random(
     _require_frontrun_env("explore_random")
     if max_attempts <= 0:
         raise ValueError("max_attempts must be positive")
+    if total_timeout is not None and (total_timeout <= 0 or not math.isfinite(total_timeout)):
+        raise ValueError(f"total_timeout must be positive and finite or None, got {total_timeout!r}")
     if error_on_any_race:
         raise ValueError("error_on_any_race requires DPOR (use frontrun.explore with strategy='dpor' instead)")
     clock_config = ClockConfig(mode=clock, diagnostics=clock_diagnostics).validate(

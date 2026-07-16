@@ -6,6 +6,7 @@ mechanism.  Tests mirror the structure of test_sql_cursor.py.
 
 from __future__ import annotations
 
+import inspect
 import threading
 from collections.abc import Generator
 from typing import Any
@@ -98,6 +99,8 @@ def _cleanup_async_sql_patch() -> Generator[None, None, None]:
         _io_tls._in_transaction = False
     if hasattr(_io_tls, "_tx_buffer"):
         _io_tls._tx_buffer = []
+    if hasattr(_io_tls, "_tx_connection"):
+        delattr(_io_tls, "_tx_connection")
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +118,90 @@ def test_patch_patches_aiosqlite_connection() -> None:
     orig_execute = aiosqlite.Connection.execute
     patch_sql_async()
     assert aiosqlite.Connection.execute is not orig_execute
+
+
+def test_async_connection_patching_preserves_aiomysql_sync_close_contract() -> None:
+    """aiomysql close() is synchronous even though commit/rollback await."""
+
+    class Connection:
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+        def close(self) -> str:
+            return "closed"
+
+    sql_cursor_async_mod._patch_async_connection_methods(Connection, close_is_async=False)
+    result = Connection().close()
+    try:
+        assert not inspect.isawaitable(result)
+        assert result == "closed"
+    finally:
+        if inspect.iscoroutine(result):
+            result.close()
+
+
+@pytest.mark.asyncio
+async def test_patch_wraps_aiosqlite_connection_transaction_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Connection-level commit/rollback/close must pass through async TX modeling."""
+    seen: list[str] = []
+    original_report = sql_cursor_async_mod._report_sql_access
+
+    def spy(operation: Any, parameters: Any = None, **kwargs: Any) -> bool:
+        if isinstance(operation, str):
+            seen.append(operation)
+        return original_report(operation, parameters, **kwargs)
+
+    monkeypatch.setattr(sql_cursor_async_mod, "_report_sql_access", spy)
+    patch_sql_async()
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await conn.execute("CREATE TABLE t (id INTEGER)")
+        await conn.commit()
+        await conn.rollback()
+    finally:
+        await conn.close()
+
+    assert "COMMIT" in seen
+    assert "ROLLBACK" in seen
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_connection_transaction_methods_finalize_modeled_state() -> None:
+    """Physical TX success flushes/clears the matching modeled transaction."""
+    from frontrun._io_detection import tx_store
+
+    patch_sql_async()
+    conn = await aiosqlite.connect(":memory:")
+    store = tx_store()
+    events: list[tuple[str, str]] = []
+    set_io_reporter(lambda resource_id, kind: events.append((resource_id, kind)))
+    try:
+        store._in_transaction = True
+        store._is_autobegin = False
+        store._tx_connection = conn
+        store._tx_buffer = [("sql:t", "write")]
+        store._tx_savepoints = {}
+        await conn.commit()
+        assert events == [("sql:t", "write")]
+        assert store._in_transaction is False
+        assert not hasattr(store, "_tx_connection")
+
+        events.clear()
+        store._in_transaction = True
+        store._is_autobegin = False
+        store._tx_connection = conn
+        store._tx_buffer = [("sql:t", "write")]
+        store._tx_savepoints = {}
+        await conn.rollback()
+        assert events == []
+        assert store._in_transaction is False
+        assert not hasattr(store, "_tx_connection")
+    finally:
+        set_io_reporter(None)
+        await conn.close()
 
 
 def test_unpatch_restores_originals() -> None:

@@ -135,6 +135,11 @@ def accept_hello(listener: socket.socket, timeout: float) -> tuple[socket.socket
         # explore() with the accepted socket leaked.
         sock.close()
         raise OSError(f"HELLO frame carries a non-integer worker id: {hello!r}") from None
+    # ``remaining`` is only the shared accept + HELLO handshake budget.  Once
+    # the handshake succeeds, later protocol frames get the caller's full
+    # per-frame silence budget; otherwise a slow connect permanently shortens
+    # every statement's effective deadlock timeout on the exhaustive path.
+    sock.settimeout(timeout)
     return sock, worker_id
 
 
@@ -179,7 +184,17 @@ def accept_hello_live(
                 raise TimeoutError("workers did not connect within the deadlock timeout")
             listener.settimeout(min(0.5, remaining))
             try:
-                return accept_hello(listener, remaining)
+                sock, worker_id = accept_hello(listener, remaining)
+                # ``remaining`` shrinks after each accept retry.  It is only
+                # the startup budget for this attempt, not the silence budget
+                # inherited by later protocol frames.  Restore the caller's
+                # full budget after a successful HELLO.
+                try:
+                    sock.settimeout(connect_budget)
+                except BaseException:
+                    sock.close()
+                    raise
+                return sock, worker_id
             except (TimeoutError, OSError):
                 # accept() or the remaining shared HELLO budget timed out.
                 # any_exited / all_exited are non-destructive; the stderr-reading
@@ -204,7 +219,12 @@ def accept_hello_live(
 class CrossProcessResult:
     """Outcome of a cross-process exploration."""
 
-    ok: bool
+    # True: no failure in at least one completed execution. False: concrete
+    # failure. None: inconclusive because no execution completed (for example,
+    # total_timeout expired during startup).  Keeping the zero-work state
+    # distinct prevents direct explore_processes() callers from reading a
+    # vacuous ``ok=True`` as a pass.
+    ok: bool | None
     iterations: int
     # True only when the search space was genuinely fully covered: any
     # truncating bound (max_iterations / max_executions / total_timeout, or a

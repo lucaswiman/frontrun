@@ -1489,6 +1489,89 @@ def _make_virtual_clock_scheduler() -> Any:
     )
 
 
+def test_noop_clock_actor_step_is_omitted_from_replay_schedule() -> None:
+    """A stale clock-actor pick with no deadline has no physical effect.
+
+    Keeping it in ``schedule_trace`` makes replay unable to distinguish this
+    no-op from an actor step that drifted ahead of a real deadline registration.
+    The constructive schedule must therefore contain only the following real
+    worker transition.
+    """
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    class Execution(_FakeExecution):
+        def __init__(self) -> None:
+            super().__init__([0, 99])
+            self.schedule_trace: list[int] = []
+
+        def discard_last_schedule_step(self, thread_id: int) -> None:
+            if self.schedule_trace and self.schedule_trace[-1] == thread_id:
+                self.schedule_trace.pop()
+
+    class Engine:
+        def __init__(self) -> None:
+            self.choices = [99]
+
+        def schedule(self, execution: Execution) -> int:
+            chosen = self.choices.pop(0) if self.choices else 0
+            execution.schedule_trace.append(chosen)
+            return chosen
+
+    execution = Execution()
+    engine = Engine()
+    scheduler = DporScheduler(
+        engine,
+        execution,
+        num_threads=1,
+        virtual_clock=VirtualClock(),
+        clock_mode="explored",
+        clock_actor_id=99,
+    )
+    execution.schedule_trace.clear()
+    engine.choices = [99]
+    # Simulate a stale wakeup-tree choice after the actor was re-enabled.
+    execution.unblock_thread(99)
+
+    assert scheduler._schedule_next() == 0
+    assert execution.schedule_trace == [0]
+
+
+def test_timed_wait_clock_preference_is_set_under_engine_lock() -> None:
+    """The Rust engine cannot be mutated outside the free-threading guard."""
+    from frontrun._dpor_runtime.scheduler import DporScheduler
+
+    class RecordingLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self.held = False
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+            self.held = True
+
+        def __exit__(self, *_args: object) -> None:
+            self.held = False
+            self._lock.release()
+
+    lock = RecordingLock()
+
+    class Engine(_FakeEngine):
+        def prefer_next_thread(self, _thread_id: int) -> None:
+            assert lock.held, "prefer_next_thread mutated the engine outside _engine_lock"
+
+    scheduler = DporScheduler(
+        Engine(),
+        _FakeExecution([0, 99]),
+        num_threads=1,
+        engine_lock=lock,
+        virtual_clock=VirtualClock(),
+        clock_mode="explored",
+        clock_actor_id=99,
+    )
+
+    scheduler.add_timed_wait(0, timeout=1.0, resource=object())
+
+
 def test_wake_scheduled_sleeper_ignores_timed_waits() -> None:
     """Deterministic regression for the replay force-expiry bug.
 
@@ -2024,14 +2107,6 @@ def test_invariant_sleep_is_virtual_not_wall_clock() -> None:
     assert wall < 4.0, f"invariant sleep ran on the wall clock ({wall:.1f}s elapsed)"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known gap (round-2 review): a timeout-kind deadline firing carries no engine-visible "
-    "event (scheduler.py _on_clock_wake 'timeout' branch), so it commutes with every worker step "
-    "and DPOR never seeds the 'timeout beats the zero-virtual-time holder's release' branch — "
-    "unlike sleep wakes, which report release/acquire edges. Tracked in "
-    "ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md #10.",
-)
 def test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder() -> None:
     # Desired: with clock="explored", "the timeout fired before the holder
     # released" is a legitimate interleaving (distinct final state — the timed
@@ -2061,6 +2136,10 @@ def test_explored_clock_finds_timed_acquire_timeout_against_runnable_holder() ->
         clock="explored",
         reproduce_on_failure=0,
     )
+    # Three acquire-first traces plus the two semantically distinct
+    # timeout-first/release-first orderings. Keep this exact: the regression
+    # must not be "fixed" by indiscriminately waking the clock actor.
+    assert result.num_explored == 5
     assert not result.property_holds, (
         f"the timeout branch (acquire_result=False) was never explored: {result.num_explored} interleavings"
     )

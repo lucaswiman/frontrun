@@ -29,6 +29,7 @@ from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._schema import _detect_driver, get_schema
 from frontrun._sql_db_scope import (
+    _CONNECTION_DB_SCOPE_OWNERS,
     _CONNECTION_DB_SCOPES,
     _DB_SCOPE_ATTR,
     _get_connection_db_scope,
@@ -37,8 +38,10 @@ from frontrun._sql_db_scope import (
     _register_connection_db_scope,
     _stable_db_scope,
     _table_primary_colset,
+    _unregister_connection_db_scope,
 )
 from frontrun._sql_endpoint_suppression import (
+    _clear_active_sql_io_context,
     _set_active_sql_io_context,
     _suppress_endpoint_io,
     _suppress_lock,
@@ -100,6 +103,7 @@ except ImportError:
 # _sql_row_locks but are imported here so existing call sites and tests
 # continue to work.
 __all__ = [
+    "_clear_active_sql_io_context",
     "_CONNECTION_DB_SCOPES",
     "_DB_SCOPE_ATTR",
     "_acquire_pending_row_locks",
@@ -700,6 +704,7 @@ def _run_connection_close(method: Callable[[], Any], connection: Any) -> Any:
     result = method()
     if getattr(tx_store(), "_tx_connection", None) is connection:
         reset_connection_state()
+    _unregister_connection_db_scope(connection)
     return result
 
 
@@ -1396,6 +1401,7 @@ def clear_sql_metadata() -> None:
     """
     _table_primary_colset.clear()
     _CONNECTION_DB_SCOPES.clear()
+    _CONNECTION_DB_SCOPE_OWNERS.clear()
 
 
 def unpatch_sql() -> None:

@@ -87,6 +87,10 @@ _real_asyncio_condition = asyncio.Condition
 _real_asyncio_sleep = asyncio.sleep
 
 _async_lock_patched = False
+_async_lock_patch_count = 0
+_async_event_patch_count = 0
+_async_queue_condition_patch_count = 0
+_async_patch_lock = _rt.lock()
 
 # Per-lock wait-for graph for async DPOR deadlock detection.
 _async_wait_graph: WaitForGraph | None = None
@@ -442,24 +446,30 @@ def _release_task_async_locks(task_id: int) -> None:
 
 def _patch_asyncio_lock() -> None:
     """Replace asyncio.Lock with cooperative deadlock-detecting version."""
-    global _async_lock_patched, _async_wait_graph  # noqa: PLW0603
-    if _async_lock_patched:
-        return
-    _async_wait_graph = WaitForGraph()
-    _async_lock_owners.clear()
-    asyncio.Lock = _CooperativeAsyncLock  # type: ignore[assignment,misc]
-    _async_lock_patched = True
+    global _async_lock_patch_count, _async_lock_patched, _async_wait_graph  # noqa: PLW0603
+    with _async_patch_lock:
+        _async_lock_patch_count += 1
+        if _async_lock_patch_count > 1:
+            return
+        _async_wait_graph = WaitForGraph()
+        _async_lock_owners.clear()
+        asyncio.Lock = _CooperativeAsyncLock  # type: ignore[assignment,misc]
+        _async_lock_patched = True
 
 
 def _unpatch_asyncio_lock() -> None:
     """Restore original asyncio.Lock."""
-    global _async_lock_patched, _async_wait_graph  # noqa: PLW0603
-    if not _async_lock_patched:
-        return
-    asyncio.Lock = _real_asyncio_lock  # type: ignore[assignment,misc]
-    _reset_async_lock_state()
-    _async_wait_graph = None
-    _async_lock_patched = False
+    global _async_lock_patch_count, _async_lock_patched, _async_wait_graph  # noqa: PLW0603
+    with _async_patch_lock:
+        if _async_lock_patch_count <= 0:
+            return
+        _async_lock_patch_count -= 1
+        if _async_lock_patch_count > 0:
+            return
+        asyncio.Lock = _real_asyncio_lock  # type: ignore[assignment,misc]
+        _reset_async_lock_state()
+        _async_wait_graph = None
+        _async_lock_patched = False
 
 
 # ---------------------------------------------------------------------------
@@ -560,12 +570,23 @@ class _CooperativeAsyncEvent:
 
 
 def _patch_asyncio_event() -> None:
-    asyncio.Event = _CooperativeAsyncEvent  # type: ignore[assignment,misc]
+    global _async_event_patch_count  # noqa: PLW0603
+    with _async_patch_lock:
+        _async_event_patch_count += 1
+        if _async_event_patch_count == 1:
+            asyncio.Event = _CooperativeAsyncEvent  # type: ignore[assignment,misc]
 
 
 def _unpatch_asyncio_event() -> None:
-    asyncio.Event = _real_asyncio_event  # type: ignore[assignment,misc]
-    _async_parked_events.clear()
+    global _async_event_patch_count  # noqa: PLW0603
+    with _async_patch_lock:
+        if _async_event_patch_count <= 0:
+            return
+        _async_event_patch_count -= 1
+        if _async_event_patch_count > 0:
+            return
+        asyncio.Event = _real_asyncio_event  # type: ignore[assignment,misc]
+        _async_parked_events.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -884,12 +905,23 @@ class _CooperativeAsyncCondition:
 
 
 def _patch_asyncio_queue_condition() -> None:
-    asyncio.Queue = _CooperativeAsyncQueue  # type: ignore[assignment,misc]
-    asyncio.Condition = _CooperativeAsyncCondition  # type: ignore[assignment,misc]
+    global _async_queue_condition_patch_count  # noqa: PLW0603
+    with _async_patch_lock:
+        _async_queue_condition_patch_count += 1
+        if _async_queue_condition_patch_count == 1:
+            asyncio.Queue = _CooperativeAsyncQueue  # type: ignore[assignment,misc]
+            asyncio.Condition = _CooperativeAsyncCondition  # type: ignore[assignment,misc]
 
 
 def _unpatch_asyncio_queue_condition() -> None:
-    asyncio.Queue = _real_asyncio_queue  # type: ignore[assignment,misc]
-    asyncio.Condition = _real_asyncio_condition  # type: ignore[assignment,misc]
-    _async_parked_queues.clear()
-    _async_parked_conditions.clear()
+    global _async_queue_condition_patch_count  # noqa: PLW0603
+    with _async_patch_lock:
+        if _async_queue_condition_patch_count <= 0:
+            return
+        _async_queue_condition_patch_count -= 1
+        if _async_queue_condition_patch_count > 0:
+            return
+        asyncio.Queue = _real_asyncio_queue  # type: ignore[assignment,misc]
+        asyncio.Condition = _real_asyncio_condition  # type: ignore[assignment,misc]
+        _async_parked_queues.clear()
+        _async_parked_conditions.clear()

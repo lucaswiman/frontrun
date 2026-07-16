@@ -24,6 +24,10 @@ def make_dpor_engine(
 ) -> Any:
     if max_executions is not None and max_executions <= 0:
         raise ValueError("max_executions must be positive or None")
+    if max_branches <= 0:
+        raise ValueError("max_branches must be positive")
+    if preemption_bound is not None and preemption_bound < 0:
+        raise ValueError("preemption_bound must be non-negative or None")
     return PyDporEngine(
         num_threads=num_threads,
         preemption_bound=preemption_bound,

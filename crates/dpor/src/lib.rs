@@ -69,6 +69,12 @@ impl PyDporEngine {
         self.inner.schedule(&mut execution.inner)
     }
 
+    /// Prefer a runnable thread at the next newly-created scheduling point.
+    /// Replayed wakeup-tree choices remain authoritative.
+    fn prefer_next_thread(&mut self, thread_id: usize) {
+        self.inner.prefer_next_thread(thread_id);
+    }
+
     /// Report a shared memory access. `kind` is "read", "write", or "weak_write".
     fn report_access(
         &mut self,
@@ -335,6 +341,13 @@ impl PyExecution {
     /// Get the list of runnable thread IDs.
     fn runnable_threads(&self) -> Vec<usize> {
         self.inner.runnable_threads()
+    }
+
+    /// Drop a just-scheduled transition that had no physical effect.
+    fn discard_last_schedule_step(&mut self, thread_id: usize) {
+        if self.inner.schedule_trace.last() == Some(&thread_id) {
+            self.inner.schedule_trace.pop();
+        }
     }
 
     /// Get the schedule trace (sequence of thread choices).

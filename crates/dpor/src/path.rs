@@ -397,6 +397,18 @@ impl Path {
         current_thread: usize,
         num_threads: usize,
     ) -> Option<usize> {
+        self.schedule_preferred(runnable, current_thread, num_threads, None)
+    }
+
+    /// Schedule like [`Self::schedule`], but prefer *preferred* when creating
+    /// a new branch. Replayed branches remain authoritative.
+    pub fn schedule_preferred(
+        &mut self,
+        runnable: &[usize],
+        current_thread: usize,
+        num_threads: usize,
+        preferred: Option<usize>,
+    ) -> Option<usize> {
         if runnable.is_empty() {
             return None;
         }
@@ -431,6 +443,8 @@ impl Path {
                 let c = if runnable.contains(&current_thread) { current_thread } else { runnable[0] };
                 (c, None)
             }
+        } else if let Some(preferred) = preferred.filter(|tid| runnable.contains(tid)) {
+            (preferred, None)
         } else {
             let c = if runnable.contains(&current_thread) { current_thread } else { runnable[0] };
             (c, None)
@@ -1228,6 +1242,25 @@ mod tests {
         let mut path = Path::new(None, SearchStrategy::Dfs);
         assert_eq!(path.schedule(&[0, 1], 0, 2), Some(0));
         assert_eq!(path.depth(), 1);
+    }
+
+    /// A local scheduling preference must not replace wakeup-tree guidance.
+    ///
+    /// The pending subtree is the suffix of a multi-step notdep sequence and
+    /// is required to reverse a previously observed race.  Dropping it to run
+    /// a newly enabled clock actor can lose that race-reversing execution.
+    #[test]
+    fn test_schedule_preference_does_not_override_pending_wakeup_sequence() {
+        let mut path = Path::new(None, SearchStrategy::Dfs);
+        let mut pending = WakeupTree::empty();
+        pending.insert(&[2]);
+        path.pending_wakeup_subtree = Some(pending);
+
+        assert_eq!(
+            path.schedule_preferred(&[0, 1, 2], 0, 3, Some(1)),
+            Some(2),
+            "the pending race-reversing sequence must remain authoritative"
+        );
     }
 
     #[test]

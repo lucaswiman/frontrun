@@ -531,13 +531,18 @@ class _TurnOrderScheduler:
         self._pending_io_by_thread: dict[int, list[Any]] = {}
         self._accesses = accesses
         self.accesses_at_release: list[tuple[int, str, str]] | None = None
+        self.lock_turn_events: list[str] = []
 
     def before_sync_retry(self, worker_id: int) -> bool:
         return True
 
     def after_sync_retry(self, worker_id: int) -> None:
+        self.lock_turn_events.append("turn-release")
         if self.accesses_at_release is None:
             self.accesses_at_release = list(self._accesses)
+
+    def release_row_locks(self, worker_id: int, resources: list[str] | None) -> None:
+        self.lock_turn_events.append("row-lock-release")
 
     def mark_done(self, worker_id: int) -> None:
         pass
@@ -597,6 +602,31 @@ def test_relay_appends_access_before_releasing_turn() -> None:
     assert scheduler.accesses_at_release == [(0, "redis:k1", "write"), (0, "redis:k2", "read")], (
         f"turn released before the worker's access was recorded: {scheduler.accesses_at_release!r}"
     )
+
+
+def test_relay_releases_row_locks_before_releasing_scheduler_turn() -> None:
+    """Row locks must remain part of the physical operation's held turn."""
+    accesses: list[tuple[int, str, str]] = []
+    scheduler = _TurnOrderScheduler(accesses)
+    coord_end, worker_end = socket.socketpair()
+    relay = threading.Thread(
+        target=_relay_loop,
+        args=(scheduler, 0, coord_end, accesses, threading.Lock(), {}, set()),
+        daemon=True,
+    )
+    relay.start()
+    try:
+        proto.send_msg(worker_end, {"t": proto.REPORT_AND_WAIT, "w": 0})
+        assert proto.recv_msg(worker_end) == {"t": proto.GRANT}
+        proto.send_msg(worker_end, {"t": proto.RELEASE_LOCKS, "w": 0, "res": ["sql:t:id=1"]})
+        proto.send_msg(worker_end, {"t": proto.DONE, "w": 0})
+        relay.join(5.0)
+        assert not relay.is_alive()
+    finally:
+        worker_end.close()
+        coord_end.close()
+
+    assert scheduler.lock_turn_events[:2] == ["row-lock-release", "turn-release"]
 
 
 def test_relay_access_trace_follows_grants_not_socket_arrival() -> None:

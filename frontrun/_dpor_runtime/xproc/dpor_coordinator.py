@@ -75,6 +75,10 @@ class _RelayDporScheduler(DporScheduler):
         return
 
 
+class _RelayNoProgressError(TimeoutError):
+    """Relay watchdog expiry after a connected execution stopped progressing."""
+
+
 def _setup_relay_tls(scheduler: DporScheduler, worker_id: int) -> list[tuple[int, str, bool]]:
     """Install the minimal per-thread state ``DporScheduler`` reads for this relay.
 
@@ -239,6 +243,7 @@ def _relay_loop(
                             scheduler.engine.register_resource_group(obj_key, group_key)
                         registered_groups.add(obj_key)
                     continue
+            released_row_locks = False
             if holding_sync_turn:
                 # The statement the last grant covered has finished executing
                 # (the worker sent its next frame); release the held turn so
@@ -253,6 +258,16 @@ def _relay_loop(
                 next_kind = msg.get("t") if msg is not None else None
                 if next_kind not in (proto.REPORT_AND_WAIT, proto.ACQUIRE_LOCKS, proto.BEFORE_IO):
                     publish_pending_accesses()
+                if next_kind == proto.RELEASE_LOCKS:
+                    assert msg is not None
+                    # Match the in-process scheduler: releasing modeled row
+                    # locks is part of the completed physical operation and
+                    # therefore happens while this worker still owns its turn.
+                    # Handing off first opens an OS-race window in which the
+                    # next worker can observe locks that should already be
+                    # released.
+                    scheduler.release_row_locks(worker_id, msg.get("res"))
+                    released_row_locks = True
                 scheduler.after_sync_retry(worker_id)
                 holding_sync_turn = False
             if msg is None:
@@ -306,7 +321,8 @@ def _relay_loop(
                 _reply(sock, True)
                 holding_sync_turn = True
             elif kind == proto.RELEASE_LOCKS:
-                scheduler.release_row_locks(worker_id, msg.get("res"))
+                if not released_row_locks:
+                    scheduler.release_row_locks(worker_id, msg.get("res"))
             elif kind == proto.BEFORE_IO:
                 scheduler.before_io(worker_id, msg["rid"])
                 # The turn was granted iff before_io made this worker the active
@@ -615,6 +631,20 @@ class DporCrossProcessCoordinator:
                     exhausted = False
                     truncation = str(exc)
                     break
+                except _RelayNoProgressError:
+                    # The workers connected and an execution began, but the
+                    # relay watchdog had to abort it.  Diagnose from the
+                    # scheduler's latched TimeoutError so this is reported as
+                    # an execution timeout with its schedule, not as a startup
+                    # / transport connection failure.
+                    num_explored += 1
+                    result = self._evaluate(
+                        execution, scheduler, engine_lock, invariant, worker_errors, accesses, num_explored
+                    )
+                    assert result is not None
+                    if result.failing_schedule is not None:
+                        failures.append((num_explored, list(result.failing_schedule)))
+                    return replace(result, failures=failures)
                 except (TimeoutError, OSError) as exc:
                     return replace(_connection_failure(exc, num_explored + 1), failures=failures)
                 except WorkerSerializationError as exc:
@@ -708,7 +738,7 @@ class DporCrossProcessCoordinator:
             if first_failure is not None:
                 return replace(first_failure, iterations=num_explored, exhausted=exhausted, failures=failures)
             return CrossProcessResult(
-                ok=True,
+                ok=True if num_explored > 0 else None,
                 iterations=num_explored,
                 exhausted=exhausted,
                 workers_executed=workers_ran,
@@ -797,7 +827,7 @@ class DporCrossProcessCoordinator:
                 break
             if now - progress[0] > no_progress_budget:
                 names = ", ".join(t.name for t in pending)
-                timeout_error = TimeoutError(
+                timeout_error = _RelayNoProgressError(
                     f"cross-process relay thread(s) {names} made no progress within "
                     f"{no_progress_budget}s and did not terminate; aborting to avoid a "
                     f"concurrent-engine data race"
@@ -963,9 +993,6 @@ class DporCrossProcessCoordinator:
                 "closed instead of certifying the result",
                 "nondeterministic",
             )
-        if worker_errors:
-            wid = min(worker_errors)
-            return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")
         # A scheduler fallback TimeoutError means the run free-ran unscheduled
         # (unmodeled DB-level blocking, or a statement slower than
         # deadlock_timeout). Its final state describes no DPOR schedule, so the
@@ -980,6 +1007,9 @@ class DporCrossProcessCoordinator:
                 "workload is just slow.",
                 "timeout",
             )
+        if worker_errors:
+            wid = min(worker_errors)
+            return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")
         if not invariant():
             return _fail("invariant violated", "invariant")
         return None

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 
@@ -834,6 +835,41 @@ def test_random_rejects_zero_attempts() -> None:
             invariant=lambda _state: True,
             strategy="random",
             max_attempts=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "option"),
+    [
+        ({"max_executions": 0}, "max_executions"),
+        ({"max_executions": -1}, "max_executions"),
+        ({"max_branches": 0}, "max_branches"),
+        ({"max_branches": -1}, "max_branches"),
+        ({"preemption_bound": -1}, "preemption_bound"),
+        ({"total_timeout": 0.0}, "total_timeout"),
+        ({"total_timeout": -1.0}, "total_timeout"),
+        ({"total_timeout": float("inf")}, "total_timeout"),
+    ],
+)
+def test_dpor_rejects_invalid_limits_consistently(kwargs: dict[str, Any], option: str) -> None:
+    with pytest.raises(ValueError, match=option):
+        frontrun.explore(
+            setup=object,
+            workers=[lambda _state: None],
+            invariant=lambda _state: True,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize("total_timeout", [0.0, -1.0, float("inf")])
+def test_random_rejects_invalid_total_timeout(total_timeout: float) -> None:
+    with pytest.raises(ValueError, match="total_timeout"):
+        frontrun.explore(
+            setup=object,
+            workers=[lambda _state: None],
+            invariant=lambda _state: True,
+            strategy="random",
+            total_timeout=total_timeout,
         )
 
 

@@ -67,6 +67,7 @@ class VirtualClockPort:
         unblock: Callable[[int], None] = _noop_actor,
         sync: Callable[[], None] = _noop,
         on_give_up: Callable[[int], None] = _noop_actor,
+        on_timed_wait_added_locked: Callable[[], None] = _noop,
         on_added: Callable[[], None] = _noop,
     ) -> None:
         self.coordinator = DeadlineCoordinator()
@@ -82,6 +83,7 @@ class VirtualClockPort:
         self._unblock = unblock
         self._sync = sync
         self._on_give_up = on_give_up
+        self._on_timed_wait_added_locked = on_timed_wait_added_locked
         self._on_added = on_added
 
     # -- Cooperative-primitive-facing protocol (callers hold no scheduler lock) --
@@ -93,6 +95,7 @@ class VirtualClockPort:
         *,
         timeout: float | None = None,
         clock: VirtualClock | None = None,
+        wake_id: int | None = None,
     ) -> float:
         """Register a virtual deadline for a timed lock acquire.
 
@@ -109,8 +112,9 @@ class VirtualClockPort:
                     if timeout is None or clock is None:
                         raise TypeError("add_timed_wait needs either deadline= or (timeout= and clock=)")
                     deadline = clock.now() + timeout
-                self.coordinator.add_timeout(actor_id, deadline, _TIMED_WAIT_TOKEN)
+                self.coordinator.add_timeout(actor_id, deadline, _TIMED_WAIT_TOKEN, wake_id=wake_id)
                 self._sync()
+                self._on_timed_wait_added_locked()
             self._condition.notify_all()
         # DPOR replay may owe an actor step that arrived before this
         # registration (schedule drift); perform it now.

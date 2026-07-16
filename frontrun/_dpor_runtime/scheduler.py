@@ -119,6 +119,7 @@ class DporScheduler:
             unblock=self._port_engine_unblock,
             sync=self._sync_clock_actor_locked,
             on_give_up=self._scrub_lock_waiters,
+            on_timed_wait_added_locked=self._prefer_clock_actor_locked,
             on_added=self._perform_owed_clock_advance,
         )
         self._deadlines = self._clock_port.coordinator
@@ -302,7 +303,15 @@ class DporScheduler:
         """
         sync_clock_actor(self.execution, self._clock_actor_id, self._clock_mode, self._has_pending_deadlines())
 
-    def _advance_virtual_clock_locked(self) -> None:
+    def _prefer_clock_actor_locked(self) -> None:
+        """Prioritize a newly armed explored timeout while holding ``_engine_lock``."""
+        if self._clock_mode != "explored" or self._clock_actor_id is None:
+            return
+        prefer = getattr(self.engine, "prefer_next_thread", None)
+        if prefer is not None:
+            prefer(self._clock_actor_id)
+
+    def _advance_virtual_clock_locked(self) -> bool:
         """Perform one clock-actor step: jump to the earliest deadline.
 
         Caller must hold ``_engine_lock``.  Wakes every thread whose deadline
@@ -311,14 +320,15 @@ class DporScheduler:
         """
         clock = self.virtual_clock
         if clock is None:
-            return
+            return False
         # The shared port pops each due actor's spin flag; the on-wake callback
         # closes the engine/HB side.  A clock-actor pick can arrive after all
         # deadlines were canceled, in which case this is a no-op and the
-        # trailing sync re-blocks the actor.  Replay accounting for no-op clock
-        # actor entries is tracked in the virtual-clock hardening roadmap.
-        self._clock_port.advance_clock_to(clock, None, self._on_clock_wake)
+        # trailing sync re-blocks the actor.  The caller removes that physically
+        # empty transition from the constructive replay schedule.
+        due = self._clock_port.advance_clock_to(clock, None, self._on_clock_wake)
         self._sync_clock_actor_locked()
+        return bool(due)
 
     def _port_engine_block(self, thread_id: int) -> None:
         """Mark *thread_id* engine-blocked (port callback; caller holds ``_engine_lock``)."""
@@ -340,9 +350,19 @@ class DporScheduler:
                 self._last_scheduled_path_id,
             )
         elif event.kind == "timeout":
-            # Timed-wait wakes deliberately carry no happens-before edge: the
-            # waiter re-reports lock_wait (re-blocking itself) before it can
-            # observe expiry, and the give-up path ends in clear_engine_block.
+            # A timed wait becomes runnable so its retry loop can observe the
+            # expired deadline and take the atomic give-up path. Model the
+            # firing as a failed acquire attempt on the primitive as well: it
+            # races with the holder's release, so explored-clock DPOR seeds
+            # both "release wins" and "timeout wins" outcomes.
+            if event.wake_id is not None:
+                self.engine.report_sync(
+                    self.execution,
+                    self._clock_actor_id,
+                    "lock_attempt_fail",
+                    event.wake_id,
+                    self._last_scheduled_path_id,
+                )
             self.execution.unblock_thread(tid)
 
     def _scrub_lock_waiters(self, thread_id: int) -> None:
@@ -363,13 +383,24 @@ class DporScheduler:
                     self._replay_advance_clock_to()
                     self._condition.notify_all()
 
-    def add_timed_wait(self, thread_id: int, deadline: float | None = None, *, timeout: float | None = None) -> float:
+    def add_timed_wait(
+        self,
+        thread_id: int,
+        deadline: float | None = None,
+        *,
+        timeout: float | None = None,
+        resource: object | None = None,
+    ) -> float:
         """Register a virtual deadline for a timed lock acquire.
 
         With ``timeout=`` the deadline is computed under the scheduler's
         serialising lock (see ``VirtualClockPort.add_timed_wait``); returns it.
         """
-        return self._clock_port.add_timed_wait(thread_id, deadline, timeout=timeout, clock=self.virtual_clock)
+        wake_id = self._stable_ids.get(resource) if resource is not None else None
+        registered = self._clock_port.add_timed_wait(
+            thread_id, deadline, timeout=timeout, clock=self.virtual_clock, wake_id=wake_id
+        )
+        return registered
 
     def remove_timed_wait(self, thread_id: int) -> None:
         """Deregister a timed-acquire deadline (acquired or gave up)."""
@@ -601,7 +632,12 @@ class DporScheduler:
                 _pp = getattr(self.engine, "path_position", None)
                 self._last_scheduled_path_id = _pp - 1 if _pp is not None else None
                 if scheduled is not None and scheduled == self._clock_actor_id:
-                    self._advance_virtual_clock_locked()
+                    if not self._advance_virtual_clock_locked():
+                        # This stale actor pick had no physical transition.
+                        # Omitting it makes replay accounting unambiguous: an
+                        # actor entry always represents a real advance (which
+                        # may be owed if replay reaches it before registration).
+                        self.execution.discard_last_schedule_step(scheduled)
                     continue
                 # Shared with the async scheduler: redirect to the lock holder when
                 # the engine picks a row-lock-blocked thread (defect #6), or drop a

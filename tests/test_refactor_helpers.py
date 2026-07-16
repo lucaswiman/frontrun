@@ -464,6 +464,14 @@ def test_finalize_marker_executor_run_detects_partial_schedule() -> None:
         )
 
 
+def test_trace_executor_task_errors_annotation_accepts_baseexceptions() -> None:
+    from typing import get_type_hints
+
+    from frontrun.trace_markers import TraceExecutor
+
+    assert get_type_hints(TraceExecutor.task_errors.fget)["return"] == dict[str, BaseException]  # type: ignore[union-attr]
+
+
 # ---------------------------------------------------------------------------
 # Target 1: shared record_dpor_failure helper
 # ---------------------------------------------------------------------------
@@ -704,6 +712,25 @@ class _StubStableIds:
         self.resets += 1
 
 
+def test_stable_object_preregistration_uses_dict_insertion_order_not_key_repr() -> None:
+    """Object-key repr (often containing an address) must not renumber anchors."""
+    from frontrun._opcode_observer import StableObjectIds
+
+    class Key:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def __repr__(self) -> str:
+            return self.label
+
+    first = _StubStableIds()
+    second = _StubStableIds()
+    stable_ids = StableObjectIds()
+    stable_ids.pre_register({Key("z-last-by-repr"): first, Key("a-first-by-repr"): second})
+
+    assert stable_ids.get(first) < stable_ids.get(second)
+
+
 def test_dpor_exploration_iter_yields_one_step_per_execution() -> None:
     from frontrun._dpor_core import dpor_exploration_iter
 
@@ -830,6 +857,7 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
         )
     )
     assert len(seen) == 4
+    assert engine._next_calls == 3, "the engine must not plan another execution after the deadline expires"
 
 
 def test_dpor_exploration_iter_works_with_real_threading_lock() -> None:

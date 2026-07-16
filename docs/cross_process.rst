@@ -206,7 +206,10 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
    * - Field
      - Meaning
    * - ``ok``
-     - ``True`` if the invariant held under every explored interleaving.
+     - ``True`` if at least one interleaving completed and no failure was
+       found, ``False`` for a concrete failure, or ``None`` when no
+       interleaving completed (for example, ``total_timeout`` expired during
+       worker startup).  Treat ``None`` as inconclusive, not as a pass.
    * - ``failure``
      - Human-readable description of the first violation, or ``None``.
    * - ``failure_kind``
@@ -220,7 +223,11 @@ that handle is passed to ``invariant(state)``, which checks the state afterwards
        truncated — the reported schedule is the truncated prefix, not a
        verified counterexample), or ``None``.
    * - ``failing_schedule``
-     - The interleaving (a list of worker ids) that triggered the failure.
+     - The interleaving (a list of worker ids) that triggered the failure. For
+       a deadlock this is the schedulable prefix that led into the detected
+       lock cycle; ``failure`` carries the cycle description. Process mode
+       does not yet expose a public ``run_with_schedule`` replay API, so
+       ``reproduce_on_failure`` is rejected rather than silently ignored.
    * - ``worker_labels``
      - For mapping input, the ``{worker_id: label}`` mapping that translates
        numeric ids in schedules and access traces back to the caller's labels;

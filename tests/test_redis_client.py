@@ -98,6 +98,50 @@ def test_migrate_destination_host_alias_shares_identity() -> None:
     assert migrate_writes & destination_writes
 
 
+def test_migrate_unix_socket_destination_matches_direct_socket_client(tmp_path: Any) -> None:
+    """MIGRATE port 0 names a Unix socket and must reuse its resolved server identity."""
+    path = str(tmp_path / "redis.sock")
+    real_path = str((tmp_path / "redis.sock").resolve())
+    _redis_client._unix_path_server_parts[real_path] = ("localhost", "6380")
+    migrate = _capture_accesses("MIGRATE", (path, 0, "k", 2, 1000), host="source")
+    destination_write = _capture_accesses("SET", ("k", "value"), db=2, host="127.0.0.1")
+    destination_write = [(resource.replace(":6379/", ":6380/"), kind) for resource, kind in destination_write]
+
+    migrate_writes = {resource for resource, kind in migrate if kind == "write"}
+    direct_writes = {resource for resource, kind in destination_write if kind == "write"}
+    assert migrate_writes & direct_writes
+
+
+def test_migrate_unix_socket_auth_parser_consumes_values_and_stops_at_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """AUTH-like credential/key values are data, not additional options."""
+    seen: list[dict[str, Any]] = []
+
+    def query(_path: str, connection_kwargs: dict[str, Any]) -> str:
+        seen.append(connection_kwargs)
+        return "6380"
+
+    monkeypatch.setattr(_redis_client, "_query_unix_socket_tcp_port", query)
+    path = str(tmp_path / "redis.sock")
+
+    _redis_client._migrate_destination_scope((path, 0, "k", 2, 1000, "AUTH", "AUTH", "COPY"))
+    assert seen.pop() == {"password": "AUTH"}
+
+    _redis_client._unix_path_server_parts.clear()
+    _redis_client._migrate_destination_scope((path, 0, "", 2, 1000, "KEYS", "AUTH", "key"))
+    assert seen.pop() == {}
+
+
+def test_migrate_copy_does_not_report_source_write() -> None:
+    """MIGRATE COPY retains the source key, so only the destination is written."""
+    events = _capture_accesses("MIGRATE", ("destination", 6380, "k", 3, 1000, "COPY"), host="source")
+
+    assert ("redis:k:db=redis:source:6379/0", "read") in events
+    assert ("redis:k:db=redis:source:6379/0", "write") not in events
+    assert ("redis:k:db=redis:destination:6380/3", "write") in events
+
+
 def test_unresolved_unix_socket_identity_fails_closed(tmp_path: Any) -> None:
     """An unresolved socket may alias TCP, so a per-path scope is unsound."""
     client = SimpleNamespace(

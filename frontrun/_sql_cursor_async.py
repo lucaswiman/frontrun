@@ -23,8 +23,8 @@ import importlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from frontrun._io_detection import external_operation_scope, tx_store
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
-from frontrun._io_detection import tx_store
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._sql_cursor import (
     _RE_INSERT_TABLE,
@@ -37,8 +37,10 @@ from frontrun._sql_cursor import (
     _release_dpor_row_locks,
     _report_sql_access,
     _suppress_endpoint_io,
+    _unregister_connection_db_scope,
+    suppress_sql_write,
 )
-from frontrun._sql_transactions import _apply_tx_op_after_success
+from frontrun._sql_transactions import _apply_tx_op_after_success, reset_connection_state
 
 # ---------------------------------------------------------------------------
 # Shared async DPOR scheduling + endpoint suppression
@@ -128,6 +130,49 @@ async def _execute_and_finalize_tx_end(
     if tx_op is not None:
         _apply_tx_op_after_success(tx_op, _connection_for_db_object(connection))
     return result
+
+
+async def _intercept_connection_method_async(
+    original_method: Any,
+    self: Any,
+    operation: str,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Model async connection commit/rollback and clean up close state."""
+    with external_operation_scope():
+        if operation == "CLOSE":
+            result = await original_method(self, *args, **kwargs)
+            if getattr(tx_store(), "_tx_connection", None) is self:
+                reset_connection_state()
+            _unregister_connection_db_scope(self)
+            return result
+
+        deferred_tx_end: list[Any] = []
+        reported = _report_sql_access(
+            operation,
+            None,
+            db_obj=self,
+            defer_tx_lock_release=True,
+            deferred_tx_end=deferred_tx_end,
+        )
+        deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
+        suppress_sql_write(operation)
+        return await _dpor_schedule_and_suppress_async(
+            reported,
+            lambda: _execute_and_finalize_tx_end(lambda: original_method(self, *args, **kwargs), deferred_tx_op, self),
+            release_locks_on_error=False,
+        )
+
+
+def _intercept_connection_close_sync(original_method: Any, self: Any, *args: Any, **kwargs: Any) -> Any:
+    """Clean up modeled state around a synchronous async-driver close method."""
+    with external_operation_scope():
+        result = original_method(self, *args, **kwargs)
+        if getattr(tx_store(), "_tx_connection", None) is self:
+            reset_connection_state()
+        _unregister_connection_db_scope(self)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +323,29 @@ def _patch_async_methods(
         )
 
 
+def _patch_async_connection_methods(connection_cls: Any, *, close_is_async: bool = True) -> None:
+    """Patch awaitable transaction methods shared by async DBAPI drivers."""
+
+    def _make_patched(orig: Any, method_name: str) -> Any:
+        async def _patched(self: Any, *args: Any, **kwargs: Any) -> Any:
+            return await _intercept_connection_method_async(orig, self, method_name.upper(), *args, **kwargs)
+
+        return wrap_method_metadata(_patched, orig, name=method_name)
+
+    _patch_async_methods(connection_cls, ("commit", "rollback"), _make_patched)
+    if close_is_async:
+        _patch_async_methods(connection_cls, ("close",), _make_patched)
+    else:
+
+        def _make_close_patched(orig: Any, method_name: str) -> Any:
+            def _patched(self: Any, *args: Any, **kwargs: Any) -> Any:
+                return _intercept_connection_close_sync(orig, self, *args, **kwargs)
+
+            return wrap_method_metadata(_patched, orig, name=method_name)
+
+        _patch_async_methods(connection_cls, ("close",), _make_close_patched)
+
+
 # ---------------------------------------------------------------------------
 # aiosqlite patching
 # ---------------------------------------------------------------------------
@@ -305,6 +373,7 @@ def _patch_aiosqlite() -> None:
             return wrap_method_metadata(_patched, orig, name=method_name)
 
         _patch_async_methods(target_cls, ("execute", "executemany"), _make_patched)
+    _patch_async_connection_methods(aiosqlite.Connection)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +387,10 @@ def _patch_psycopg_async() -> None:
         import psycopg  # type: ignore[import-untyped]
     except ImportError:
         return
+
+    connection_cls = getattr(psycopg, "AsyncConnection", None)
+    if connection_cls is not None:
+        _patch_async_connection_methods(connection_cls)
 
     cursor_cls = getattr(psycopg, "AsyncCursor", None)
     if cursor_cls is None:
@@ -397,6 +470,15 @@ def _patch_aiomysql() -> None:
         return wrap_method_metadata(_patched, orig, name=method_name)
 
     _patch_async_methods(cursor_cls, ("execute", "executemany"), _make_patched)
+    try:
+        connection_mod = importlib.import_module("aiomysql.connection")
+    except ImportError:
+        return
+    connection_cls = getattr(connection_mod, "Connection", None)
+    if connection_cls is not None:
+        # aiomysql follows the asyncio transport convention: commit() and
+        # rollback() are coroutines, but close() is an immediate sync method.
+        _patch_async_connection_methods(connection_cls, close_is_async=False)
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +494,7 @@ def _patch_asyncpg() -> None:
         return
 
     conn_cls = asyncpg.Connection
+    _patch_async_connection_methods(conn_cls)
 
     # asyncpg methods all take (query, *args) — no separate params arg.
     # execute returns command tag, fetch/fetchrow/fetchval return results.

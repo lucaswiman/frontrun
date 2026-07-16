@@ -291,7 +291,7 @@ class TraceExecutor:
         return self._sync.marker_registry
 
     @property
-    def task_errors(self) -> dict[str, Exception]:
+    def task_errors(self) -> dict[str, BaseException]:
         if self._async is None:
             return {}
         return self._async.task_errors

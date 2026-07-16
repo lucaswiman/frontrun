@@ -127,6 +127,8 @@ def _cleanup_sql_patch() -> Generator[None, None, None]:
     _io_tls._tx_buffer = []
     _io_tls._tx_savepoints = {}
     _io_tls._pending_row_locks = []
+    if hasattr(_io_tls, "_tx_connection"):
+        delattr(_io_tls, "_tx_connection")
 
 
 # ---------------------------------------------------------------------------
@@ -2173,6 +2175,8 @@ def test_detect_autobegin_callable_autocommit_method() -> None:
     finally:
         _io_tls._in_transaction = False
         _io_tls._is_autobegin = False
+        if hasattr(_io_tls, "_tx_connection"):
+            delattr(_io_tls, "_tx_connection")
 
 
 def test_detect_autobegin_callable_autocommit_on() -> None:
@@ -2259,6 +2263,31 @@ def test_db_scope_registration_evicted_when_connection_collected():
     del conn
     gc.collect()
     assert key not in _CONNECTION_DB_SCOPES
+
+
+def test_raw_sqlite_scope_owner_prevents_id_reuse_until_connection_close() -> None:
+    """Non-weakrefable connections need an owner guard, evicted on close."""
+    from frontrun._sql_cursor import clear_sql_metadata
+    from frontrun._sql_db_scope import (
+        _CONNECTION_DB_SCOPE_OWNERS,
+        _CONNECTION_DB_SCOPES,
+        _register_connection_db_scope,
+    )
+
+    conn = sqlite3.Connection(":memory:")
+    key = id(conn)
+    try:
+        _register_connection_db_scope(conn, f"sqlite-memory:{key}")
+        assert _CONNECTION_DB_SCOPE_OWNERS[key] is conn
+        assert key in _CONNECTION_DB_SCOPES
+    finally:
+        from frontrun._sql_cursor import _run_connection_close
+
+        _run_connection_close(conn.close, conn)
+
+    assert key not in _CONNECTION_DB_SCOPE_OWNERS
+    assert key not in _CONNECTION_DB_SCOPES
+    clear_sql_metadata()
 
 
 def test_postgres_scope_unifies_tcp_and_unix_aliases() -> None:

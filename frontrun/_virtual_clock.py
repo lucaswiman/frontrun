@@ -133,6 +133,7 @@ def validate_clock_options(
 #: process.  ``id``-reuse across freed code objects is possible but harmless
 #: here (code objects for explored workers stay alive for the run's duration).
 _scanned_code_objects: set[CodeType] = set()
+_diagnostics_lock = _rt.lock()
 
 
 def warn_if_captured_time_reference(frame: Any) -> None:
@@ -149,9 +150,10 @@ def warn_if_captured_time_reference(frame: Any) -> None:
     once, not once per executed line.
     """
     code = frame.f_code
-    if code in _scanned_code_objects:
-        return
-    _scanned_code_objects.add(code)
+    with _diagnostics_lock:
+        if code in _scanned_code_objects:
+            return
+        _scanned_code_objects.add(code)
     qualname = getattr(code, "co_qualname", code.co_name)
     for scope_name, mapping in (("local", frame.f_locals), ("global", frame.f_globals)):
         # Iterating a live f_globals can race concurrent module-global stores on
@@ -169,9 +171,10 @@ def warn_if_captured_time_reference(frame: Any) -> None:
             if label is None:
                 continue
             key = (code.co_filename, qualname, name, label)
-            if key in _warned_captured_refs:
-                continue
-            _warned_captured_refs.add(key)
+            with _diagnostics_lock:
+                if key in _warned_captured_refs:
+                    continue
+                _warned_captured_refs.add(key)
             warnings.warn(
                 f"virtual clock diagnostic: captured real {label} reference in {scope_name} {name!r}; "
                 f"call through the time module inside explored code instead",
