@@ -137,16 +137,43 @@ def wrap_sync_thread(
 def wrap_async_setup(engine: Any, setup: Callable[[], T]) -> Callable[[], T]:
     """Return a setup wrapper that disposes the async engine before setup runs."""
 
+    def dispose_pool() -> None:
+        sync_engine = engine.sync_engine
+        dialect = getattr(sync_engine, "dialect", None)
+        if dialect is None or not bool(getattr(dialect, "has_terminate", False)):
+            # Older/custom async dialects may have no synchronous termination
+            # hook. Detaching is safer than invoking an await-only close from
+            # this synchronous setup callback, though the old pool then relies
+            # on its normal GC cleanup.
+            sync_engine.dispose(close=False)
+            return
+
+        # SQLAlchemy's async adapters implement do_terminate() specifically as
+        # a synchronous, force-close path when no greenlet is active. Route the
+        # pool's normal checked-in close through that hook for this disposal so
+        # every execution gets a fresh pool without leaking the detached one.
+        instance_dict = getattr(dialect, "__dict__", {})
+        missing = object()
+        previous = instance_dict.get("do_close", missing)
+        try:
+            dialect.do_close = dialect.do_terminate
+        except (AttributeError, TypeError):
+            sync_engine.dispose(close=False)
+            return
+        try:
+            sync_engine.dispose()
+        finally:
+            if previous is missing:
+                del dialect.do_close
+            else:
+                dialect.do_close = previous
+
     def wrapped_setup() -> T:
         from frontrun._cooperative import suppress_sync_reporting, unsuppress_sync_reporting
 
         suppress_sync_reporting()
         try:
-            # Closing async-driver connections through the synchronous facade
-            # can require an await and raise MissingGreenlet.  Replacing the
-            # pool is enough to keep executions isolated; the async engine's
-            # owner remains responsible for its final awaited dispose().
-            engine.sync_engine.dispose(close=False)
+            dispose_pool()
             return setup()
         finally:
             unsuppress_sync_reporting()
