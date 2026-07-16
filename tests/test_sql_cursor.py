@@ -2261,6 +2261,29 @@ def test_db_scope_registration_evicted_when_connection_collected():
     assert key not in _CONNECTION_DB_SCOPES
 
 
+def test_raw_sqlite_scope_owner_prevents_id_reuse_until_metadata_clear() -> None:
+    """Non-weakrefable connections need an owner guard for their id-keyed scope."""
+    from frontrun._sql_cursor import clear_sql_metadata
+    from frontrun._sql_db_scope import (
+        _CONNECTION_DB_SCOPE_OWNERS,
+        _CONNECTION_DB_SCOPES,
+        _register_connection_db_scope,
+    )
+
+    conn = sqlite3.Connection(":memory:")
+    key = id(conn)
+    try:
+        _register_connection_db_scope(conn, f"sqlite-memory:{key}")
+        assert _CONNECTION_DB_SCOPE_OWNERS[key] is conn
+        assert key in _CONNECTION_DB_SCOPES
+    finally:
+        conn.close()
+        clear_sql_metadata()
+
+    assert key not in _CONNECTION_DB_SCOPE_OWNERS
+    assert key not in _CONNECTION_DB_SCOPES
+
+
 def test_postgres_scope_unifies_tcp_and_unix_aliases() -> None:
     """One database must not split into independent scopes by connection alias."""
     from frontrun._sql_db_scope import _normalize_db_identity

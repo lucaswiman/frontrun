@@ -112,6 +112,26 @@ def test_django_sync_wrapper_preserves_deferred_worker_return():
     assert wrapper(None) is deferred
 
 
+def test_sqlalchemy_async_setup_recycles_pool_without_sync_closing() -> None:
+    """Async-driver connections cannot be closed through sync_engine.dispose()."""
+    from types import SimpleNamespace
+
+    from frontrun.contrib.sqlalchemy._shared import wrap_async_setup
+
+    calls: list[bool] = []
+
+    def dispose(*, close: bool = True) -> None:
+        calls.append(close)
+        if close:
+            raise RuntimeError("MissingGreenlet")
+
+    engine = SimpleNamespace(sync_engine=SimpleNamespace(dispose=dispose))
+    wrapped = wrap_async_setup(engine, lambda: "state")
+
+    assert wrapped() == "state"
+    assert calls == [False]
+
+
 def test_sqlite3_custom_factory_traced():
     """sqlite3.connect(factory=CustomConnection) must still trace SQL."""
     import sqlite3

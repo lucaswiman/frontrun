@@ -117,6 +117,31 @@ def test_patch_patches_aiosqlite_connection() -> None:
     assert aiosqlite.Connection.execute is not orig_execute
 
 
+@pytest.mark.asyncio
+async def test_patch_wraps_aiosqlite_connection_transaction_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Connection-level commit/rollback/close must pass through async TX modeling."""
+    seen: list[str] = []
+    original_report = sql_cursor_async_mod._report_sql_access
+
+    def spy(operation: Any, parameters: Any = None, **kwargs: Any) -> bool:
+        if isinstance(operation, str):
+            seen.append(operation)
+        return original_report(operation, parameters, **kwargs)
+
+    monkeypatch.setattr(sql_cursor_async_mod, "_report_sql_access", spy)
+    patch_sql_async()
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await conn.execute("CREATE TABLE t (id INTEGER)")
+        await conn.commit()
+        await conn.rollback()
+    finally:
+        await conn.close()
+
+    assert "COMMIT" in seen
+    assert "ROLLBACK" in seen
+
+
 def test_unpatch_restores_originals() -> None:
     orig_cursor_execute = aiosqlite.Cursor.execute
     orig_conn_execute = aiosqlite.Connection.execute

@@ -21,7 +21,7 @@ import pytest
 
 import frontrun
 from frontrun._dpor_runtime.xproc import protocol as proto
-from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, accept_hello
+from frontrun._dpor_runtime.xproc.coordinator import CrossProcessCoordinator, accept_hello, accept_hello_live
 from frontrun._dpor_runtime.xproc.proxy import SchedulerProxy
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher, _connect_and_serve, _run_iteration
 
@@ -42,6 +42,42 @@ def test_total_timeout_bounds_spawned_worker_cleanup() -> None:
     assert not result.exhausted
     assert "total_timeout" in (result.truncation or "")
     assert elapsed < 1.0, f"total_timeout=0.2 took {elapsed:.3f}s while cleaning up the worker"
+
+
+def test_accept_hello_live_restores_full_post_handshake_frame_budget() -> None:
+    """HELLO latency must not shrink later per-frame deadlock timeouts."""
+    server, client = socket.socketpair()
+
+    class Listener:
+        timeout: float | None = None
+
+        def gettimeout(self) -> float | None:
+            return self.timeout
+
+        def settimeout(self, value: float | None) -> None:
+            self.timeout = value
+
+        def accept(self) -> tuple[socket.socket, None]:
+            return server, None
+
+    class Workers:
+        def diagnose(self, _handles: object) -> None:
+            return None
+
+    def delayed_hello() -> None:
+        time.sleep(0.05)
+        proto.send_msg(client, {"t": proto.HELLO, "w": 0})
+
+    thread = threading.Thread(target=delayed_hello)
+    thread.start()
+    try:
+        accepted, worker_id = accept_hello_live(Listener(), Workers(), None, 0.5)  # type: ignore[arg-type]
+        assert worker_id == 0
+        assert accepted.gettimeout() == 0.5
+    finally:
+        thread.join()
+        server.close()
+        client.close()
 
 
 # ---------------------------------------------------------------------------

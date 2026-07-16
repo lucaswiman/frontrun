@@ -5,7 +5,12 @@ from __future__ import annotations
 import threading
 
 from frontrun._preload_io import PreloadIOEvent
-from frontrun._sql_endpoint_suppression import clear_permanent_suppressions, suppress_sql_write
+from frontrun._sql_endpoint_suppression import (
+    _set_active_sql_io_context,
+    clear_permanent_suppressions,
+    get_active_sql_io_context,
+    suppress_sql_write,
+)
 from frontrun.dpor import _PreloadBridge
 
 
@@ -37,6 +42,18 @@ class TestPreloadBridgeKindMapping:
         assert len(events) == 1, "sql_write event should be buffered"
         # tuple is (obj_key, kind, resource_id, detail, call_chain)
         assert events[0][1] == "write", "sql_write must map to DPOR 'write', not 'read'"
+
+    def test_unregister_thread_discards_sql_trace_context(self) -> None:
+        """A reused native TID must not inherit a dead worker's SQL details."""
+        tid = threading.get_native_id()
+        bridge = _PreloadBridge()
+        bridge.register_thread(os_tid=tid, dpor_id=0)
+        _set_active_sql_io_context("SELECT 1", None, "format")
+        assert get_active_sql_io_context(tid)[0] == "SQL: SELECT 1"
+
+        bridge.unregister_thread(tid)
+
+        assert get_active_sql_io_context(tid) == (None, None)
 
     def test_suppressed_sql_write_is_dropped(self) -> None:
         """Raw SQL wire events are redundant once SQL parsing reported rows."""
