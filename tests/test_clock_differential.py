@@ -359,7 +359,14 @@ def test_canary_safe_program_certifies_under_all_clocks() -> None:
         result = _explore_dpor(_SAFE_LOCKED, clock, reproduce=0)
         assert result.property_holds, f"clock={clock}: {result.explanation}"
         assert _certified_pass(result), f"clock={clock} did not exhaust: {result.num_explored}"
+        assert result.num_explored == 4, f"clock={clock} explored {result.num_explored} traces instead of 4"
     _run_oracle(_SAFE_LOCKED)
+
+
+def test_safe_program_virtual_clock_count_is_stable() -> None:
+    for iteration in range(100):
+        result = _explore_dpor(_SAFE_LOCKED, "virtual", reproduce=0)
+        assert result.num_explored == 4, f"iteration {iteration} explored {result.num_explored} traces instead of 4"
 
 
 def test_canary_autojump_narrowing_is_the_documented_semantics() -> None:

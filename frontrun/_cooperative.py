@@ -560,11 +560,33 @@ class CooperativeLock:
                     graph.remove_holding(owner, self._object_id)
             return
 
+        ctx = get_context()
+        scheduler = ctx[0] if ctx is not None else None
+        thread_id = ctx[1] if ctx is not None else None
+        before_sync_retry = getattr(scheduler, "before_sync_retry", None)
+        after_sync_retry = getattr(scheduler, "after_sync_retry", None)
+        reserved_turn = False
+        # A virtual clock derives runnable/blocked state from cooperative
+        # probes, so release must not race a contender's physical probe after
+        # the scheduler handoff.  Real-clock DPOR does not use that blockedness
+        # model; adding a release boundary there exposes library-internal locks
+        # (notably SQLAlchemy/driver locks) as redundant trace dimensions.
+        if getattr(scheduler, "virtual_clock", None) is not None and before_sync_retry is not None:
+            assert thread_id is not None
+            assert after_sync_retry is not None
+            reserved_turn = before_sync_retry(thread_id)
+
         owner = self._owner_thread_id
-        self._owner_thread_id = None
-        self._lock.release()
-        self._report("lock_release")
-        _note_spin_release(self._object_id)
+        try:
+            self._owner_thread_id = None
+            self._lock.release()
+            self._report("lock_release")
+            _note_spin_release(self._object_id)
+        finally:
+            if reserved_turn:
+                assert after_sync_retry is not None
+                assert thread_id is not None
+                after_sync_retry(thread_id)
 
         # Remove holding edge
         if owner is not None:
