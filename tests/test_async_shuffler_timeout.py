@@ -225,6 +225,62 @@ def test_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
     assert result.property_holds, result.explanation
 
 
+def test_peer_waiting_on_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
+    """A task blocked in pause() waiting for a peer that is merely slow on an
+    unmanaged awaitable must NOT be reported as a deadlock counterexample.
+
+    ``test_slow_unmanaged_await_is_not_a_false_deadlock`` covers the single-task
+    case, where no task ever waits in pause().  With two tasks the failure mode
+    is different: ``fast_task`` reaches ``pause()`` where the schedule wants
+    ``slow_task`` first, but ``slow_task`` is off on an *unmanaged* Future that
+    resolves via a real timer AFTER ``deadlock_timeout`` yet well BEFORE
+    ``timeout_per_run``.  The pause watchdog (``_handle_timeout``) fired and set
+    ``scheduler._error`` unconditionally — bypassing ``detect_external_deadlock``
+    — so the run was scored ``property_holds=False`` "Deadlock detected".  That
+    is a fabricated counterexample for a slow-but-correct run: a plain
+    unmanaged stall must reach the overall timeout (inconclusive) or complete,
+    never become a fail.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.done: list[str] = []
+
+    async def slow_task(state: State) -> None:
+        await asyncio.sleep(0)  # a controlled pause point
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[None] = loop.create_future()
+        # Resolve after 0.3s real time: > deadlock_timeout (0.05) but well
+        # under timeout_per_run (3.0).  Unmanaged by the scheduler.
+        loop.call_later(0.3, lambda: fut.done() or fut.set_result(None))
+        await fut
+        await asyncio.sleep(0)
+        state.done.append("slow")
+
+    async def fast_task(state: State) -> None:
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        state.done.append("fast")
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=State,
+            tasks=[slow_task, fast_task],
+            invariant=lambda s: True,  # can never be violated
+            max_attempts=4,
+            max_ops=8,
+            timeout_per_run=3.0,
+            deadlock_timeout=0.05,
+            patch_sleep=False,
+            seed=1234,
+        )
+    )
+
+    assert result.property_holds is not False, result.explanation
+    if result.explanation is not None:
+        assert "deadlock" not in result.explanation.lower(), result.explanation
+
+
 def test_max_ops_truncation_cannot_return_passing_proof() -> None:
     """If every sampled schedule is truncated, no invariant was checked."""
 

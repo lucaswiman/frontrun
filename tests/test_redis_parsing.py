@@ -615,6 +615,31 @@ class TestKeyspaceIntentLock:
         # The script remains atomic, but must conflict with FLUSHDB/FLUSHALL.
         assert parse_redis_access("EVAL", ("script", "1", "k")).keyspace == "read"
 
+    def test_watch_reads_keyspace(self) -> None:
+        # WATCH names the keys it guards, so — like GET and every other
+        # key-touching command — it must take a keyspace *read*.  Otherwise a
+        # whole-keyspace mutation (FLUSHDB/FLUSHALL/SWAPDB) that invalidates the
+        # watch shares no resource with it and DPOR prunes the racing order,
+        # an under-merge that can certify a false pass.
+        result = parse_redis_access("WATCH", ("gk",))
+        assert result.read_keys == ["gk"]
+        assert result.keyspace == "read"
+
+    def test_watch_conflicts_with_flushall_on_keyspace(self) -> None:
+        watch = parse_redis_access("WATCH", ("gk",))
+        flush = parse_redis_access("FLUSHALL", ())
+        # WATCH reads the keyspace, FLUSHALL writes it: a real conflict DPOR
+        # must explore (the flush inside the WATCH window invalidates the watch).
+        assert watch.keyspace == "read"
+        assert flush.keyspace == "write"
+
+    def test_multi_exec_still_carry_no_keyspace(self) -> None:
+        # Transaction control with no keys must remain keyspace-free.
+        assert parse_redis_access("MULTI", ()).keyspace is None
+        assert parse_redis_access("EXEC", ()).keyspace is None
+        assert parse_redis_access("UNWATCH", ()).keyspace is None
+        assert parse_redis_access("WATCH", ()).keyspace is None
+
     def test_publish_no_keyspace(self) -> None:
         # Pub/sub channels are not keyspace operations.
         assert parse_redis_access("PUBLISH", ("ch", "msg")).keyspace is None

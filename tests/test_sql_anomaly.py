@@ -230,6 +230,44 @@ class TestClassifyWriteWrite:
         assert "accounts" in result.tables
 
 
+class TestSyntheticDatabaseMarkerIgnored:
+    """The coarse ``sql:__database__`` marker is an internal conflict-modeling
+    channel, not a real table: ``_report_sql_access`` emits it as a *read* for
+    every parsed statement and as a *write* for every unparsable / non-``str``
+    operation.  It must never drive anomaly classification or appear as a table
+    name in the report, or a genuine write-write conflict on a real table gets
+    mislabeled a ``dirty_read`` on ``'__database__'``.
+    """
+
+    def test_database_marker_does_not_flip_write_write_to_dirty_read(self) -> None:
+        # Two threads both write the same real row (a write-write conflict).
+        # Thread 0 also runs a non-str op -> sql:__database__ WRITE; thread 1
+        # runs parsed statements -> sql:__database__ READ.  The synthetic
+        # WR edge on __database__ must not turn this into a dirty read.
+        events = [
+            _sql_event(0, 0, "__database__", "write"),
+            _sql_event_row(1, 0, "accounts", "(('id','1'),)", "write"),
+            _sql_event(2, 1, "__database__", "read"),
+            _sql_event_row(3, 1, "accounts", "(('id','1'),)", "write"),
+        ]
+        result = classify_sql_anomaly(events)
+        assert result is not None
+        assert result.kind == "write_write", result
+        assert "__database__" not in result.tables
+        assert result.tables == frozenset({"accounts"})
+
+    def test_database_marker_only_conflict_is_not_classified(self) -> None:
+        # When the only cross-thread overlap is the synthetic global marker,
+        # there is no real-table anomaly to name — returning None is honest,
+        # a bogus "dirty_read on '__database__'" is not.
+        events = [
+            _sql_event(0, 0, "__database__", "write"),
+            _sql_event(1, 1, "__database__", "read"),
+        ]
+        result = classify_sql_anomaly(events)
+        assert result is None
+
+
 class TestClassifyDirtyRead:
     def test_dirty_read(self) -> None:
         events = [

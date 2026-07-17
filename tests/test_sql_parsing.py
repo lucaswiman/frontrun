@@ -78,6 +78,22 @@ class TestStripQuotes:
     def test_bracket_quoted_table_only(self):
         assert _strip_quotes("dbo.[users]") == "users"
 
+    def test_double_quoted_name_with_interior_dot(self):
+        """A fully-quoted identifier may contain a dot as part of the name.
+
+        Splitting ``"my.table"`` on the interior dot treats it as a schema
+        separator and returns ``'table'`` — a different resource id from the
+        ``my.table`` that sqlglot extracts for the same name in DML, so a
+        ``LOCK TABLE`` never conflicts with the rows it guards (an under-merge).
+        """
+        assert _strip_quotes('"my.table"') == "my.table"
+
+    def test_backtick_quoted_name_with_interior_dot(self):
+        assert _strip_quotes("`my.table`") == "my.table"
+
+    def test_bracket_quoted_name_with_interior_dot(self):
+        assert _strip_quotes("[my.table]") == "my.table"
+
 
 # ---------------------------------------------------------------------------
 # _sqlglot_parse — non-DML constructs now handled inside _sqlglot_parse
@@ -206,6 +222,13 @@ class TestSqlglotParseNonDml:
         assert r is not None
         assert "orders" in r.write_tables
         assert r.lock_intent is LockIntent.UPDATE
+
+    def test_lock_table_quoted_name_with_interior_dot(self):
+        """LOCK TABLE on a quoted name containing a dot must lock that exact
+        table, matching the resource id DML uses for the same name — otherwise
+        the lock guards a phantom table and never conflicts (under-merge)."""
+        r = parse_sql_access('LOCK TABLE "my.table" IN EXCLUSIVE MODE')
+        assert r.write_tables == {"my.table"}
 
     # -----------------------------------------------------------------------
     # COPY
