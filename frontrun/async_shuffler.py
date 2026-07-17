@@ -410,12 +410,21 @@ class AwaitScheduler(InterleavedLoop):
         if self._index < len(self.schedule):
             self._index += 1
 
-    def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
+    def _handle_timeout(self, task_id: Any, marker: Any = None) -> bool:
+        if not self._classify_unmanaged_stall_as_deadlock:
+            # The scheduled task has not reached its pause point: it is off on
+            # an awaitable the scheduler does not manage (a real timer, socket,
+            # or externally-completed Future), which is a slow run, not a proven
+            # deadlock.  Decline so pause() keeps waiting until the overall run
+            # timeout, which the caller reports as inconclusive — mirroring
+            # _wait_watching_progress and avoiding a fabricated counterexample.
+            return False
         needed = self.schedule[self._index] if self._index < len(self.schedule) else "?"
         self._error = SchedulerTimeoutError(
             f"Deadlock: schedule wants task {needed} at index {self._index}/{len(self.schedule)}"
         )
         self._condition.notify_all()
+        return True
 
     def _rescue_stalled_pause(self) -> bool:
         """Advance a pending virtual deadline instead of declaring a stall.

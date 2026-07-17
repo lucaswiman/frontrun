@@ -878,13 +878,14 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                 if not future.done():
                     future.set_result(None)
 
-    def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
+    def _handle_timeout(self, task_id: Any, marker: Any = None) -> bool:
         self._error = SchedulerTimeoutError(
             f"Deadlock: DPOR async scheduler wants task {self._current_task} "
             f"but task {task_id} is waiting at marker {marker!r}"
         )
         self._condition.notify_all()
         self._on_error_set()
+        return True
 
     def _setup_task_context(self, task_id: Any) -> None:
         _scheduler_var.set(self)
