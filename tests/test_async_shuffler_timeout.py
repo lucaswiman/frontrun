@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 
 from frontrun.async_scheduler import SchedulerTimeoutError
-from frontrun.async_shuffler import explore_async_random, run_with_schedule
+from frontrun.async_shuffler import AwaitScheduler, explore_async_random, run_with_schedule
 
 
 def test_public_run_with_schedule_rejects_deadlocked_state() -> None:
@@ -239,6 +239,45 @@ def test_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
     )
 
     assert result.property_holds, result.explanation
+
+
+def test_unmanaged_stall_is_abandoned_after_deadlock_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ambiguous unmanaged stall should become inconclusive promptly.
+
+    Waiting for the full per-run timeout after the no-progress watchdog has
+    already established that the scheduler cannot control the blocked awaitable
+    multiplies that timeout across sampled schedules.  The run is inconclusive
+    either way, so the watchdog should stop it once ``deadlock_timeout`` expires.
+    """
+
+    async def no_completion_wait(
+        futures: set[asyncio.Future[Any]], *, timeout: float | None = None
+    ) -> tuple[set[asyncio.Future[Any]], set[asyncio.Future[Any]]]:
+        del timeout
+        return set(), futures
+
+    async def run() -> None:
+        scheduler = AwaitScheduler([0], 1, deadlock_timeout=0.01)
+        scheduler._classify_unmanaged_stall_as_deadlock = False
+        gathered: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        watcher = asyncio.create_task(scheduler._wait_watching_progress(gathered, timeout=60.0))
+        try:
+            # Make each watchdog poll deterministic and instantaneous.  One
+            # no-progress window needs ten loop turns for the scheduler's
+            # starvation guard; the old implementation keeps polling forever.
+            monkeypatch.setattr(asyncio, "wait", no_completion_wait)
+            for _ in range(30):
+                await asyncio.sleep(0)
+            assert watcher.done(), "ambiguous stall waited for the full per-run timeout"
+            with pytest.raises(asyncio.TimeoutError):
+                await watcher
+        finally:
+            if not watcher.done():
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+            gathered.cancel()
+
+    asyncio.run(run())
 
 
 def test_peer_waiting_on_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
