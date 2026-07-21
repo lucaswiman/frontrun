@@ -1,0 +1,34 @@
+[restart 0] new best: objective=48/89 |F|=89 gens=[7, 12, 88, 256, 259, 288, 296, 298, 301, 345, 352, 384, 391, 448, 463, 479]
+[restart 1] new best: objective=1/2 |F|=24 gens=[0, 3, 4, 7, 24, 168, 432]
+[restart 2] best this restart: 52/95 (|F|=95)
+[restart 3] best this restart: 27/53 (|F|=53)
+[restart 4] best this restart: 12/23 (|F|=69)
+[restart 5] best this restart: 27/53 (|F|=53)
+[restart 6] best this restart: 46/83 (|F|=83)
+[restart 7] best this restart: 47/87 (|F|=87)
+[restart 8] best this restart: 91/173 (|F|=173)
+[restart 9] best this restart: 74/141 (|F|=141)
+[restart 10] best this restart: 37/68 (|F|=68)
+[restart 11] best this restart: 51/94 (|F|=94)
+[restart 12] best this restart: 62/117 (|F|=117)
+[restart 13] best this restart: 46/85 (|F|=85)
+[restart 14] best this restart: 13/25 (|F|=75)
+[restart 15] best this restart: 51/91 (|F|=91)
+[restart 16] best this restart: 53/96 (|F|=96)
+[restart 17] best this restart: 45/83 (|F|=83)
+[restart 18] best this restart: 10/19 (|F|=38)
+[restart 19] best this restart: 44/79 (|F|=79)
+[restart 20] best this restart: 15/28 (|F|=28)
+[restart 21] best this restart: 17/32 (|F|=64)
+[restart 22] new best: objective=1/2 |F|=50 gens=[7, 40, 152, 200, 236, 392, 480, 481, 482]
+[restart 23] best this restart: 19/36 (|F|=108)
+[restart 24] best this restart: 41/76 (|F|=76)
+[restart 25] best this restart: 71/132 (|F|=132)
+[restart 26] best this restart: 51/98 (|F|=98)
+[restart 27] best this restart: 26/47 (|F|=94)
+[restart 28] best this restart: 57/110 (|F|=110)
+[restart 29] best this restart: 16/31 (|F|=31)
+
+mode=triple n=9: global best objective = 1/2 with |F| = 50
+generators: [7, 40, 152, 200, 236, 392, 480, 481, 482]
+(triple max-proportion 1/2 = 0.5000; < 1/2 reproduces Sarvate-Renaud)

@@ -1,0 +1,24 @@
+[restart 0] new best: objective=0 |F|=2 gens=[0, 3084]
+[restart 1] best this restart: 0 (|F|=2)
+[restart 2] best this restart: 0 (|F|=2)
+[restart 3] best this restart: 0 (|F|=2)
+[restart 4] best this restart: 0 (|F|=2)
+[restart 5] best this restart: 0 (|F|=2)
+[restart 6] best this restart: 0 (|F|=2)
+[restart 7] best this restart: 0 (|F|=2)
+[restart 8] best this restart: 0 (|F|=2)
+[restart 9] best this restart: 0 (|F|=2)
+[restart 10] new best: objective=0 |F|=4 gens=[0, 8, 2052]
+[restart 11] best this restart: 0 (|F|=2)
+[restart 12] best this restart: 0 (|F|=2)
+[restart 13] best this restart: 0 (|F|=2)
+[restart 14] best this restart: 0 (|F|=4)
+[restart 15] best this restart: 0 (|F|=2)
+[restart 16] best this restart: 0 (|F|=2)
+[restart 17] best this restart: 0 (|F|=2)
+[restart 18] best this restart: 0 (|F|=2)
+[restart 19] best this restart: 0 (|F|=2)
+
+mode=anneal n=12: global best objective = 0 with |F| = 4
+generators: [0, 8, 2052]
+(margin 0 = conjecture exactly tight, as for powersets; never went below)
