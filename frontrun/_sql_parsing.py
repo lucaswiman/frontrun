@@ -63,46 +63,33 @@ _EMPTY = SqlAccessResult(set(), set(), None, None, None, None, None)
 def _strip_quotes(name: str) -> str:
     """Remove surrounding quotes/backticks and extract table from schema.table.
 
-    Handles quoted schema-qualified names like "public"."users" and
-    `myschema`.`users` by splitting on "." or `.` boundaries first,
-    then stripping quotes from the last component.
+    Dots inside a quoted identifier belong to the identifier, so only an
+    unquoted dot separates schema/catalog components.
     """
-    # Split on dot boundaries between quoted identifiers: "schema"."table"
-    # or `schema`.`table`.  Also handles unquoted schema.table.
-    if '"."' in name:
-        parts = name.split('"."')
-        last = parts[-1]
-    elif "`.`" in name:
-        parts = name.split("`.`")
-        last = parts[-1]
-    elif "].[" in name:
-        parts = name.split("].[")
-        last = parts[-1]
-    elif '".`' in name or '`."' in name:
-        # Mixed quoting — unlikely but handle gracefully
-        last = name.rsplit(".", 1)[-1]
-    else:
-        # A single *fully* quoted identifier may legitimately contain a dot
-        # (e.g. "my.table"): that dot is part of the name, not a schema
-        # separator, so return the interior verbatim instead of splitting on
-        # it.  Splitting would give a different resource id than DML uses for
-        # the same name, silently dropping the lock's conflicts (under-merge).
-        for open_q, close_q in (('"', '"'), ("`", "`"), ("[", "]")):
-            if len(name) >= 2 and name[0] == open_q and name[-1] == close_q:
-                return name[1:-1]
-        # No "." or `.` boundary detected.  Split on plain dot to
-        # separate schema from table, then strip quotes from the
-        # resulting table component.  The previous code assumed a
-        # leading quote meant the *entire* string was quoted and used
-        # [1:-1] — but for mixed cases like "public".users the last
-        # character is part of the table name, not a closing quote.
-        last = name.rsplit(".", 1)[-1]
+    component_start = 0
+    close_quote: str | None = None
+    i = 0
+    while i < len(name):
+        char = name[i]
+        if close_quote is None:
+            if char in ('"', "`"):
+                close_quote = char
+            elif char == "[":
+                close_quote = "]"
+            elif char == ".":
+                component_start = i + 1
+        elif char == close_quote:
+            # SQL identifiers escape their closing delimiter by doubling it.
+            if i + 1 < len(name) and name[i + 1] == close_quote:
+                i += 1
+            else:
+                close_quote = None
+        i += 1
 
-    # Strip remaining quotes from the last component
-    if last.startswith(('"', "`", "[")):
-        last = last[1:]
-    if last.endswith(('"', "`", "]")):
-        last = last[:-1]
+    last = name[component_start:]
+    for open_quote, closing_quote in (('"', '"'), ("`", "`"), ("[", "]")):
+        if len(last) >= 2 and last[0] == open_quote and last[-1] == closing_quote:
+            return last[1:-1].replace(closing_quote * 2, closing_quote)
     return last
 
 
