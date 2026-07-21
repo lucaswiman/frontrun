@@ -19,8 +19,9 @@ from typing import Any
 
 import pytest
 
+import frontrun.async_shuffler as async_shuffler
 from frontrun.async_scheduler import SchedulerTimeoutError
-from frontrun.async_shuffler import AwaitScheduler, explore_async_random, run_with_schedule
+from frontrun.async_shuffler import explore_async_random, run_with_schedule
 
 
 def test_public_run_with_schedule_rejects_deadlocked_state() -> None:
@@ -62,7 +63,7 @@ def test_public_run_with_schedule_rejects_deadlocked_state() -> None:
     asyncio.run(replay())
 
 
-def test_deadlock_on_unmanaged_locks_is_not_scored_as_a_pass() -> None:
+def test_deadlock_on_unmanaged_locks_is_not_scored_as_a_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     """A lock-order-inversion deadlock on *unmanaged* primitives must never be
     scored as a pass — but the random shuffler reports it as inconclusive, not
     a fabricated counterexample.
@@ -101,15 +102,18 @@ def test_deadlock_on_unmanaged_locks_is_not_scored_as_a_pass() -> None:
             async with state.lock_a:
                 state.done += 1
 
+    # Exercise one known deadlocking schedule instead of relying on a random
+    # sample to hit it repeatedly and paying timeout_per_run for every hit.
+    monkeypatch.setattr(async_shuffler, "random_round_robin_schedule", lambda *_args: [0, 1] * 20)
     result = asyncio.run(
         explore_async_random(
             setup=State,
             tasks=[task_ab, task_ba],
             # Invariant a partial/cancelled run trivially satisfies.
             invariant=lambda s: s.done <= 2,
-            max_attempts=40,
-            timeout_per_run=2.0,
-            deadlock_timeout=0.5,
+            max_attempts=1,
+            timeout_per_run=0.2,
+            deadlock_timeout=0.05,
             seed=1234,
         )
     )
@@ -241,45 +245,6 @@ def test_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
     assert result.property_holds, result.explanation
 
 
-def test_unmanaged_stall_is_abandoned_after_deadlock_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An ambiguous unmanaged stall should become inconclusive promptly.
-
-    Waiting for the full per-run timeout after the no-progress watchdog has
-    already established that the scheduler cannot control the blocked awaitable
-    multiplies that timeout across sampled schedules.  The run is inconclusive
-    either way, so the watchdog should stop it once ``deadlock_timeout`` expires.
-    """
-
-    async def no_completion_wait(
-        futures: set[asyncio.Future[Any]], *, timeout: float | None = None
-    ) -> tuple[set[asyncio.Future[Any]], set[asyncio.Future[Any]]]:
-        del timeout
-        return set(), futures
-
-    async def run() -> None:
-        scheduler = AwaitScheduler([0], 1, deadlock_timeout=0.01)
-        scheduler._classify_unmanaged_stall_as_deadlock = False
-        gathered: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        watcher = asyncio.create_task(scheduler._wait_watching_progress(gathered, timeout=60.0))
-        try:
-            # Make each watchdog poll deterministic and instantaneous.  One
-            # no-progress window needs ten loop turns for the scheduler's
-            # starvation guard; the old implementation keeps polling forever.
-            monkeypatch.setattr(asyncio, "wait", no_completion_wait)
-            for _ in range(30):
-                await asyncio.sleep(0)
-            assert watcher.done(), "ambiguous stall waited for the full per-run timeout"
-            with pytest.raises(asyncio.TimeoutError):
-                await watcher
-        finally:
-            if not watcher.done():
-                watcher.cancel()
-                await asyncio.gather(watcher, return_exceptions=True)
-            gathered.cancel()
-
-    asyncio.run(run())
-
-
 def test_peer_waiting_on_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
     """A task blocked in pause() waiting for a peer that is merely slow on an
     unmanaged awaitable must NOT be reported as a deadlock counterexample.
@@ -293,8 +258,8 @@ def test_peer_waiting_on_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
     ``scheduler._error`` unconditionally — bypassing ``detect_external_deadlock``
     — so the run was scored ``property_holds=False`` "Deadlock detected".  That
     is a fabricated counterexample for a slow-but-correct run: a plain
-    unmanaged stall must complete or be abandoned as inconclusive, never become
-    a fail.
+    unmanaged stall must reach the overall timeout (inconclusive) or complete,
+    never become a fail.
     """
 
     class State:

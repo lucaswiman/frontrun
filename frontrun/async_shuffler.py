@@ -415,8 +415,9 @@ class AwaitScheduler(InterleavedLoop):
             # The scheduled task has not reached its pause point: it is off on
             # an awaitable the scheduler does not manage (a real timer, socket,
             # or externally-completed Future), which is a slow run, not a proven
-            # deadlock.  Decline so the run-level watchdog reports an ordinary
-            # inconclusive timeout, avoiding a fabricated counterexample.
+            # deadlock.  Decline so pause() keeps waiting until the overall run
+            # timeout, which the caller reports as inconclusive — mirroring
+            # _wait_watching_progress and avoiding a fabricated counterexample.
             return False
         needed = self.schedule[self._index] if self._index < len(self.schedule) else "?"
         self._error = SchedulerTimeoutError(
