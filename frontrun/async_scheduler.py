@@ -406,10 +406,9 @@ class InterleavedLoop:
                         # _handle_timeout declined to declare a deadlock: the
                         # scheduled task is off on an awaitable the scheduler
                         # does not manage (a real timer/socket/external Future),
-                        # which is a slow run, not a proven deadlock.  Keep
-                        # waiting until the overall run timeout, which the caller
-                        # classifies as inconclusive rather than fabricating a
-                        # counterexample.
+                        # which is an inconclusive run, not a proven deadlock.
+                        # The run-level watchdog will cancel it without
+                        # fabricating a counterexample.
                         continue
 
                     if self._finished or self._error:
@@ -511,7 +510,9 @@ class InterleavedLoop:
                 deadlocks are invisible to the pause-path detection; with this
                 flag, a full ``deadlock_timeout`` window with zero scheduler
                 progress records a deadlock in ``self._error`` before timing
-                out, so callers can tell it from a slow-but-correct run.
+                out, so callers can tell it from a slow-but-correct run. Without
+                this flag, the same window stops the run as an ordinary,
+                inconclusive timeout without recording a deadlock.
         """
         if isinstance(task_funcs, list):
             task_funcs = dict(enumerate(task_funcs))
@@ -646,9 +647,12 @@ class InterleavedLoop:
                     if not self._classify_unmanaged_stall_as_deadlock:
                         # A quiet unmanaged awaitable may still be a timer,
                         # socket, subprocess, or externally completed Future.
-                        # Keep watching until the overall run timeout, which
-                        # the caller will report as inconclusive.
-                        continue
+                        # Stop this attempt as an ordinary timeout: waiting for
+                        # the full per-run budget cannot make the partial run
+                        # decisive, and multiplies that delay across schedules.
+                        # The caller reports it as inconclusive because no
+                        # scheduler error is recorded.
+                        break
                     if self._error is None:
                         self._error = SchedulerTimeoutError(
                             f"Deadlock: no task progressed for {self.deadlock_timeout}s and no task is "

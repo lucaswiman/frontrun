@@ -293,8 +293,8 @@ def test_peer_waiting_on_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
     ``scheduler._error`` unconditionally — bypassing ``detect_external_deadlock``
     — so the run was scored ``property_holds=False`` "Deadlock detected".  That
     is a fabricated counterexample for a slow-but-correct run: a plain
-    unmanaged stall must reach the overall timeout (inconclusive) or complete,
-    never become a fail.
+    unmanaged stall must complete or be abandoned as inconclusive, never become
+    a fail.
     """
 
     class State:
