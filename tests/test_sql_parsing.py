@@ -94,6 +94,15 @@ class TestStripQuotes:
     def test_bracket_quoted_name_with_interior_dot(self):
         assert _strip_quotes("[my.table]") == "my.table"
 
+    def test_unquoted_schema_quoted_name_with_interior_dot(self):
+        assert _strip_quotes('public."my.table"') == "my.table"
+
+    def test_unquoted_schema_backtick_name_with_interior_dot(self):
+        assert _strip_quotes("public.`my.table`") == "my.table"
+
+    def test_unquoted_schema_bracket_name_with_interior_dot(self):
+        assert _strip_quotes("public.[my.table]") == "my.table"
+
 
 # ---------------------------------------------------------------------------
 # _sqlglot_parse — non-DML constructs now handled inside _sqlglot_parse
@@ -228,6 +237,10 @@ class TestSqlglotParseNonDml:
         table, matching the resource id DML uses for the same name — otherwise
         the lock guards a phantom table and never conflicts (under-merge)."""
         r = parse_sql_access('LOCK TABLE "my.table" IN EXCLUSIVE MODE')
+        assert r.write_tables == {"my.table"}
+
+    def test_lock_table_schema_qualified_quoted_name_with_interior_dot(self):
+        r = parse_sql_access('LOCK TABLE public."my.table" IN EXCLUSIVE MODE')
         assert r.write_tables == {"my.table"}
 
     # -----------------------------------------------------------------------
