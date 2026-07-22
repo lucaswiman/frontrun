@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+import frontrun.async_shuffler as async_shuffler
 from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.async_shuffler import explore_async_random, run_with_schedule
 
@@ -62,7 +63,7 @@ def test_public_run_with_schedule_rejects_deadlocked_state() -> None:
     asyncio.run(replay())
 
 
-def test_deadlock_on_unmanaged_locks_is_not_scored_as_a_pass() -> None:
+def test_deadlock_on_unmanaged_locks_is_not_scored_as_a_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     """A lock-order-inversion deadlock on *unmanaged* primitives must never be
     scored as a pass — but the random shuffler reports it as inconclusive, not
     a fabricated counterexample.
@@ -101,15 +102,18 @@ def test_deadlock_on_unmanaged_locks_is_not_scored_as_a_pass() -> None:
             async with state.lock_a:
                 state.done += 1
 
+    # Exercise one known deadlocking schedule instead of relying on a random
+    # sample to hit it repeatedly and paying timeout_per_run for every hit.
+    monkeypatch.setattr(async_shuffler, "random_round_robin_schedule", lambda *_args: [0, 1] * 20)
     result = asyncio.run(
         explore_async_random(
             setup=State,
             tasks=[task_ab, task_ba],
             # Invariant a partial/cancelled run trivially satisfies.
             invariant=lambda s: s.done <= 2,
-            max_attempts=40,
-            timeout_per_run=2.0,
-            deadlock_timeout=0.5,
+            max_attempts=1,
+            timeout_per_run=0.2,
+            deadlock_timeout=0.05,
             seed=1234,
         )
     )
