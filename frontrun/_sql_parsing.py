@@ -82,6 +82,14 @@ def _strip_quotes(name: str) -> str:
         # Mixed quoting — unlikely but handle gracefully
         last = name.rsplit(".", 1)[-1]
     else:
+        # A single *fully* quoted identifier may legitimately contain a dot
+        # (e.g. "my.table"): that dot is part of the name, not a schema
+        # separator, so return the interior verbatim instead of splitting on
+        # it.  Splitting would give a different resource id than DML uses for
+        # the same name, silently dropping the lock's conflicts (under-merge).
+        for open_q, close_q in (('"', '"'), ("`", "`"), ("[", "]")):
+            if len(name) >= 2 and name[0] == open_q and name[-1] == close_q:
+                return name[1:-1]
         # No "." or `.` boundary detected.  Split on plain dot to
         # separate schema from table, then strip quotes from the
         # resulting table component.  The previous code assumed a

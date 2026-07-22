@@ -230,11 +230,16 @@ def _keyspace_kind(upper: str, result: RedisAccessResult) -> str | None:
     traffic stays read-read (no new conflicts); only FLUSH* takes a write,
     so it conflicts with every concurrent key access.
     """
-    if result.is_transaction_control and upper not in _EVAL_CMDS:
-        # MULTI/EXEC/DISCARD/UNWATCH/WATCH do not execute a keyspace mutation.
-        # Atomic scripts/functions are different: their declared KEYS still
-        # need a command-level dependency (including against FLUSH*), even
-        # though the command itself remains one indivisible I/O envelope.
+    if result.is_transaction_control and upper not in _EVAL_CMDS and not (result.read_keys or result.write_keys):
+        # MULTI/EXEC/DISCARD/UNWATCH carry no keys and execute no keyspace
+        # mutation.  WATCH is different: it names the keys it guards, so — like
+        # every other key-touching command — it must take a keyspace *read*, or
+        # a whole-keyspace mutation (FLUSHDB/FLUSHALL/SWAPDB) that invalidates
+        # the watch would share no resource with it and DPOR would prune the
+        # racing order (an under-merge / false pass).  Atomic scripts/functions
+        # are handled the same way: their declared KEYS need a command-level
+        # dependency (including against FLUSH*), even though the command itself
+        # remains one indivisible I/O envelope.
         return None
     if upper in _KEYSPACE_WRITE_CMDS:
         return "write"

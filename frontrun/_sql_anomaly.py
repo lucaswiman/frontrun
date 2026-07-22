@@ -48,7 +48,14 @@ def _extract_sql_events(events: list[TraceEvent]) -> list[tuple[int, str, str, s
             continue
         remainder = attr[4:]  # everything after "sql:"
         table = remainder.split(":")[0]
-        if table:
+        # ``sql:__database__`` is the coarse, conservative conflict-modeling
+        # marker (``_report_sql_access`` emits it as a read for every parsed
+        # statement and as a write for every unparsable / non-``str`` op).  It
+        # is an internal DPOR channel, not a real table, so it must not drive
+        # anomaly classification or surface as a table name — otherwise a
+        # write-write conflict on a real row gets mislabeled a dirty read on
+        # a bogus ``'__database__'`` table.
+        if table and table != "__database__":
             result.append((ev.thread_id, remainder, table, access))
     return result
 

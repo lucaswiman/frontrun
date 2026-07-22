@@ -62,14 +62,25 @@ def test_public_run_with_schedule_rejects_deadlocked_state() -> None:
     asyncio.run(replay())
 
 
-def test_deadlock_is_surfaced_not_false_invariant() -> None:
-    """A lock-order-inversion deadlock must be reported as a deadlock.
+def test_deadlock_on_unmanaged_locks_is_not_scored_as_a_pass() -> None:
+    """A lock-order-inversion deadlock on *unmanaged* primitives must never be
+    scored as a pass — but the random shuffler reports it as inconclusive, not
+    a fabricated counterexample.
 
-    Two tasks acquire two locks in opposite order.  Some interleavings
-    deadlock.  The invariant below would be *satisfied* by a partial
-    (cancelled) run where neither task finished — so swallowing the timeout
-    and checking the invariant would wrongly report property_holds=True and
-    silently drop the deadlock.
+    Two tasks acquire two stock ``asyncio.Lock`` objects in opposite order and
+    deadlock, blocking *outside* ``pause()``.  The invariant below is trivially
+    satisfied by the partial (cancelled) state, so the essential guarantee is
+    that the run is NOT scored ``property_holds=True``.
+
+    The shuffler cannot *constructively* prove this deadlock: it is invisible to
+    the sound all-waiting-in-pause() detector, and a bounded no-progress window
+    cannot distinguish a permanent deadlock from a slow-but-completing unmanaged
+    await (the exact ambiguity that made the pause watchdog fabricate a
+    "Deadlock detected" counterexample for correct-but-slow code — see
+    ``test_peer_waiting_on_slow_unmanaged_await_is_not_a_false_deadlock``).  So
+    ``explore_async_random`` (``detect_external_deadlock=False``) honestly
+    reports *inconclusive* rather than a false FAIL.  Sound deadlock detection
+    on unmanaged primitives is the DPOR path's job, not the random shuffler's.
     """
 
     class State:
@@ -103,9 +114,14 @@ def test_deadlock_is_surfaced_not_false_invariant() -> None:
         )
     )
 
-    assert not result.property_holds, "deadlock should be surfaced, not scored as a pass"
+    # The core soundness guarantee: a deadlocked run is never a false pass.
+    assert result.property_holds is not True, "deadlock must not be scored as a pass"
+    # And the shuffler must not fabricate a deadlock it cannot prove: the honest
+    # verdict is inconclusive (property_holds=None, no counterexample).
+    assert result.property_holds is None, result.explanation
+    assert result.counterexample is None
     assert result.explanation is not None
-    assert "deadlock" in result.explanation.lower(), result.explanation
+    assert "inconclusive" in result.explanation.lower(), result.explanation
 
 
 def test_lock_deadlock_with_no_task_in_pause_is_detected() -> None:
@@ -223,6 +239,62 @@ def test_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
     )
 
     assert result.property_holds, result.explanation
+
+
+def test_peer_waiting_on_slow_unmanaged_await_is_not_a_false_deadlock() -> None:
+    """A task blocked in pause() waiting for a peer that is merely slow on an
+    unmanaged awaitable must NOT be reported as a deadlock counterexample.
+
+    ``test_slow_unmanaged_await_is_not_a_false_deadlock`` covers the single-task
+    case, where no task ever waits in pause().  With two tasks the failure mode
+    is different: ``fast_task`` reaches ``pause()`` where the schedule wants
+    ``slow_task`` first, but ``slow_task`` is off on an *unmanaged* Future that
+    resolves via a real timer AFTER ``deadlock_timeout`` yet well BEFORE
+    ``timeout_per_run``.  The pause watchdog (``_handle_timeout``) fired and set
+    ``scheduler._error`` unconditionally — bypassing ``detect_external_deadlock``
+    — so the run was scored ``property_holds=False`` "Deadlock detected".  That
+    is a fabricated counterexample for a slow-but-correct run: a plain
+    unmanaged stall must reach the overall timeout (inconclusive) or complete,
+    never become a fail.
+    """
+
+    class State:
+        def __init__(self) -> None:
+            self.done: list[str] = []
+
+    async def slow_task(state: State) -> None:
+        await asyncio.sleep(0)  # a controlled pause point
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[None] = loop.create_future()
+        # Resolve after 0.3s real time: > deadlock_timeout (0.05) but well
+        # under timeout_per_run (3.0).  Unmanaged by the scheduler.
+        loop.call_later(0.3, lambda: fut.done() or fut.set_result(None))
+        await fut
+        await asyncio.sleep(0)
+        state.done.append("slow")
+
+    async def fast_task(state: State) -> None:
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        state.done.append("fast")
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=State,
+            tasks=[slow_task, fast_task],
+            invariant=lambda s: True,  # can never be violated
+            max_attempts=4,
+            max_ops=8,
+            timeout_per_run=3.0,
+            deadlock_timeout=0.05,
+            patch_sleep=False,
+            seed=1234,
+        )
+    )
+
+    assert result.property_holds is not False, result.explanation
+    if result.explanation is not None:
+        assert "deadlock" not in result.explanation.lower(), result.explanation
 
 
 def test_max_ops_truncation_cannot_return_passing_proof() -> None:

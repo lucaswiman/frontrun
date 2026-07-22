@@ -401,8 +401,16 @@ class InterleavedLoop:
                     except asyncio.TimeoutError:
                         if self._rescue_stalled_pause():
                             continue
-                        self._handle_timeout(task_id, marker)
-                        return
+                        if self._handle_timeout(task_id, marker):
+                            return
+                        # _handle_timeout declined to declare a deadlock: the
+                        # scheduled task is off on an awaitable the scheduler
+                        # does not manage (a real timer/socket/external Future),
+                        # which is a slow run, not a proven deadlock.  Keep
+                        # waiting until the overall run timeout, which the caller
+                        # classifies as inconclusive rather than fabricating a
+                        # counterexample.
+                        continue
 
                     if self._finished or self._error:
                         return
@@ -434,16 +442,22 @@ class InterleavedLoop:
         """
         return False
 
-    def _handle_timeout(self, task_id: Any, marker: Any = None) -> None:
+    def _handle_timeout(self, task_id: Any, marker: Any = None) -> bool:
         """Handle a timeout in pause(). Sets the error and wakes everyone.
 
-        Override to provide a more informative error message.
+        Returns True when it declared a deadlock (``pause()`` then returns), or
+        False to decline — an unmanaged external stall that ``pause()`` should
+        keep waiting on rather than fabricate a counterexample from.
+
+        Override to provide a more informative error message or to honor
+        ``_classify_unmanaged_stall_as_deadlock``.
         """
         self._error = SchedulerTimeoutError(
             f"Deadlock: task {task_id!r} timed out waiting at marker {marker!r} (fallback timeout)"
         )
         self._on_error_set()
         self._condition.notify_all()
+        return True
 
     def _handle_all_waiting_deadlock(self, task_id: Any, marker: Any = None) -> None:
         """Handle instant deadlock: all alive tasks are waiting, none can proceed.
