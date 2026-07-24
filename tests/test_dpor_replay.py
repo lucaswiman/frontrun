@@ -495,3 +495,88 @@ class TestIOAnchoredReplayScheduler:
         assert state.elapsed >= 1.0
         assert clock.now() >= VIRTUAL_EPOCH + 1.0
         assert wall_elapsed < 0.5, f"virtual replay sleep burned wall time ({wall_elapsed:.3f}s)"
+
+
+class TestIOAnchoredReplayDesync:
+    """An IO-anchored replay desynchronisation during the best-effort
+    reproduction step must be scored as a non-reproduction, never crash the
+    exploration and discard the already-recorded counterexample.
+
+    Anchors are matched by exact equality (modulo the redis random-key
+    binding), so any worker whose I/O sequence varies run to run — sampled
+    telemetry, jitter, a retry loop — desynchronises the replay.  That is an
+    expected imperfect-replay condition, not a frontrun-internal bug;
+    ``_ReplayDporScheduler`` degrades to positional replay for the same reason.
+    """
+
+    @pytest.mark.parametrize(
+        ("io_schedule", "current_thread", "io_index", "anchor"),
+        [
+            # Recorded schedule exhausted: replay issued an extra I/O.
+            ([(0, "sql:accounts")], 0, 1, (0, "sql:orders")),
+            # Anchor recorded for thread 1, but thread 0 arrived.
+            ([(1, "sql:accounts")], 0, 0, (0, "sql:accounts")),
+        ],
+    )
+    def test_desync_raises_absorbable_error_type(
+        self, io_schedule: list[tuple[int, str]], current_thread: int, io_index: int, anchor: tuple[int, str]
+    ) -> None:
+        from frontrun._dpor_runtime.replay import _ReplayDesyncError
+        from frontrun._dpor_runtime.scheduler import _IOAnchoredReplayScheduler
+
+        scheduler = _IOAnchoredReplayScheduler(io_schedule, 2, deadlock_timeout=1.0)
+        scheduler._current_thread = current_thread
+        scheduler._io_index = io_index
+        assert scheduler.before_io(*anchor) is False
+        assert isinstance(scheduler._error, _ReplayDesyncError), type(scheduler._error)
+
+    def test_reproduction_absorbs_desync_instead_of_crashing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import frontrun._dpor_runtime.replay as replay_mod
+        from frontrun._dpor_runtime.replay import _ReplayDesyncError, _reproduce_dpor_counterexample
+
+        def always_desync(*_args: object, **_kwargs: object) -> object:
+            raise _ReplayDesyncError("DPOR IO-anchored replay desynchronised: simulated")
+
+        monkeypatch.setattr(replay_mod, "_run_dpor_schedule", always_desync)
+
+        # Must NOT raise — a desync is scored as a non-reproduction.
+        attempts, successes = _reproduce_dpor_counterexample(
+            schedule_list=[0, 1],
+            setup=lambda: object(),
+            threads=[lambda _s: None, lambda _s: None],
+            timeout_per_run=1.0,
+            deadlock_timeout=1.0,
+            reproduce_on_failure=3,
+            lock_timeout=None,
+            invariant=lambda _s: True,
+            detect_io=True,
+            io_schedule=[(0, "sql:accounts")],
+        )
+        assert attempts == 3
+        assert successes == 0
+
+    def test_reproduction_still_propagates_genuine_internal_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-desync RuntimeError is a real frontrun-internal bug and must
+        still propagate — the absorb path must not swallow every RuntimeError.
+        """
+        import frontrun._dpor_runtime.replay as replay_mod
+        from frontrun._dpor_runtime.replay import _reproduce_dpor_counterexample
+
+        def internal_bug(*_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("engine invariant broken")
+
+        monkeypatch.setattr(replay_mod, "_run_dpor_schedule", internal_bug)
+
+        with pytest.raises(RuntimeError, match="engine invariant broken"):
+            _reproduce_dpor_counterexample(
+                schedule_list=[0, 1],
+                setup=lambda: object(),
+                threads=[lambda _s: None, lambda _s: None],
+                timeout_per_run=1.0,
+                deadlock_timeout=1.0,
+                reproduce_on_failure=3,
+                lock_timeout=None,
+                invariant=lambda _s: True,
+                detect_io=True,
+                io_schedule=[(0, "sql:accounts")],
+            )

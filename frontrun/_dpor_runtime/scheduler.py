@@ -1769,6 +1769,21 @@ class _ReplayDporScheduler(DporScheduler):
                     return False
 
 
+class _ReplayDesyncError(RuntimeError):
+    """An IO-anchored replay diverged from the recorded I/O schedule.
+
+    Raised (via ``scheduler._error``) when a reproduction replay produces an
+    I/O anchor order this scheduler cannot reconcile with the recorded one —
+    a worker whose I/O sequence varies run to run (sampling, jitter, retries)
+    is enough.  That is an *expected imperfect-replay* condition, not a
+    frontrun-internal bug, so the reproduction loop scores it as a
+    non-reproduction rather than letting it crash the exploration and discard
+    the counterexample already found.  ``_ReplayDporScheduler`` degrades to
+    positional-only replay for the same reason.  The distinct type is what
+    keeps genuine internal ``RuntimeError``s propagating.
+    """
+
+
 class _IOAnchoredReplayScheduler(DporScheduler):
     """Replay using only IO boundaries as schedule anchors (defect #16).
 
@@ -1972,7 +1987,7 @@ class _IOAnchoredReplayScheduler(DporScheduler):
                         pass
                     elif self._current_thread == thread_id:
                         if self._io_index >= len(self._io_schedule):
-                            self._error = RuntimeError(
+                            self._error = _ReplayDesyncError(
                                 "DPOR IO-anchored replay desynchronised: "
                                 f"unexpected extra I/O anchor {(thread_id, resource_id)!r}"
                             )
@@ -1981,7 +1996,7 @@ class _IOAnchoredReplayScheduler(DporScheduler):
 
                         expected_tid, expected_resource_id = self._io_schedule[self._io_index]
                         if expected_tid != thread_id or not self._anchors_match(expected_resource_id, resource_id):
-                            self._error = RuntimeError(
+                            self._error = _ReplayDesyncError(
                                 "DPOR IO-anchored replay desynchronised: "
                                 f"expected {(expected_tid, expected_resource_id)!r}, "
                                 f"got {(thread_id, resource_id)!r}"
