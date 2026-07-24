@@ -91,19 +91,28 @@ def build_trace_function(
                 return trace_function
 
             if include_previous_line and lineno > 1 and _last_current_line_marker[0] != (filename, lineno - 1):
-                prev_marker = marker_registry.get_marker(filename, lineno - 1)
-                # Only fire the prev-line marker when line lineno-1 is a
-                # comment/blank line (legitimately attached to this line) OR the
-                # previous *executed* line in this frame was exactly lineno-1.
-                # Otherwise lineno-1 is executable code that was skipped, and
-                # firing its marker would report a step that never ran.  The
-                # cheap checks run first so the line-classification lookup only
-                # happens when a prev marker could actually fire.
-                if (
-                    prev_marker
-                    and _last_prev_line_fired[0] != (filename, lineno)
-                    and (_is_non_executable_line(filename, lineno - 1) or prev_executed == (filename, lineno - 1))
-                ):
+                # Locate a standalone marker gating this executable line.
+                # Comment/blank lines emit no line event of their own, so a
+                # marker on one gates the next executable line even when
+                # further blank/comment lines separate the two.  Scan back over
+                # that contiguous non-executable run; stopping at the first
+                # executable line keeps a marker above one statement from
+                # leaking onto a later one.  A marker on the immediately
+                # preceding *executable* line fires only when that line
+                # actually ran — otherwise it would report a step that didn't.
+                prev_marker: str | None = None
+                if _is_non_executable_line(filename, lineno - 1):
+                    probe = lineno - 1
+                    while probe >= 1 and _is_non_executable_line(filename, probe):
+                        candidate = marker_registry.get_marker(filename, probe)
+                        if candidate is not None:
+                            prev_marker = candidate
+                            break
+                        probe -= 1
+                elif prev_executed == (filename, lineno - 1):
+                    prev_marker = marker_registry.get_marker(filename, lineno - 1)
+
+                if prev_marker is not None and _last_prev_line_fired[0] != (filename, lineno):
                     _last_prev_line_fired[0] = (filename, lineno)
                     _wait_for_marker(coordinator, execution_name, prev_marker)
 

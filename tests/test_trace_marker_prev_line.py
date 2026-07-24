@@ -21,6 +21,8 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from frontrun._marker_coordination import MarkerRegistry
 from frontrun._trace_marker_runtime import build_trace_function
 
@@ -104,9 +106,26 @@ def test_prev_line_marker_not_fired_for_skipped_code_line():
     )
 
 
-def test_prev_line_marker_fired_for_comment_only_line():
-    """The legitimate case: marker on a comment-only line above an await."""
-    fname = "fake2.py"
+@pytest.mark.parametrize(
+    ("separator", "label"),
+    [
+        ([], "directly above"),
+        (["\n"], "blank line between"),
+        (["    # read the current balance\n"], "comment between"),
+        (["\n", "    # and then read it\n"], "blank + comment between"),
+    ],
+)
+def test_prev_line_marker_fired_for_standalone_marker(separator: list[str], label: str):
+    """A standalone marker gates the next *executable* line, however many
+    blank/comment lines sit in between.
+
+    ``docs/quickstart.rst`` documents the separate-line placement style as
+    "the marker gates the next executable line".  Non-executable lines emit no
+    line event, so a marker orphaned by one is never fired: the schedule step
+    is never consumed, the interleaving silently goes unenforced, and the race
+    the user wrote the schedule to demonstrate does not reproduce.
+    """
+    fname = f"fake2_{len(separator)}.py"
     registry = MarkerRegistry()
     registry._markers[(fname, 2)] = "read_balance"  # type: ignore[attr-defined]
     registry._scanned_files.add(fname)  # type: ignore[attr-defined]
@@ -118,7 +137,8 @@ def test_prev_line_marker_fired_for_comment_only_line():
         [
             "async def transfer():\n",  # line 1
             "    # frontrun: read_balance\n",  # line 2 (comment only)
-            "    current = await get()\n",  # line 3 (executable)
+            *separator,  # non-executable filler
+            "    current = await get()\n",  # the executable line the marker gates
         ],
         fname,
     )
@@ -126,7 +146,38 @@ def test_prev_line_marker_fired_for_comment_only_line():
     coord = _RecordingCoordinator()
     trace = build_trace_function(coord, registry, "t1", include_previous_line=True)
 
-    # Land on line 3; the comment marker on line 2 must fire.
-    trace(_frame(fname, 3), "line", None)
+    trace(_frame(fname, 3 + len(separator)), "line", None)
 
-    assert "read_balance" in coord.fired, "legitimate comment-line marker did not fire"
+    assert "read_balance" in coord.fired, f"standalone marker did not fire ({label})"
+
+
+def test_prev_line_marker_not_fired_across_executable_line():
+    """The backward scan must stop at an executable line — a marker above a
+    *different* statement must not leak onto a later line."""
+    fname = "fake4.py"
+    registry = MarkerRegistry()
+    registry._markers[(fname, 2)] = "gate"  # type: ignore[attr-defined]
+    registry._scanned_files.add(fname)  # type: ignore[attr-defined]
+    import linecache
+
+    linecache.cache[fname] = (  # type: ignore[assignment]
+        0,
+        None,
+        [
+            "def f():\n",  # line 1
+            "    # frontrun: gate\n",  # line 2 (marker)
+            "    a = compute()\n",  # line 3 (executable — the real gated line)
+            "    b = other()\n",  # line 4 (a *different* statement)
+        ],
+        fname,
+    )
+
+    coord = _RecordingCoordinator()
+    trace = build_trace_function(coord, registry, "t1", include_previous_line=True)
+
+    # Line 3 ran (gated by the marker), then line 4 runs.  The marker must NOT
+    # fire a second time for line 4 — the executable line 3 blocks the scan.
+    trace(_frame(fname, 3), "line", None)
+    trace(_frame(fname, 4), "line", None)
+
+    assert coord.fired.count("gate") == 1, f"marker fired {coord.fired.count('gate')} times, expected once"
