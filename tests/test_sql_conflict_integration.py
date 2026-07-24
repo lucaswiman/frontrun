@@ -21,14 +21,18 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from pathlib import Path
 
 import pytest
 
+import frontrun
 from frontrun._io_detection import set_io_reporter
 from frontrun._sql_cursor import (
     _ORIGINAL_METHODS,
     _PATCHES,
+    _sql_resource_id,
+    _sql_sequence_resource_id,
     _suppress_tids,
     patch_sql,
     unpatch_sql,
@@ -741,3 +745,82 @@ class TestSqlPreloadIntegration:
         assert any(r == "sql:data" or r.startswith("sql:data:") for r in all_resources)
         # Verify no socket-level resources are present
         assert not any(r.startswith("socket:") for r in all_resources)
+
+
+class TestTableNameCaseFolding:
+    """Unquoted table identifiers are case-insensitive under PostgreSQL and
+    SQLite (and MySQL with ``lower_case_table_names``), so two spellings of one
+    table denote the same physical rows.  The conflict-graph identity must
+    therefore case-fold table names: keeping ``Accounts`` and ``accounts``
+    distinct is an *under-merge* that hides a genuine same-row race, and
+    under-merging is forbidden (CLAUDE.md soundness principles).
+    """
+
+    def test_resource_ids_fold_table_case(self) -> None:
+        assert _sql_resource_id("accounts", []) == _sql_resource_id("Accounts", [])
+        assert _sql_resource_id("accounts", []) == _sql_resource_id("ACCOUNTS", [])
+        assert _sql_sequence_resource_id("Orders") == _sql_sequence_resource_id("orders")
+
+    def test_primary_colset_folds_table_case(self) -> None:
+        # The first spelling seen establishes the primary column set for the
+        # table; a differently-cased spelling must resolve to that SAME entry,
+        # not create a fresh (and independently-tracked) one.
+        from frontrun._sql_db_scope import _get_primary_colset, _table_primary_colset
+
+        _table_primary_colset.clear()
+        try:
+            first = _get_primary_colset("Widget", ("id",))
+            second = _get_primary_colset("widget", ("name",))
+            assert first == second == ("id",)
+        finally:
+            _table_primary_colset.clear()
+
+    def test_insert_alias_folds_table_case(self) -> None:
+        # A captured INSERT id recorded under one spelling must resolve when a
+        # later statement references the row via a differently-cased name.
+        from frontrun._sql_insert_tracker import clear_insert_tracker, record_insert, resolve_alias
+
+        clear_insert_tracker()
+        try:
+            alias = record_insert("Accounts", 42)
+            assert resolve_alias("accounts", 42) == alias
+        finally:
+            clear_insert_tracker()
+
+    def test_case_variant_lost_update_is_found(self, tmp_path: Path) -> None:
+        """DPOR must find a lost update between workers spelling the table
+        differently.  Distinct resource IDs make the two writes look
+        independent, so the race is pruned and ``explore()`` certifies a
+        program that is genuinely broken — a false pass.
+        """
+        db = str(tmp_path / "accounts.db")
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, bal INTEGER)")
+        conn.execute("INSERT INTO accounts VALUES (1, 100)")
+        conn.commit()
+        conn.close()
+
+        def make_worker(table: str) -> Callable[[str], None]:
+            def worker(path: str) -> None:
+                c = sqlite3.connect(path, timeout=5)
+                bal = c.execute(f"SELECT bal FROM {table} WHERE id = 1").fetchone()[0]
+                c.execute(f"UPDATE {table} SET bal = ? WHERE id = 1", (bal + 10,))
+                c.commit()
+                c.close()
+
+            return worker
+
+        def invariant(path: str) -> bool:
+            c = sqlite3.connect(path)
+            bal = c.execute("SELECT bal FROM accounts WHERE id = 1").fetchone()[0]
+            c.close()
+            return bal == 120
+
+        result = frontrun.explore(
+            setup=lambda: db,
+            workers=[make_worker("accounts"), make_worker("Accounts")],
+            invariant=invariant,
+            detect_io=True,
+            max_executions=200,
+        )
+        assert not result.property_holds, "DPOR missed the lost update across case-variant table names"
