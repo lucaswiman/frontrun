@@ -35,6 +35,7 @@ from frontrun._sql_db_scope import (
     _get_connection_db_scope,
     _get_primary_colset,
     _normalize_db_identity,
+    _normalize_table_identity,
     _register_connection_db_scope,
     _stable_db_scope,
     _table_primary_colset,
@@ -310,7 +311,7 @@ def _sql_resource_id(
     db_scope: str | None = None,
 ) -> str:
     """Build a resource ID from table name and optional predicates."""
-    resource = f"sql:{table}"
+    resource = f"sql:{_normalize_table_identity(table)}"
     if temporal:
         resource = f"{resource}:history:{temporal}"
     if db_scope is not None:

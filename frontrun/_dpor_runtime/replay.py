@@ -9,7 +9,7 @@ from frontrun.common import _call_sync_setup
 
 from ._shared import *
 from .runner import DporBytecodeRunner
-from .scheduler import DporScheduler, _IOAnchoredReplayScheduler, _ReplayDporScheduler
+from .scheduler import DporScheduler, _IOAnchoredReplayScheduler, _ReplayDesyncError, _ReplayDporScheduler
 
 
 class _WorkerExecutionError(Exception):
@@ -218,6 +218,13 @@ def _reproduce_dpor_counterexample(
                 break
             except _WorkerExecutionError:
                 continue  # user worker crash during replay — not a reproduction
+            except _ReplayDesyncError:
+                # The IO-anchored replay diverged from the recorded I/O order in
+                # a way its tolerance rules can't reconcile.  That is an expected
+                # imperfect-replay condition, not a reproduction — absorb it so
+                # the best-effort reproduction step never crashes exploration or
+                # discards the counterexample already recorded on ``result``.
+                continue
             if is_reproduction_run(
                 deadlocked=deadlocked, has_invariant=invariant is not None, invariant_failed=inv_failed
             ):

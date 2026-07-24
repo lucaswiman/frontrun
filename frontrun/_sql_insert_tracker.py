@@ -16,6 +16,7 @@ from typing import Any
 
 from frontrun import _real_threading as _rt
 from frontrun._cooperative import get_context
+from frontrun._sql_db_scope import _normalize_table_identity
 
 
 @dataclass
@@ -68,6 +69,9 @@ def record_insert(table: str, concrete_id: Any | None, *, db_scope: str | None =
     Called after INSERT execution with the captured ``lastrowid`` (or None
     if capture failed).  Thread ID is obtained from the scheduler context.
     """
+    # Fold as ``_sql_resource_id`` does, so a later reference spelling the
+    # table differently still resolves to this alias.
+    table = _normalize_table_identity(table)
     thread_id = _get_thread_id()
     with _lock:
         key = (db_scope, thread_id, table)
@@ -105,6 +109,7 @@ def resolve_alias(table: str, concrete_id: Any, *, db_scope: str | None = None) 
     Returns the alias string (e.g. ``"sql:users:t0_ins0"``) or ``None`` if
     the concrete ID was not produced by a tracked INSERT.
     """
+    table = _normalize_table_identity(table)
     with _lock:
         return _state.concrete_to_alias.get((db_scope, table, str(concrete_id)))
 

@@ -434,12 +434,13 @@ class CrossProcessCoordinator:
                     failures=[(iterations, list(outcome.schedule))],
                 )
             if not invariant():
+                detail = getattr(invariant, "last_failure_message", None)
                 return CrossProcessResult(
                     ok=False,
                     iterations=iterations,
                     exhausted=False,
                     failing_schedule=outcome.schedule,
-                    failure="invariant violated",
+                    failure=f"invariant violated: {detail}" if detail else "invariant violated",
                     failure_kind="invariant",
                     accesses=outcome.accesses,
                     failures=[(iterations, list(outcome.schedule))],

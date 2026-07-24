@@ -31,11 +31,26 @@ __all__ = [
     "_get_connection_db_scope",
     "_get_primary_colset",
     "_normalize_db_identity",
+    "_normalize_table_identity",
     "_register_connection_db_scope",
     "_stable_db_scope",
     "_table_primary_colset",
     "_unregister_connection_db_scope",
 ]
+
+
+def _normalize_table_identity(table: str) -> str:
+    """Case-fold a table name for conflict-graph identity.
+
+    Unquoted table identifiers are case-insensitive under PostgreSQL and SQLite
+    (and MySQL with ``lower_case_table_names``), so ``Accounts`` and
+    ``accounts`` denote the same physical table.  The parse layer preserves the
+    written case, so fold it here: distinct resource IDs for one table would be
+    an *under-merge* that hides a genuine same-row race.  Folding is a
+    conservative over-merge — at worst it forces a spurious conflict between
+    two quoted identifiers differing only in case, which stays sound.
+    """
+    return table.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +75,7 @@ _table_primary_colset: dict[tuple[str | None, str], tuple[str, ...]] = {}
 
 def _get_primary_colset(table: str, colset: tuple[str, ...], *, db_scope: str | None = None) -> tuple[str, ...]:
     """Return the primary column set for a table, initializing it if necessary."""
-    return _table_primary_colset.setdefault((db_scope, table), colset)
+    return _table_primary_colset.setdefault((db_scope, _normalize_table_identity(table)), colset)
 
 
 def _stable_db_scope(identity: str) -> str:

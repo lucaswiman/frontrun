@@ -1015,7 +1015,8 @@ class DporCrossProcessCoordinator:
             wid = min(worker_errors)
             return _fail(f"worker {wid} failed: {worker_errors[wid]}", "worker_error")
         if not invariant():
-            return _fail("invariant violated", "invariant")
+            detail = getattr(invariant, "last_failure_message", None)
+            return _fail(f"invariant violated: {detail}" if detail else "invariant violated", "invariant")
         return None
 
     def _cleanup_socket(self) -> None:
