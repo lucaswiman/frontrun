@@ -137,11 +137,29 @@ def _state_threaded_hooks(
     def coord_setup() -> None:
         state_box["state"] = _call_sync_setup(setup)
 
-    def coord_invariant() -> bool:
-        failed, _message = check_invariant(invariant, state_box.get("state"))
-        return not failed
+    return coord_setup, _StateThreadedInvariant(invariant, state_box), state_box
 
-    return coord_setup, coord_invariant, state_box
+
+class _StateThreadedInvariant:
+    """Nullary invariant adapter that also retains the AssertionError message.
+
+    The cross-process coordinators call ``invariant()`` with no arguments and
+    see only a bool, which drops the message ``check_invariant`` captures from
+    an ``assert cond, msg`` invariant. Exposing it on ``last_failure_message``
+    lets them fold it into the failure explanation the way thread/async mode
+    does; reading the attribute is optional, so the coordinator contract stays
+    ``Callable[[], bool]``.
+    """
+
+    def __init__(self, invariant: Callable[[Any], bool], state_box: dict[str, Any]) -> None:
+        self._invariant = invariant
+        self._state_box = state_box
+        self.last_failure_message: str | None = None
+
+    def __call__(self) -> bool:
+        failed, message = check_invariant(self._invariant, self._state_box.get("state"))
+        self.last_failure_message = message if failed else None
+        return not failed
 
 
 def _explore_process(  # pyright: ignore[reportUnusedFunction]  # imported lazily by frontrun.explore

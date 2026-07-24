@@ -27,16 +27,26 @@ def _make_setup(db: str):
 
 def test_process_execution_finds_lost_update(tmp_path) -> None:
     db = str(tmp_path / "counter.db")
+
+    def invariant(state: str) -> bool:
+        # assert-style invariant: its message must reach the explanation the
+        # way it does in thread/async mode, otherwise the process-mode report
+        # degrades to a bare "invariant violated".
+        read = xproc_demo_counter.read(state)
+        assert read == 2, f"lost update: counter is {read}, expected 2"
+        return True
+
     result = frontrun.explore(
         setup=_make_setup(db),
         workers=xproc_demo_counter.increment,
         count=2,
-        invariant=lambda state: xproc_demo_counter.read(state) == 2,
+        invariant=invariant,
         execution="process",
     )
     assert not result.property_holds
     assert result.counterexample is not None
-    assert result.explanation
+    assert result.failure_kind == "invariant"
+    assert "lost update: counter is" in (result.explanation or ""), result.explanation
 
 
 def test_process_execution_atomic_increment_holds(tmp_path) -> None:
