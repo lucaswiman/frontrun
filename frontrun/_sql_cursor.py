@@ -1375,12 +1375,19 @@ def patch_sql() -> None:
             orig_cursor_cls = getattr(cursor_mod, target.cursor_attr_name)
             orig_connection_cls = getattr(cursor_mod, "connection", None)
             orig_connect = driver_mod.connect
-            driver_mod.connect = _make_patched_connect(
-                orig_connect,
-                orig_cursor_cls,
-                paramstyle=target.paramstyle,
-                driver=target.driver,
-                default_connection_cls=orig_connection_cls if isinstance(orig_connection_cls, type) else None,
+            # B010 suppressed: driver_mod is resolved at runtime, so a direct
+            # attribute assignment is unverifiable to the type checker
+            # (reportAttributeAccessIssue on ModuleType).
+            setattr(  # noqa: B010
+                driver_mod,
+                "connect",
+                _make_patched_connect(
+                    orig_connect,
+                    orig_cursor_cls,
+                    paramstyle=target.paramstyle,
+                    driver=target.driver,
+                    default_connection_cls=orig_connection_cls if isinstance(orig_connection_cls, type) else None,
+                ),
             )
             _PATCHES.append((driver_mod, "connect", orig_connect))
             _ORIGINAL_METHODS[(orig_cursor_cls, "execute")] = orig_cursor_cls.execute
