@@ -114,7 +114,15 @@ target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "A", "C4", "ISC", "PIE", "Q", "LOG", "PERF"]
+select = [
+    "E", "F", "W", "I", "N", "UP", "A", "C4", "ISC", "PIE", "Q", "LOG", "PERF",
+    # Bug-prone patterns.  B905 (zip without strict=) is the main prize: silent
+    # length-truncation would corrupt the operation sequences this library's
+    # correctness arguments are built on.
+    "B",
+    # Ratchets: zero findings today, kept enabled so regressions can't land.
+    "PLE", "SLOT", "INT", "TID", "EXE", "ICN", "YTT", "FA", "T10",
+]
 ignore = [
     "E402",   # Module level import not at top of file (valid in conftest.py)
     "E501",   # Line too long (conflicts with docstring formatting in some cases)
@@ -122,6 +130,11 @@ ignore = [
     "C408",   # Unnecessary dict() call (dict() with kwargs is more readable)
     "PERF203",  # try-except in loop (performance suggestion, acceptable for test code)
     "UP015",    # Unnecessary open mode "r" (explicit mode aids readability in I/O tests)
+    # B023 cannot distinguish a closure that escapes its loop iteration from one
+    # that is defined, called, and drained within the same iteration.  Every
+    # occurrence in this codebase is the latter (e.g. `_classify_node` in
+    # _sql_parsing.py), so the rule is pure false positives here.
+    "B023",
 ]
 
 [tool.pyright]
