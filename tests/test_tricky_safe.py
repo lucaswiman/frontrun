@@ -1680,8 +1680,10 @@ class TestLockProtectedSetattrGetattr:
     def test_dpor_safe(self) -> None:
         def inc(state: _SetattrLockState) -> None:
             with state.lock:
-                temp = getattr(state, "value")
-                setattr(state, "value", temp + 1)
+                # B009/B010 suppressed: these builtins are the subject under
+                # test (passthrough builtin tracking), not a code smell.
+                temp = getattr(state, "value")  # noqa: B009
+                setattr(state, "value", temp + 1)  # noqa: B010
 
         result = frontrun.explore(
             setup=_SetattrLockState,
@@ -1695,8 +1697,9 @@ class TestLockProtectedSetattrGetattr:
     def test_bytecode_safe(self) -> None:
         def inc(state: _SetattrLockState) -> None:
             with state.lock:
-                temp = getattr(state, "value")
-                setattr(state, "value", temp + 1)
+                # B009/B010 suppressed: see test_dpor_safe above.
+                temp = getattr(state, "value")  # noqa: B009
+                setattr(state, "value", temp + 1)  # noqa: B010
 
         result = frontrun.explore_random(
             setup=_SetattrLockState,

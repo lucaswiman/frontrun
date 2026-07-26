@@ -210,7 +210,7 @@ class _ForcedIdLauncher:
 
     def launch(self, targets):
         threads = []
-        for target, wid, body in zip(list(targets), self._forced_ids, self._bodies):
+        for target, wid, body in zip(list(targets), self._forced_ids, self._bodies, strict=True):
             t = threading.Thread(
                 target=_connect_and_serve,
                 args=(str(target.args[0]), wid, body),

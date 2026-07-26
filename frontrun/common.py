@@ -26,7 +26,9 @@ def _is_async_callable(fn: Any) -> bool:
     """
     if inspect.iscoroutinefunction(fn):
         return True
-    return inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+    # B004 is suppressed: not a callable-check.  `__call__` is fetched to ask whether it
+    # is a *coroutine* function, which `callable(fn)` cannot answer.
+    return inspect.iscoroutinefunction(getattr(fn, "__call__", None))  # noqa: B004
 
 
 def any_async(fns: Iterable[Any]) -> bool:

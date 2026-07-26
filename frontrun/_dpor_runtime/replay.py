@@ -115,7 +115,9 @@ def _run_dpor_schedule(
             # stronger diagnosis, but never treat an ordinary timeout as a
             # completed replay with a partially mutated state.
             if isinstance(scheduler._error, DeadlockError):
-                raise scheduler._error
+                # from None: the deadlock *is* the diagnosis; the teardown
+                # timeout above it is noise that would obscure the report.
+                raise scheduler._error from None
             raise
         except Exception as exc:
             # A crash raised from inside a user worker body is a legitimate

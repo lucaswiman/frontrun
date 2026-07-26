@@ -566,17 +566,23 @@ class InterleavedLoop:
                 # cancelling_for_timeout is still false and is misreported as
                 # a worker cancelling itself.
                 await frontrun_wait_for(asyncio.shield(gathered), timeout=timeout)
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as timeout_exc:
             cancelling_for_timeout = True
             for t in tasks:
                 if not t.done():
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # from None on the first two: a recorded deadlock or worker error is
+            # the root cause, and chaining the timeout that merely surfaced it
+            # would bury the real diagnosis.  The SchedulerTimeoutError below is
+            # a wrapper for this very timeout, so it keeps the chain.
             if isinstance(self._error, DeadlockError):
-                raise self._error
+                raise self._error from None
             if errors:
-                raise next(iter(errors.values()))
-            raise SchedulerTimeoutError("Tasks did not complete within timeout. Check for deadlocks in your schedule.")
+                raise next(iter(errors.values())) from None
+            raise SchedulerTimeoutError(
+                "Tasks did not complete within timeout. Check for deadlocks in your schedule."
+            ) from timeout_exc
 
         # A DeadlockError verdict is the root cause: report_error's first-wins
         # rule means a genuine worker error would have claimed self._error

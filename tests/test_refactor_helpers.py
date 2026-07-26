@@ -339,7 +339,8 @@ def test_random_round_robin_schedule_can_express_drift() -> None:
     for seed in range(20):
         schedule = random_round_robin_schedule(random.Random(seed), num_actors=2, max_ops=40)
         # A burst is two or more consecutive identical actor ids.
-        if any(a == b for a, b in zip(schedule, schedule[1:])):
+        # strict=False: pairwise scan, the operands differ in length by one by design.
+        if any(a == b for a, b in zip(schedule, schedule[1:], strict=False)):
             saw_burst = True
             break
     assert saw_burst, "generator never produced a burst (drift > 1 unreachable)"

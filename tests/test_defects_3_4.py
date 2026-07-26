@@ -151,7 +151,9 @@ def test_dpor_setattr_getattr_no_crash() -> None:
         setup=SharedObj,
         workers=[
             lambda obj: setattr(obj, "is_active", True),
-            lambda obj: getattr(obj, "is_active"),
+            # B009 suppressed: the builtin call is the subject under test, and it
+            # compiles to a different instruction stream than `obj.is_active`.
+            lambda obj: getattr(obj, "is_active"),  # noqa: B009
         ],
         invariant=lambda obj: True,
         max_executions=100,

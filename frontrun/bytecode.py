@@ -745,7 +745,7 @@ class BytecodeShuffler:
         self._start_opcode_trace()
         run_thread = self._run_thread
 
-        thread_args = [(a, kw) for a, kw in zip(args, kwargs)]
+        thread_args = [(a, kw) for a, kw in zip(args, kwargs, strict=True)]
 
         def make_thread_target(
             thread_id: int,

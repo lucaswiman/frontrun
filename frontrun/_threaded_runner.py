@@ -95,7 +95,7 @@ def run_thread_group(
     if setup is not None:
         setup()
     try:
-        for i, (func, thread_args) in enumerate(zip(funcs, args)):
+        for i, (func, thread_args) in enumerate(zip(funcs, args, strict=True)):
             thread = threading.Thread(
                 target=make_thread_target(i, func, thread_args),
                 name=f"{name_prefix}-{i}",

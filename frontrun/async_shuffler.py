@@ -552,7 +552,7 @@ class AsyncShuffler:
 
         task_funcs: dict[int, Callable[..., Coroutine[Any, Any, None]]] = {
             i: (lambda f=func, a=a, kw=kw: f(*a, **kw))  # type: ignore[assignment]
-            for i, (func, a, kw) in enumerate(zip(funcs, args, kwargs))
+            for i, (func, a, kw) in enumerate(zip(funcs, args, kwargs, strict=True))
         }
 
         self.timed_out = False
