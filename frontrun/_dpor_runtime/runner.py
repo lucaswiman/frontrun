@@ -502,7 +502,7 @@ class DporBytecodeRunner:
 
         targets = [
             WorkerTarget(worker_id=i, func=run_thread, args=(i, func, tuple(thread_args)))
-            for i, (func, thread_args) in enumerate(zip(funcs, args))
+            for i, (func, thread_args) in enumerate(zip(funcs, args, strict=True))
         ]
 
         def on_timeout(alive: list[threading.Thread]) -> None:

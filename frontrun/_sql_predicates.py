@@ -212,7 +212,7 @@ def extract_row_level_access(sql: str, *, ast: Any | None = None) -> list[list[E
                 continue
 
             row_preds: list[EqualityPredicate] = []
-            for col, val_expr in zip(columns, tuple_expr.expressions):
+            for col, val_expr in zip(columns, tuple_expr.expressions, strict=True):
                 # Non-literal values (e.g. function call NOW()) are skipped for row-level
                 value = _literal_value(val_expr)
                 if value is not None:
@@ -268,7 +268,7 @@ def expand_predicate_rows(preds: list[Predicate]) -> list[list[EqualityPredicate
     rows: list[list[EqualityPredicate]] = []
     for combo in product(*value_lists):
         row = list(equalities)
-        for col, val in zip(columns, combo):
+        for col, val in zip(columns, combo, strict=True):
             row.append(EqualityPredicate(col, val))
         rows.append(row)
 

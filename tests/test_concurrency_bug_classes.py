@@ -246,7 +246,7 @@ def test_deadlock_exact_schedule():
         executor.run(
             {"thread1": lambda: bank.transfer_a_to_b(10), "thread2": lambda: bank.transfer_b_to_a(10)}, timeout=1.0
         )
-        assert False, "Should have timed out due to deadlock"
+        raise AssertionError("Should have timed out due to deadlock")
     except TimeoutError:
         # Expected - deadlock occurred
         pass

@@ -1037,7 +1037,7 @@ def test_concurrent_patching_safe() -> None:
     assert errors == [], f"Errors during concurrent execution: {errors}"
     assert len(results) == 10
     # Each thread selected its own id
-    for i, rows in enumerate(results):
+    for rows in results:
         assert len(rows) == 1
 
 

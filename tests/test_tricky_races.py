@@ -171,8 +171,8 @@ class TestSetattrRace:
 
     def test_dpor_detects_setattr_race(self) -> None:
         def inc(state: _SetattrCounterState) -> None:
-            temp = getattr(state, "value")
-            setattr(state, "value", temp + 1)
+            temp = state.value
+            state.value = temp + 1
 
         result = frontrun.explore(
             setup=_SetattrCounterState,
@@ -319,8 +319,8 @@ class TestTypeSetattrCompoundRace:
     def test_dpor_detects_type_setattr_race(self) -> None:
         def inc(state: _TypeSetattrState) -> None:
             cls = type(state)
-            temp = getattr(cls, "class_counter")
-            setattr(cls, "class_counter", temp + 1)
+            temp = cls.class_counter
+            cls.class_counter = temp + 1
 
         result = frontrun.explore(
             setup=_TypeSetattrState,
@@ -1572,7 +1572,10 @@ class TestZipRace:
 
     def test_dpor_detects_zip_race(self) -> None:
         def zip_to_dict(state: _ZipInterleaveState) -> None:
-            state.result = dict(zip(state.keys, state.values))
+            # B905 is suppressed: this is the code *under test* -- it mirrors
+            # unguarded user code so DPOR can race zip's lazy pulls against the
+            # mutator.  Adding strict= would change the behaviour being probed.
+            state.result = dict(zip(state.keys, state.values))  # noqa: B905
 
         def mutator(state: _ZipInterleaveState) -> None:
             state.keys[0] = "z"

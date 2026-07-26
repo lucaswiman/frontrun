@@ -677,7 +677,7 @@ def test_async_timeout_context_uses_virtual_deadline_and_reports_expiry() -> Non
         except TimeoutError:
             s.timed_out = True
             s.elapsed = time.monotonic() - start
-            s.expired = bool(timeout_cm is not None and getattr(timeout_cm, "expired")())
+            s.expired = bool(timeout_cm is not None and timeout_cm.expired())
 
     result = asyncio.run(
         frontrun.explore(
@@ -1123,7 +1123,7 @@ def test_async_timeout_context_reschedule_from_none_uses_virtual_deadline() -> N
         except TimeoutError:
             s.timed_out = True
             s.elapsed = time.monotonic() - virtual_start
-            s.expired = bool(timeout_cm is not None and getattr(timeout_cm, "expired")())
+            s.expired = bool(timeout_cm is not None and timeout_cm.expired())
 
     result = asyncio.run(
         frontrun.explore(
@@ -1374,11 +1374,11 @@ def test_timer_tagging_restores_loop_call_at_instance_override() -> None:
         def custom_call_at(when: float, callback: object, *args: object, context: object = None) -> object:
             raise AssertionError("not called")
 
-        setattr(loop, "call_at", custom_call_at)
+        loop.call_at = custom_call_at
         _check_user_timers, uninstall = _install_frontrun_timer_tagging(loop)
         uninstall()
 
-        assert getattr(loop, "call_at") is custom_call_at
+        assert loop.call_at is custom_call_at
 
     asyncio.run(scenario())
 
@@ -1392,11 +1392,11 @@ def test_async_runtime_pin_restores_loop_time_instance_override() -> None:
         def custom_time() -> float:
             return 123.0
 
-        setattr(loop, "time", custom_time)
+        loop.time = custom_time
         with _patch_async_runtime(virtual_time=True, pin_loop_time=loop):
-            assert getattr(loop, "time") is not custom_time
+            assert loop.time is not custom_time
 
-        assert getattr(loop, "time") is custom_time
+        assert loop.time is custom_time
 
     asyncio.run(scenario())
 
@@ -1934,7 +1934,7 @@ def test_async_condition_notify_one_wakes_exactly_one_waiter_first() -> None:
         await s.ready_event.wait()
         async with s.condition:
             s.condition.notify(1)
-            s.remaining_after_first_notify = len(getattr(s.condition, "_waiters"))
+            s.remaining_after_first_notify = len(s.condition._waiters)
 
     result = asyncio.run(
         frontrun.explore(
