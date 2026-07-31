@@ -423,19 +423,17 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                 if scheduler_timed_out:
                     # Python threads cannot be terminated safely. Once a run
                     # times out, survivors may continue outside scheduler
-                    # control and no later execution is trustworthy. Stop the
-                    # search immediately with an inconclusive verdict — a
-                    # timed-out partial run is neither a passing proof nor a
-                    # counterexample.
+                    # control and no later execution is trustworthy, so the
+                    # search stops here and never claims full coverage.
                     clear_instr_cache()
-                    # A truncated search never covers the space, whichever
-                    # verdict it carries.
                     result.exhausted = False
                     if result.property_holds is False:
                         # An earlier execution already proved a counterexample.
                         # The timeout bounds how much more of the space was
                         # searched; it does not unprove the failure.
                         return result
+                    # Otherwise the timed-out partial run is neither a passing
+                    # proof nor a counterexample: report it as inconclusive.
                     result.property_holds = None
                     result.inconclusive_reason = (
                         f"DPOR execution {result.num_explored} timed out before all worker threads completed. "
