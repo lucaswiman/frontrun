@@ -212,26 +212,16 @@ impl ObjectState {
         self.map_for(kind).insert(thread_id, AccessSpan::new(access));
     }
 
-    /// Like [`record_access`] but keeps the **first** (earliest) access for
-    /// each thread rather than overwriting with the latest.  Used for I/O
-    /// objects where the earliest position creates the most useful wakeup
+    /// Like [`record_access`] but keeps the **first** *and* the latest access
+    /// for each thread.  The earliest position creates the most useful wakeup
     /// tree insertion point (e.g. between a SELECT and UPDATE in a database
-    /// transaction).
+    /// transaction), but keeping only that one is unsound: a thread that
+    /// touches an object twice (`UPDATE ...; SELECT ...`, or two
+    /// `LOAD_GLOBAL`s of the same name) would drop the later access, so the
+    /// race between it and another thread's write is never detected and DPOR
+    /// reports exhaustion without exploring the interleaving where that write
+    /// lands between the two operations.
     pub fn record_io_access(&mut self, access: Access, kind: AccessKind) {
-        let thread_id = access.thread_id;
-        self.map_for(kind)
-            .entry(thread_id)
-            .or_insert_with(|| AccessSpan::new(access));
-    }
-
-    /// Like [`record_io_access`] but *also* tracks the latest access per
-    /// thread.  Keeping only the first access is unsound for synced I/O
-    /// (SQL/Redis): a thread that writes a row and later reads it back
-    /// (UPDATE ... ; SELECT ...) would drop the later read, so the race
-    /// between that read and another thread's write is never detected and
-    /// DPOR reports exhaustion without exploring the interleaving where
-    /// the other thread's write lands between the two statements.
-    pub fn record_synced_io_access(&mut self, access: Access, kind: AccessKind) {
         let thread_id = access.thread_id;
         match self.map_for(kind).entry(thread_id) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
