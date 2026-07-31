@@ -186,6 +186,44 @@ class TestAsyncDporBasic:
         assert result.property_holds, f"No race expected: {result.counterexample}"
         assert result.num_explored >= 1
 
+    def test_finds_queue_producer_ordering_race(self) -> None:
+        """Queue contents are shared state, so producer order must be explored.
+
+        ``asyncio.Queue`` keeps its items in a stdlib deque that opcode
+        tracing never sees, so unless the wrapper reports the access DPOR
+        treats two producers' ``put`` calls as commuting and certifies a pass.
+        """
+        require_active("test_async_dpor_queue_producer_order")
+
+        class State:
+            def __init__(self) -> None:
+                self.queue: asyncio.Queue[int] = asyncio.Queue()
+                self.drained: list[int] = []
+
+        def make_producer(item: int):  # noqa: ANN202
+            async def producer(state: State) -> None:
+                await state.queue.put(item)
+
+            return producer
+
+        async def consumer(state: State) -> None:
+            state.drained.append(await state.queue.get())
+            state.drained.append(await state.queue.get())
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[make_producer(0), make_producer(1), consumer],
+                strategy="dpor",
+                invariant=lambda s: s.drained == [0, 1],
+                preemption_bound=None,
+                max_executions=200,
+                deadlock_timeout=5.0,
+            )
+        )
+
+        assert not result.property_holds, "DPOR should explore the producer order that drains [1, 0]"
+
     def test_completed_and_timed_out_executions_are_inconclusive(self) -> None:
         """One completed execution cannot turn an incomplete search into proof.
 
