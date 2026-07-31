@@ -18,7 +18,7 @@ from typing import NamedTuple
 from frontrun._redis_command_data import (
     _COMMAND_KEY_SPECS,
     _EVAL_CMDS,
-    _KEYSPACE_READ_CMDS,
+    _KEYSPACE_ENUMERATION_CMDS,
     _KEYSPACE_WRITE_CMDS,
     _NO_KEY_CMDS,
     _SUBCOMMAND_PARENTS,
@@ -221,14 +221,18 @@ def _parse_sort(cmd_args: tuple[object, ...]) -> RedisAccessResult:
 def _keyspace_kind(upper: str, result: RedisAccessResult) -> str | None:
     """Decide the database-wide keyspace intent-lock kind for a command.
 
-    ``"write"`` for whole-keyspace mutations (FLUSHDB/FLUSHALL), ``"read"``
-    for keyspace scans (KEYS/SCAN/RANDOMKEY/DBSIZE) and for any command that
-    touches specific keys, and ``None`` otherwise (transaction control, Lua
-    scripts, pub/sub, and plain server/connection commands).
+    ``"write"`` for whole-keyspace mutations (FLUSHDB/FLUSHALL) and for
+    whole-keyspace enumerations (KEYS/SCAN/RANDOMKEY/DBSIZE), ``"read"`` for
+    any command that touches specific keys, and ``None`` otherwise
+    (transaction control, Lua scripts, pub/sub, and plain server/connection
+    commands).
 
     Key-touching commands take a *read* on the keyspace so ordinary key-key
-    traffic stays read-read (no new conflicts); only FLUSH* takes a write,
-    so it conflicts with every concurrent key access.
+    traffic stays read-read (no new conflicts).  Everything whose behaviour
+    depends on the whole set of keys takes the write side, so it conflicts
+    with every concurrent key access — for FLUSH* because it destroys them,
+    for an enumeration because a concurrent create or delete changes what it
+    returns.
     """
     if result.is_transaction_control and upper not in _EVAL_CMDS and not (result.read_keys or result.write_keys):
         # MULTI/EXEC/DISCARD/UNWATCH carry no keys and execute no keyspace
@@ -241,10 +245,8 @@ def _keyspace_kind(upper: str, result: RedisAccessResult) -> str | None:
         # dependency (including against FLUSH*), even though the command itself
         # remains one indivisible I/O envelope.
         return None
-    if upper in _KEYSPACE_WRITE_CMDS:
+    if upper in _KEYSPACE_WRITE_CMDS or upper in _KEYSPACE_ENUMERATION_CMDS:
         return "write"
-    if upper in _KEYSPACE_READ_CMDS:
-        return "read"
     # Pub/sub channels are not keyspace operations.  Identify them by command
     # name rather than by the ``channel:`` sentinel prefix on their keys, so a
     # real data key literally named ``channel:...`` still takes a keyspace read.
