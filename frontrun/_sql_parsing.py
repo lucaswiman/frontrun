@@ -149,6 +149,31 @@ def _delete_write_tables(node: Any) -> set[str]:
     return tables
 
 
+def _cte_shadowed_tables(ctes: list[Any], cte_aliases: set[str], *, recursive: bool) -> set[str]:
+    """CTE aliases that also name a real table the statement references.
+
+    ``WITH users AS (SELECT ... FROM users ...)`` is a common idiom: the inner
+    reference resolves to the base table, because a non-recursive CTE can only
+    see aliases declared *before* it.  Those names must survive alias
+    filtering — dropping them loses a real access and under-merges.
+
+    Under ``WITH RECURSIVE`` every alias is in scope inside every body, so a
+    matching reference is the CTE itself and nothing is shadowed.
+    """
+    from sqlglot import exp  # type: ignore[import-untyped]
+
+    if recursive:
+        return set()
+    shadowed: set[str] = set()
+    aliases = [c.alias for c in ctes]
+    for i, cte_node in enumerate(ctes):
+        in_scope = {a for a in aliases[:i] if a}
+        for tbl in cte_node.this.find_all(exp.Table):
+            if tbl.name in cte_aliases and tbl.name not in in_scope:
+                shadowed.add(tbl.name)
+    return shadowed
+
+
 def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
     """Parse a SQL statement and return table access information.
 
@@ -512,8 +537,12 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
             _classify_node(ast, top_level=True)
 
             # Drop CTE alias names — they are query-local, not real tables.
-            write -= cte_aliases
-            read -= cte_aliases
+            # Names that also identify a base table the query reads or writes
+            # are kept (see _cte_shadowed_tables).
+            recursive = any(w.args.get("recursive") for w in ast.find_all(exp.With))
+            query_local = cte_aliases - _cte_shadowed_tables(ctes, cte_aliases, recursive=recursive)
+            write -= query_local
+            read -= query_local
 
         all_read.update(read)
         all_write.update(write)
