@@ -427,6 +427,15 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                     # search immediately with an inconclusive verdict — a
                     # timed-out partial run is neither a passing proof nor a
                     # counterexample.
+                    clear_instr_cache()
+                    # A truncated search never covers the space, whichever
+                    # verdict it carries.
+                    result.exhausted = False
+                    if result.property_holds is False:
+                        # An earlier execution already proved a counterexample.
+                        # The timeout bounds how much more of the space was
+                        # searched; it does not unprove the failure.
+                        return result
                     result.property_holds = None
                     result.inconclusive_reason = (
                         f"DPOR execution {result.num_explored} timed out before all worker threads completed. "
@@ -434,7 +443,6 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
                         "timeout_per_run/deadlock_timeout or remove unmanaged blocking from explored workers."
                     )
                     result.explanation = result.inconclusive_reason
-                    clear_instr_cache()
                     return result
                 if _deadlock_err is not None:
                     with engine_lock:
