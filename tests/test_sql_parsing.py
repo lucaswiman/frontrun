@@ -631,6 +631,29 @@ class TestDataModifyingCte:
         assert "orders" in r
         assert "recent" not in r
 
+    def test_cte_named_after_the_table_it_reads_keeps_the_table_read(self):
+        """A CTE alias may shadow a real table the query also reads.
+
+        ``WITH users AS (SELECT ... FROM users ...)`` is a common idiom: the
+        inner reference is the base table.  Dropping the name wholesale loses
+        that read, so a concurrent ``UPDATE users`` shares no resource and the
+        race is pruned -- under-merging, which is forbidden.
+        """
+        sql = "WITH users AS (SELECT id FROM users WHERE active) UPDATE orders SET x = 1 FROM users WHERE orders.uid = users.id"  # noqa: E501
+        r, w, *_ = parse_sql_access(sql)
+        assert "orders" in w
+        assert "users" in r, "the base table read inside the CTE body must survive alias filtering"
+
+    def test_cte_named_after_the_table_it_writes_keeps_the_table_write(self):
+        sql = "WITH jobs AS (UPDATE jobs SET state='done' WHERE id=1 RETURNING id) SELECT * FROM jobs"
+        r, w, *_ = parse_sql_access(sql)
+        assert "jobs" in w, "the data-modifying CTE's target table must survive alias filtering"
+
+    def test_recursive_self_reference_is_not_a_table(self):
+        sql = "WITH RECURSIVE t AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM t WHERE n < 5) SELECT * FROM t"
+        r, w, *_ = parse_sql_access(sql)
+        assert "t" not in r and "t" not in w, "a recursive CTE's self-reference is the CTE, not a table"
+
 
 # ---------------------------------------------------------------------------
 # Multi-table UPDATE (finding 8)
