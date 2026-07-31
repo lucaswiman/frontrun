@@ -712,6 +712,10 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         await _real_asyncio_sleep(0)
 
     def get_nowait(self) -> Any:
+        # The items live in the stdlib deque, which opcode tracing never sees;
+        # without this the engine treats concurrent queue operations as
+        # commuting and never explores their orderings.
+        _report_state_access(self, "__queue_state__", "write")
         item = super().get_nowait()
         self._wake_waiter(self._frontrun_put_waiters, _active_dpor_context())
         if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
@@ -719,6 +723,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         return item
 
     def put_nowait(self, item: Any) -> None:
+        _report_state_access(self, "__queue_state__", "write")
         super().put_nowait(item)
         self._wake_waiter(self._frontrun_get_waiters, _active_dpor_context())
         if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
