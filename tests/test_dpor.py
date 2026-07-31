@@ -913,6 +913,33 @@ def _simple_global_check(_state: _SimpleGlobalState) -> bool:
     return _simple_global == 2
 
 
+_reread_global = 0
+
+
+class _RereadGlobalState:
+    def __init__(self) -> None:
+        global _reread_global
+        _reread_global = 0
+        self.observed: list[tuple[int, int]] = []
+
+
+def _reread_global_writer(_state: _RereadGlobalState) -> None:
+    global _reread_global
+    _reread_global = 1
+    _reread_global = 2
+
+
+def _reread_global_reader(state: _RereadGlobalState) -> None:
+    global _reread_global
+    first = _reread_global
+    last = _reread_global
+    state.observed.append((first, last))
+
+
+def _reread_global_is_stable(state: _RereadGlobalState) -> bool:
+    return all(first == last for first, last in state.observed)
+
+
 class TestGlobalVariableRace:
     """DPOR detects lost-update on module-level globals (LOAD_GLOBAL / STORE_GLOBAL)."""
 
@@ -936,6 +963,24 @@ class TestGlobalVariableRace:
             deadlock_timeout=5.0,
         )
         assert not result.property_holds, "DPOR should detect the global += lost-update race"
+
+    def test_dpor_detects_torn_reread_of_a_global(self) -> None:
+        """Every read of a global is a backtrack anchor, not just the first.
+
+        The reader can observe ``first == 0`` and ``last == 2`` when the writer
+        runs between its two ``LOAD_GLOBAL``s.  Anchoring only a thread's
+        earliest read on an object hides that interleaving entirely.
+        """
+        result = frontrun.explore(
+            setup=_RereadGlobalState,
+            workers=[_reread_global_writer, _reread_global_reader],
+            invariant=_reread_global_is_stable,
+            detect_io=False,
+            stop_on_first=False,
+            preemption_bound=None,
+            deadlock_timeout=5.0,
+        )
+        assert not result.property_holds, "DPOR should schedule the writer between the reader's two reads"
 
     def test_barrier_proves_global_race_is_real(self) -> None:
         """Barrier-forced interleaving proves the lost update is real."""
