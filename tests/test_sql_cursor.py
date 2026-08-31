@@ -1104,21 +1104,6 @@ def test_reporter_tls_isolation() -> None:
     assert any((r == "sql:orders" or r.startswith("sql:orders:")) and k == "read" for r, k in thread_events)
 
 
-def test_endpoint_io_suppression_is_thread_local() -> None:
-    suppress_in_thread: list[bool] = []
-
-    def worker() -> None:
-        suppress_in_thread.append(is_endpoint_io_suppressed())
-
-    with endpoint_suppression._suppress_endpoint_io():
-        assert is_endpoint_io_suppressed()
-        t = threading.Thread(target=worker)
-        t.start()
-        t.join()
-
-    assert suppress_in_thread == [False]
-
-
 # ---------------------------------------------------------------------------
 # 6. _intercept_execute unit tests (white-box)
 # ---------------------------------------------------------------------------

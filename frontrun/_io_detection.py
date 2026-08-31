@@ -60,10 +60,12 @@ _dpor_scheduler_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor
 _dpor_thread_id_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor_thread_id_var", default=_UNSET)
 
 # SQL and Redis interceptors replace coarse socket events with higher-level
-# table/key accesses.  This depth is task-local so one async task cannot hide
-# an unrelated sibling's socket I/O while it awaits a database operation.
-_endpoint_io_suppression_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "_endpoint_io_suppression_depth", default=0
+# table/key accesses. This state is task-local so one async task cannot hide an
+# unrelated sibling's socket I/O while it awaits a database operation. Keep the
+# originating thread identity too: free-threaded Python builds inherit context
+# into newly spawned threads by default, but suppression must not follow them.
+_endpoint_io_suppression_state: contextvars.ContextVar[tuple[int, int] | None] = contextvars.ContextVar(
+    "_endpoint_io_suppression_state", default=None
 )
 
 
@@ -82,7 +84,10 @@ class EndpointIOSuppression:
 
     @contextmanager
     def scope(self, *, suppress_native_tid: bool = True) -> Generator[None]:
-        token = _endpoint_io_suppression_depth.set(_endpoint_io_suppression_depth.get() + 1)
+        thread_ident = threading.get_ident()
+        state = _endpoint_io_suppression_state.get()
+        depth = state[1] if state is not None and state[0] == thread_ident else 0
+        token = _endpoint_io_suppression_state.set((thread_ident, depth + 1))
         tid = threading.get_native_id()
         if suppress_native_tid:
             with self.lock:
@@ -99,7 +104,7 @@ class EndpointIOSuppression:
                         self.tids.discard(tid)
                     else:
                         self._tid_depths[tid] = depth - 1
-            _endpoint_io_suppression_depth.reset(token)
+            _endpoint_io_suppression_state.reset(token)
 
     def is_tid_suppressed(self, tid: int) -> bool:
         with self.lock:
@@ -108,7 +113,8 @@ class EndpointIOSuppression:
 
 def is_endpoint_io_suppressed() -> bool:
     """Return whether this thread or asyncio task is in a high-level I/O call."""
-    return _endpoint_io_suppression_depth.get() > 0
+    state = _endpoint_io_suppression_state.get()
+    return state is not None and state[0] == threading.get_ident() and state[1] > 0
 
 
 # Callback signature: (resource_id: str, kind: str) -> None

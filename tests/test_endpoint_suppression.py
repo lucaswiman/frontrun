@@ -9,7 +9,7 @@ from contextlib import AbstractContextManager
 
 import pytest
 
-from frontrun._io_detection import _emit_socket_io, set_io_reporter
+from frontrun._io_detection import _emit_socket_io, is_endpoint_io_suppressed, set_io_reporter
 from frontrun._redis_client import (
     _suppress_endpoint_io as suppress_redis_endpoint_io,
 )
@@ -48,6 +48,21 @@ def test_endpoint_suppression_is_nested(
 
     assert events == [("socket:visible", "read")]
     assert not is_tid_suppressed(tid)
+
+
+def test_endpoint_suppression_does_not_leak_to_spawned_thread(
+    endpoint_suppression: tuple[SuppressionScope, Callable[[int], bool]],
+) -> None:
+    suppress, _ = endpoint_suppression
+    suppress_in_thread: list[bool] = []
+
+    with suppress():
+        assert is_endpoint_io_suppressed()
+        thread = threading.Thread(target=lambda: suppress_in_thread.append(is_endpoint_io_suppressed()))
+        thread.start()
+        thread.join()
+
+    assert suppress_in_thread == [False]
 
 
 @pytest.mark.asyncio
