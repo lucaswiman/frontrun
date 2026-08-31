@@ -113,7 +113,7 @@ async def _dpor_schedule_and_suppress_async(
             _dpor_ctx[0].report_and_wait(None, _dpor_ctx[1])
     try:
         if reported:
-            with _suppress_endpoint_io():
+            with _suppress_endpoint_io(suppress_native_tid=False):
                 return await execute()
         return await execute()
     except Exception:

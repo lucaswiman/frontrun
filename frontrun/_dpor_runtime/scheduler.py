@@ -219,8 +219,12 @@ class DporScheduler:
         self._row_lock_redirected = False
 
         # Last path_id snapshot from _schedule_next, used to attribute
-        # lock events to the correct scheduling step on free-threaded Python.
+        # clock transitions to the scheduling step that selected the clock.
         self._last_scheduled_path_id: int | None = None
+        # Actor-specific snapshots used by synchronization reports.  schedule()
+        # records the *next* actor, so copying its path id into the currently
+        # reporting thread's TLS attributes events to the wrong schedule slot.
+        self._last_scheduled_path_id_by_thread: dict[int, int] = {}
 
         # The clock actor starts blocked: it only becomes runnable when a
         # deadline is pending (explored) or when everything else idles
@@ -623,6 +627,8 @@ class DporScheduler:
                 # the correct step.
                 _pp = getattr(self.engine, "path_position", None)
                 self._last_scheduled_path_id = _pp - 1 if _pp is not None else None
+                if scheduled is not None and self._last_scheduled_path_id is not None:
+                    self._last_scheduled_path_id_by_thread[scheduled] = self._last_scheduled_path_id
                 if scheduled is not None and scheduled == self._clock_actor_id:
                     if not self._advance_virtual_clock_locked():
                         # This stale actor pick had no physical transition.
@@ -659,7 +665,7 @@ class DporScheduler:
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
                         next_thread = self._schedule_next()
-                        _pp = self._last_scheduled_path_id
+                        _pp = self._last_scheduled_path_id_by_thread.get(thread_id)
                         if _pp is not None:
                             _dpor_tls._last_path_id = _pp
                         self._active_sync_thread = thread_id
@@ -871,12 +877,10 @@ class DporScheduler:
                             self._capture_step_event(_switch_frame, thread_id)
                         # It's our turn. After executing one opcode, schedule next.
                         next_thread = self._schedule_next()
-                        # _schedule_next saves the path position in
-                        # self._last_scheduled_path_id (under engine_lock).
-                        # Copy it to TLS so _sync_reporter can attribute lock
-                        # events to this thread's scheduling step, not a later
-                        # step advanced by another thread on free-threaded Python.
-                        _pp = self._last_scheduled_path_id
+                        # Preserve this actor's own most recent schedule slot.
+                        # The step just added by _schedule_next belongs to
+                        # next_thread, which may be a different actor.
+                        _pp = self._last_scheduled_path_id_by_thread.get(thread_id)
                         if _pp is not None:
                             _dpor_tls._last_path_id = _pp
                         # Record switch point if thread changes and collector is active
@@ -948,7 +952,7 @@ class DporScheduler:
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
                         next_thread = self._schedule_next()
-                        _pp = self._last_scheduled_path_id
+                        _pp = self._last_scheduled_path_id_by_thread.get(thread_id)
                         if _pp is not None:
                             _dpor_tls._last_path_id = _pp
                         self._active_io_thread = thread_id
@@ -1493,7 +1497,7 @@ class DporScheduler:
                 # reflect the serialization from database row locking.
                 _elock = getattr(self, "_engine_lock", None)
                 if _elock is not None:
-                    _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
+                    _saved_path_id = self._last_scheduled_path_id_by_thread.get(thread_id)
                     with _elock:
                         self.engine.report_sync(self.execution, thread_id, "lock_acquire", lock_int_id, _saved_path_id)
         return acquired
@@ -1510,7 +1514,7 @@ class DporScheduler:
         # reflect the serialization from database row locking.
         _elock = getattr(self, "_engine_lock", None)
         if _elock is not None:
-            _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
+            _saved_path_id = self._last_scheduled_path_id_by_thread.get(thread_id)
             for _res_id, lid in released:
                 with _elock:
                     self.engine.report_sync(self.execution, thread_id, "lock_release", lid, _saved_path_id)

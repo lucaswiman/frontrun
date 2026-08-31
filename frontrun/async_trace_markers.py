@@ -139,9 +139,21 @@ class AsyncTraceExecutor:
             timeout: Timeout in seconds for all tasks to complete
 
         Raises:
+            ValueError: If *tasks* is empty
+            TypeError: If any value in *tasks* is not callable
             TimeoutError: If tasks don't complete within the timeout
             Any exception that occurred in a task during execution
         """
+        if not tasks:
+            raise ValueError(
+                "AsyncTraceExecutor.run() received an empty dict — pass at least one {name: callable} entry."
+            )
+        for name, task_fn in tasks.items():
+            if not callable(task_fn):
+                raise TypeError(
+                    f"AsyncTraceExecutor.run(): value for {name!r} must be callable, got {type(task_fn).__name__!r}."
+                )
+
         threads: list[threading.Thread] = []
         for execution_name, task_fn in tasks.items():
             thread = threading.Thread(

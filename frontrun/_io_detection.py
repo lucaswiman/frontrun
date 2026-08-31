@@ -31,6 +31,8 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Any
 
+from frontrun import _real_threading as _rt
+
 # ---------------------------------------------------------------------------
 # Per-thread IO reporter callback (set by scheduler)
 # ---------------------------------------------------------------------------
@@ -56,6 +58,58 @@ _UNSET: Any = object()
 _io_reporter_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_io_reporter_var", default=_UNSET)
 _dpor_scheduler_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor_scheduler_var", default=_UNSET)
 _dpor_thread_id_var: contextvars.ContextVar[Any] = contextvars.ContextVar("_dpor_thread_id_var", default=_UNSET)
+
+# SQL and Redis interceptors replace coarse socket events with higher-level
+# table/key accesses.  This depth is task-local so one async task cannot hide
+# an unrelated sibling's socket I/O while it awaits a database operation.
+_endpoint_io_suppression_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "_endpoint_io_suppression_depth", default=0
+)
+
+
+class EndpointIOSuppression:
+    """Shared nest-safe Python/native endpoint suppression state.
+
+    Python socket monkey-patch suppression is task-local.  Native TID state is
+    optional because an async scope may yield while unrelated tasks run on the
+    same OS thread; only non-yielding sync driver calls may safely use it.
+    """
+
+    def __init__(self) -> None:
+        self.tids: set[int] = set()
+        self.lock = _rt.lock()
+        self._tid_depths: dict[int, int] = {}
+
+    @contextmanager
+    def scope(self, *, suppress_native_tid: bool = True) -> Generator[None]:
+        token = _endpoint_io_suppression_depth.set(_endpoint_io_suppression_depth.get() + 1)
+        tid = threading.get_native_id()
+        if suppress_native_tid:
+            with self.lock:
+                self._tid_depths[tid] = self._tid_depths.get(tid, 0) + 1
+                self.tids.add(tid)
+        try:
+            yield
+        finally:
+            if suppress_native_tid:
+                with self.lock:
+                    depth = self._tid_depths.get(tid, 0)
+                    if depth <= 1:
+                        self._tid_depths.pop(tid, None)
+                        self.tids.discard(tid)
+                    else:
+                        self._tid_depths[tid] = depth - 1
+            _endpoint_io_suppression_depth.reset(token)
+
+    def is_tid_suppressed(self, tid: int) -> bool:
+        with self.lock:
+            return tid in self.tids
+
+
+def is_endpoint_io_suppressed() -> bool:
+    """Return whether this thread or asyncio task is in a high-level I/O call."""
+    return _endpoint_io_suppression_depth.get() > 0
+
 
 # Callback signature: (resource_id: str, kind: str) -> None
 #   resource_id: e.g. "socket:127.0.0.1:5432" or "file:/tmp/data.db"
@@ -289,7 +343,7 @@ def _emit_socket_io(resource_id: str | None, kind: str) -> None:
     if resource_id is None:
         return
     # Skip if SQL-level or Redis-level detection already reported for this call
-    if getattr(_io_tls, "_sql_suppress", False) or getattr(_io_tls, "_redis_suppress", False):
+    if is_endpoint_io_suppressed():
         return
     reporter = get_io_reporter()
     if reporter is not None:
