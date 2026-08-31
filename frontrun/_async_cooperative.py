@@ -341,6 +341,12 @@ class _CooperativeAsyncLock:
     def __init__(self) -> None:
         self._lock = _real_asyncio_lock()
         self._owner: int | None = None
+        # asyncio.Lock preserves waiter fairness: after release() wakes the
+        # first queued waiter, locked() is briefly false but a new acquire
+        # still queues behind that waiter.  Keep the corresponding task order
+        # so DPOR models that handoff as blocking instead of scheduling the
+        # new acquirer while its real coroutine is parked.
+        self._waiters: list[int] = []
 
     def locked(self) -> bool:
         result = self._lock.locked()
@@ -379,7 +385,9 @@ class _CooperativeAsyncLock:
             await ctx.scheduler.pause(ctx.task_id, ("lock_acquire", id(self)))
 
         lock_was_held = self._lock.locked()
-        if task_id is not None and graph is not None and lock_was_held:
+        handoff_owner = self._waiters[0] if self._waiters else None
+        acquire_will_block = lock_was_held or handoff_owner is not None
+        if task_id is not None and graph is not None and acquire_will_block:
             lock_id = id(self)
             # A waiter guarded by a *virtual* timeout (asyncio.timeout /
             # wait_for registered a timeout-kind deadline for this task)
@@ -411,8 +419,9 @@ class _CooperativeAsyncLock:
             # if needed.
             if scheduler is not None:
                 scheduler.execution.block_thread(task_id)
-                if self._owner is not None:
-                    scheduler._lock_blocked[task_id] = self._owner
+                effective_owner = self._owner if self._owner is not None else handoff_owner
+                if effective_owner is not None:
+                    scheduler._lock_blocked[task_id] = effective_owner
             # Set _in_scheduler_pause so the AutoPauseCoroutine passes
             # the lock's internal yields through to the event loop without
             # inserting scheduling points.  Without this, the DPOR scheduler
@@ -421,6 +430,7 @@ class _CooperativeAsyncLock:
             # scheduler keeps picking it).
             depth = _in_scheduler_pause.get()
             _in_scheduler_pause.set(depth + 1)
+            self._waiters.append(task_id)
             try:
                 # If blocking ourselves left nothing engine-runnable (the
                 # holder may be parked in sleep_until with no scheduling
@@ -432,6 +442,7 @@ class _CooperativeAsyncLock:
                 result = await self._lock.acquire()
             finally:
                 _in_scheduler_pause.set(depth)
+                self._waiters.remove(task_id)
                 if not timed_wait:
                     graph.remove_waiting(task_id, lock_id)
                 if scheduler is not None:
