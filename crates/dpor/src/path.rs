@@ -92,33 +92,6 @@ pub struct PendingRace {
     pub is_attribute_race: bool,
 }
 
-/// Check whether two access kinds conflict (i.e., are dependent).
-///
-/// Two accesses to the same object are **dependent** if reordering them could
-/// produce a different result. This mirrors the conflict semantics in
-/// `ObjectState::dependent_accesses` (object.rs).
-///
-/// Paper ref: JACM'17 Def 3.3 (p.13) — events e, e' are dependent when they
-/// access the same shared variable and at least one is a write (for the basic
-/// model). Our extended model also has WeakWrite/WeakRead with relaxed
-/// conflict rules for container operations.
-///
-/// Independence (¬conflict) is used for sleep set propagation:
-///   Algorithm 2 line 16 (JACM'17 p.24): Sleep' = {q ∈ sleep(E) | E ⊢ p♦q}
-/// where p♦q means p's action is independent of q's action.
-fn access_kinds_conflict(a: AccessKind, b: AccessKind) -> bool {
-    matches!(
-        (a, b),
-        // Write conflicts with everything
-        (AccessKind::Write, _) | (_, AccessKind::Write)
-        // Read + WeakWrite conflict (Read depends on WeakWrite)
-        | (AccessKind::Read, AccessKind::WeakWrite) | (AccessKind::WeakWrite, AccessKind::Read)
-    )
-    // Independent pairs (not matched above):
-    //   Read + Read, Read + WeakRead, WeakRead + WeakRead,
-    //   WeakWrite + WeakWrite, WeakWrite + WeakRead, WeakRead + WeakWrite
-}
-
 /// Check if two sets of (object → access_kind) are independent.
 ///
 /// Two sets are independent if, for every object that appears in both sets,
@@ -137,7 +110,7 @@ fn accesses_are_independent(
         if let Some((kind_b, origin_b)) = larger.get(obj) {
             // Origins available for future per-origin conflict policies (Fix 6 phase 2).
             let _ = (origin_a, origin_b);
-            if access_kinds_conflict(*kind_a, *kind_b) {
+            if kind_a.conflicts(*kind_b) {
                 return false;
             }
         }

@@ -30,6 +30,8 @@ except ImportError:
 
 import frontrun
 
+pytestmark = pytest.mark.integration
+
 
 class TestStampedeReproduction:
     """Defect #10: pipeline-based stampede reproduction."""

@@ -29,6 +29,12 @@ from .scheduler import DporScheduler
 from .worker_set import ThreadWorkerSet
 
 
+def _lock_event_schedule_index(trace_length: int) -> int:
+    """Return this thread's saved schedule slot without rescanning the trace."""
+    path_id = getattr(_dpor_tls, "_last_path_id", None)
+    return path_id if path_id is not None else max(0, trace_length - 1)
+
+
 class DporBytecodeRunner:
     """Runs threads under DPOR-controlled bytecode-level interleaving.
 
@@ -201,19 +207,17 @@ class DporBytecodeRunner:
                         _trace_len_wait = (
                             len(execution.schedule_trace) if scheduler._lock_event_collector is not None else 0
                         )
-                        _trace_snap_wait = (
-                            list(execution.schedule_trace) if scheduler._lock_event_collector is not None else None
+                        _wait_idx = (
+                            _lock_event_schedule_index(_trace_len_wait)
+                            if scheduler._lock_event_collector is not None
+                            else None
                         )
                     if scheduler._error is not None:
                         # Capture teardown boundary once, then suppress all further events.
                         if scheduler._deadlock_at is None:
                             scheduler._deadlock_at = _trace_len_wait
                         return
-                    if _trace_snap_wait is not None:
-                        _wait_idx = next(
-                            (i for i in range(len(_trace_snap_wait) - 1, -1, -1) if _trace_snap_wait[i] == thread_id),
-                            max(0, len(_trace_snap_wait) - 1),
-                        )
+                    if _wait_idx is not None:
                         _append_lock_event(_wait_idx, "wait", stable_lock_id)
                     return
                 if event == "lock_acquire":
@@ -227,8 +231,10 @@ class DporBytecodeRunner:
                         _trace_len_acq = (
                             len(execution.schedule_trace) if scheduler._lock_event_collector is not None else 0
                         )
-                        _trace_snap_acq = (
-                            list(execution.schedule_trace) if scheduler._lock_event_collector is not None else None
+                        _acq_idx = (
+                            _lock_event_schedule_index(_trace_len_acq)
+                            if scheduler._lock_event_collector is not None
+                            else None
                         )
                     new_depth = getattr(_dpor_tls, "lock_depth", 0) + 1
                     _dpor_tls.lock_depth = new_depth
@@ -237,11 +243,7 @@ class DporBytecodeRunner:
                         if scheduler._deadlock_at is None:
                             scheduler._deadlock_at = _trace_len_acq
                         return
-                    if _trace_snap_acq is not None:
-                        _acq_idx = next(
-                            (i for i in range(len(_trace_snap_acq) - 1, -1, -1) if _trace_snap_acq[i] == thread_id),
-                            max(0, len(_trace_snap_acq) - 1),
-                        )
+                    if _acq_idx is not None:
                         _append_lock_event(_acq_idx, "acquire", stable_lock_id)
                     return
                 if event == "lock_release":
@@ -254,8 +256,10 @@ class DporBytecodeRunner:
                         _trace_len_rel = (
                             len(execution.schedule_trace) if scheduler._lock_event_collector is not None else 0
                         )
-                        _trace_snap_rel = (
-                            list(execution.schedule_trace) if scheduler._lock_event_collector is not None else None
+                        _rel_idx = (
+                            _lock_event_schedule_index(_trace_len_rel)
+                            if scheduler._lock_event_collector is not None
+                            else None
                         )
                     new_depth = max(0, getattr(_dpor_tls, "lock_depth", 1) - 1)
                     _dpor_tls.lock_depth = new_depth
@@ -264,11 +268,7 @@ class DporBytecodeRunner:
                         if scheduler._deadlock_at is None:
                             scheduler._deadlock_at = _trace_len_rel
                         return
-                    if _trace_snap_rel is not None:
-                        _rel_idx = next(
-                            (i for i in range(len(_trace_snap_rel) - 1, -1, -1) if _trace_snap_rel[i] == thread_id),
-                            max(0, len(_trace_snap_rel) - 1),
-                        )
+                    if _rel_idx is not None:
                         _append_lock_event(_rel_idx, "release", stable_lock_id)
                     # Wake threads that may now be schedulable
                     with scheduler._condition:

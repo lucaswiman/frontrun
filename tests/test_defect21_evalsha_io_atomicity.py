@@ -45,6 +45,8 @@ except ImportError:
 
 import frontrun
 
+pytestmark = pytest.mark.integration
+
 LIMIT = 1
 
 # Atomic check-then-conditional-admit rate limiter in a SINGLE Lua script.

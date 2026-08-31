@@ -35,6 +35,8 @@ except ImportError:
 
 import frontrun
 
+pytestmark = pytest.mark.integration
+
 
 class TestReplayWithRunSpecificKeys:
     def test_lost_update_on_random_key_reproduces(self, redis_port: int) -> None:
