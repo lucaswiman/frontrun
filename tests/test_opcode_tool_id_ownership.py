@@ -134,6 +134,47 @@ def test_reclaims_same_thread_stale_slot():
         obs.teardown_opcode_monitoring(tool_id)
 
 
+def test_same_thread_stale_record_does_not_steal_reclaimed_external_slot():
+    """A registry record is stale if the interpreter reports a new tool name."""
+    import threading
+
+    from frontrun import _opcode_observer as obs
+
+    mon = sys.monitoring
+    tool_id = mon.OPTIMIZER_ID
+
+    obs.setup_opcode_monitoring(
+        tool_name="frontrun-bytecode",
+        handle_py_start=lambda *a: None,
+        handle_py_return=lambda *a: None,
+        handle_instruction=lambda *a: None,
+        tool_kind="optimizer",
+        monitor_returns=False,
+    )
+    assert obs._TOOL_OWNERS[tool_id] == threading.get_ident()
+
+    # Simulate an external tool reclaiming a slot after frontrun leaked its
+    # registry entry.  The OS-thread id is unchanged, so ownership cannot be
+    # established from that id alone.
+    obs._force_free_tool_id(tool_id)
+    mon.use_tool_id(tool_id, "external-after-frontrun")
+    try:
+        with pytest.raises(RuntimeError, match="refusing to steal"):
+            obs.setup_opcode_monitoring(
+                tool_name="frontrun-bytecode",
+                handle_py_start=lambda *a: None,
+                handle_py_return=lambda *a: None,
+                handle_instruction=lambda *a: None,
+                tool_kind="optimizer",
+                monitor_returns=False,
+            )
+        assert mon.get_tool(tool_id) == "external-after-frontrun"
+    finally:
+        obs._TOOL_OWNERS.pop(tool_id, None)
+        if mon.get_tool(tool_id) == "external-after-frontrun":
+            mon.free_tool_id(tool_id)
+
+
 def test_teardown_does_not_free_other_owners_slot():
     """teardown_opcode_monitoring must not free a slot owned by another thread.
 
