@@ -84,6 +84,8 @@ def _guard_async_exploration(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, 
 _real_asyncio_lock = asyncio.Lock
 _real_asyncio_event = asyncio.Event
 _real_asyncio_queue = asyncio.Queue
+_real_asyncio_lifo_queue = asyncio.LifoQueue
+_real_asyncio_priority_queue = asyncio.PriorityQueue
 _real_asyncio_condition = asyncio.Condition
 _real_asyncio_sleep = asyncio.sleep
 
@@ -668,6 +670,11 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
 
     def __init__(self, maxsize: int = 0) -> None:
         super().__init__(maxsize=maxsize)
+        # Queue.join() waits on this event.  The stdlib Queue constructs a raw
+        # asyncio.Event internally, bypassing our module-level Event patch, so
+        # replace it with the same cooperative abstraction used elsewhere.
+        self._finished = _CooperativeAsyncEvent()
+        self._finished.set()
         self._frontrun_get_waiters: list[tuple[int, asyncio.Future[None]]] = []
         self._frontrun_put_waiters: list[tuple[int, asyncio.Future[None]]] = []
 
@@ -711,6 +718,18 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             on_task_yielded(task_id)
         await _real_asyncio_sleep(0)
 
+    def qsize(self) -> int:
+        _report_state_access(self, "__queue_state__", "read")
+        return super().qsize()
+
+    def empty(self) -> bool:
+        _report_state_access(self, "__queue_state__", "read")
+        return super().empty()
+
+    def full(self) -> bool:
+        _report_state_access(self, "__queue_state__", "read")
+        return super().full()
+
     def get_nowait(self) -> Any:
         # The items live in the stdlib deque, which opcode tracing never sees;
         # without this the engine treats concurrent queue operations as
@@ -737,6 +756,8 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         task_id = ctx.task_id
         await scheduler.pause(task_id, ("queue_get", id(self)))
         while self.empty():
+            if getattr(self, "_is_shutdown", False):
+                raise asyncio.QueueShutDown
             if ctx.errored:
                 raise SchedulerTimeoutError("queue get aborted by scheduler")
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -774,7 +795,11 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         scheduler = ctx.scheduler
         task_id = ctx.task_id
         await scheduler.pause(task_id, ("queue_put", id(self)))
+        if getattr(self, "_is_shutdown", False):
+            raise asyncio.QueueShutDown
         while self.full():
+            if getattr(self, "_is_shutdown", False):
+                raise asyncio.QueueShutDown
             if ctx.errored:
                 raise SchedulerTimeoutError("queue put aborted by scheduler")
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -800,6 +825,36 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         self.put_nowait(item)
         if woke_getter:
             await self._yield_after_handoff(scheduler, task_id, "queue_put")
+
+    if hasattr(_real_asyncio_queue, "shutdown"):
+
+        def shutdown(self, immediate: bool = False) -> None:
+            """Shut down the queue and wake waiters parked in the DPOR engine."""
+            _report_state_access(self, "__queue_state__", "write")
+            super().shutdown(immediate=immediate)
+            ctx = _active_dpor_context()
+            wake_ctx = ctx if ctx is not None and not ctx.errored else None
+            while self._frontrun_get_waiters:
+                self._wake_waiter(self._frontrun_get_waiters, wake_ctx)
+            while self._frontrun_put_waiters:
+                self._wake_waiter(self._frontrun_put_waiters, wake_ctx)
+            _async_parked_queues.discard(self)
+
+
+class _CooperativeAsyncLifoQueue(_CooperativeAsyncQueue):
+    """Cooperative queue preserving stdlib LIFO storage semantics."""
+
+    _init = _real_asyncio_lifo_queue._init
+    _put = _real_asyncio_lifo_queue._put
+    _get = _real_asyncio_lifo_queue._get
+
+
+class _CooperativeAsyncPriorityQueue(_CooperativeAsyncQueue):
+    """Cooperative queue preserving stdlib heap storage semantics."""
+
+    _init = _real_asyncio_priority_queue._init
+    _put = _real_asyncio_priority_queue._put
+    _get = _real_asyncio_priority_queue._get
 
 
 class _CooperativeAsyncCondition:
@@ -988,6 +1043,11 @@ def _patch_asyncio_queue_condition() -> None:
         _async_queue_condition_patch_count += 1
         if _async_queue_condition_patch_count == 1:
             asyncio.Queue = _CooperativeAsyncQueue  # type: ignore[assignment,misc]
+            asyncio.LifoQueue = _CooperativeAsyncLifoQueue  # type: ignore[assignment,misc]
+            asyncio.PriorityQueue = _CooperativeAsyncPriorityQueue  # type: ignore[assignment,misc]
+            asyncio.queues.Queue = _CooperativeAsyncQueue  # type: ignore[assignment,misc]
+            asyncio.queues.LifoQueue = _CooperativeAsyncLifoQueue  # type: ignore[assignment,misc]
+            asyncio.queues.PriorityQueue = _CooperativeAsyncPriorityQueue  # type: ignore[assignment,misc]
             asyncio.Condition = _CooperativeAsyncCondition  # type: ignore[assignment,misc]
 
 
@@ -1000,6 +1060,11 @@ def _unpatch_asyncio_queue_condition() -> None:
         if _async_queue_condition_patch_count > 0:
             return
         asyncio.Queue = _real_asyncio_queue  # type: ignore[assignment,misc]
+        asyncio.LifoQueue = _real_asyncio_lifo_queue  # type: ignore[assignment,misc]
+        asyncio.PriorityQueue = _real_asyncio_priority_queue  # type: ignore[assignment,misc]
+        asyncio.queues.Queue = _real_asyncio_queue  # type: ignore[assignment,misc]
+        asyncio.queues.LifoQueue = _real_asyncio_lifo_queue  # type: ignore[assignment,misc]
+        asyncio.queues.PriorityQueue = _real_asyncio_priority_queue  # type: ignore[assignment,misc]
         asyncio.Condition = _real_asyncio_condition  # type: ignore[assignment,misc]
         _async_parked_queues.clear()
         _async_parked_conditions.clear()
