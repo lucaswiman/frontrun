@@ -437,7 +437,13 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_io_vv, thread_id, origin);
-        object_state.record_access_span(access, kind);
+        if origin == AccessOrigin::LockSynthetic {
+            object_state.record_first_access(access, kind);
+        } else {
+            // Direct I/O has no lock happens-before edges in io_vv, so both
+            // endpoints are required to expose middle interleavings.
+            object_state.record_access_span(access, kind);
+        }
 
         self.path.record_access(current_path_id, object_id, kind, origin);
     }

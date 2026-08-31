@@ -212,6 +212,17 @@ impl ObjectState {
         self.map_for(kind).insert(thread_id, AccessSpan::new(access));
     }
 
+    /// Keep the earliest access per thread.  Synthetic lock accesses use this
+    /// as their wakeup anchor: lock happens-before edges already order later
+    /// acquisitions, and retaining every endpoint would re-explore equivalent
+    /// critical-section orderings.
+    pub fn record_first_access(&mut self, access: Access, kind: AccessKind) {
+        let thread_id = access.thread_id;
+        self.map_for(kind)
+            .entry(thread_id)
+            .or_insert_with(|| AccessSpan::new(access));
+    }
+
     /// Like [`record_access`] but tracks both the earliest and latest access
     /// per thread.  Keeping only either endpoint is unsound whenever a thread
     /// can touch the same object twice: for synced I/O (SQL/Redis) a thread
