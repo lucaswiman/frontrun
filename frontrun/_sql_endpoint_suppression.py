@@ -8,10 +8,10 @@ bridge listener consults.
 
 Two suppression mechanisms exist:
 
-* **Per-thread (transient)** — :func:`_suppress_endpoint_io` flips a
-  thread-local + a TID set for the duration of a single ``execute()``
-  call.  Used to drop socket events synchronously emitted while the
-  SQL call is on the stack.
+* **Per-call (transient)** — :func:`_suppress_endpoint_io` increments a
+  task-local suppression depth and, for synchronous calls, a native-TID
+  reference count for the duration of a single ``execute()`` call. Used to
+  drop socket events synchronously emitted while the SQL call is on the stack.
 * **Per-endpoint (persistent)** — :func:`suppress_sql_endpoint` records
   the connection's socket peer (e.g. ``socket:127.0.0.1:5432``) so
   events that travel through the async pipe and are read after the
