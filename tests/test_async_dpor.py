@@ -186,6 +186,44 @@ class TestAsyncDporBasic:
         assert result.property_holds, f"No race expected: {result.counterexample}"
         assert result.num_explored >= 1
 
+    def test_lock_handoff_survives_immediate_reacquire(self) -> None:
+        """A releasing task may race a queued waiter by reacquiring immediately.
+
+        ``asyncio.Lock`` briefly reports unlocked after granting its first
+        waiter, but a new acquire still queues behind that waiter.  DPOR must
+        model the new acquirer as blocked instead of scheduling a coroutine
+        that the real lock has parked.
+        """
+        require_active("test_async_dpor_lock_handoff_reacquire")
+
+        class Counter:
+            def __init__(self) -> None:
+                self.value = 0
+                self.lock = asyncio.Lock()
+
+        async def increment_twice(counter: Counter) -> None:
+            for _ in range(2):
+                async with counter.lock:
+                    value = counter.value
+                    await asyncio.sleep(0)
+                    counter.value = value + 1
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=Counter,
+                workers=[increment_twice, increment_twice],
+                strategy="dpor",
+                invariant=lambda counter: counter.value == 4,
+                preemption_bound=None,
+                max_executions=100,
+                deadlock_timeout=0.1,
+                reproduce_on_failure=0,
+                detect_io=False,
+            )
+        )
+
+        assert result.property_holds, result.explanation
+
     def test_finds_queue_producer_ordering_race(self) -> None:
         """Queue contents are shared state, so producer order must be explored.
 
