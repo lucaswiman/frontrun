@@ -2126,10 +2126,9 @@ mod tests {
         );
     }
 
-    /// Test that future_accesses_for returns empty when thread ran more steps
-    /// in current execution than previous (conservative: assume done).
+    /// A still-runnable thread that outgrows its cached trace has an unknown future.
     #[test]
-    fn test_future_accesses_for_extra_steps_returns_empty() {
+    fn test_future_accesses_for_extra_steps_returns_unknown() {
         use crate::access::{AccessKind, AccessOrigin};
         let mut path = Path::new(None, SearchStrategy::Dfs);
 
@@ -2149,9 +2148,15 @@ mod tests {
 
         // At pos=3, T0 has taken 2 steps in new execution, but cache only has
         // 1 step for T0 (futures has len 2: [0]={10:Write}, [1]=empty).
-        // k=2 >= futures.len()=2, so returns Some(empty).
+        // k=2 >= the one cached step, so its future is unknown.  Treating it
+        // as empty could keep the thread asleep and prune a new conflict.
         let result = path.future_accesses_for(0, 3);
-        assert_eq!(result, Some(HashMap::new()), "Extra steps should return empty (thread done in cache)");
+        assert_eq!(result, None, "Extra steps must wake conservatively");
+        assert_eq!(
+            path.future_steps_independent_of(0, 3, &HashMap::new()),
+            None,
+            "An exhausted per-step cache must not certify independence"
+        );
     }
 
     /// Test suffix union merges access kinds correctly.

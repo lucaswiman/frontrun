@@ -29,6 +29,13 @@ class BankAccount:
         await self.set_balance(current + amount)
 
 
+def test_empty_task_mapping_is_rejected() -> None:
+    executor = AsyncTraceExecutor(Schedule([Step("task", "marker")]))
+
+    with pytest.raises(ValueError, match="empty"):
+        executor.run({})
+
+
 def test_race_condition_buggy_schedule():
     """Both tasks read before either writes, causing a lost update."""
     account = BankAccount(balance=100)
