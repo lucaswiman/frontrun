@@ -654,6 +654,42 @@ class TestDataModifyingCte:
         r, w, *_ = parse_sql_access(sql)
         assert "t" not in r and "t" not in w, "a recursive CTE's self-reference is the CTE, not a table"
 
+    @pytest.mark.parametrize(
+        ("sql", "expected_reads", "expected_writes"),
+        [
+            ("WITH users AS (SELECT 1) SELECT * FROM public.users", {"users"}, set()),
+            ("WITH users AS (SELECT 1) UPDATE public.users SET active=true", {"users"}, {"users"}),
+            ("WITH users AS (SELECT 1) DELETE FROM public.users WHERE id=1", {"users"}, {"users"}),
+            ("WITH users AS (SELECT 1) INSERT INTO public.users(id) VALUES (1)", set(), {"users"}),
+        ],
+    )
+    def test_schema_qualified_table_is_not_hidden_by_same_named_cte(
+        self, sql: str, expected_reads: set[str], expected_writes: set[str]
+    ) -> None:
+        result = parse_sql_access(sql)
+        assert expected_reads <= result.read_tables
+        assert expected_writes <= result.write_tables
+
+    def test_nested_recursive_with_does_not_change_outer_cte_scope(self) -> None:
+        sql = """
+            WITH users AS (SELECT id FROM users)
+            SELECT * FROM users
+            CROSS JOIN (
+                WITH RECURSIVE t(n) AS (
+                    VALUES (1) UNION ALL SELECT n + 1 FROM t WHERE n < 2
+                )
+                SELECT * FROM t
+            ) q
+        """
+        result = parse_sql_access(sql)
+        assert "users" in result.read_tables
+
+    def test_recursive_forward_reference_is_conservatively_physical(self) -> None:
+        """Without a driver dialect, retain an ambiguously forward-referenced name."""
+        sql = "WITH RECURSIVE a AS (SELECT * FROM b), b AS (SELECT * FROM base) SELECT * FROM a"
+        result = parse_sql_access(sql)
+        assert {"b", "base"} <= result.read_tables
+
 
 # ---------------------------------------------------------------------------
 # Multi-table UPDATE (finding 8)
