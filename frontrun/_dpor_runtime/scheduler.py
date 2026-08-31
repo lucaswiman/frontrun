@@ -221,9 +221,9 @@ class DporScheduler:
         # Last path_id snapshot from _schedule_next, used to attribute
         # clock transitions to the scheduling step that selected the clock.
         self._last_scheduled_path_id: int | None = None
-        # Actor-specific snapshots used by synchronization reports.  schedule()
-        # records the *next* actor, so copying its path id into the currently
-        # reporting thread's TLS attributes events to the wrong schedule slot.
+        # Actor-specific snapshots used only by human-facing report events.
+        # Engine sync reports intentionally use the current transition cursor
+        # (_last_scheduled_path_id), which can already name the next actor.
         self._last_scheduled_path_id_by_thread: dict[int, int] = {}
 
         # The clock actor starts blocked: it only becomes runnable when a
@@ -665,7 +665,7 @@ class DporScheduler:
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
                         next_thread = self._schedule_next()
-                        _pp = self._last_scheduled_path_id_by_thread.get(thread_id)
+                        _pp = self._last_scheduled_path_id
                         if _pp is not None:
                             _dpor_tls._last_path_id = _pp
                         self._active_sync_thread = thread_id
@@ -877,10 +877,9 @@ class DporScheduler:
                             self._capture_step_event(_switch_frame, thread_id)
                         # It's our turn. After executing one opcode, schedule next.
                         next_thread = self._schedule_next()
-                        # Preserve this actor's own most recent schedule slot.
-                        # The step just added by _schedule_next belongs to
-                        # next_thread, which may be a different actor.
-                        _pp = self._last_scheduled_path_id_by_thread.get(thread_id)
+                        # Preserve the engine transition cursor for sync events
+                        # emitted before this thread reaches its next trace hook.
+                        _pp = self._last_scheduled_path_id
                         if _pp is not None:
                             _dpor_tls._last_path_id = _pp
                         # Record switch point if thread changes and collector is active
@@ -952,7 +951,7 @@ class DporScheduler:
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
                         next_thread = self._schedule_next()
-                        _pp = self._last_scheduled_path_id_by_thread.get(thread_id)
+                        _pp = self._last_scheduled_path_id
                         if _pp is not None:
                             _dpor_tls._last_path_id = _pp
                         self._active_io_thread = thread_id
@@ -1497,7 +1496,7 @@ class DporScheduler:
                 # reflect the serialization from database row locking.
                 _elock = getattr(self, "_engine_lock", None)
                 if _elock is not None:
-                    _saved_path_id = self._last_scheduled_path_id_by_thread.get(thread_id)
+                    _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                     with _elock:
                         self.engine.report_sync(self.execution, thread_id, "lock_acquire", lock_int_id, _saved_path_id)
         return acquired
@@ -1514,7 +1513,7 @@ class DporScheduler:
         # reflect the serialization from database row locking.
         _elock = getattr(self, "_engine_lock", None)
         if _elock is not None:
-            _saved_path_id = self._last_scheduled_path_id_by_thread.get(thread_id)
+            _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
             for _res_id, lid in released:
                 with _elock:
                     self.engine.report_sync(self.execution, thread_id, "lock_release", lid, _saved_path_id)

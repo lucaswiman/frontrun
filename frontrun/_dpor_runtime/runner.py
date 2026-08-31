@@ -226,7 +226,7 @@ class DporBytecodeRunner:
                         if waiter_set is not None and thread_id in waiter_set:
                             waiter_set.discard(thread_id)
                             execution.unblock_thread(thread_id)
-                        _saved_path_id = scheduler._last_scheduled_path_id_by_thread.get(thread_id)
+                        _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                         engine.report_sync(execution, thread_id, "lock_acquire", stable_lock_id, _saved_path_id)
                         _trace_len_acq = (
                             len(execution.schedule_trace) if scheduler._lock_event_collector is not None else 0
@@ -251,7 +251,7 @@ class DporBytecodeRunner:
                         waiters = scheduler._lock_waiters.pop(stable_lock_id, set())
                         for waiter in waiters:
                             execution.unblock_thread(waiter)
-                        _saved_path_id = scheduler._last_scheduled_path_id_by_thread.get(thread_id)
+                        _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                         engine.report_sync(execution, thread_id, "lock_release", stable_lock_id, _saved_path_id)
                         _trace_len_rel = (
                             len(execution.schedule_trace) if scheduler._lock_event_collector is not None else 0
@@ -291,7 +291,7 @@ class DporBytecodeRunner:
                 if event == "event_set":
                     with engine_lock:
                         waiters = scheduler._lock_waiters.pop(stable_lock_id, set())
-                        _saved_path_id = scheduler._last_scheduled_path_id_by_thread.get(thread_id)
+                        _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                         for waiter in sorted(waiters):
                             execution.unblock_thread(waiter)
                             engine.report_sync(
@@ -320,7 +320,7 @@ class DporBytecodeRunner:
                         if waiter_set is not None:
                             waiter_set.discard(thread_id)
                         execution.unblock_thread(thread_id)
-                        _saved_path_id = scheduler._last_scheduled_path_id_by_thread.get(thread_id)
+                        _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                         engine.report_sync(
                             execution,
                             thread_id,
@@ -330,7 +330,7 @@ class DporBytecodeRunner:
                         )
                     return
                 with engine_lock:
-                    _saved_path_id = scheduler._last_scheduled_path_id_by_thread.get(thread_id)
+                    _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                     engine.report_sync(execution, thread_id, event, stable_lock_id, _saved_path_id)
             finally:
                 _scheduler_tls._in_dpor_machinery = False

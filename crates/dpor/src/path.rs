@@ -196,17 +196,6 @@ pub struct Path {
     /// (in step() or schedule()). Used by BitReversal to index into the
     /// bit-reversal permutation.
     selection_counter: u64,
-    /// Per-thread access union from the most recently completed execution.
-    ///
-    /// This conservative union is carried across branches when the exact
-    /// per-step cache below is unavailable.  Keeping one union per actor,
-    /// rather than cloning a full union for every suffix, avoids quadratic
-    /// cache construction and retained memory.
-    ///
-    /// Paper ref: JACM'17 Section 10 (p.31-35) — Concuerror maintains
-    /// per-process event sequences for sleep set propagation.
-    ///
-    prev_thread_access_union: HashMap<usize, HashMap<u64, (AccessKind, AccessOrigin)>>,
     /// Per-step access cache from the most recently completed execution.
     ///
     /// `prev_thread_steps[tid][k]` = thread `tid`'s accesses at exactly its
@@ -214,7 +203,7 @@ pub struct Path {
     /// independence checking which avoids false wakeups from merge escalation.
     ///
     /// Example: if thread T does WeakWrite(X) at step 0 and Read(X) at step 1,
-    /// the merged carrier union is {X: Write} (merge(WeakWrite, Read) = Write),
+    /// a merged suffix is {X: Write} (merge(WeakWrite, Read) = Write),
     /// but the per-step data preserves {X: WeakWrite} and {X: Read} separately.
     /// This allows checking each step individually against the active thread's
     /// accesses, avoiding false conflicts from merge escalation.
@@ -243,7 +232,6 @@ impl Path {
             preemption_bound,
             search_strategy,
             selection_counter: 0,
-            prev_thread_access_union: HashMap::new(),
             prev_thread_steps: HashMap::new(),
             pending_wakeup_subtree: None,
         }
@@ -261,9 +249,9 @@ impl Path {
     /// Look up a thread's future accesses after `completed_steps` of its own
     /// scheduling steps in the current execution.
     ///
-    /// Returns `None` when there is no cache or the still-runnable thread has
-    /// reached the end of its previous trace.  The latter is unknown rather
-    /// than empty: this execution may have data-dependent extra work.
+    /// Returns an empty map at the exact end of the previous trace and `None`
+    /// once the current execution has progressed beyond that boundary.  Extra
+    /// progress proves divergence and must wake the actor conservatively.
     fn future_accesses_for(
         &self,
         tid: usize,
@@ -271,7 +259,27 @@ impl Path {
     ) -> Option<HashMap<u64, (AccessKind, AccessOrigin)>> {
         let steps = self.prev_thread_steps.get(&tid)?;
         if completed_steps < steps.len() {
-            self.prev_thread_access_union.get(&tid).cloned()
+            // Build only the suffix requested by sleep propagation.  The old
+            // cache eagerly cloned every suffix map, retaining quadratic data
+            // even for actors that never slept.
+            let mut accesses: HashMap<u64, (AccessKind, AccessOrigin)> = HashMap::new();
+            for step in &steps[completed_steps..] {
+                for (obj_id, (kind, origin)) in step {
+                    accesses
+                        .entry(*obj_id)
+                        .and_modify(|(existing_kind, existing_origin)| {
+                            *existing_kind = existing_kind.merge(*kind);
+                            *existing_origin = existing_origin.merge(*origin);
+                        })
+                        .or_insert((*kind, *origin));
+                }
+            }
+            Some(accesses)
+        } else if completed_steps == steps.len() {
+            // Matching the prior trace exactly means the next cached action is
+            // termination.  Only progress *past* this boundary proves that the
+            // current execution has diverged and must wake conservatively.
+            Some(HashMap::new())
         } else {
             None
         }
@@ -294,8 +302,11 @@ impl Path {
         active: &HashMap<u64, (AccessKind, AccessOrigin)>,
     ) -> Option<bool> {
         let steps = self.prev_thread_steps.get(&tid)?;
-        if completed_steps >= steps.len() {
+        if completed_steps > steps.len() {
             return None;
+        }
+        if completed_steps == steps.len() {
+            return Some(true);
         }
         // Check each remaining step individually
         for step_idx in completed_steps..steps.len() {
@@ -513,11 +524,11 @@ impl Path {
         // Compute which sleeping threads stay asleep at pos.
         //
         // Per-step independence check (Fix 6): instead of checking against the
-        // merged carrier union (which can escalate e.g. WeakWrite+Read → Write),
+        // merged suffix union (which can escalate e.g. WeakWrite+Read → Write),
         // check each remaining step individually. This avoids false wakeups
         // when individual steps are all independent but the merge is not.
         //
-        // Falls back to the merged carrier union when no per-step cache is available
+        // Falls back to the merged suffix union when no per-step cache is available
         // (e.g., first execution).
         let mut propagated: HashMap<usize, HashMap<u64, (AccessKind, AccessOrigin)>> = HashMap::new();
         for (tid, tid_accesses) in sleeping_threads {
@@ -608,11 +619,7 @@ impl Path {
     ///     remove p.w from wut(E) → remove_branch()
     ///     add p to sleep(E)      → sleep[active] = true
     pub fn step(&mut self) -> bool {
-        // Build per-thread access data from the completed execution.
-        //
-        // The exact per-step cache below drives independence checks.  The
-        // single merged union per actor is only a conservative carrier for
-        // branches that outlive that exact cache.
+        // Build per-thread exact-step data from the completed execution.
         let mut per_thread_accesses: HashMap<usize, Vec<&HashMap<u64, (AccessKind, AccessOrigin)>>> = HashMap::new();
         for branch in &self.branches {
             per_thread_accesses
@@ -620,26 +627,8 @@ impl Path {
                 .or_default()
                 .push(&branch.active_accesses);
         }
-        let mut access_unions: HashMap<usize, HashMap<u64, (AccessKind, AccessOrigin)>> = HashMap::new();
-        for (tid, steps) in &per_thread_accesses {
-            let mut accesses: HashMap<u64, (AccessKind, AccessOrigin)> = HashMap::new();
-            for step in steps {
-                for (obj_id, (kind, origin)) in *step {
-                    accesses
-                        .entry(*obj_id)
-                        .and_modify(|(existing_kind, existing_origin)| {
-                            *existing_kind = existing_kind.merge(*kind);
-                            *existing_origin = existing_origin.merge(*origin);
-                        })
-                        .or_insert((*kind, *origin));
-                }
-            }
-            access_unions.insert(*tid, accesses);
-        }
-        self.prev_thread_access_union = access_unions;
-
-        // Build per-step (non-merged) cache for per-step independence checking.
-        // Each entry is a clone of the thread's accesses at exactly that step.
+        // Clone each exact step once. Suffix unions are derived lazily only
+        // when propagation needs one, rather than prebuilding every suffix.
         let mut per_step: HashMap<usize, Vec<HashMap<u64, (AccessKind, AccessOrigin)>>> = HashMap::new();
         for (tid, steps) in &per_thread_accesses {
             per_step.insert(*tid, steps.iter().map(|s| (*s).clone()).collect());
@@ -1861,9 +1850,9 @@ mod tests {
 
     // --- Position-sensitive future access cache tests (Fix 3) ---
 
-    /// Test that step() builds one conservative access union per thread.
+    /// Test that exact steps support a lazily-derived full suffix union.
     #[test]
-    fn test_step_builds_thread_access_union() {
+    fn test_step_builds_exact_steps_for_lazy_suffix_union() {
         use crate::access::{AccessKind, AccessOrigin};
         let mut path = Path::new(None, SearchStrategy::Dfs);
 
@@ -1883,7 +1872,7 @@ mod tests {
         // Trigger step() to build the cache
         path.step();
 
-        let accesses = path.prev_thread_access_union.get(&0).unwrap();
+        let accesses = path.future_accesses_for(0, 0).unwrap();
         assert!(accesses.contains_key(&10));
         assert!(accesses.contains_key(&20));
         assert!(accesses.contains_key(&30));
@@ -1920,7 +1909,7 @@ mod tests {
         // Now replay through the prefix to verify future_accesses_for.
         // Branches[0] still exists (T0 at pos 0). Use it to verify cache.
 
-        let union = path.prev_thread_access_union.get(&0).unwrap();
+        let union = path.future_accesses_for(0, 0).unwrap();
         assert!(union.contains_key(&10));
         assert!(union.contains_key(&20));
 
@@ -1935,9 +1924,10 @@ mod tests {
         assert_eq!(chosen, Some(0)); // replay T0 at pos 0
 
         let f1 = path.future_accesses_for(0, 1).unwrap();
-        assert!(f1.contains_key(&10));
+        assert!(!f1.contains_key(&10));
         assert!(f1.contains_key(&20));
-        assert!(path.future_accesses_for(0, 2).is_none());
+        assert!(path.future_accesses_for(0, 2).unwrap().is_empty());
+        assert!(path.future_accesses_for(0, 3).is_none());
     }
 
     /// Test that a sleeping thread stays asleep when its REMAINING work is independent,
@@ -2096,7 +2086,7 @@ mod tests {
         );
     }
 
-    /// Test that the conservative carrier union merges access kinds correctly.
+    /// Test that a lazily-derived suffix union merges access kinds correctly.
     ///
     /// When the same object is accessed with Read at step 0 and Write at step 1,
     /// The union should have the object as Write (merged from Read + Write).
@@ -2114,7 +2104,7 @@ mod tests {
 
         path.step();
 
-        let accesses = path.prev_thread_access_union.get(&0).unwrap();
+        let accesses = path.future_accesses_for(0, 0).unwrap();
 
         assert_eq!(accesses.get(&10).unwrap().0, AccessKind::Write);
     }
@@ -2135,7 +2125,7 @@ mod tests {
         path.record_access(1, 100, AccessKind::WeakRead, AccessOrigin::PythonMemory);
         path.step();
 
-        let accesses = path.prev_thread_access_union.get(&0).unwrap();
+        let accesses = path.future_accesses_for(0, 0).unwrap();
         // Key: merged kind should be WeakWrite (not Write), since WeakWrite
         // subsumes WeakRead's conflict set.
         assert_eq!(
@@ -2151,7 +2141,7 @@ mod tests {
     /// T0: WeakWrite(obj 100) at step 0, Read(obj 100) at step 1
     /// T1: WeakRead(obj 100)
     ///
-    /// Merged carrier union: merge(WeakWrite, Read) = Write (catch-all in AccessKind::merge).
+    /// Merged suffix union: merge(WeakWrite, Read) = Write (catch-all in AccessKind::merge).
     ///   Write vs WeakRead → CONFLICT → T0 wakes up (FALSE wakeup).
     ///
     /// Per-step check:
