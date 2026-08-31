@@ -155,6 +155,38 @@ class TestPyDporEngine:
         assert len(engine.pending_races()) == 1
         assert engine.attribute_races() == []
 
+    def test_direct_io_repeated_read_keeps_trailing_backtrack_anchor(self) -> None:
+        """A direct-I/O write must be schedulable between two reads."""
+        engine = PyDporEngine(2)
+        observations: set[tuple[int, int]] = set()
+
+        while True:
+            execution = engine.begin_execution()
+            positions = [0, 0]
+            value = 0
+            reads = [0, 0]
+
+            while execution.runnable_threads():
+                chosen = engine.schedule(execution)
+                assert chosen is not None
+                if chosen == 0:
+                    engine.report_io_access(execution, chosen, 1, "read")
+                    reads[positions[chosen]] = value
+                    positions[chosen] += 1
+                    if positions[chosen] == 2:
+                        execution.finish_thread(chosen)
+                else:
+                    engine.report_io_access(execution, chosen, 1, "write")
+                    value = 1
+                    positions[chosen] += 1
+                    execution.finish_thread(chosen)
+
+            observations.add((reads[0], reads[1]))
+            if not engine.next_execution():
+                break
+
+        assert (0, 1) in observations
+
     def test_synced_io_conflict_is_not_an_attribute_race(self) -> None:
         engine = PyDporEngine(2)
         execution = engine.begin_execution()
