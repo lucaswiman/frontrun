@@ -70,7 +70,7 @@ def test_reclaims_stale_frontrun_slot():
         monitor_returns=False,
     )
     # Forge a dead owner ident (0 is never a live thread ident).
-    obs._TOOL_OWNERS[tool_id] = 0
+    obs._TOOL_OWNERS[tool_id] = (0, "frontrun-bytecode")
 
     tid = None
     try:
@@ -114,7 +114,7 @@ def test_reclaims_same_thread_stale_slot():
         tool_kind="optimizer",
         monitor_returns=False,
     )
-    assert obs._TOOL_OWNERS[tool_id] == threading.get_ident()
+    assert obs._TOOL_OWNERS[tool_id] == (threading.get_ident(), "frontrun-bytecode")
 
     tid = None
     try:
@@ -130,7 +130,7 @@ def test_reclaims_same_thread_stale_slot():
         )
         assert tid == tool_id
     finally:
-        obs._TOOL_OWNERS[tool_id] = threading.get_ident()
+        obs._TOOL_OWNERS[tool_id] = (threading.get_ident(), "frontrun-bytecode")
         obs.teardown_opcode_monitoring(tool_id)
 
 
@@ -151,7 +151,7 @@ def test_same_thread_stale_record_does_not_steal_reclaimed_external_slot():
         tool_kind="optimizer",
         monitor_returns=False,
     )
-    assert obs._TOOL_OWNERS[tool_id] == threading.get_ident()
+    assert obs._TOOL_OWNERS[tool_id] == (threading.get_ident(), "frontrun-bytecode")
 
     # Simulate an external tool reclaiming a slot after frontrun leaked its
     # registry entry.  The OS-thread id is unchanged, so ownership cannot be
@@ -206,7 +206,7 @@ def test_teardown_does_not_free_other_owners_slot():
     main_ident = threading.get_ident()
     # We'll run teardown from a helper thread.  First, forge ownership to
     # the main thread so the helper thread's teardown should NOT free it.
-    obs._TOOL_OWNERS[tool_id] = main_ident
+    obs._TOOL_OWNERS[tool_id] = (main_ident, "frontrun-bytecode")
 
     freed = []
 
@@ -229,5 +229,5 @@ def test_teardown_does_not_free_other_owners_slot():
         )
     finally:
         # Clean up properly.
-        obs._TOOL_OWNERS[tool_id] = threading.get_ident()
+        obs._TOOL_OWNERS[tool_id] = (threading.get_ident(), "frontrun-bytecode")
         obs.teardown_opcode_monitoring(tool_id)
