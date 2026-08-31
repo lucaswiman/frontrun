@@ -34,6 +34,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: lint
 
       - name: Set up Python
         run: uv python install 3.12
@@ -64,6 +65,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: tests-${{ matrix.python }}
 
       - name: Run tests
         run: make test-${{ matrix.python }}
@@ -87,6 +89,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: e2e-3.14
 
       - name: Run end-to-end tests
         run: make test-e2e-3.14
@@ -132,6 +135,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: integration-3.14
 
       - name: Run integration tests
         run: make test-integration-3.14
