@@ -59,10 +59,11 @@ build-examples-%: build-dpor-%
 default-venv: .venv-3.10/activate
 
 
-# Pattern rule for running tests with specific Python versions.
-# Builds the Rust DPOR extension and I/O library first.
+# Pattern rule for running the fast suite with specific Python versions.
+# Integration and end-to-end tests have dedicated targets below, so exclude
+# them here instead of repeating their expensive setup across every version.
 test-%: build-dpor-% build-io
-	PATH=$(CURDIR)/.venv-$*/bin:$$PATH $(CURDIR)/.venv-$*/bin/frontrun pytest $(PYTEST_ARGS)
+	PATH=$(CURDIR)/.venv-$*/bin:$$PATH $(CURDIR)/.venv-$*/bin/frontrun pytest $(PYTEST_ARGS) -m "not integration and not e2e"
 
 # Main test target - runs tests for all Python versions
 test: $(addprefix test-,$(PYTHON_VERSIONS))
@@ -80,7 +81,7 @@ test-integration: $(addprefix test-integration-,$(PYTHON_VERSIONS))
 # Selected by @pytest.mark.e2e. Cross-process exploration uses stdlib sqlite3,
 # so no external services are required.
 test-e2e-%: build-dpor-% build-io
-	PATH=$(CURDIR)/.venv-$*/bin:$$PATH $(CURDIR)/.venv-$*/bin/frontrun pytest $(PYTEST_ARGS) -m e2e
+	PATH=$(CURDIR)/.venv-$*/bin:$$PATH $(CURDIR)/.venv-$*/bin/frontrun pytest $(PYTEST_ARGS) -m "e2e and not integration"
 
 # End-to-end tests for all Python versions
 test-e2e: $(addprefix test-e2e-,$(PYTHON_VERSIONS))
