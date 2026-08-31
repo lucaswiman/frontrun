@@ -320,13 +320,13 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_dpor_vv, thread_id, AccessOrigin::PythonMemory);
-        object_state.record_io_access_span(access, kind);
+        object_state.record_access_span(access, kind);
 
         self.path.record_access(current_path_id, object_id, kind, AccessOrigin::PythonMemory);
     }
 
     /// Like [`process_access`] but uses `dpor_vv` (lock-aware) with
-    /// `record_io_access_span` recording semantics.  Intended for I/O
+    /// `record_access_span` recording semantics.  Intended for I/O
     /// operations that go through Python-level code (Redis, SQL) where
     /// Python locks are tracked by `report_sync` and should be respected.
     ///
@@ -382,7 +382,7 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_dpor_vv, thread_id, AccessOrigin::IoDirect);
-        object_state.record_io_access_span(access, kind);
+        object_state.record_access_span(access, kind);
 
         self.path.record_access(current_path_id, object_id, kind, AccessOrigin::IoDirect);
     }
@@ -437,7 +437,7 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_io_vv, thread_id, origin);
-        object_state.record_io_access(access, kind);
+        object_state.record_access_span(access, kind);
 
         self.path.record_access(current_path_id, object_id, kind, origin);
     }

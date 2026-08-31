@@ -4,9 +4,8 @@ The bug: _intercept_execute lives in frontrun/ which is skipped by sys.settrace.
 When SQL is called from library code (site-packages / frontrun internals), the
 tracer never fires between cursor.execute() calls, so pending_io events from
 intermediate SQL operations accumulate and are flushed together at the next
-user-code opcode.  The Rust engine's record_io_access keeps only the FIRST
-event per thread — so the UPDATE write is dropped and only the SELECT read is
-recorded.  DPOR sees no write-write conflict and explores only 1 interleaving.
+user-code opcode.  They are then attributed to one scheduling position, so
+DPOR has no boundary at which to insert the competing operation.
 
 The fix: _intercept_execute forces a scheduler boundary at each SQL call
 regardless of whether the caller is traced user code or opaque library code.
@@ -330,9 +329,9 @@ class TestDporSqlSchedulingPoints:
             immediately and create a scheduling point
 
         Without the fix, both SQL events are flushed together at the next
-        user-code opcode (conn.close()).  record_io_access keeps only the first
-        (SELECT/read), dropping the UPDATE/write.  DPOR finds far fewer
-        interleavings (the write-write conflict is invisible).
+        user-code opcode (conn.close()) and share one scheduling position.
+        DPOR finds far fewer interleavings because it has no boundary between
+        the SELECT and UPDATE.
 
         With the fix, each SQL operation has its own scheduling point, the
         UPDATE/write is recorded separately, and DPOR explores the write-write

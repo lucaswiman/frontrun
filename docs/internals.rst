@@ -775,26 +775,25 @@ tracking would miss.
      - Python attribute/subscript accesses
    * - ``report_first_access``
      - ``dpor_vv``
-     - first-write-wins
+     - first-and-last span
      - ``PythonMemory``
      - container-level keys (earliest position for wakeup insertion)
    * - ``report_synced_io_access``
      - ``dpor_vv``
-     - first-write-wins
+     - first-and-last span
      - ``IoDirect``
      - Python-level I/O (Redis, SQL) ordered by Python locks
    * - ``report_io_access``
      - ``io_vv``
-     - first-write-wins
+     - first-and-last span
      - ``IoDirect``
      - file/socket I/O (``LD_PRELOAD``, C-call detection)
 
 The "last-write-wins" recording mode (``record_access``) overwrites the
-per-thread access entry with the latest access, so the race check always
-considers the most recent access to each object.  The "first-write-wins"
-mode (``record_io_access``) keeps the earliest access per thread, enabling
-wakeup tree insertion at the earliest point --- for example, between a
-``SELECT`` and ``UPDATE`` in a database transaction.
+per-thread access entry with the latest access.  Span recording keeps both
+the earliest and latest access: the first enables an early wakeup insertion,
+while the last preserves the dependency needed to schedule another thread
+between two accesses to the same object.
 
 
 Conflict detection and race checking

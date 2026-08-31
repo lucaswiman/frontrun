@@ -600,9 +600,9 @@ def anchor_label(obj: Any, name: Any, stable_ids: StableObjectIds | None = None)
 # Access-reporting kinds.
 #
 # - ``read``/``write``: ordinary accesses routed to ``engine.report_access``.
-# - ``first_read``: like ``read`` but routed to ``engine.report_first_access``
-#   so that LOAD_GLOBAL on a ``global += 1`` pattern preserves the *earliest*
-#   read position (critical for TOCTOU detection).
+# - ``first_read``: historical name for a read routed to
+#   ``engine.report_first_access``.  That API now preserves the earliest and
+#   latest positions, both of which are required for sound middle interleavings.
 # - ``weak_read``: does not conflict with weak writes or other weak reads.
 #   Used for LOAD_ATTR on mutable values so loading a container to subscript
 #   it doesn't create a spurious conflict with ``STORE_SUBSCR``'s weak write
@@ -905,9 +905,8 @@ def _process_opcode(
             shadow.push(val)
         # Report a READ on the module's globals dict for this variable name.
         # Without this, LOAD_GLOBAL/STORE_GLOBAL races are invisible to DPOR.
-        # Uses first-access semantics so ``global += 1`` (LOAD_GLOBAL + STORE_GLOBAL)
-        # doesn't overwrite the position of an earlier read, enabling DPOR to
-        # insert into the wakeup tree between the read and a subsequent write.
+        # Uses span semantics so repeated loads retain both the earliest and
+        # latest backtrack anchors, enabling a write between two reads.
         _report_access(engine, execution, thread_id, frame.f_globals, instr.argval, elock, sids, "first_read")
 
     elif op == "LOAD_NAME":
