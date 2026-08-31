@@ -230,7 +230,7 @@ def test_stateless_allowlist_is_disjoint_from_modeled_sets() -> None:
         ("tx control", _TX_CONTROL_CMDS),
         ("eval family", _EVAL_CMDS),
         ("keyspace writes", _KEYSPACE_WRITE_CMDS),
-        ("keyspace reads", _KEYSPACE_ENUMERATION_CMDS),
+        ("keyspace enumerations", _KEYSPACE_ENUMERATION_CMDS),
         ("pub/sub", _PUBSUB_CMDS),
         ("special modeled", _SPECIAL_MODELED),
     ]:

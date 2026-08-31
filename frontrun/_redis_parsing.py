@@ -56,10 +56,9 @@ class RedisAccessResult(NamedTuple):
     write_keys: list[str]
     is_transaction_control: bool  # MULTI, EXEC, DISCARD, WATCH, UNWATCH
     # Database-wide keyspace intent-lock kind (``"read"``, ``"write"`` or
-    # ``None``).  FLUSHDB/FLUSHALL write the whole keyspace; per-key commands
-    # and keyspace scans (KEYS/SCAN/RANDOMKEY/DBSIZE) read it.  This lets DPOR
-    # detect FLUSH*-vs-key races without over-serializing ordinary key traffic
-    # (which stays read-read on the keyspace resource).  See
+    # ``None``).  Whole-keyspace mutations and enumerations write it; per-key
+    # commands read it.  This lets DPOR detect enumeration/key-mutation and
+    # FLUSH*-vs-key races while ordinary key traffic remains read-read.  See
     # ``_keyspace_kind`` and the report path in ``_redis_client.py``.
     keyspace: str | None = None
 
