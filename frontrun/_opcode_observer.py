@@ -1570,9 +1570,12 @@ def _resolve_tool_id(tool_kind: ToolKind) -> int:
 # finished or died — never an external profiler/optimizer or a concurrent
 # frontrun run in another (still-alive) thread.  This registry maps each
 # claimed tool_id to the ident of the frontrun thread that claimed it, so the
-# recovery path can tell "stale frontrun run" apart from "live holder".
+# recovery path can tell "stale frontrun run" apart from "live holder".  The
+# tool name is part of the claim: a thread id alone is insufficient because an
+# external tool can reclaim the interpreter slot while a leaked registry entry
+# from that same long-lived thread remains.
 
-_TOOL_OWNERS: dict[int, int] = {}
+_TOOL_OWNERS: dict[int, tuple[int, str]] = {}
 _TOOL_OWNERS_LOCK = threading.Lock()
 
 
@@ -1623,11 +1626,22 @@ def setup_opcode_monitoring(
                     f"by {held_by!r} and is not owned by frontrun; refusing to steal it. "
                     "Stop the other monitoring tool before running frontrun."
                 ) from None
-            if prior != threading.get_ident() and _owner_thread_alive(prior):
+            prior_ident, prior_name = prior
+            held_by = mon.get_tool(tool_id)  # type: ignore[attr-defined]
+            if held_by != prior_name:
+                # The interpreter is authoritative: another tool reclaimed
+                # the slot while our registry entry leaked.
+                del _TOOL_OWNERS[tool_id]
+                raise RuntimeError(
+                    f"sys.monitoring tool id {tool_id} ({tool_kind}) is already in use "
+                    f"by {held_by!r} and is not owned by frontrun; refusing to steal it. "
+                    "Stop the other monitoring tool before running frontrun."
+                ) from None
+            if prior_ident != threading.get_ident() and _owner_thread_alive(prior_ident):
                 # A concurrent frontrun run in another live thread owns it.
                 raise RuntimeError(
                     f"sys.monitoring tool id {tool_id} ({tool_kind}) is in use by a "
-                    f"concurrent frontrun run (thread {prior}); "
+                    f"concurrent frontrun run (thread {prior_ident}); "
                     "frontrun runs that share a tool-id slot cannot overlap."
                 ) from None
             # Genuinely stale — either the owning thread has died, or the owner
@@ -1639,7 +1653,7 @@ def setup_opcode_monitoring(
             _force_free_tool_id(tool_id)
             mon.use_tool_id(tool_id, tool_name)  # type: ignore[attr-defined]
 
-        _TOOL_OWNERS[tool_id] = threading.get_ident()
+        _TOOL_OWNERS[tool_id] = (threading.get_ident(), tool_name)
 
     events = mon.events.PY_START | mon.events.INSTRUCTION  # type: ignore[attr-defined]
     if monitor_returns:
@@ -1678,9 +1692,10 @@ def teardown_opcode_monitoring(tool_id: int | None) -> None:
         # Only free a slot we still own; another run may have reclaimed it after
         # we died, in which case we must not stomp on it.
         owner = _TOOL_OWNERS.get(tool_id)
-        if owner is not None and owner == threading.get_ident():
+        if owner is not None and owner[0] == threading.get_ident():
             del _TOOL_OWNERS[tool_id]
-            _force_free_tool_id(tool_id)
+            if sys.monitoring.get_tool(tool_id) == owner[1]:  # type: ignore[attr-defined]
+                _force_free_tool_id(tool_id)
 
 
 # ---------------------------------------------------------------------------

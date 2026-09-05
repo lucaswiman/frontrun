@@ -8,10 +8,10 @@ bridge listener consults.
 
 Two suppression mechanisms exist:
 
-* **Per-thread (transient)** — :func:`_suppress_endpoint_io` flips a
-  thread-local + a TID set for the duration of a single ``execute()``
-  call.  Used to drop socket events synchronously emitted while the
-  SQL call is on the stack.
+* **Per-call (transient)** — :func:`_suppress_endpoint_io` increments a
+  task-local suppression depth and, for synchronous calls, a native-TID
+  reference count for the duration of a single ``execute()`` call. Used to
+  drop socket events synchronously emitted while the SQL call is on the stack.
 * **Per-endpoint (persistent)** — :func:`suppress_sql_endpoint` records
   the connection's socket peer (e.g. ``socket:127.0.0.1:5432``) so
   events that travel through the async pipe and are read after the
@@ -32,8 +32,7 @@ import threading
 from collections.abc import Generator
 from typing import Any
 
-from frontrun import _real_threading as _rt
-from frontrun._io_detection import _io_tls
+from frontrun._io_detection import EndpointIOSuppression
 from frontrun._trace_format import build_call_chain
 from frontrun._tracing import should_trace_file as _should_trace_file
 
@@ -68,10 +67,11 @@ __all__ = [
 # Suppression infrastructure
 # ---------------------------------------------------------------------------
 
-# OS thread IDs currently inside a patched execute call.
+# OS thread IDs currently inside a non-yielding patched execute call.
 # The LD_PRELOAD bridge listener checks this to skip endpoint-level reports.
-_suppress_tids: set[int] = set()
-_suppress_lock = _rt.lock()  # Real lock (not cooperative)
+_endpoint_io_suppression = EndpointIOSuppression()
+_suppress_tids = _endpoint_io_suppression.tids
+_suppress_lock = _endpoint_io_suppression.lock
 _ACTIVE_SQL_IO_CONTEXTS: dict[int, tuple[str | None, list[str] | None]] = {}
 
 # Persistent suppression: SQL socket endpoints whose LD_PRELOAD events
@@ -151,18 +151,10 @@ def get_active_sql_io_context(tid: int) -> tuple[str | None, list[str] | None]:
 
 
 @contextlib.contextmanager
-def _suppress_endpoint_io() -> Generator[None, None, None]:
-    """Temporarily suppress endpoint-level I/O for the current thread."""
-    tid = threading.get_native_id()
-    _io_tls._sql_suppress = True
-    with _suppress_lock:
-        _suppress_tids.add(tid)
-    try:
+def _suppress_endpoint_io(*, suppress_native_tid: bool = True) -> Generator[None, None, None]:
+    """Suppress duplicate socket I/O in this call's thread/task context."""
+    with _endpoint_io_suppression.scope(suppress_native_tid=suppress_native_tid):
         yield
-    finally:
-        with _suppress_lock:
-            _suppress_tids.discard(tid)
-        _io_tls._sql_suppress = False
 
 
 def is_tid_suppressed(tid: int) -> bool:

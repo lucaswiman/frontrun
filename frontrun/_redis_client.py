@@ -24,14 +24,12 @@ import importlib
 import ipaddress
 import os
 import socket
-import threading
 import weakref
 from collections.abc import Callable, Generator, Iterator
 from typing import Any
 
-from frontrun import _real_threading as _rt
 from frontrun._deadlock import SchedulerAbort
-from frontrun._io_detection import _io_tls, external_operation_scope, get_io_reporter
+from frontrun._io_detection import EndpointIOSuppression, external_operation_scope, get_io_reporter
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._redis_command_data import (
@@ -45,8 +43,9 @@ from frontrun._redis_command_data import (
 from frontrun._redis_parsing import _PUBSUB_CMDS, RedisAccessResult, parse_redis_access
 from frontrun._redis_patch_registry import SYNC_REDIS_TARGETS
 
-_suppress_tids: set[int] = set()
-_suppress_lock = _rt.lock()
+_endpoint_io_suppression = EndpointIOSuppression()
+_suppress_tids = _endpoint_io_suppression.tids
+_suppress_lock = _endpoint_io_suppression.lock
 
 # When True, Redis interception forces scheduling points even without
 # the IO reporter.  Used during counterexample reproduction to enforce
@@ -55,24 +54,15 @@ _redis_replay_mode = False
 
 
 @contextlib.contextmanager
-def _suppress_endpoint_io() -> Generator[None, None, None]:
-    """Temporarily suppress endpoint-level I/O for the current thread."""
-    tid = threading.get_native_id()
-    _io_tls._redis_suppress = True
-    with _suppress_lock:
-        _suppress_tids.add(tid)
-    try:
+def _suppress_endpoint_io(*, suppress_native_tid: bool = True) -> Generator[None, None, None]:
+    """Suppress duplicate socket I/O in this call's thread/task context."""
+    with _endpoint_io_suppression.scope(suppress_native_tid=suppress_native_tid):
         yield
-    finally:
-        with _suppress_lock:
-            _suppress_tids.discard(tid)
-        _io_tls._redis_suppress = False
 
 
 def is_redis_tid_suppressed(tid: int) -> bool:
     """Check if a thread ID is currently suppressed (for LD_PRELOAD bridge)."""
-    with _suppress_lock:
-        return tid in _suppress_tids
+    return _endpoint_io_suppression.is_tid_suppressed(tid)
 
 
 # ---------------------------------------------------------------------------

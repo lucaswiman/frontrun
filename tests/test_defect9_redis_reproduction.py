@@ -24,6 +24,8 @@ except ImportError:
 
 import frontrun
 
+pytestmark = pytest.mark.integration
+
 
 class TestRedisReproductionFailure:
     """Minimal reproduction of defect #9: Redis DPOR counterexamples

@@ -156,12 +156,16 @@ def _check_lock_cycle(graph: Any, thread_id: int, object_id: int, scheduler: Any
         raise SchedulerAbort(desc)
 
 
-def _validate_lock_timeout(timeout: float) -> None:
-    """Preserve CPython's non-finite Lock/RLock timeout errors."""
+def _validate_lock_timeout(blocking: bool, timeout: float) -> None:
+    """Preserve CPython's Lock/RLock argument validation."""
     if math.isnan(timeout):
         raise ValueError("Invalid value NaN (not a number)")
     if math.isinf(timeout):
         raise OverflowError("timestamp out of range for platform time_t")
+    if not blocking and timeout != -1:
+        raise ValueError("can't specify a timeout for a non-blocking call")
+    if timeout < 0 and timeout != -1:
+        raise ValueError("timeout value must be a non-negative number")
 
 
 def _timed_acquire_state(
@@ -417,7 +421,7 @@ class CooperativeLock:
         self._owner_thread_id: int | None = None  # frontrun thread_id, not OS tid
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        _validate_lock_timeout(timeout)
+        _validate_lock_timeout(blocking, timeout)
         # Reentrancy guard: if we're already inside DPOR machinery (e.g.,
         # _sync_reporter or _process_opcode), GC-triggered __del__ chains
         # must not re-enter the scheduler.  Fall back to real blocking.
@@ -657,7 +661,7 @@ class CooperativeRLock:
         self._acquired_during_dpor_machinery = False
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        _validate_lock_timeout(timeout)
+        _validate_lock_timeout(blocking, timeout)
         me = threading.get_ident()
         if self._owner == me:
             self._count += 1
@@ -940,6 +944,8 @@ class CooperativeSemaphore:
         return False
 
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        if not blocking and timeout is not None:
+            raise ValueError("can't specify timeout for non-blocking acquire")
         # Fast path: try to decrement counter
         is_trylock = (not blocking) or timeout == 0
         if self._try_acquire():

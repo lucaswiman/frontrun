@@ -16,7 +16,7 @@ import pytest
 
 import frontrun._sql_cursor as sql_cursor_mod
 import frontrun._sql_endpoint_suppression as endpoint_suppression
-from frontrun._io_detection import _io_tls, set_io_reporter
+from frontrun._io_detection import _io_tls, is_endpoint_io_suppressed, set_io_reporter
 from frontrun._sql_cursor import (
     _ORIGINAL_METHODS,
     _PATCHES,
@@ -120,8 +120,6 @@ def _cleanup_sql_patch() -> Generator[None, None, None]:
     _suppress_tids.clear()
     sql_cursor_mod._sql_patched = False
     set_io_reporter(None)
-    if hasattr(_io_tls, "_sql_suppress"):
-        _io_tls._sql_suppress = False
     _io_tls._in_transaction = False
     _io_tls._is_autobegin = False
     _io_tls._tx_buffer = []
@@ -515,8 +513,8 @@ def test_different_tables_reported_independently() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sql_suppress_flag_set_during_original_execute() -> None:
-    """_io_tls._sql_suppress is True while the original execute runs."""
+def test_endpoint_io_is_suppressed_during_original_execute() -> None:
+    """Endpoint I/O suppression is active while the original execute runs."""
     suppress_seen: list[bool] = []
 
     log = IOLog()
@@ -530,7 +528,7 @@ def test_sql_suppress_flag_set_during_original_execute() -> None:
     old_original = _ORIGINAL_METHODS[sqlite3_cursor_key]
 
     def spy_original(self: Any, operation: Any, parameters: Any = None) -> Any:
-        suppress_seen.append(getattr(_io_tls, "_sql_suppress", False))
+        suppress_seen.append(is_endpoint_io_suppressed())
         if parameters is not None:
             return old_original(self, operation, parameters)
         return old_original(self, operation)
@@ -546,7 +544,7 @@ def test_sql_suppress_flag_set_during_original_execute() -> None:
     assert any(suppress_seen), f"suppress flag should be True during original execute, got: {suppress_seen}"
 
 
-def test_sql_suppress_flag_cleared_after_execute() -> None:
+def test_endpoint_io_suppression_cleared_after_execute() -> None:
     log = IOLog()
     set_io_reporter(log)
     patch_sql()
@@ -555,7 +553,7 @@ def test_sql_suppress_flag_cleared_after_execute() -> None:
     conn.execute("CREATE TABLE users (id INTEGER)")
     conn.execute("SELECT * FROM users")
 
-    assert getattr(_io_tls, "_sql_suppress", False) is False
+    assert not is_endpoint_io_suppressed()
     conn.close()
 
 
@@ -658,7 +656,7 @@ def test_suppress_cleaned_on_exception() -> None:
     current_tid = threading.get_native_id()
     with _suppress_lock:
         assert current_tid not in _suppress_tids
-    assert getattr(_io_tls, "_sql_suppress", False) is False
+    assert not is_endpoint_io_suppressed()
     conn.close()
 
     # Restore so unpatch works cleanly
@@ -674,7 +672,7 @@ def test_suppress_not_set_when_no_tables_parsed() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA journal_mode=WAL")
 
-    assert getattr(_io_tls, "_sql_suppress", False) is False
+    assert not is_endpoint_io_suppressed()
     assert len(log.events) == 1
     assert log.events[0][0].startswith("sql:__database__")
     assert log.events[0][1] == "write"
@@ -916,7 +914,7 @@ def test_unparseable_sql_reports_opaque_database_write() -> None:
     assert len(log.events) == 1
     assert log.events[0][0].startswith("sql:__database__")
     assert log.events[0][1] == "write"
-    assert getattr(_io_tls, "_sql_suppress", False) is False
+    assert not is_endpoint_io_suppressed()
     with _suppress_lock:
         assert threading.get_native_id() not in _suppress_tids
     conn.close()
@@ -940,7 +938,7 @@ def test_empty_sql_string_reports_opaque_database_write() -> None:
     assert len(log.events) == 1
     assert log.events[0][0].startswith("sql:__database__")
     assert log.events[0][1] == "write"
-    assert getattr(_io_tls, "_sql_suppress", False) is False
+    assert not is_endpoint_io_suppressed()
     conn.close()
 
 
@@ -1106,24 +1104,6 @@ def test_reporter_tls_isolation() -> None:
     assert any((r == "sql:orders" or r.startswith("sql:orders:")) and k == "read" for r, k in thread_events)
 
 
-def test_sql_suppress_tls_isolation() -> None:
-    """_sql_suppress flag is per-thread via TLS."""
-    patch_sql()
-    log = IOLog()
-    set_io_reporter(log)
-
-    suppress_in_thread: list[bool] = []
-
-    def worker() -> None:
-        suppress_in_thread.append(getattr(_io_tls, "_sql_suppress", False))
-
-    t = threading.Thread(target=worker)
-    t.start()
-    t.join()
-
-    assert suppress_in_thread == [False]
-
-
 # ---------------------------------------------------------------------------
 # 6. _intercept_execute unit tests (white-box)
 # ---------------------------------------------------------------------------
@@ -1202,7 +1182,7 @@ def test_intercept_execute_exception_cleanup() -> None:
     with pytest.raises(ValueError, match="DB exploded"):
         _intercept_execute(raising_original, fake_self, "SELECT * FROM sometable")
 
-    assert getattr(_io_tls, "_sql_suppress", False) is False
+    assert not is_endpoint_io_suppressed()
     with _suppress_lock:
         assert threading.get_native_id() not in _suppress_tids
 

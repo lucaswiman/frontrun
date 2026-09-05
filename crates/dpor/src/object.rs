@@ -82,6 +82,15 @@ impl ObjectState {
         map.get(&thread).is_some_and(|span| span.has_path_id(path_id))
     }
 
+    fn map_for_kind(&self, kind: AccessKind) -> &HashMap<usize, AccessSpan> {
+        match kind {
+            AccessKind::Read => &self.per_thread_read,
+            AccessKind::Write => &self.per_thread_write,
+            AccessKind::WeakWrite => &self.per_thread_weak_write,
+            AccessKind::WeakRead => &self.per_thread_weak_read,
+        }
+    }
+
     /// Returns all accesses that the given `kind` by `current_thread` depends on.
     ///
     /// Paper: dependency is defined in JACM'17 Section 3.3 (p.13-14). Two events
@@ -99,96 +108,21 @@ impl ObjectState {
     /// duplicate wakeup insertions.
     pub fn dependent_accesses(&self, kind: AccessKind, current_thread: usize) -> Vec<&Access> {
         let mut result: Vec<&Access> = Vec::new();
-        match kind {
-            AccessKind::Read => {
-                // Read depends on Write and WeakWrite from other threads.
-                for (tid, span) in &self.per_thread_write {
-                    if *tid != current_thread {
-                        result.extend(span.entries());
-                    }
-                }
-                for (tid, span) in &self.per_thread_weak_write {
-                    if *tid != current_thread {
-                        for access in span.entries() {
-                            let dominated =
-                                Self::map_has_path_id(&self.per_thread_write, *tid, access.path_id);
-                            if !dominated {
-                                result.push(access);
-                            }
-                        }
-                    }
-                }
+        for (index, previous_kind) in AccessKind::ALL.into_iter().enumerate() {
+            if !kind.conflicts(previous_kind) {
+                continue;
             }
-            AccessKind::Write => {
-                // Write depends on Read, Write, WeakWrite, and WeakRead.
-                for (tid, span) in &self.per_thread_read {
-                    if *tid != current_thread {
-                        result.extend(span.entries());
-                    }
+            for (thread, span) in self.map_for_kind(previous_kind) {
+                if *thread == current_thread {
+                    continue;
                 }
-                for (tid, span) in &self.per_thread_write {
-                    if *tid != current_thread {
-                        for access in span.entries() {
-                            let dominated =
-                                Self::map_has_path_id(&self.per_thread_read, *tid, access.path_id);
-                            if !dominated {
-                                result.push(access);
-                            }
-                        }
-                    }
-                }
-                for (tid, span) in &self.per_thread_weak_write {
-                    if *tid != current_thread {
-                        for access in span.entries() {
-                            let dominated =
-                                Self::map_has_path_id(&self.per_thread_read, *tid, access.path_id)
-                                    || Self::map_has_path_id(&self.per_thread_write, *tid, access.path_id);
-                            if !dominated {
-                                result.push(access);
-                            }
-                        }
-                    }
-                }
-                for (tid, span) in &self.per_thread_weak_read {
-                    if *tid != current_thread {
-                        for access in span.entries() {
-                            let dominated =
-                                Self::map_has_path_id(&self.per_thread_read, *tid, access.path_id)
-                                    || Self::map_has_path_id(&self.per_thread_write, *tid, access.path_id)
-                                    || Self::map_has_path_id(&self.per_thread_weak_write, *tid, access.path_id);
-                            if !dominated {
-                                result.push(access);
-                            }
-                        }
-                    }
-                }
-            }
-            AccessKind::WeakWrite => {
-                // WeakWrite depends on Read and Write, but NOT WeakWrite
-                // or WeakRead.
-                for (tid, span) in &self.per_thread_read {
-                    if *tid != current_thread {
-                        result.extend(span.entries());
-                    }
-                }
-                for (tid, span) in &self.per_thread_write {
-                    if *tid != current_thread {
-                        for access in span.entries() {
-                            let dominated =
-                                Self::map_has_path_id(&self.per_thread_read, *tid, access.path_id);
-                            if !dominated {
-                                result.push(access);
-                            }
-                        }
-                    }
-                }
-            }
-            AccessKind::WeakRead => {
-                // WeakRead depends only on Write (not Read, WeakWrite, or
-                // other WeakRead).
-                for (tid, span) in &self.per_thread_write {
-                    if *tid != current_thread {
-                        result.extend(span.entries());
+                for access in span.entries() {
+                    let dominated = AccessKind::ALL[..index].iter().any(|stronger_kind| {
+                        kind.conflicts(*stronger_kind)
+                            && Self::map_has_path_id(self.map_for_kind(*stronger_kind), *thread, access.path_id)
+                    });
+                    if !dominated {
+                        result.push(access);
                     }
                 }
             }

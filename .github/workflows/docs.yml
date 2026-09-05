@@ -2,6 +2,8 @@ name: Build and Deploy Docs
 
 on:
   push:
+    branches:
+      - main
     paths:
       - 'docs/**'
       - 'frontrun/**'
@@ -29,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
 
@@ -45,9 +47,10 @@ jobs:
           "
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: docs
 
       - name: Set up Python
         run: uv python install 3.12
@@ -57,12 +60,6 @@ jobs:
 
       - name: Install dependencies
         run: uv pip install -e .[dev]
-
-      - name: Build Rust DPOR extension
-        run: |
-          source .venv/bin/activate
-          pip install maturin
-          maturin develop --release
 
       - name: Build documentation
         run: |

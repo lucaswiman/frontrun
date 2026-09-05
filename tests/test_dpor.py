@@ -66,6 +66,7 @@ def test_dpor_report_and_wait_reschedules_done_current_without_timeout() -> None
             self._switch_point_collector = None
             self._step_event_collector = None
             self._last_scheduled_path_id = None
+            self._last_scheduled_path_id_by_thread: dict[int, int] = {}
             self.scheduled = 0
 
         _report_and_wait = DporScheduler._report_and_wait

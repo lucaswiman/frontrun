@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 
-from frontrun.async_scheduler import InterleavedLoop
+from frontrun.async_scheduler import InterleavedLoop, SchedulerTimeoutError
 
 
 class _AllWaitingLoop(InterleavedLoop):
@@ -38,7 +38,7 @@ def test_run_all_propagates_scheduler_error() -> None:
     async def main() -> None:
         await loop.run_all([worker, worker], timeout=5.0)
 
-    with pytest.raises((TimeoutError, Exception)) as excinfo:
+    with pytest.raises(SchedulerTimeoutError) as excinfo:
         asyncio.run(main())
 
     # The surfaced error must be the scheduler's own deadlock error, not a

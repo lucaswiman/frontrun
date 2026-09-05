@@ -28,12 +28,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: lint
 
       - name: Set up Python
         run: uv python install 3.12
@@ -44,13 +45,13 @@ jobs:
   test:
     name: Tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         python: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.14t']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -61,12 +62,37 @@ jobs:
           workspaces: .
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: tests-${{ matrix.python }}
 
       - name: Run tests
         run: make test-${{ matrix.python }}
+
+  e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-suffix: e2e-3.14
+
+      - name: Run end-to-end tests
+        run: make test-e2e-3.14
 
   integration:
     name: Integration Tests
@@ -95,7 +121,7 @@ jobs:
           --health-timeout 3s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -106,9 +132,10 @@ jobs:
           workspaces: .
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: integration-3.14
 
       - name: Run integration tests
         run: make test-integration-3.14

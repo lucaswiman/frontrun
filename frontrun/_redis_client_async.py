@@ -95,7 +95,7 @@ async def _dispatch_async(
     depth = pause_var.get()
     pause_var.set(depth + 1)
     try:
-        with _suppress_endpoint_io():
+        with _suppress_endpoint_io(suppress_native_tid=False):
             result = await original_method(self, *args, **kwargs)
     finally:
         pause_var.set(depth)

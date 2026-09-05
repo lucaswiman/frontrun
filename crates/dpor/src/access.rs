@@ -63,6 +63,19 @@ pub enum AccessKind {
 }
 
 impl AccessKind {
+    pub const ALL: [Self; 4] = [Self::Read, Self::Write, Self::WeakWrite, Self::WeakRead];
+
+    /// Whether two accesses are dependent when they touch the same object.
+    pub fn conflicts(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Write, _)
+                | (_, Self::Write)
+                | (Self::Read, Self::WeakWrite)
+                | (Self::WeakWrite, Self::Read)
+        )
+    }
+
     /// Merge two access kinds into a single kind whose conflict set is a
     /// superset of both inputs' conflict sets.  Used by trace caching and
     /// per-branch access recording when the same object is accessed with
@@ -159,5 +172,22 @@ mod tests {
         assert_eq!(AccessOrigin::IoDirect.merge(AccessOrigin::PythonMemory), AccessOrigin::IoDirect);
         assert_eq!(AccessOrigin::PythonMemory.merge(AccessOrigin::LockSynthetic), AccessOrigin::LockSynthetic);
         assert_eq!(AccessOrigin::LockSynthetic.merge(AccessOrigin::IoDirect), AccessOrigin::IoDirect);
+    }
+
+    #[test]
+    fn test_conflict_matrix_is_symmetric_and_complete() {
+        for left in AccessKind::ALL {
+            for right in AccessKind::ALL {
+                assert_eq!(left.conflicts(right), right.conflicts(left));
+                let expected = left == AccessKind::Write
+                    || right == AccessKind::Write
+                    || matches!(
+                        (left, right),
+                        (AccessKind::Read, AccessKind::WeakWrite)
+                            | (AccessKind::WeakWrite, AccessKind::Read)
+                    );
+                assert_eq!(left.conflicts(right), expected, "{left:?} vs {right:?}");
+            }
+        }
     }
 }

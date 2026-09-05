@@ -219,8 +219,12 @@ class DporScheduler:
         self._row_lock_redirected = False
 
         # Last path_id snapshot from _schedule_next, used to attribute
-        # lock events to the correct scheduling step on free-threaded Python.
+        # clock transitions to the scheduling step that selected the clock.
         self._last_scheduled_path_id: int | None = None
+        # Actor-specific snapshots used only by human-facing report events.
+        # Engine sync reports intentionally use the current transition cursor
+        # (_last_scheduled_path_id), which can already name the next actor.
+        self._last_scheduled_path_id_by_thread: dict[int, int] = {}
 
         # The clock actor starts blocked: it only becomes runnable when a
         # deadline is pending (explored) or when everything else idles
@@ -623,6 +627,8 @@ class DporScheduler:
                 # the correct step.
                 _pp = getattr(self.engine, "path_position", None)
                 self._last_scheduled_path_id = _pp - 1 if _pp is not None else None
+                if scheduled is not None and self._last_scheduled_path_id is not None:
+                    self._last_scheduled_path_id_by_thread[scheduled] = self._last_scheduled_path_id
                 if scheduled is not None and scheduled == self._clock_actor_id:
                     if not self._advance_virtual_clock_locked():
                         # This stale actor pick had no physical transition.
@@ -871,11 +877,8 @@ class DporScheduler:
                             self._capture_step_event(_switch_frame, thread_id)
                         # It's our turn. After executing one opcode, schedule next.
                         next_thread = self._schedule_next()
-                        # _schedule_next saves the path position in
-                        # self._last_scheduled_path_id (under engine_lock).
-                        # Copy it to TLS so _sync_reporter can attribute lock
-                        # events to this thread's scheduling step, not a later
-                        # step advanced by another thread on free-threaded Python.
+                        # Preserve the engine transition cursor for sync events
+                        # emitted before this thread reaches its next trace hook.
                         _pp = self._last_scheduled_path_id
                         if _pp is not None:
                             _dpor_tls._last_path_id = _pp

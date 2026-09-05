@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+import time
 
 from frontrun._report import (
     ExecutionRecord,
@@ -228,6 +230,58 @@ def test_append_unique_lock_event_deduplicates_adjacent_duplicates():
     _append_unique_lock_event(events, distinct)
 
     assert events == [first, distinct]
+
+
+def test_lock_events_point_to_the_reporting_threads_schedule_step():
+    """A preempted reporter must not inherit the next actor's path id."""
+    import frontrun._report
+
+    class State:
+        def __init__(self) -> None:
+            self.lock = threading.Lock()
+            self.value = 0
+            self.side = 0
+
+    def worker(state: State) -> None:
+        side = state.side
+        with state.lock:
+            time.sleep(0)
+            state.value += 1
+        state.side = side + 1
+
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+        path = f.name
+
+    try:
+        frontrun._report._global_report_path = path
+        frontrun.explore(
+            State,
+            [worker, worker],
+            lambda _state: False,
+            detect_io=False,
+            reproduce_on_failure=0,
+            stop_on_first=False,
+            max_executions=20,
+            preemption_bound=None,
+        )
+
+        with open(path) as f:
+            html = f.read()
+        marker = '<script type="application/json" id="dpor-data">'
+        data = json.loads(html.split(marker, 1)[1].split("</script>", 1)[0])
+
+        events_seen = 0
+        for execution in data["executions"]:
+            trace = execution["schedule_trace"]
+            for event in execution.get("lock_events", []):
+                events_seen += 1
+                assert 0 <= event["schedule_index"] < len(trace)
+                assert trace[event["schedule_index"]] == event["thread_id"]
+        assert events_seen > 0
+    finally:
+        frontrun._report._global_report_path = None
+        if os.path.exists(path):
+            os.unlink(path)
 
 
 def test_report_generated_on_error_on_any_race_early_return():

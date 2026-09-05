@@ -28,6 +28,8 @@ except ImportError:
 
 import frontrun
 
+pytestmark = pytest.mark.integration
+
 
 class TestStateDependentReplayReproduction:
     """Minimal reproduction of defect #16: state-dependent code paths
