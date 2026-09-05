@@ -102,11 +102,9 @@ impl PyDporEngine {
         Ok(())
     }
 
-    /// Report a first-access shared memory access.  Like `report_access`
-    /// but keeps the earliest access per thread rather than the latest.
-    /// Used for container-level keys where multiple writes to the same
-    /// container should preserve the first write's position for
-    /// fine-grained wakeup tree insertion.
+    /// Report a span-tracked shared memory access.  The historical API name is
+    /// retained for compatibility; unlike `report_access`, it keeps both the
+    /// earliest and latest access per thread for sound middle interleavings.
     fn report_first_access(
         &mut self,
         execution: &mut PyExecution,
@@ -119,7 +117,7 @@ impl PyDporEngine {
         Ok(())
     }
 
-    /// Report a first-access shared memory access attributed to an explicit path position.
+    /// Report a span-tracked shared memory access attributed to an explicit path position.
     fn report_first_access_at(
         &mut self,
         execution: &mut PyExecution,

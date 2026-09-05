@@ -268,17 +268,18 @@ impl DporEngine {
         self.path.record_access(current_path_id, object_id, kind, AccessOrigin::PythonMemory);
     }
 
-    /// Like [`process_access`] but uses first-access recording semantics
-    /// (keeps the earliest access per thread rather than the latest).
+    /// Like [`process_access`] but uses span recording semantics (keeps the
+    /// earliest *and* latest access per thread rather than only the latest).
     /// Uses the regular `dpor_vv` for happens-before computation, so
     /// lock-based synchronization is still respected.
     ///
-    /// This is useful for container-level access keys (`__cmethods__`)
-    /// where a thread performs multiple writes to the same container.
-    /// By keeping the first write position, DPOR can insert into the
-    /// wakeup tree at the earliest point, enabling exploration of
-    /// interleavings where another thread runs between the first and
-    /// subsequent writes.
+    /// This is useful for container-level access keys (`__cmethods__`) and
+    /// for names a thread loads repeatedly (`LOAD_GLOBAL`, `LOAD_DEREF`,
+    /// `FOR_ITER`).  The first position lets DPOR insert into the wakeup tree
+    /// at the earliest point, enabling exploration of interleavings where
+    /// another thread runs between the first and subsequent accesses; the
+    /// last position keeps the trailing access racing with other threads'
+    /// writes, which keeping only the first would silently drop.
     pub fn process_first_access(
         &mut self,
         execution: &mut Execution,
@@ -319,13 +320,13 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_dpor_vv, thread_id, AccessOrigin::PythonMemory);
-        object_state.record_io_access(access, kind);
+        object_state.record_access_span(access, kind);
 
         self.path.record_access(current_path_id, object_id, kind, AccessOrigin::PythonMemory);
     }
 
     /// Like [`process_access`] but uses `dpor_vv` (lock-aware) with
-    /// `record_io_access` recording semantics.  Intended for I/O
+    /// `record_access_span` recording semantics.  Intended for I/O
     /// operations that go through Python-level code (Redis, SQL) where
     /// Python locks are tracked by `report_sync` and should be respected.
     ///
@@ -381,7 +382,7 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_dpor_vv, thread_id, AccessOrigin::IoDirect);
-        object_state.record_synced_io_access(access, kind);
+        object_state.record_access_span(access, kind);
 
         self.path.record_access(current_path_id, object_id, kind, AccessOrigin::IoDirect);
     }
@@ -436,7 +437,13 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_io_vv, thread_id, origin);
-        object_state.record_io_access(access, kind);
+        if origin == AccessOrigin::LockSynthetic {
+            object_state.record_first_access(access, kind);
+        } else {
+            // Direct I/O has no lock happens-before edges in io_vv, so both
+            // endpoints are required to expose middle interleavings.
+            object_state.record_access_span(access, kind);
+        }
 
         self.path.record_access(current_path_id, object_id, kind, origin);
     }

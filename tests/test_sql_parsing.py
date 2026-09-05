@@ -631,6 +631,65 @@ class TestDataModifyingCte:
         assert "orders" in r
         assert "recent" not in r
 
+    def test_cte_named_after_the_table_it_reads_keeps_the_table_read(self):
+        """A CTE alias may shadow a real table the query also reads.
+
+        ``WITH users AS (SELECT ... FROM users ...)`` is a common idiom: the
+        inner reference is the base table.  Dropping the name wholesale loses
+        that read, so a concurrent ``UPDATE users`` shares no resource and the
+        race is pruned -- under-merging, which is forbidden.
+        """
+        sql = "WITH users AS (SELECT id FROM users WHERE active) UPDATE orders SET x = 1 FROM users WHERE orders.uid = users.id"  # noqa: E501
+        r, w, *_ = parse_sql_access(sql)
+        assert "orders" in w
+        assert "users" in r, "the base table read inside the CTE body must survive alias filtering"
+
+    def test_cte_named_after_the_table_it_writes_keeps_the_table_write(self):
+        sql = "WITH jobs AS (UPDATE jobs SET state='done' WHERE id=1 RETURNING id) SELECT * FROM jobs"
+        r, w, *_ = parse_sql_access(sql)
+        assert "jobs" in w, "the data-modifying CTE's target table must survive alias filtering"
+
+    def test_recursive_self_reference_is_not_a_table(self):
+        sql = "WITH RECURSIVE t AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM t WHERE n < 5) SELECT * FROM t"
+        r, w, *_ = parse_sql_access(sql)
+        assert "t" not in r and "t" not in w, "a recursive CTE's self-reference is the CTE, not a table"
+
+    @pytest.mark.parametrize(
+        ("sql", "expected_reads", "expected_writes"),
+        [
+            ("WITH users AS (SELECT 1) SELECT * FROM public.users", {"users"}, set()),
+            ("WITH users AS (SELECT 1) UPDATE public.users SET active=true", {"users"}, {"users"}),
+            ("WITH users AS (SELECT 1) DELETE FROM public.users WHERE id=1", {"users"}, {"users"}),
+            ("WITH users AS (SELECT 1) INSERT INTO public.users(id) VALUES (1)", set(), {"users"}),
+        ],
+    )
+    def test_schema_qualified_table_is_not_hidden_by_same_named_cte(
+        self, sql: str, expected_reads: set[str], expected_writes: set[str]
+    ) -> None:
+        result = parse_sql_access(sql)
+        assert expected_reads <= result.read_tables
+        assert expected_writes <= result.write_tables
+
+    def test_nested_recursive_with_does_not_change_outer_cte_scope(self) -> None:
+        sql = """
+            WITH users AS (SELECT id FROM users)
+            SELECT * FROM users
+            CROSS JOIN (
+                WITH RECURSIVE t(n) AS (
+                    VALUES (1) UNION ALL SELECT n + 1 FROM t WHERE n < 2
+                )
+                SELECT * FROM t
+            ) q
+        """
+        result = parse_sql_access(sql)
+        assert "users" in result.read_tables
+
+    def test_recursive_forward_reference_is_conservatively_physical(self) -> None:
+        """Without a driver dialect, retain an ambiguously forward-referenced name."""
+        sql = "WITH RECURSIVE a AS (SELECT * FROM b), b AS (SELECT * FROM base) SELECT * FROM a"
+        result = parse_sql_access(sql)
+        assert {"b", "base"} <= result.read_tables
+
 
 # ---------------------------------------------------------------------------
 # Multi-table UPDATE (finding 8)

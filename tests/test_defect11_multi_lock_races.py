@@ -35,7 +35,7 @@ The fix has two parts:
 
 2. **Lock operations create backtrack points**: Lock acquire is reported
    as a Write I/O access to a virtual lock object, using ``io_vv`` (which
-   doesn't include lock-based HB) and first-access semantics.  This makes
+   doesn't include lock-based HB) and first-and-last span semantics.  This makes
    lock acquires on the same lock by different threads appear concurrent,
    creating backtrack points at lock boundaries.
 

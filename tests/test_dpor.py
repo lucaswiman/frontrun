@@ -155,6 +155,38 @@ class TestPyDporEngine:
         assert len(engine.pending_races()) == 1
         assert engine.attribute_races() == []
 
+    def test_direct_io_repeated_read_keeps_trailing_backtrack_anchor(self) -> None:
+        """A direct-I/O write must be schedulable between two reads."""
+        engine = PyDporEngine(2)
+        observations: set[tuple[int, int]] = set()
+
+        while True:
+            execution = engine.begin_execution()
+            positions = [0, 0]
+            value = 0
+            reads = [0, 0]
+
+            while execution.runnable_threads():
+                chosen = engine.schedule(execution)
+                assert chosen is not None
+                if chosen == 0:
+                    engine.report_io_access(execution, chosen, 1, "read")
+                    reads[positions[chosen]] = value
+                    positions[chosen] += 1
+                    if positions[chosen] == 2:
+                        execution.finish_thread(chosen)
+                else:
+                    engine.report_io_access(execution, chosen, 1, "write")
+                    value = 1
+                    positions[chosen] += 1
+                    execution.finish_thread(chosen)
+
+            observations.add((reads[0], reads[1]))
+            if not engine.next_execution():
+                break
+
+        assert (0, 1) in observations
+
     def test_synced_io_conflict_is_not_an_attribute_race(self) -> None:
         engine = PyDporEngine(2)
         execution = engine.begin_execution()
@@ -913,6 +945,33 @@ def _simple_global_check(_state: _SimpleGlobalState) -> bool:
     return _simple_global == 2
 
 
+_reread_global = 0
+
+
+class _RereadGlobalState:
+    def __init__(self) -> None:
+        global _reread_global
+        _reread_global = 0
+        self.observed: list[tuple[int, int]] = []
+
+
+def _reread_global_writer(_state: _RereadGlobalState) -> None:
+    global _reread_global
+    _reread_global = 1
+    _reread_global = 2
+
+
+def _reread_global_reader(state: _RereadGlobalState) -> None:
+    global _reread_global
+    first = _reread_global
+    last = _reread_global
+    state.observed.append((first, last))
+
+
+def _reread_global_is_stable(state: _RereadGlobalState) -> bool:
+    return all(first == last for first, last in state.observed)
+
+
 class TestGlobalVariableRace:
     """DPOR detects lost-update on module-level globals (LOAD_GLOBAL / STORE_GLOBAL)."""
 
@@ -936,6 +995,24 @@ class TestGlobalVariableRace:
             deadlock_timeout=5.0,
         )
         assert not result.property_holds, "DPOR should detect the global += lost-update race"
+
+    def test_dpor_detects_torn_reread_of_a_global(self) -> None:
+        """Every read of a global is a backtrack anchor, not just the first.
+
+        The reader can observe ``first == 0`` and ``last == 2`` when the writer
+        runs between its two ``LOAD_GLOBAL``s.  Anchoring only a thread's
+        earliest read on an object hides that interleaving entirely.
+        """
+        result = frontrun.explore(
+            setup=_RereadGlobalState,
+            workers=[_reread_global_writer, _reread_global_reader],
+            invariant=_reread_global_is_stable,
+            detect_io=False,
+            stop_on_first=False,
+            preemption_bound=None,
+            deadlock_timeout=5.0,
+        )
+        assert not result.property_holds, "DPOR should schedule the writer between the reader's two reads"
 
     def test_barrier_proves_global_race_is_real(self) -> None:
         """Barrier-forced interleaving proves the lost update is real."""

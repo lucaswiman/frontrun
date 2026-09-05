@@ -149,6 +149,66 @@ def _delete_write_tables(node: Any) -> set[str]:
     return tables
 
 
+def _is_descendant(node: Any, ancestor: Any) -> bool:
+    """Whether *node* is contained in *ancestor* in a sqlglot AST."""
+    current = node
+    while current is not None:
+        if current is ancestor:
+            return True
+        current = current.parent
+    return False
+
+
+def _has_visible_cte_binding(table: Any, name: str, with_nodes: list[Any]) -> bool:
+    """Whether an unqualified table occurrence is definitely a CTE reference.
+
+    CTE visibility is lexical and belongs to one ``WITH`` node, not to the
+    statement as a whole.  The main query sees every alias in its own ``WITH``;
+    a CTE body sees earlier siblings and, under ``WITH RECURSIVE``, itself.
+    Forward sibling visibility differs between supported SQL dialects, so it is
+    deliberately not treated as proof of a query-local reference.
+    """
+    for with_node in with_nodes:
+        query = with_node.parent
+        if query is None or not _is_descendant(table, query):
+            continue
+        ctes = list(with_node.expressions)
+        aliases = [cte.alias for cte in ctes]
+        if name not in aliases:
+            continue
+
+        containing_index = next((i for i, cte in enumerate(ctes) if _is_descendant(table, cte)), None)
+        if containing_index is None:
+            return True
+        if name in aliases[:containing_index]:
+            return True
+        if with_node.args.get("recursive") and name == aliases[containing_index]:
+            return True
+    return False
+
+
+def _query_local_cte_aliases(ast: Any, cte_aliases: set[str], write_tables: set[str]) -> set[str]:
+    """Return aliases proven to have no physical table occurrence.
+
+    Access sets store unqualified names, so subtracting a CTE alias is safe only
+    when *every* occurrence of that name is proven query-local.  Qualified
+    references, DML targets, non-recursive self references, and dialect-
+    ambiguous forward references all retain the name.  This may over-merge two
+    scopes that reuse an alias, but can never erase a real dependency.
+    """
+    from sqlglot import exp  # type: ignore[import-untyped]
+
+    physical_names = cte_aliases & write_tables
+    with_nodes = list(ast.find_all(exp.With))
+    for table in ast.find_all(exp.Table):
+        name = table.name
+        if name not in cte_aliases or name in physical_names:
+            continue
+        if table.catalog or table.db or not _has_visible_cte_binding(table, name, with_nodes):
+            physical_names.add(name)
+    return cte_aliases - physical_names
+
+
 def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
     """Parse a SQL statement and return table access information.
 
@@ -437,10 +497,9 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                         all_temporal = {}
                     all_temporal[t.name] = clause
 
-            # CTE alias names are query-local and must never be reported as
-            # tables (finding 1).  Data-modifying CTEs (UPDATE/DELETE/INSERT
-            # nested in a WITH clause) are classified into the write set with
-            # their own sources as reads, so their writes are not lost.
+            # CTE alias occurrences that are proven query-local must not be
+            # reported as tables (finding 1).  The same unqualified name may
+            # still denote a physical table in another lexical scope.
             cte_aliases = {c.alias for c in ctes if c.alias}
 
             def _classify_node(node: Any, *, top_level: bool) -> None:
@@ -511,9 +570,11 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
 
             _classify_node(ast, top_level=True)
 
-            # Drop CTE alias names — they are query-local, not real tables.
-            write -= cte_aliases
-            read -= cte_aliases
+            # Drop only aliases whose every occurrence is proven query-local.
+            # Writes are always physical targets (CTEs cannot be mutated by
+            # INSERT/UPDATE/DELETE/MERGE), so a colliding write name survives.
+            query_local = _query_local_cte_aliases(ast, cte_aliases, write)
+            read -= query_local
 
         all_read.update(read)
         all_write.update(write)

@@ -250,11 +250,13 @@ _EVAL_CMDS: frozenset[str] = frozenset({"EVAL", "EVALSHA", "EVAL_RO", "EVALSHA_R
 # ``_redis_parsing.parse_redis_access``.
 _KEYSPACE_WRITE_CMDS: frozenset[str] = frozenset({"FLUSHDB", "FLUSHALL", "SWAPDB"})
 
-# Commands that read the *entire* keyspace (enumeration / existence over all
-# keys) without naming a specific key.  Modeled as a read on the database-wide
-# keyspace resource: this conflicts with FLUSH* (and nothing else new, since
-# the keyspace read is read-read against ordinary key traffic).
-_KEYSPACE_READ_CMDS: frozenset[str] = frozenset({"KEYS", "SCAN", "RANDOMKEY", "DBSIZE"})
+# Commands that observe the *entire* keyspace (enumeration / cardinality over
+# all keys) without naming a specific key.  Their result depends on which keys
+# exist, so they must conflict with any concurrent create or delete.  Since
+# ordinary key-touching commands take a keyspace *read* (to keep key-key
+# traffic read-read), an enumeration has to take the write side of the
+# database-wide keyspace resource to produce that dependency.
+_KEYSPACE_ENUMERATION_CMDS: frozenset[str] = frozenset({"KEYS", "SCAN", "RANDOMKEY", "DBSIZE"})
 
 # Server/connection/cluster commands that never operate on specific keys.
 # These must not hit the conservative fallback (which treats arg[0] as a key).

@@ -34,7 +34,7 @@ from frontrun._io_detection import set_io_reporter
 from frontrun._redis_command_data import (
     _COMMAND_KEY_SPECS,
     _EVAL_CMDS,
-    _KEYSPACE_READ_CMDS,
+    _KEYSPACE_ENUMERATION_CMDS,
     _KEYSPACE_WRITE_CMDS,
     _NO_KEY_CMDS,
     _TX_CONTROL_CMDS,
@@ -230,7 +230,7 @@ def test_stateless_allowlist_is_disjoint_from_modeled_sets() -> None:
         ("tx control", _TX_CONTROL_CMDS),
         ("eval family", _EVAL_CMDS),
         ("keyspace writes", _KEYSPACE_WRITE_CMDS),
-        ("keyspace reads", _KEYSPACE_READ_CMDS),
+        ("keyspace enumerations", _KEYSPACE_ENUMERATION_CMDS),
         ("pub/sub", _PUBSUB_CMDS),
         ("special modeled", _SPECIAL_MODELED),
     ]:
@@ -249,7 +249,7 @@ def _command_universe() -> set[str]:
     universe |= set(_TX_CONTROL_CMDS)
     universe |= set(_EVAL_CMDS)
     universe |= set(_KEYSPACE_WRITE_CMDS)
-    universe |= set(_KEYSPACE_READ_CMDS)
+    universe |= set(_KEYSPACE_ENUMERATION_CMDS)
     universe |= set(_PUBSUB_CMDS)
     universe |= set(_SPECIAL_MODELED)
     return universe
@@ -267,7 +267,7 @@ def test_every_command_in_table_is_classified_exactly_once() -> None:
         | set(_TX_CONTROL_CMDS)
         | set(_EVAL_CMDS)
         | set(_KEYSPACE_WRITE_CMDS)
-        | set(_KEYSPACE_READ_CMDS)
+        | set(_KEYSPACE_ENUMERATION_CMDS)
         | set(_PUBSUB_CMDS)
         | _SPECIAL_MODELED
     )

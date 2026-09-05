@@ -37,7 +37,7 @@ from frontrun._patching import patch_method, restore_patches, wrap_method_metada
 from frontrun._redis_command_data import (
     _COMMAND_KEY_SPECS,
     _EVAL_CMDS,
-    _KEYSPACE_READ_CMDS,
+    _KEYSPACE_ENUMERATION_CMDS,
     _KEYSPACE_WRITE_CMDS,
     _STATELESS_NO_ACCESS_CMDS,
     _TX_CONTROL_CMDS,
@@ -450,7 +450,7 @@ _RECOGNIZED_NO_SPEC_CMDS: frozenset[str] = (
     | _EVAL_CMDS
     | _PUBSUB_CMDS
     | _KEYSPACE_WRITE_CMDS
-    | _KEYSPACE_READ_CMDS
+    | _KEYSPACE_ENUMERATION_CMDS
     | _STATELESS_NO_ACCESS_CMDS
     | frozenset({"WATCH", "SELECT", "PUBSUB", "SORT", "SORT_RO"})
 )

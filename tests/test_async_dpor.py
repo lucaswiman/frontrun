@@ -186,6 +186,199 @@ class TestAsyncDporBasic:
         assert result.property_holds, f"No race expected: {result.counterexample}"
         assert result.num_explored >= 1
 
+    def test_lock_handoff_survives_immediate_reacquire(self) -> None:
+        """A releasing task may race a queued waiter by reacquiring immediately.
+
+        ``asyncio.Lock`` briefly reports unlocked after granting its first
+        waiter, but a new acquire still queues behind that waiter.  DPOR must
+        model the new acquirer as blocked instead of scheduling a coroutine
+        that the real lock has parked.
+        """
+        require_active("test_async_dpor_lock_handoff_reacquire")
+
+        class Counter:
+            def __init__(self) -> None:
+                self.value = 0
+                self.lock = asyncio.Lock()
+
+        async def increment_twice(counter: Counter) -> None:
+            for _ in range(2):
+                async with counter.lock:
+                    value = counter.value
+                    await asyncio.sleep(0)
+                    counter.value = value + 1
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=Counter,
+                workers=[increment_twice, increment_twice],
+                strategy="dpor",
+                invariant=lambda counter: counter.value == 4,
+                preemption_bound=None,
+                max_executions=100,
+                deadlock_timeout=0.1,
+                reproduce_on_failure=0,
+                detect_io=False,
+            )
+        )
+
+        assert result.property_holds, result.explanation
+
+    def test_finds_queue_producer_ordering_race(self) -> None:
+        """Queue contents are shared state, so producer order must be explored.
+
+        ``asyncio.Queue`` keeps its items in a stdlib deque that opcode
+        tracing never sees, so unless the wrapper reports the access DPOR
+        treats two producers' ``put`` calls as commuting and certifies a pass.
+        """
+        require_active("test_async_dpor_queue_producer_order")
+
+        class State:
+            def __init__(self) -> None:
+                self.queue: asyncio.Queue[int] = asyncio.Queue()
+                self.drained: list[int] = []
+
+        def make_producer(item: int):  # noqa: ANN202
+            async def producer(state: State) -> None:
+                await state.queue.put(item)
+
+            return producer
+
+        async def consumer(state: State) -> None:
+            state.drained.append(await state.queue.get())
+            state.drained.append(await state.queue.get())
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[make_producer(0), make_producer(1), consumer],
+                strategy="dpor",
+                invariant=lambda s: s.drained == [0, 1],
+                preemption_bound=None,
+                max_executions=200,
+                deadlock_timeout=5.0,
+            )
+        )
+
+        assert not result.property_holds, "DPOR should explore the producer order that drains [1, 0]"
+
+    @pytest.mark.parametrize(
+        ("queue_name", "items", "initial_order"),
+        [
+            ("LifoQueue", (0, 1), [1, 0]),
+            ("PriorityQueue", ((0, 0), (0, 1)), [0, 1]),
+        ],
+    )
+    def test_finds_queue_variant_producer_ordering_race(
+        self, queue_name: str, items: tuple[object, object], initial_order: list[int]
+    ) -> None:
+        """LIFO and equal-priority queues need the same state instrumentation."""
+        require_active(f"test_async_dpor_{queue_name.lower()}_producer_order")
+
+        class PriorityItem:
+            def __init__(self, priority: int, label: int) -> None:
+                self.priority = priority
+                self.label = label
+
+            def __lt__(self, other: PriorityItem) -> bool:
+                return self.priority < other.priority
+
+        class State:
+            def __init__(self) -> None:
+                queue_type = getattr(asyncio, queue_name)
+                self.queue: asyncio.Queue[object] = queue_type()
+                self.drained: list[int] = []
+
+        queue_items = tuple(PriorityItem(*item) if isinstance(item, tuple) else item for item in items)
+
+        def make_producer(item: object):  # noqa: ANN202
+            async def producer(state: State) -> None:
+                await state.queue.put(item)
+
+            return producer
+
+        async def consumer(state: State) -> None:
+            for _ in items:
+                item = await state.queue.get()
+                state.drained.append(item.label if isinstance(item, PriorityItem) else item)
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[*(make_producer(item) for item in queue_items), consumer],
+                strategy="dpor",
+                invariant=lambda state: state.drained == initial_order,
+                preemption_bound=None,
+                max_executions=200,
+                deadlock_timeout=5.0,
+            )
+        )
+
+        assert not result.property_holds, f"DPOR should explore both {queue_name} producer orders"
+
+    @pytest.mark.parametrize(("observation", "producer_first"), [("qsize", 1), ("empty", False), ("full", True)])
+    def test_finds_queue_observation_race(self, observation: str, producer_first: object) -> None:
+        """Queue size observations are reads of the same state that put mutates."""
+        require_active(f"test_async_dpor_queue_{observation}_race")
+
+        class State:
+            def __init__(self) -> None:
+                self.queue: asyncio.Queue[int] = asyncio.Queue(maxsize=1)
+                self.observed: object = None
+
+        async def producer(state: State) -> None:
+            await state.queue.put(1)
+
+        async def observer(state: State) -> None:
+            self_method = getattr(state.queue, observation)
+            state.observed = self_method()
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[producer, observer],
+                strategy="dpor",
+                invariant=lambda state: state.observed == producer_first,
+                preemption_bound=None,
+                deadlock_timeout=5.0,
+            )
+        )
+
+        assert not result.property_holds, f"DPOR should explore {observation} before and after put"
+
+    @pytest.mark.skipif(not hasattr(asyncio, "QueueShutDown"), reason="asyncio.Queue.shutdown requires Python 3.13+")
+    def test_queue_shutdown_wakes_engine_parked_getter(self) -> None:
+        """shutdown() must wake the wrapper's waiter, not only stdlib waiters."""
+        require_active("test_async_dpor_queue_shutdown")
+
+        class State:
+            def __init__(self) -> None:
+                self.queue: asyncio.Queue[int] = asyncio.Queue()
+                self.saw_shutdown = False
+
+        async def getter(state: State) -> None:
+            try:
+                await state.queue.get()
+            except asyncio.QueueShutDown:
+                state.saw_shutdown = True
+
+        async def shutdown(state: State) -> None:
+            state.queue.shutdown()
+
+        result = asyncio.run(
+            frontrun.explore(
+                setup=State,
+                workers=[getter, shutdown],
+                strategy="dpor",
+                invariant=lambda state: state.saw_shutdown,
+                preemption_bound=None,
+                timeout_per_run=0.5,
+                deadlock_timeout=0.1,
+            )
+        )
+
+        assert result.property_holds is True, result.explanation
+
     def test_completed_and_timed_out_executions_are_inconclusive(self) -> None:
         """One completed execution cannot turn an incomplete search into proof.
 

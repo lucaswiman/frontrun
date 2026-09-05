@@ -15,7 +15,7 @@ pub type ObjectId = u64;
 
 /// Earliest and latest access of one kind by one thread.
 ///
-/// Most recording modes keep a single access (first == last).  Synced-I/O
+/// Most recording modes keep a single access (first == last).  Span
 /// recording keeps both: the earliest access gives the most useful wakeup
 /// tree insertion point for read-then-write patterns (e.g. between a SELECT
 /// and UPDATE in a transaction), while the latest access is required for
@@ -212,26 +212,27 @@ impl ObjectState {
         self.map_for(kind).insert(thread_id, AccessSpan::new(access));
     }
 
-    /// Like [`record_access`] but keeps the **first** (earliest) access for
-    /// each thread rather than overwriting with the latest.  Used for I/O
-    /// objects where the earliest position creates the most useful wakeup
-    /// tree insertion point (e.g. between a SELECT and UPDATE in a database
-    /// transaction).
-    pub fn record_io_access(&mut self, access: Access, kind: AccessKind) {
+    /// Keep the earliest access per thread.  Synthetic lock accesses use this
+    /// as their wakeup anchor: lock happens-before edges already order later
+    /// acquisitions, and retaining every endpoint would re-explore equivalent
+    /// critical-section orderings.
+    pub fn record_first_access(&mut self, access: Access, kind: AccessKind) {
         let thread_id = access.thread_id;
         self.map_for(kind)
             .entry(thread_id)
             .or_insert_with(|| AccessSpan::new(access));
     }
 
-    /// Like [`record_io_access`] but *also* tracks the latest access per
-    /// thread.  Keeping only the first access is unsound for synced I/O
-    /// (SQL/Redis): a thread that writes a row and later reads it back
-    /// (UPDATE ... ; SELECT ...) would drop the later read, so the race
-    /// between that read and another thread's write is never detected and
-    /// DPOR reports exhaustion without exploring the interleaving where
-    /// the other thread's write lands between the two statements.
-    pub fn record_synced_io_access(&mut self, access: Access, kind: AccessKind) {
+    /// Like [`record_access`] but tracks both the earliest and latest access
+    /// per thread.  Keeping only either endpoint is unsound whenever a thread
+    /// can touch the same object twice: for synced I/O (SQL/Redis) a thread
+    /// that writes a row and later reads it back (UPDATE ... ; SELECT ...)
+    /// would drop the later read, and for Python memory a second
+    /// `LOAD_GLOBAL` of the same name would drop the re-read.  Either way the
+    /// race between that access and another thread's write is never detected
+    /// and DPOR reports exhaustion without exploring the interleaving where
+    /// the other thread's write lands in between.
+    pub fn record_access_span(&mut self, access: Access, kind: AccessKind) {
         let thread_id = access.thread_id;
         match self.map_for(kind).entry(thread_id) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {

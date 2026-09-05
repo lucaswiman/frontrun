@@ -550,13 +550,13 @@ class TestServerCommands:
 
 
 class TestKeyspaceIntentLock:
-    """FLUSHDB/FLUSHALL write the whole keyspace; per-key commands read it.
+    """Whole-keyspace operations write the intent; per-key commands read it.
 
     This models the database-wide keyspace as a shared resource so DPOR
     explores the racing order between FLUSH* and ordinary key traffic.
     Ordinary key-key traffic stays read-read on the keyspace (no new
-    conflicts); FLUSH* takes a keyspace write that conflicts with every
-    key access.
+    conflicts); FLUSH* and enumerations take a keyspace write that conflicts
+    with every key access.
     """
 
     def test_flushdb_writes_keyspace(self) -> None:
@@ -584,23 +584,23 @@ class TestKeyspaceIntentLock:
         assert result.write_keys == ["k1", "k2"]
         assert result.keyspace == "read"
 
-    def test_keys_reads_keyspace(self) -> None:
-        result = parse_redis_access("KEYS", ("*",))
+    @pytest.mark.parametrize(
+        ("cmd", "args"),
+        [("KEYS", ("*",)), ("SCAN", ("0",)), ("RANDOMKEY", ()), ("DBSIZE", ())],
+    )
+    def test_enumeration_writes_keyspace(self, cmd: str, args: tuple[str, ...]) -> None:
+        """Enumerating the keyspace must conflict with creating/deleting a key.
+
+        Every key-touching command takes a keyspace *read* so ordinary key-key
+        traffic stays read-read.  An enumeration therefore has to take the
+        write side, or ``SCAN`` and a concurrent ``SET``/``DEL`` share no
+        conflicting resource and DPOR prunes the order that decides whether
+        the new key is visible to the scan.
+        """
+        result = parse_redis_access(cmd, args)
         assert result.read_keys == []
         assert result.write_keys == []
-        assert result.keyspace == "read"
-
-    def test_scan_reads_keyspace(self) -> None:
-        result = parse_redis_access("SCAN", ("0",))
-        assert result.keyspace == "read"
-
-    def test_randomkey_reads_keyspace(self) -> None:
-        result = parse_redis_access("RANDOMKEY", ())
-        assert result.keyspace == "read"
-
-    def test_dbsize_reads_keyspace(self) -> None:
-        result = parse_redis_access("DBSIZE", ())
-        assert result.keyspace == "read"
+        assert result.keyspace == "write"
 
     def test_plain_server_command_no_keyspace(self) -> None:
         # PING/INFO etc. do not touch the keyspace.
