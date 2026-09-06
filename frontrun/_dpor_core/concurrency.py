@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -39,22 +39,8 @@ if TYPE_CHECKING:
     from frontrun._opcode_observer import StableObjectIds
 
 
-class NoOpLock:
-    """Context-manager-shaped no-op lock for single-threaded engine calls.
-
-    Used by the async DPOR driver, which runs every task on the asyncio
-    event-loop thread and therefore has no contention on the underlying
-    Rust ``PyDporEngine``.  The sync driver passes a real
-    :class:`threading.Lock` instead.
-    """
-
-    __slots__ = ()
-
-    def __enter__(self) -> None:
-        return None
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        return None
+# Async engine calls need the same context-manager surface without locking.
+NoOpLock = nullcontext
 
 
 class ReplayEngine:

@@ -80,9 +80,8 @@ from frontrun._sql_cursor import patch_sql, unpatch_sql
 from frontrun._sql_insert_tracker import clear_insert_tracker, ensure_no_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout, run_thread_group
 from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
-from frontrun._tracing import TraceFilter as _TraceFilter
-from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun._tracing import should_trace_file as _should_trace_file
+from frontrun._tracing import trace_filter_scope
 from frontrun._virtual_clock import (
     ClockConfig,
     ClockMode,
@@ -1016,9 +1015,7 @@ def explore_random(
         serializable_invariant=serializable_invariant,
     )
     clock = clock_config.mode
-    if trace_packages is not None:
-        _set_active_trace_filter(_TraceFilter(trace_packages))
-    try:
+    with trace_filter_scope(trace_packages):
         from frontrun._dpor_core import compute_serializable_baseline_sync
 
         serial_valid_states, serial_hash_fn = compute_serializable_baseline_sync(setup, threads, serializable_invariant)
@@ -1198,8 +1195,6 @@ def explore_random(
                 ),
             ),
         )
-    finally:
-        _set_active_trace_filter(None)
 
 
 def schedule_strategy(num_threads: int, max_ops: int = 300):

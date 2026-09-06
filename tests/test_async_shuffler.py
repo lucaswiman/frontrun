@@ -433,7 +433,6 @@ def test_explore_async_random_unwinds_patch_stack_in_reverse_order(monkeypatch: 
     def unpatch_sleep() -> None:
         events.append("unpatch_sleep")
 
-    monkeypatch.setattr("frontrun.async_shuffler._sql_async_available", True)
     monkeypatch.setattr("frontrun.async_shuffler.patch_sql_async", patch_sql)
     monkeypatch.setattr("frontrun.async_shuffler.unpatch_sql_async", unpatch_sql)
     monkeypatch.setattr("frontrun._async_virtual_timeouts._patch_asyncio_sleep", patch_sleep)

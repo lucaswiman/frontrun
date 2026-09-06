@@ -48,7 +48,6 @@ from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
-# Lazy import for async SQL patching — shared with async_dpor.py
 from frontrun._async_autopause import (
     _in_scheduler_pause,
     _scheduler_var,
@@ -59,6 +58,7 @@ from frontrun._async_autopause import (
 from frontrun._async_cooperative import _guard_async_exploration, _real_asyncio_sleep
 from frontrun._certificate import PassEvidence, certify_pass
 from frontrun._random_schedules import burst_round, fair_schedule_strategy, random_round_robin_schedule
+from frontrun._sql_cursor_async import patch_sql_async, unpatch_sql_async
 from frontrun._threaded_runner import PatchScope
 from frontrun._virtual_clock import (
     ClockMode,
@@ -68,11 +68,6 @@ from frontrun._virtual_clock import (
     clock_context,
     patch_time,
     unpatch_time,
-)
-from frontrun.async_dpor import (
-    _sql_async_available,
-    patch_sql_async,
-    unpatch_sql_async,
 )
 from frontrun.async_scheduler import (
     InterleavedLoop,
@@ -580,7 +575,7 @@ def _patch_async_runtime(
 ):
     restore_loop_time: Callable[[], None] | None = None
     with PatchScope() as patch_scope:
-        patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
+        patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql)
         if patch_sleep:
             from frontrun._async_virtual_timeouts import (
                 _patch_asyncio_sleep,

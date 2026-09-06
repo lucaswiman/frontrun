@@ -14,7 +14,6 @@ class RowLockRegistry:
     * ``_active_row_locks``  — resource_id → holder thread/task ID
     * ``_task_row_locks``    — thread/task ID → set of held resource IDs
     * ``_row_lock_ids``      — resource_id → stable integer ID for WaitForGraph
-    * ``_row_lock_next_id``  — monotonic counter for ID allocation
 
     This class holds that shared state and exposes three shared operations:
 
@@ -45,16 +44,10 @@ class RowLockRegistry:
         # row-lock nodes ("row_lock", int) are disjoint from cooperative-lock
         # nodes ("lock", id(obj)) in the WaitForGraph.
         self._row_lock_ids: dict[str, int] = {}
-        self._row_lock_next_id: int = 0
 
     def _row_lock_int_id(self, res_id: str) -> int:
         """Return a stable monotonic integer ID for *res_id* (allocated on first call)."""
-        lid = self._row_lock_ids.get(res_id)
-        if lid is None:
-            lid = self._row_lock_next_id
-            self._row_lock_next_id += 1
-            self._row_lock_ids[res_id] = lid
-        return lid
+        return self._row_lock_ids.setdefault(res_id, len(self._row_lock_ids))
 
     def active_lock_owner(self, res_id: str) -> int | None:
         """Return the worker/task ID currently holding *res_id*, or ``None`` if free.
@@ -89,9 +82,7 @@ class RowLockRegistry:
             # Ownership transfer: scrub the old holder's bookkeeping so a later
             # pop_all(prev_owner) cannot remove this resource from
             # _active_row_locks and corrupt the new owner's state.
-            prev_set = self._task_row_locks.get(prev_owner)
-            if prev_set is not None:
-                prev_set.discard(res_id)
+            self._task_row_locks[prev_owner].remove(res_id)
             if graph is not None:
                 graph.remove_holding(prev_owner, lid, kind="row_lock")
         self._active_row_locks[res_id] = owner_id
@@ -124,14 +115,11 @@ class RowLockRegistry:
             return []
         held.difference_update(selected)
         if not held:
-            self._task_row_locks.pop(owner_id, None)
+            del self._task_row_locks[owner_id]
         released: list[tuple[str, int]] = []
         for res_id in selected:
-            if self._active_row_locks.get(res_id) == owner_id:
-                self._active_row_locks.pop(res_id, None)
-            lid = self._row_lock_ids.get(res_id)
-            if lid is not None:
-                released.append((res_id, lid))
+            del self._active_row_locks[res_id]
+            released.append((res_id, self._row_lock_ids[res_id]))
         # The sync scheduler emits DPOR events in this order, so canonicalize
         # the set iteration by the stable allocation ID.
         released.sort(key=lambda pair: pair[1])
