@@ -18,8 +18,10 @@ from frontrun import _sql_cursor
         ("SELECT * FROM users; INSERT INTO users VALUES (1, 'Alice', 30)", "write"),
         ("WITH added AS (INSERT INTO users VALUES (1, 'Alice', 30) RETURNING *) SELECT * FROM users", "write"),
         (
-            "MERGE INTO users USING (SELECT 1 AS id) AS src ON users.id = src.id "
-            "WHEN NOT MATCHED THEN INSERT (id) VALUES (src.id)",
+            (
+                "MERGE INTO users USING (SELECT 1 AS id) AS src ON users.id = src.id "
+                "WHEN NOT MATCHED THEN INSERT (id) VALUES (src.id)"
+            ),
             "write",
         ),
         (
@@ -29,6 +31,13 @@ from frontrun import _sql_cursor
         (
             "MERGE INTO users USING (SELECT 1 AS id) AS src ON users.id = src.id WHEN MATCHED THEN UPDATE SET age = 30",
             "read",
+        ),
+        (
+            (
+                "WITH changed AS (MERGE INTO users USING (SELECT 1 AS id) AS src ON users.id = src.id "
+                "WHEN NOT MATCHED THEN INSERT (id) VALUES (src.id) RETURNING *) SELECT * FROM changed"
+            ),
+            "write",
         ),
     ],
 )
