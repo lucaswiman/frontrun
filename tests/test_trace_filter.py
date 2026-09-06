@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
 import os
 import threading
+from contextlib import nullcontext
 
 import pytest
 
@@ -317,10 +317,10 @@ class TestTraceFilterCleanupOnException:
         # The trace filter must be restored, not leaked
         assert get_active_trace_filter() == old_filter, "Trace filter leaked after exception in explore_random setup"
 
-    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("strategy,asynchronous", [("dpor", False), ("dpor", True), ("random", False)])
     @pytest.mark.parametrize("setup_error", [False, True])
     @pytest.mark.parametrize("trace_packages", [None, ["inner.*"]])
-    def test_dpor_restores_surrounding_filter(self, asynchronous, setup_error, trace_packages) -> None:
+    def test_exploration_restores_surrounding_filter(self, strategy, asynchronous, setup_error, trace_packages) -> None:
         import frontrun
 
         surrounding = TraceFilter(["surrounding.*"])
@@ -338,13 +338,14 @@ class TestTraceFilterCleanupOnException:
         try:
             with pytest.raises(RuntimeError, match="setup failed") if setup_error else nullcontext():
                 result = frontrun.explore(
+                    strategy=strategy,
                     setup=setup,
                     workers=[async_worker] if asynchronous else [lambda _state: None],
                     invariant=lambda _state: True,
                     serializable_invariant=setup_error,
-                    max_executions=1,
                     trace_packages=trace_packages,
                     reproduce_on_failure=0,
+                    **({"max_executions": 1} if strategy == "dpor" else {"max_attempts": 1}),
                 )
                 if asynchronous:
                     result = asyncio.run(result)
