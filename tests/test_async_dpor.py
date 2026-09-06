@@ -37,7 +37,6 @@ def test_async_sql_scopes_sync_driver_patching_to_bridge(
 
     require_active("test_async_sql_scopes_sync_driver_patching_to_bridge")
     calls: list[str] = []
-    monkeypatch.setattr(async_dpor, "_sql_async_available", True)
     monkeypatch.setattr(async_dpor, "patch_sql", lambda: calls.append("sync-patch"))
     monkeypatch.setattr(async_dpor, "unpatch_sql", lambda: calls.append("sync-unpatch"))
     monkeypatch.setattr(async_dpor, "patch_sql_async", lambda: calls.append("async-patch"))

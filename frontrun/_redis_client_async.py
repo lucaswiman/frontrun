@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
+from frontrun._async_autopause import _in_scheduler_pause, _task_id_var
 from frontrun._io_detection import get_dpor_context as _get_dpor_context
 from frontrun._patching import patch_method, restore_patches, wrap_method_metadata
 from frontrun._redis_client import (
@@ -26,39 +27,6 @@ from frontrun._redis_client import (
     _suppress_endpoint_io,
 )
 from frontrun._redis_patch_registry import ASYNC_REDIS_TARGETS
-
-# Lazy imports to avoid circular dependency — resolved at first use.
-_in_scheduler_pause = None
-_scheduler_var_ref = None
-_real_asyncio_sleep_ref = None
-
-
-def _get_in_scheduler_pause() -> Any:
-    global _in_scheduler_pause  # noqa: PLW0603
-    if _in_scheduler_pause is None:
-        from frontrun.async_dpor import _in_scheduler_pause as _isp
-
-        _in_scheduler_pause = _isp
-    return _in_scheduler_pause
-
-
-def _get_scheduler_var() -> Any:
-    global _scheduler_var_ref  # noqa: PLW0603
-    if _scheduler_var_ref is None:
-        from frontrun.async_dpor import _scheduler_var, _task_id_var
-
-        _scheduler_var_ref = (_scheduler_var, _task_id_var)
-    return _scheduler_var_ref
-
-
-def _get_real_asyncio_sleep() -> Any:
-    global _real_asyncio_sleep_ref  # noqa: PLW0603
-    if _real_asyncio_sleep_ref is None:
-        from frontrun.async_dpor import _real_asyncio_sleep
-
-        _real_asyncio_sleep_ref = _real_asyncio_sleep
-    return _real_asyncio_sleep_ref
-
 
 # ---------------------------------------------------------------------------
 # Async interception
@@ -82,28 +50,29 @@ async def _dispatch_async(
     if not reported:
         return await original_method(self, *args, **kwargs)
 
+    from frontrun._async_cooperative import _real_asyncio_sleep
+
     dpor_ctx = _get_dpor_context()
     scheduler = None
     task_id = None
     if dpor_ctx is not None:
         scheduler = dpor_ctx[0]
-        task_id = _get_scheduler_var()[1].get()
+        task_id = _task_id_var.get()
         if task_id is not None and hasattr(scheduler, "pause"):
             await scheduler.pause(task_id)
 
-    pause_var = _get_in_scheduler_pause()
-    depth = pause_var.get()
-    pause_var.set(depth + 1)
+    depth = _in_scheduler_pause.get()
+    _in_scheduler_pause.set(depth + 1)
     try:
         with _suppress_endpoint_io(suppress_native_tid=False):
             result = await original_method(self, *args, **kwargs)
     finally:
-        pause_var.set(depth)
+        _in_scheduler_pause.set(depth)
     if dpor_ctx is not None and task_id is not None:
         on_task_yielded = getattr(scheduler, "on_task_yielded", None)
         if on_task_yielded is not None:
             on_task_yielded(task_id)
-    await _get_real_asyncio_sleep()(0)
+    await _real_asyncio_sleep(0)
     return result
 
 

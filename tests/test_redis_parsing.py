@@ -7,71 +7,99 @@ import pytest
 from frontrun._redis_parsing import parse_redis_access
 
 
-class TestStringCommands:
-    """Test classification of Redis string commands."""
-
-    def test_get_is_read(self) -> None:
-        result = parse_redis_access("GET", ("mykey",))
-        assert result.read_keys == ["mykey"]
-        assert result.write_keys == []
-
-    def test_set_is_read_write(self) -> None:
-        result = parse_redis_access("SET", ("mykey", "myvalue"))
-        assert "mykey" in result.read_keys
-        assert "mykey" in result.write_keys
-
-    def test_setnx_is_write(self) -> None:
-        result = parse_redis_access("SETNX", ("mykey", "myvalue"))
-        assert result.write_keys == ["mykey"]
-
-    def test_setex_is_write(self) -> None:
-        result = parse_redis_access("SETEX", ("mykey", 60, "myvalue"))
-        assert result.write_keys == ["mykey"]
-
-    def test_incr_is_read_write(self) -> None:
-        result = parse_redis_access("INCR", ("counter",))
-        assert "counter" in result.write_keys
-        assert "counter" in result.read_keys
-
-    def test_incrby_is_read_write(self) -> None:
-        result = parse_redis_access("INCRBY", ("counter", 5))
-        assert "counter" in result.write_keys
-        assert "counter" in result.read_keys
-
-    def test_decr_is_read_write(self) -> None:
-        result = parse_redis_access("DECR", ("counter",))
-        assert "counter" in result.write_keys
-        assert "counter" in result.read_keys
-
-    def test_append_is_read_write(self) -> None:
-        result = parse_redis_access("APPEND", ("mykey", "extra"))
-        assert "mykey" in result.write_keys
-        assert "mykey" in result.read_keys
-
-    def test_strlen_is_read(self) -> None:
-        result = parse_redis_access("STRLEN", ("mykey",))
-        assert result.read_keys == ["mykey"]
-        assert result.write_keys == []
-
-    def test_mget_reads_all_keys(self) -> None:
-        result = parse_redis_access("MGET", ("key1", "key2", "key3"))
-        assert result.read_keys == ["key1", "key2", "key3"]
-        assert result.write_keys == []
-
-    def test_mset_writes_key_value_pairs(self) -> None:
-        result = parse_redis_access("MSET", ("key1", "val1", "key2", "val2"))
-        assert result.read_keys == []
-        assert result.write_keys == ["key1", "key2"]
-
-    def test_getset_is_read_write(self) -> None:
-        result = parse_redis_access("GETSET", ("mykey", "newvalue"))
-        assert "mykey" in result.read_keys
-        assert "mykey" in result.write_keys
-
-    def test_getdel_is_read_write(self) -> None:
-        result = parse_redis_access("GETDEL", ("mykey",))
-        assert "mykey" in result.read_keys
-        assert "mykey" in result.write_keys
+# Explicit examples are independent of the production command-spec table.
+# Compound names omit the subcommand argument (redis-py 4.2+), so their key
+# positions must match the equivalent split command form.
+@pytest.mark.parametrize(
+    ("command", "args", "reads", "writes"),
+    [
+        # String Commands.
+        ("GET", ("mykey",), ["mykey"], []),
+        ("SET", ("mykey", "myvalue"), ["mykey"], ["mykey"]),
+        ("SETNX", ("mykey", "myvalue"), [], ["mykey"]),
+        ("SETEX", ("mykey", 60, "myvalue"), [], ["mykey"]),
+        ("INCR", ("counter",), ["counter"], ["counter"]),
+        ("INCRBY", ("counter", 5), ["counter"], ["counter"]),
+        ("DECR", ("counter",), ["counter"], ["counter"]),
+        ("APPEND", ("mykey", "extra"), ["mykey"], ["mykey"]),
+        ("STRLEN", ("mykey",), ["mykey"], []),
+        ("MGET", ("key1", "key2", "key3"), ["key1", "key2", "key3"], []),
+        ("MSET", ("key1", "val1", "key2", "val2"), [], ["key1", "key2"]),
+        ("GETSET", ("mykey", "newvalue"), ["mykey"], ["mykey"]),
+        ("GETDEL", ("mykey",), ["mykey"], ["mykey"]),
+        # Hash Commands.
+        ("HGET", ("myhash", "field1"), ["myhash"], []),
+        ("HSET", ("myhash", "field1", "value1"), ["myhash"], ["myhash"]),
+        ("HMSET", ("myhash", "f1", "v1", "f2", "v2"), ["myhash"], ["myhash"]),
+        ("HGETALL", ("myhash",), ["myhash"], []),
+        ("HDEL", ("myhash", "field1"), ["myhash"], ["myhash"]),
+        ("HINCRBY", ("myhash", "field1", 5), ["myhash"], ["myhash"]),
+        ("HEXISTS", ("myhash", "field1"), ["myhash"], []),
+        ("HLEN", ("myhash",), ["myhash"], []),
+        # List Commands.
+        ("LPUSH", ("mylist", "value1"), ["mylist"], ["mylist"]),
+        ("RPUSH", ("mylist", "value1"), ["mylist"], ["mylist"]),
+        ("LPOP", ("mylist",), ["mylist"], ["mylist"]),
+        ("RPOP", ("mylist",), ["mylist"], ["mylist"]),
+        ("LRANGE", ("mylist", 0, -1), ["mylist"], []),
+        ("LLEN", ("mylist",), ["mylist"], []),
+        ("LINDEX", ("mylist", 0), ["mylist"], []),
+        # Set Commands.
+        ("SADD", ("myset", "member1"), ["myset"], ["myset"]),
+        ("SREM", ("myset", "member1"), ["myset"], ["myset"]),
+        ("SMEMBERS", ("myset",), ["myset"], []),
+        ("SCARD", ("myset",), ["myset"], []),
+        ("SISMEMBER", ("myset", "member1"), ["myset"], []),
+        ("SUNIONSTORE", ("dest", "src1", "src2"), ["src1", "src2"], ["dest"]),
+        ("SUNION", ("set1", "set2", "set3"), ["set1", "set2", "set3"], []),
+        # Sorted Set Commands.
+        ("ZADD", ("myzset", 1, "member1"), ["myzset"], ["myzset"]),
+        ("ZRANGE", ("myzset", 0, -1), ["myzset"], []),
+        ("ZCARD", ("myzset",), ["myzset"], []),
+        ("ZINCRBY", ("myzset", 1, "member1"), ["myzset"], ["myzset"]),
+        # Key Commands.
+        ("DEL", ("key1", "key2"), [], ["key1", "key2"]),
+        ("EXISTS", ("key1", "key2"), ["key1", "key2"], []),
+        ("EXPIRE", ("mykey", 60), ["mykey"], ["mykey"]),
+        ("TTL", ("mykey",), ["mykey"], []),
+        ("TYPE", ("mykey",), ["mykey"], []),
+        ("RENAME", ("old", "new"), ["old"], ["old", "new"]),
+        # Pub Sub Commands.
+        ("PUBLISH", ("mychannel", "message"), [], ["channel:mychannel"]),
+        ("SUBSCRIBE", ("ch1", "ch2"), ["channel:ch1", "channel:ch2"], []),
+        ("PSUBSCRIBE", ("pattern*",), ["channel:pattern*"], []),
+        # Stream Commands.
+        ("XADD", ("mystream", "*", "field", "value"), ["mystream"], ["mystream"]),
+        ("XREAD", ("COUNT", "10", "STREAMS", "s1", "s2", "0-0", "0-0"), ["s1", "s2"], []),
+        ("XREADGROUP", ("GROUP", "g1", "c1", "STREAMS", "s1", "s2", ">", ">"), ["s1", "s2"], ["s1", "s2"]),
+        ("XLEN", ("mystream",), ["mystream"], []),
+        ("XGROUP", ("CREATE", "mystream", "mygroup", "0"), ["mystream"], ["mystream"]),
+        # Geo Commands.
+        ("GEOADD", ("mygeo", 13.361389, 38.115556, "Palermo"), ["mygeo"], ["mygeo"]),
+        ("GEODIST", ("mygeo", "Palermo", "Catania"), ["mygeo"], []),
+        ("GEOSEARCHSTORE", ("dest", "src", "FROMLONLAT", "15", "37", "BYRADIUS", "100", "km"), ["src"], ["dest"]),
+        ("GEORADIUS", ("mygeo", 15, 37, 100, "km", "STORE", "dest"), ["mygeo"], ["dest"]),
+        ("GEORADIUS", ("mygeo", 15, 37, 100, "km"), ["mygeo"], []),
+        # Compound Subcommand Key Extraction.
+        ("XGROUP CREATE", ("mystream", "grp", "0"), ["mystream"], ["mystream"]),
+        ("XGROUP DESTROY", ("mystream", "grp"), ["mystream"], ["mystream"]),
+        ("XINFO GROUPS", ("mystream",), ["mystream"], []),
+        ("XINFO STREAM", ("mystream",), ["mystream"], []),
+        ("MEMORY USAGE", ("mykey",), ["mykey"], []),
+        ("XGROUP SETID", ("mystream", "grp", "0"), ["mystream"], ["mystream"]),
+        # Compound No Key Cmds.
+        ("CLIENT SETNAME", ("myname",), [], []),
+        ("CONFIG GET", ("maxmemory",), [], []),
+        ("SLOWLOG GET", ("10",), [], []),
+        ("ACL GETUSER", ("admin",), [], []),
+        ("CLUSTER INFO", (), [], []),
+        ("SCRIPT EXISTS", ("abc123",), [], []),
+    ],
+)
+def test_command_access(command: str, args: tuple[object, ...], reads: list[str], writes: list[str]) -> None:
+    result = parse_redis_access(command, args)
+    assert result.read_keys == reads
+    assert result.write_keys == writes
 
 
 class TestBytesKeys:
@@ -100,84 +128,7 @@ class TestBytesKeys:
         assert result.write_keys == ["channel:chan"]
 
 
-class TestHashCommands:
-    """Test classification of Redis hash commands."""
-
-    def test_hget_is_read(self) -> None:
-        result = parse_redis_access("HGET", ("myhash", "field1"))
-        assert result.read_keys == ["myhash"]
-        assert result.write_keys == []
-
-    def test_hset_is_read_write(self) -> None:
-        result = parse_redis_access("HSET", ("myhash", "field1", "value1"))
-        assert "myhash" in result.read_keys
-        assert "myhash" in result.write_keys
-
-    def test_hmset_is_read_write(self) -> None:
-        result = parse_redis_access("HMSET", ("myhash", "f1", "v1", "f2", "v2"))
-        assert "myhash" in result.read_keys
-        assert "myhash" in result.write_keys
-
-    def test_hgetall_is_read(self) -> None:
-        result = parse_redis_access("HGETALL", ("myhash",))
-        assert result.read_keys == ["myhash"]
-        assert result.write_keys == []
-
-    def test_hdel_is_read_write(self) -> None:
-        result = parse_redis_access("HDEL", ("myhash", "field1"))
-        assert "myhash" in result.write_keys
-        assert "myhash" in result.read_keys
-
-    def test_hincrby_is_read_write(self) -> None:
-        result = parse_redis_access("HINCRBY", ("myhash", "field1", 5))
-        assert "myhash" in result.write_keys
-        assert "myhash" in result.read_keys
-
-    def test_hexists_is_read(self) -> None:
-        result = parse_redis_access("HEXISTS", ("myhash", "field1"))
-        assert result.read_keys == ["myhash"]
-        assert result.write_keys == []
-
-    def test_hlen_is_read(self) -> None:
-        result = parse_redis_access("HLEN", ("myhash",))
-        assert result.read_keys == ["myhash"]
-        assert result.write_keys == []
-
-
 class TestListCommands:
-    """Test classification of Redis list commands."""
-
-    def test_lpush_is_write(self) -> None:
-        result = parse_redis_access("LPUSH", ("mylist", "value1"))
-        assert "mylist" in result.write_keys
-
-    def test_rpush_is_write(self) -> None:
-        result = parse_redis_access("RPUSH", ("mylist", "value1"))
-        assert "mylist" in result.write_keys
-
-    def test_lpop_is_write(self) -> None:
-        result = parse_redis_access("LPOP", ("mylist",))
-        assert "mylist" in result.write_keys
-
-    def test_rpop_is_write(self) -> None:
-        result = parse_redis_access("RPOP", ("mylist",))
-        assert "mylist" in result.write_keys
-
-    def test_lrange_is_read(self) -> None:
-        result = parse_redis_access("LRANGE", ("mylist", 0, -1))
-        assert result.read_keys == ["mylist"]
-        assert result.write_keys == []
-
-    def test_llen_is_read(self) -> None:
-        result = parse_redis_access("LLEN", ("mylist",))
-        assert result.read_keys == ["mylist"]
-        assert result.write_keys == []
-
-    def test_lindex_is_read(self) -> None:
-        result = parse_redis_access("LINDEX", ("mylist", 0))
-        assert result.read_keys == ["mylist"]
-        assert result.write_keys == []
-
     def test_lmpop_uses_numkeys(self) -> None:
         """LMPOP numkeys key [key ...] LEFT|RIGHT — first arg is numkeys, not a key."""
         result = parse_redis_access("LMPOP", (2, "list1", "list2", "LEFT"))
@@ -217,41 +168,6 @@ class TestListCommands:
 
 
 class TestSetCommands:
-    """Test classification of Redis set commands."""
-
-    def test_sadd_is_write(self) -> None:
-        result = parse_redis_access("SADD", ("myset", "member1"))
-        assert "myset" in result.write_keys
-
-    def test_srem_is_write(self) -> None:
-        result = parse_redis_access("SREM", ("myset", "member1"))
-        assert "myset" in result.write_keys
-
-    def test_smembers_is_read(self) -> None:
-        result = parse_redis_access("SMEMBERS", ("myset",))
-        assert result.read_keys == ["myset"]
-        assert result.write_keys == []
-
-    def test_scard_is_read(self) -> None:
-        result = parse_redis_access("SCARD", ("myset",))
-        assert result.read_keys == ["myset"]
-        assert result.write_keys == []
-
-    def test_sismember_is_read(self) -> None:
-        result = parse_redis_access("SISMEMBER", ("myset", "member1"))
-        assert result.read_keys == ["myset"]
-        assert result.write_keys == []
-
-    def test_sunionstore_reads_sources_writes_dest(self) -> None:
-        result = parse_redis_access("SUNIONSTORE", ("dest", "src1", "src2"))
-        assert result.read_keys == ["src1", "src2"]
-        assert result.write_keys == ["dest"]
-
-    def test_sunion_reads_all(self) -> None:
-        result = parse_redis_access("SUNION", ("set1", "set2", "set3"))
-        assert result.read_keys == ["set1", "set2", "set3"]
-        assert result.write_keys == []
-
     def test_sinterstore_dest_is_write_only(self) -> None:
         """SINTERSTORE overwrites dest without reading it — dest should be write-only.
 
@@ -307,26 +223,6 @@ class TestMigrateKeys:
 
 
 class TestSortedSetCommands:
-    """Test classification of Redis sorted set commands."""
-
-    def test_zadd_is_write(self) -> None:
-        result = parse_redis_access("ZADD", ("myzset", 1, "member1"))
-        assert "myzset" in result.write_keys
-
-    def test_zrange_is_read(self) -> None:
-        result = parse_redis_access("ZRANGE", ("myzset", 0, -1))
-        assert result.read_keys == ["myzset"]
-        assert result.write_keys == []
-
-    def test_zcard_is_read(self) -> None:
-        result = parse_redis_access("ZCARD", ("myzset",))
-        assert result.read_keys == ["myzset"]
-        assert result.write_keys == []
-
-    def test_zincrby_is_write(self) -> None:
-        result = parse_redis_access("ZINCRBY", ("myzset", 1, "member1"))
-        assert "myzset" in result.write_keys
-
     def test_zmpop_uses_numkeys(self) -> None:
         """ZMPOP numkeys key [key ...] MIN|MAX — first arg is numkeys."""
         result = parse_redis_access("ZMPOP", (2, "zset1", "zset2", "MIN"))
@@ -357,38 +253,6 @@ class TestSortedSetCommands:
 
 
 class TestKeyCommands:
-    """Test classification of Redis key commands."""
-
-    def test_del_writes_all_keys(self) -> None:
-        result = parse_redis_access("DEL", ("key1", "key2"))
-        assert result.read_keys == []
-        assert result.write_keys == ["key1", "key2"]
-
-    def test_exists_reads_all_keys(self) -> None:
-        result = parse_redis_access("EXISTS", ("key1", "key2"))
-        assert result.read_keys == ["key1", "key2"]
-        assert result.write_keys == []
-
-    def test_expire_is_write(self) -> None:
-        result = parse_redis_access("EXPIRE", ("mykey", 60))
-        assert "mykey" in result.write_keys
-
-    def test_ttl_is_read(self) -> None:
-        result = parse_redis_access("TTL", ("mykey",))
-        assert result.read_keys == ["mykey"]
-        assert result.write_keys == []
-
-    def test_type_is_read(self) -> None:
-        result = parse_redis_access("TYPE", ("mykey",))
-        assert result.read_keys == ["mykey"]
-        assert result.write_keys == []
-
-    def test_rename_reads_source_writes_both(self) -> None:
-        result = parse_redis_access("RENAME", ("old", "new"))
-        assert "old" in result.read_keys
-        assert "old" in result.write_keys
-        assert "new" in result.write_keys
-
     def test_persist_is_read_write(self) -> None:
         """PERSIST modifies TTL metadata — should be read+write."""
         result = parse_redis_access("PERSIST", ("mykey",))
@@ -696,81 +560,6 @@ class TestKeyspaceReporting:
         assert flush_res & get_res, f"FLUSHDB and GET must share a keyspace resource: {flush_res} vs {get_res}"
 
 
-class TestPubSubCommands:
-    """Test Pub/Sub channel handling."""
-
-    def test_publish_writes_channel(self) -> None:
-        result = parse_redis_access("PUBLISH", ("mychannel", "message"))
-        assert result.write_keys == ["channel:mychannel"]
-
-    def test_subscribe_reads_channels(self) -> None:
-        result = parse_redis_access("SUBSCRIBE", ("ch1", "ch2"))
-        assert result.read_keys == ["channel:ch1", "channel:ch2"]
-
-    def test_psubscribe_reads_channels(self) -> None:
-        result = parse_redis_access("PSUBSCRIBE", ("pattern*",))
-        assert result.read_keys == ["channel:pattern*"]
-
-
-class TestStreamCommands:
-    """Test stream command key extraction."""
-
-    def test_xadd_is_write(self) -> None:
-        result = parse_redis_access("XADD", ("mystream", "*", "field", "value"))
-        assert "mystream" in result.write_keys
-
-    def test_xread_extracts_stream_keys(self) -> None:
-        result = parse_redis_access("XREAD", ("COUNT", "10", "STREAMS", "s1", "s2", "0-0", "0-0"))
-        assert result.read_keys == ["s1", "s2"]
-        assert result.write_keys == []
-
-    def test_xreadgroup_extracts_stream_keys(self) -> None:
-        result = parse_redis_access("XREADGROUP", ("GROUP", "g1", "c1", "STREAMS", "s1", "s2", ">", ">"))
-        assert "s1" in result.read_keys
-        assert "s2" in result.read_keys
-        assert "s1" in result.write_keys
-        assert "s2" in result.write_keys
-
-    def test_xlen_is_read(self) -> None:
-        result = parse_redis_access("XLEN", ("mystream",))
-        assert result.read_keys == ["mystream"]
-        assert result.write_keys == []
-
-    def test_xgroup_create_writes_key(self) -> None:
-        result = parse_redis_access("XGROUP", ("CREATE", "mystream", "mygroup", "0"))
-        assert "mystream" in result.write_keys
-
-
-class TestGeoCommands:
-    """Test geo command key extraction."""
-
-    def test_geoadd_is_write(self) -> None:
-        result = parse_redis_access("GEOADD", ("mygeo", 13.361389, 38.115556, "Palermo"))
-        assert "mygeo" in result.write_keys
-
-    def test_geodist_is_read(self) -> None:
-        result = parse_redis_access("GEODIST", ("mygeo", "Palermo", "Catania"))
-        assert result.read_keys == ["mygeo"]
-        assert result.write_keys == []
-
-    def test_geosearchstore_reads_source_writes_dest(self) -> None:
-        result = parse_redis_access(
-            "GEOSEARCHSTORE", ("dest", "src", "FROMLONLAT", "15", "37", "BYRADIUS", "100", "km")
-        )
-        assert "src" in result.read_keys
-        assert "dest" in result.write_keys
-
-    def test_georadius_with_store(self) -> None:
-        result = parse_redis_access("GEORADIUS", ("mygeo", 15, 37, 100, "km", "STORE", "dest"))
-        assert "mygeo" in result.read_keys
-        assert "dest" in result.write_keys
-
-    def test_georadius_without_store(self) -> None:
-        result = parse_redis_access("GEORADIUS", ("mygeo", 15, 37, 100, "km"))
-        assert "mygeo" in result.read_keys
-        assert result.write_keys == []
-
-
 class TestCaseSensitivity:
     """Test case-insensitive command handling."""
 
@@ -835,72 +624,6 @@ class TestCommandCoverage:
                 f"Command {cmd_name} with args {actual_args[:5]}... returned no keys — "
                 f"likely hitting the fallback. Add explicit handling."
             )
-
-
-class TestCompoundSubcommandKeyExtraction:
-    """redis-py 4.2+ sends subcommands as compound names like 'XGROUP CREATE'.
-
-    When cmd_name contains a space, the subcommand word is NOT in cmd_args,
-    so key-spec indices must be adjusted.
-    """
-
-    def test_xgroup_create_compound(self):
-        result = parse_redis_access("XGROUP CREATE", ("mystream", "grp", "0"))
-        assert "mystream" in result.write_keys
-
-    def test_xgroup_destroy_compound(self):
-        result = parse_redis_access("XGROUP DESTROY", ("mystream", "grp"))
-        assert "mystream" in result.write_keys
-
-    def test_xinfo_groups_compound(self):
-        result = parse_redis_access("XINFO GROUPS", ("mystream",))
-        assert "mystream" in result.read_keys
-
-    def test_xinfo_stream_compound(self):
-        result = parse_redis_access("XINFO STREAM", ("mystream",))
-        assert "mystream" in result.read_keys
-
-    def test_memory_usage_compound(self):
-        result = parse_redis_access("MEMORY USAGE", ("mykey",))
-        assert "mykey" in result.read_keys
-
-    def test_xgroup_setid_compound(self):
-        result = parse_redis_access("XGROUP SETID", ("mystream", "grp", "0"))
-        assert "mystream" in result.write_keys
-
-
-class TestCompoundNoKeyCmds:
-    """Compound command names for server/admin commands should not produce false keys."""
-
-    def test_client_setname_no_keys(self):
-        result = parse_redis_access("CLIENT SETNAME", ("myname",))
-        assert result.read_keys == []
-        assert result.write_keys == []
-
-    def test_config_get_no_keys(self):
-        result = parse_redis_access("CONFIG GET", ("maxmemory",))
-        assert result.read_keys == []
-        assert result.write_keys == []
-
-    def test_slowlog_get_no_keys(self):
-        result = parse_redis_access("SLOWLOG GET", ("10",))
-        assert result.read_keys == []
-        assert result.write_keys == []
-
-    def test_acl_getuser_no_keys(self):
-        result = parse_redis_access("ACL GETUSER", ("admin",))
-        assert result.read_keys == []
-        assert result.write_keys == []
-
-    def test_cluster_info_no_keys(self):
-        result = parse_redis_access("CLUSTER INFO", ())
-        assert result.read_keys == []
-        assert result.write_keys == []
-
-    def test_script_exists_no_keys(self):
-        result = parse_redis_access("SCRIPT EXISTS", ("abc123",))
-        assert result.read_keys == []
-        assert result.write_keys == []
 
 
 class TestReplaySchedulingPoint:

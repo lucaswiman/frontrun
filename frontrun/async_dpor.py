@@ -126,7 +126,9 @@ from frontrun._opcode_observer import (
     stop_opcode_trace,
     uninstall_thread_opcode_trace,
 )
-from frontrun._sql_cursor import clear_sql_metadata, get_lock_timeout, set_lock_timeout
+from frontrun._redis_client_async import patch_redis_async, unpatch_redis_async
+from frontrun._sql_cursor import clear_sql_metadata, get_lock_timeout, patch_sql, set_lock_timeout, unpatch_sql
+from frontrun._sql_cursor_async import patch_sql_async, unpatch_sql_async
 from frontrun._sql_insert_tracker import ensure_no_uncaptured_inserts
 from frontrun._threaded_runner import PatchScope
 from frontrun._tracing import TraceFilter as _TraceFilter
@@ -165,43 +167,6 @@ except ModuleNotFoundError as _err:
         "Build it with:  make build-dpor-3.14   (or build-dpor-3.10 / build-dpor-3.14t)\n"
         "Or install from source:  pip install -e ."
     ) from _err
-
-# Lazy import for async SQL patching (avoid hard dependency)
-_sql_async_available = False
-try:
-    from frontrun._sql_cursor import patch_sql, unpatch_sql
-    from frontrun._sql_cursor_async import patch_sql_async, unpatch_sql_async
-
-    _sql_async_available = True
-except ImportError:
-
-    def patch_sql() -> None:  # type: ignore[misc]
-        pass
-
-    def unpatch_sql() -> None:  # type: ignore[misc]
-        pass
-
-    def patch_sql_async() -> None:  # type: ignore[misc]
-        pass
-
-    def unpatch_sql_async() -> None:  # type: ignore[misc]
-        pass
-
-
-# Lazy import for async Redis patching (avoid hard dependency)
-_redis_async_available = False
-try:
-    from frontrun._redis_client_async import patch_redis_async, unpatch_redis_async
-
-    _redis_async_available = True
-except ImportError:
-
-    def patch_redis_async() -> None:  # type: ignore[misc]
-        pass
-
-    def unpatch_redis_async() -> None:  # type: ignore[misc]
-        pass
-
 
 T = TypeVar("T")
 
@@ -1567,10 +1532,10 @@ async def _explore_async_dpor(  # pyright: ignore[reportUnusedFunction]  # calle
             patch_scope.add(
                 patch_sql,
                 unpatch_sql,
-                enabled=detect_sql and _bridge_sync_io and _sql_async_available,
+                enabled=detect_sql and _bridge_sync_io,
             )
-            patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql and _sql_async_available)
-            patch_scope.add(patch_redis_async, unpatch_redis_async, enabled=detect_redis and _redis_async_available)
+            patch_scope.add(patch_sql_async, unpatch_sql_async, enabled=detect_sql)
+            patch_scope.add(patch_redis_async, unpatch_redis_async, enabled=detect_redis)
             patch_scope.add(_patch_asyncio_lock, _unpatch_asyncio_lock)
             patch_scope.add(_patch_asyncio_event, _unpatch_asyncio_event)
             patch_scope.add(_patch_asyncio_queue_condition, _unpatch_asyncio_queue_condition)
