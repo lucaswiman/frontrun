@@ -18,7 +18,8 @@ import os
 import re
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 
 # Directories to never trace into (stdlib, site-packages)
 _SKIP_DIRS: frozenset[str] = frozenset(p for p in sys.path if "lib/python" in p or "site-packages" in p)
@@ -150,6 +151,18 @@ def set_active_trace_filter(filt: TraceFilter | None) -> None:
 def get_active_trace_filter() -> TraceFilter:
     """Return the currently active trace filter."""
     return _active_filter or _DEFAULT_FILTER
+
+
+@contextmanager
+def trace_filter_scope(trace_packages: Sequence[str] | None) -> Generator[None, None, None]:
+    """Temporarily override the process-wide filter, preserving its caller's filter."""
+    previous = get_active_trace_filter()
+    if trace_packages is not None:
+        set_active_trace_filter(TraceFilter(trace_packages))
+    try:
+        yield
+    finally:
+        set_active_trace_filter(previous)
 
 
 def should_trace_file(filename: str) -> bool:

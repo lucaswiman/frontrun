@@ -582,63 +582,25 @@ def _report_sql_access(
             for table in access.write_tables:
                 report_or_buffer(table, "write", pred_rows)
 
-            # Phantom read detection (sequence-number tracking):
-            # SELECT depends on which rows exist in a table.  If a concurrent
-            # INSERT adds a row (or DELETE removes one), the SELECT's result
-            # changes.  Row-level conflict tracking misses this because the
-            # new/removed row has a different resource ID than the SELECT's
-            # table-level or row-level resource.
-            #
-            # Fix: use the table's :seq resource as a "membership" marker.
-            # - Pure-read tables (SELECT) report READ on :seq.
-            # - INSERT tables report WRITE on :seq (moved here from
-            #   _capture_insert_id so the write is flushed at the INSERT's
-            #   scheduling point, not left as orphaned pending_io).
-            # - DELETE tables report WRITE on :seq.
-            # - UPDATE tables report READ on :seq (defect #6 fix): UPDATE
-            #   results depend on which rows exist (like SELECT), so
-            #   concurrent INSERTs that add rows matching the UPDATE's WHERE
-            #   clause are phantom reads. We use READ (not WRITE) to avoid
-            #   false write-write conflicts between UPDATEs on different rows.
-            #
-            # This creates READ-WRITE conflicts between SELECT/UPDATE and
-            # INSERT/DELETE, detecting phantom read races.
-            pure_read_tables = access.read_tables - access.write_tables
-            for table in pure_read_tables:
-                _report_or_buffer(
-                    reporter,
-                    _sql_sequence_resource_id(table, db_scope=db_scope),
-                    "read",
-                )
-            # INSERT targets: in write_tables but NOT in read_tables (INSERT
-            # doesn't read the target table, unlike UPDATE/DELETE).
-            insert_tables = access.write_tables - access.read_tables
-            for table in insert_tables:
-                _report_or_buffer(
-                    reporter,
-                    _sql_sequence_resource_id(table, db_scope=db_scope),
-                    "write",
-                )
+            # Membership reads (SELECT/UPDATE) conflict with INSERT/DELETE
+            # writes even when row resources differ. Explicit INSERT targets
+            # are necessary: INSERT...SELECT, CTEs, and MERGE can also read
+            # their target. Keep write-only statements conservative (e.g. DDL).
+            # Preserve the established category order for ordinary statements.
+            insert_tables = access.insert_tables or set()
             delete_tables = access.delete_tables or set()
-            for table in delete_tables:
-                _report_or_buffer(
-                    reporter,
-                    _sql_sequence_resource_id(table, db_scope=db_scope),
-                    "write",
-                )
-            # UPDATE targets: in both write_tables and read_tables (UPDATE
-            # reads the WHERE clause and writes matched rows), excluding
-            # DELETE tables. Report READ on :seq so DPOR creates conflict
-            # arcs with concurrent INSERTs (which WRITE :seq). This lets
-            # DPOR explore interleavings where both UPDATEs run before either
-            # INSERT — the pattern that causes phantom races (defect #6).
-            update_tables = (access.write_tables & access.read_tables) - delete_tables
-            for table in update_tables:
-                _report_or_buffer(
-                    reporter,
-                    _sql_sequence_resource_id(table, db_scope=db_scope),
-                    "read",
-                )
+            for tables, kind in (
+                (access.read_tables - access.write_tables, "read"),
+                (access.write_tables - access.read_tables, "write"),
+                (delete_tables, "write"),
+                ((access.write_tables & access.read_tables) - delete_tables, "read"),
+            ):
+                for table in tables:
+                    _report_or_buffer(
+                        reporter,
+                        _sql_sequence_resource_id(table, db_scope=db_scope),
+                        "write" if table in insert_tables else kind,
+                    )
 
     return reported
 
