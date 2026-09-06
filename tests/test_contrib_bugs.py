@@ -106,31 +106,46 @@ class TestSqlalchemyAsyncLockTimeoutForwarding:
 class TestSqlalchemySyncExitExceptionInfo:
     """SQLAlchemy sync wrapper should pass exception info to __exit__."""
 
-    def test_exit_receives_exception_info(self) -> None:
-        """conn_ctx.__exit__ should receive actual exception info, not always (None, None, None).
+    @pytest.mark.parametrize("failure", [None, "enter", "setup", "wrapping", "body", "exit"])
+    def test_connection_lifetime(self, failure: str | None) -> None:
+        from contextvars import ContextVar
+        from unittest.mock import MagicMock, PropertyMock
 
-        Regression: the finally block always calls conn_ctx.__exit__(None, None, None),
-        even when fn(state) raises. SQLAlchemy uses the exception info to decide
-        whether to rollback. With (None, None, None), it may try to commit instead.
-        """
-        from frontrun.contrib.sqlalchemy._sync import sqlalchemy_dpor
+        from frontrun._cooperative import is_sync_suppressed
+        from frontrun.contrib.sqlalchemy._shared import wrap_sync_thread
 
-        source = inspect.getsource(sqlalchemy_dpor)
+        conn, context, engine = MagicMock(), MagicMock(), MagicMock()
+        current: ContextVar[object] = ContextVar("test_connection", default=None)
+        error = RuntimeError(failure)
+        engine.connect.return_value = context
 
-        # The source should NOT have unconditional __exit__(None, None, None) in the
-        # finally block of the main fn(state) call path. It's OK in the lock_timeout
-        # error path since that's before fn(state) runs.
-        #
-        # Count occurrences of __exit__(None, None, None)
-        exit_none_count = source.count("__exit__(None, None, None)")
+        def stage(name: str) -> None:
+            assert is_sync_suppressed() == (name != "body")
+            if name == "body":
+                assert current.get() is conn
+            if failure == name:
+                raise error
 
-        # There should be at most 1 occurrence (the lock_timeout error path).
-        # The main fn(state) path should use sys.exc_info() or a with statement.
-        assert exit_none_count <= 1, (
-            f"Found {exit_none_count} occurrences of __exit__(None, None, None) in sqlalchemy_dpor. "
-            "The finally block after fn(state) should pass actual exception info to __exit__, "
-            "not (None, None, None), so SQLAlchemy can decide whether to rollback."
-        )
+        context.__enter__.side_effect = lambda: (stage("enter"), conn)[1]
+        context.__exit__.side_effect = lambda *exc: stage("exit")
+        conn.exec_driver_sql.side_effect = lambda sql: stage("setup")
+        if failure == "wrapping":
+            type(conn).execute = PropertyMock(side_effect=error)
+        wrapped = wrap_sync_thread(engine, current, 5000, lambda state: stage("body"))
+        if failure is None:
+            wrapped(None)
+        else:
+            with pytest.raises(RuntimeError) as caught:
+                wrapped(None)
+            assert caught.value is error
+
+        assert not is_sync_suppressed()
+        assert current.get() is None
+        if failure == "enter":
+            context.__exit__.assert_not_called()
+        else:
+            context.__exit__.assert_called_once()
+            assert context.__exit__.call_args.args[1] is (error if failure in {"setup", "wrapping", "body"} else None)
 
 
 class TestSqlalchemyConnectionHelpers:
