@@ -26,9 +26,7 @@ def _python_to_sql_literal(value: Any) -> str:
         return "NULL"
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
+    if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         return f"X'{bytes(value).hex()}'"
@@ -142,7 +140,7 @@ def resolve_parameters(sql: str, parameters: Any, paramstyle: str) -> str:
             # Detect actual style from parameter type:
             # dict → %(name)s or SQLAlchemy-style :name, sequence → %s
             if isinstance(parameters, dict):
-                resolved = _resolve_pyformat(sql, parameters)
+                resolved = _resolve_named(sql, parameters, _RE_PYFORMAT)
                 if resolved == sql:
                     resolved = _resolve_named(sql, parameters)
                 return resolved
@@ -181,21 +179,11 @@ def _resolve_numeric(sql: str, parameters: Any, pattern: re.Pattern[str]) -> str
     return _sub_outside_literals(pattern, replacer, sql)
 
 
-def _resolve_named(sql: str, parameters: Any) -> str:
-    """Replace :name placeholders with named parameters."""
+def _resolve_named(sql: str, parameters: Any, pattern: re.Pattern[str] = _RE_NAMED) -> str:
+    """Replace :name or %(name)s placeholders with named parameters."""
     params = dict(parameters)
 
     def replacer(m: re.Match[str]) -> str:
         return _python_to_sql_literal(params[m.group(1)])
 
-    return _sub_outside_literals(_RE_NAMED, replacer, sql)
-
-
-def _resolve_pyformat(sql: str, parameters: Any) -> str:
-    """Replace %(name)s placeholders with named parameters."""
-    params = dict(parameters)
-
-    def replacer(m: re.Match[str]) -> str:
-        return _python_to_sql_literal(params[m.group(1)])
-
-    return _sub_outside_literals(_RE_PYFORMAT, replacer, sql)
+    return _sub_outside_literals(pattern, replacer, sql)

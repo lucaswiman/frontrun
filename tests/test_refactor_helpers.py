@@ -631,11 +631,6 @@ def test_async_dpor_scheduler_uses_row_lock_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_noop_lock_importable_from_dpor_core() -> None:
-    """NoOpLock is importable from frontrun._dpor_core for both sync + async drivers."""
-    from frontrun._dpor_core import NoOpLock  # noqa: F401
-
-
 def test_noop_lock_is_context_manager() -> None:
     """NoOpLock supports the `with` statement and returns None."""
     from frontrun._dpor_core import NoOpLock
