@@ -19,6 +19,35 @@ from frontrun.common import Schedule, Step
 from frontrun.dpor import DporBytecodeRunner, DporScheduler
 from frontrun.trace_markers import TraceExecutor
 
+
+@pytest.mark.parametrize("failure", ["factory", "assignment"])
+def test_failed_patch_can_be_retried(failure, monkeypatch):
+    from unittest.mock import Mock
+
+    from frontrun import _patching
+
+    class Target:
+        method = object()
+
+    original, replacement = Target.method, object()
+    originals, patches = {}, []
+    factory = Mock(return_value=replacement)
+    with monkeypatch.context() as scoped:
+        if failure == "factory":
+            factory.side_effect = RuntimeError("patch failed")
+        else:
+            scoped.setattr(_patching, "setattr", Mock(side_effect=RuntimeError("patch failed")), raising=False)
+        with pytest.raises(RuntimeError, match="patch failed"):
+            _patching.patch_method(Target, "method", originals=originals, patches=patches, make_wrapper=factory)
+    assert originals == {} and patches == []
+    assert Target.method is original
+    factory.side_effect = None
+    assert _patching.patch_method(Target, "method", originals=originals, patches=patches, make_wrapper=factory)
+    assert Target.method is replacement
+    _patching.restore_patches(patches)
+    assert Target.method is original
+
+
 # ---------------------------------------------------------------------------
 # Bug: _patch_class_methods closure captures _is_executemany by reference
 # ---------------------------------------------------------------------------
