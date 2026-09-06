@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import contextvars
-import sys
 from collections.abc import Callable, Coroutine
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -36,18 +35,40 @@ def _current_connection_scope(
         current_connection.reset(token)
 
 
+@contextmanager
+def _suppress_sync_reporting():
+    from frontrun._cooperative import suppress_sync_reporting, unsuppress_sync_reporting
+
+    suppress_sync_reporting()
+    try:
+        yield
+    finally:
+        unsuppress_sync_reporting()
+
+
+@contextmanager
+def _sync_connection(engine: Any):
+    """Keep internal locks quiet and close even when method wrapping fails."""
+    with ExitStack() as stack:
+        with _suppress_sync_reporting():
+            context = engine.connect()
+            conn = context.__enter__()
+
+        def close(*exc: Any) -> None:
+            with _suppress_sync_reporting():
+                context.__exit__(*exc)
+
+        stack.push(close)
+        yield conn
+
+
 def wrap_sync_setup(engine: Any, setup: Callable[[], T]) -> Callable[[], T]:
     """Return a setup wrapper that disposes the engine before setup runs."""
 
     def wrapped_setup() -> T:
-        from frontrun._cooperative import suppress_sync_reporting, unsuppress_sync_reporting
-
-        suppress_sync_reporting()
-        try:
+        with _suppress_sync_reporting():
             engine.dispose()
             return setup()
-        finally:
-            unsuppress_sync_reporting()
 
     return wrapped_setup
 
@@ -61,75 +82,37 @@ def wrap_sync_thread(
     """Return a thread wrapper that manages a per-thread SQLAlchemy connection."""
 
     def wrapper(state: T) -> Any:
-        from frontrun._cooperative import suppress_sync_reporting, unsuppress_sync_reporting
+        with ExitStack() as scope, _sync_connection(engine) as conn:
+            with _suppress_sync_reporting():
+                lock_timeout_sql = _lock_timeout_statement(lock_timeout)
+                if lock_timeout_sql is not None:
+                    from frontrun._sql_endpoint_suppression import suppress_sql_write
 
-        # Suppress cooperative lock sync events during connection setup
-        # and teardown.  Internal SQLAlchemy/psycopg2 locks are implementation
-        # details that shouldn't create DPOR sync events.
-        suppress_sync_reporting()
-        try:
-            conn_ctx = engine.connect()
-            conn = conn_ctx.__enter__()
-        except BaseException:
-            unsuppress_sync_reporting()
-            raise
-        # conn_ctx is now entered — guarantee __exit__ via outer finally.
-        try:
-            lock_timeout_sql = _lock_timeout_statement(lock_timeout)
-            if lock_timeout_sql is not None:
-                from frontrun._sql_endpoint_suppression import suppress_sql_write
+                    suppress_sql_write("BEGIN")
+                    suppress_sql_write(lock_timeout_sql)
+                    conn.exec_driver_sql(lock_timeout_sql)
 
-                suppress_sql_write("BEGIN")
-                suppress_sql_write(lock_timeout_sql)
-                conn.exec_driver_sql(lock_timeout_sql)
-        except BaseException:
-            unsuppress_sync_reporting()
-            suppress_sync_reporting()
-            try:
-                conn_ctx.__exit__(*sys.exc_info())
-            finally:
-                unsuppress_sync_reporting()
-            raise
-        unsuppress_sync_reporting()
-        # Wrap SA Connection methods that trigger internal locks.
-        # conn.execute() acquires statement compilation locks.
-        # conn.commit()/rollback() acquires transaction state locks.
-        _orig_execute = conn.execute
-        _orig_exec_driver_sql = conn.exec_driver_sql
-        _orig_commit = conn.commit
-        _orig_rollback = conn.rollback
+            def _wrap_sa_method(method: Any, sql_write: str | None) -> Any:
+                def wrapped(*args: Any, **kw: Any) -> Any:
+                    with _suppress_sync_reporting():
+                        if sql_write is not None:
+                            from frontrun._sql_endpoint_suppression import suppress_sql_write
 
-        def _wrap_sa_method(method: Any, sql_write: str | None = None) -> Any:
-            def wrapped(*args: Any, **kw: Any) -> Any:
-                suppress_sync_reporting()
-                try:
-                    if sql_write is not None:
-                        from frontrun._sql_endpoint_suppression import suppress_sql_write
+                            suppress_sql_write(sql_write)
+                        return method(*args, **kw)
 
-                        suppress_sql_write(sql_write)
-                    return method(*args, **kw)
-                finally:
-                    unsuppress_sync_reporting()
+                return wrapped
 
-            return wrapped
-
-        conn.execute = _wrap_sa_method(_orig_execute)  # type: ignore[method-assign]
-        conn.exec_driver_sql = _wrap_sa_method(_orig_exec_driver_sql)  # type: ignore[method-assign]
-        conn.commit = _wrap_sa_method(_orig_commit, "COMMIT")  # type: ignore[method-assign]
-        conn.rollback = _wrap_sa_method(_orig_rollback, "ROLLBACK")  # type: ignore[method-assign]
-        exc_info: tuple[type[BaseException], BaseException, object] | tuple[None, None, None] = (None, None, None)
-        with _current_connection_scope(current_connection, conn):
-            try:
-                return fn(state)
-            except BaseException:
-                exc_info = sys.exc_info()  # type: ignore[assignment]
-                raise
-            finally:
-                suppress_sync_reporting()
-                try:
-                    conn_ctx.__exit__(*exc_info)
-                finally:
-                    unsuppress_sync_reporting()
+            # Compilation and transaction-state locks are SQLAlchemy internals.
+            for name, sql_write in (
+                ("execute", None),
+                ("exec_driver_sql", None),
+                ("commit", "COMMIT"),
+                ("rollback", "ROLLBACK"),
+            ):
+                setattr(conn, name, _wrap_sa_method(getattr(conn, name), sql_write))
+            scope.enter_context(_current_connection_scope(current_connection, conn))
+            return fn(state)
 
     return wrapper
 
@@ -169,14 +152,9 @@ def wrap_async_setup(engine: Any, setup: Callable[[], T]) -> Callable[[], T]:
                 dialect.do_close = previous
 
     def wrapped_setup() -> T:
-        from frontrun._cooperative import suppress_sync_reporting, unsuppress_sync_reporting
-
-        suppress_sync_reporting()
-        try:
+        with _suppress_sync_reporting():
             dispose_pool()
             return setup()
-        finally:
-            unsuppress_sync_reporting()
 
     return wrapped_setup
 
