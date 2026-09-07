@@ -1,13 +1,8 @@
-"""Integration tests for DPOR Redis key-level analysis.
+"""Additional integration tests for DPOR Redis interception.
 
-These tests exercise DPOR's ability to detect application-level race
-conditions through key-level Redis command interception (as opposed to
-the coarser socket-level I/O detection in test_integration_redis.py).
-
-Key-level analysis intercepts redis-py's ``execute_command()`` method,
-classifies each Redis command (GET, SET, HSET, etc.) as a read or write
-on specific keys, and reports those key-level accesses to the DPOR engine.
-This gives more precise conflict detection than endpoint-level socket I/O.
+These scenarios complement the canonical Redis race tests and use the
+same configured interception path.  They do not claim a separate
+socket-only or key-only backend.
 
 Requirements::
 
@@ -43,12 +38,12 @@ import frontrun
 pytestmark = pytest.mark.integration
 
 
-# 5. Hash-based race (key-level analysis)
+# 1. Hash-based race
 # ---------------------------------------------------------------------------
 
 
 class TestRedisHashRaceKeyLevel:
-    """Race on Redis hash operations detected via key-level analysis."""
+    """Race on Redis hash operations."""
 
     def test_dpor_detects_hash_lost_update(self, redis_port: int) -> None:
         """DPOR detects lost update on hash field read-modify-write."""
