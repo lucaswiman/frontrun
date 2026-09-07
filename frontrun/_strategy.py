@@ -28,6 +28,11 @@ def _expand_async_io_kwargs(kwargs: dict[str, Any]) -> tuple[bool, bool]:
     return detect_sql_explicit or detect_io, detect_io
 
 
+def _filter_kwargs(kwargs: dict[str, Any], allowed: frozenset[str]) -> dict[str, Any]:
+    """Keep supported options, including only meaningful ``None`` values."""
+    return {k: v for k, v in kwargs.items() if k in allowed and (v is not None or k in _NONE_MEANINGFUL_KEYS)}
+
+
 @runtime_checkable
 class Strategy(Protocol):
     """Synchronous exploration strategy."""
@@ -142,11 +147,7 @@ class _SyncDporStrategy:
             setup=setup,
             threads=workers,
             invariant=invariant,
-            **{
-                k: v
-                for k, v in kwargs.items()
-                if k in _DPOR_SYNC_KEYS and (v is not None or k in _NONE_MEANINGFUL_KEYS)
-            },  # pyright: ignore[reportArgumentType]
+            **_filter_kwargs(kwargs, _DPOR_SYNC_KEYS),  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -169,11 +170,7 @@ class _SyncRandomStrategy:
             setup=setup,
             threads=workers,
             invariant=invariant,
-            **{
-                k: v
-                for k, v in kwargs.items()
-                if k in _RANDOM_SYNC_KEYS and (v is not None or k in _NONE_MEANINGFUL_KEYS)
-            },  # pyright: ignore[reportArgumentType]
+            **_filter_kwargs(kwargs, _RANDOM_SYNC_KEYS),  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -247,11 +244,7 @@ class _AsyncDporStrategy:
             invariant=invariant,
             detect_sql=detect_sql,
             detect_redis=detect_io,
-            **{
-                k: v
-                for k, v in kwargs.items()
-                if k in _DPOR_ASYNC_KEYS and (v is not None or k in _NONE_MEANINGFUL_KEYS)
-            },  # pyright: ignore[reportArgumentType]
+            **_filter_kwargs(kwargs, _DPOR_ASYNC_KEYS),  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -276,11 +269,7 @@ class _AsyncRandomStrategy:
             tasks=workers,
             invariant=invariant,
             detect_sql=detect_sql,
-            **{
-                k: v
-                for k, v in kwargs.items()
-                if k in _RANDOM_ASYNC_KEYS and (v is not None or k in _NONE_MEANINGFUL_KEYS)
-            },  # pyright: ignore[reportArgumentType]
+            **_filter_kwargs(kwargs, _RANDOM_ASYNC_KEYS),  # pyright: ignore[reportArgumentType]
         )
 
 

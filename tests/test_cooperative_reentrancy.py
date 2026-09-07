@@ -11,6 +11,7 @@ import pytest
 from frontrun._cooperative import (
     CooperativeLock,
     CooperativeRLock,
+    CooperativeSemaphore,
     _scheduler_tls,
     set_context,
     set_sync_reporter,
@@ -85,7 +86,8 @@ def test_contested_rlock_in_machinery_uses_native_wait(scheduler_context):
     assert not thread.is_alive()
 
 
-def test_lock_inside_sync_reporter_does_not_recurse(scheduler_context):
+@pytest.mark.parametrize("primitive", [CooperativeLock, CooperativeRLock, CooperativeSemaphore])
+def test_lock_inside_sync_reporter_does_not_recurse(scheduler_context, primitive):
     acquired = []
 
     def reporter(event, obj_id, lock_obj):
@@ -95,7 +97,7 @@ def test_lock_inside_sync_reporter_does_not_recurse(scheduler_context):
             inner.release()
 
     set_sync_reporter(reporter)
-    with CooperativeLock():
+    with primitive():
         pass
     assert acquired and all(acquired)
 

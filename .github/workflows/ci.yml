@@ -9,7 +9,6 @@ on:
       - 'crates/**'
       - 'tests/**'
       - 'Makefile'
-      - 'venv.mk'
       - 'pyproject.toml'
       - '.github/workflows/**'
   pull_request:
@@ -18,7 +17,6 @@ on:
       - 'crates/**'
       - 'tests/**'
       - 'Makefile'
-      - 'venv.mk'
       - 'pyproject.toml'
       - '.github/workflows/**'
 

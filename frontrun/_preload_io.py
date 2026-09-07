@@ -103,7 +103,7 @@ def _parse_event_line(line: str) -> PreloadIOEvent | None:
             pid=int(parts[3]),
             tid=int(parts[4]),
         )
-    except (ValueError, IndexError):
+    except ValueError:
         return None
 
 
