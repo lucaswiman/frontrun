@@ -502,7 +502,7 @@ def test_condition_notify_no_context_wakes_at_most_n_across_both_waiter_sets() -
         # One real-condition waiter (what the no-context wait() path registers).
         condition._real_condition._waiters.append(real_fut)  # type: ignore[attr-defined]
         # One cooperative waiter (what the with-context wait() path registers).
-        condition._waiters.append((123, coop_fut))
+        condition._waiters.add(123, coop_fut)
         await condition.acquire()
         try:
             condition.notify(1)

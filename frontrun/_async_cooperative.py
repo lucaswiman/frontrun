@@ -700,11 +700,6 @@ class _AsyncWaiters(OrderedDict[asyncio.Future[None], int]):
             return True
         return False
 
-    def append(self, waiter: tuple[int, asyncio.Future[None]]) -> None:
-        """Support direct waiter injection by replay fault fixtures."""
-        task_id, fut = waiter
-        self.add(task_id, fut)
-
 
 class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-type]
     """asyncio.Queue wrapper whose get/put waiters are visible to DPOR."""
