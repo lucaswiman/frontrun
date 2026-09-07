@@ -10,6 +10,7 @@ import inspect
 import sys
 import threading
 from collections.abc import Generator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -77,12 +78,9 @@ class AsyncSqlScheduler:
             self.held.difference_update(resources)
 
 
-@pytest.fixture
-def async_sql_scheduler() -> AsyncSqlScheduler:
-    return AsyncSqlScheduler()
-
-
-def _install_async_sql_scheduler(scheduler: AsyncSqlScheduler) -> tuple[Any, tuple[Any, Any, Any]]:
+@contextmanager
+def async_sql_scheduler() -> Generator[tuple[AsyncSqlScheduler, Any], None, None]:
+    scheduler = AsyncSqlScheduler()
     tx_token = _tx_store_var.set(_tx_store_var.get())
     store = set_tx_store_task()
     store._in_transaction = True
@@ -92,14 +90,13 @@ def _install_async_sql_scheduler(scheduler: AsyncSqlScheduler) -> tuple[Any, tup
     scheduler_token = _dpor_scheduler_var.set(scheduler)
     thread_token = _dpor_thread_id_var.set(0)
     set_io_reporter(IOLog())
-    return store, (scheduler_token, thread_token, tx_token)
-
-
-def _restore_async_sql_scheduler(tokens: tuple[Any, Any, Any]) -> None:
-    _dpor_scheduler_var.reset(tokens[0])
-    _dpor_thread_id_var.reset(tokens[1])
-    _tx_store_var.reset(tokens[2])
-    set_io_reporter(None)
+    try:
+        yield scheduler, store
+    finally:
+        _dpor_scheduler_var.reset(scheduler_token)
+        _dpor_thread_id_var.reset(thread_token)
+        _tx_store_var.reset(tx_token)
+        set_io_reporter(None)
 
 
 # ---------------------------------------------------------------------------
@@ -446,16 +443,12 @@ async def test_executemany() -> None:
 async def test_shared_async_sql_pipeline_error_policy(
     release_on_error: bool,
     expected_releases: int,
-    async_sql_scheduler: AsyncSqlScheduler,
 ) -> None:
-    scheduler = async_sql_scheduler
-    store, tokens = _install_async_sql_scheduler(scheduler)
-    store._pending_row_locks = ["sql:users"]
-
     async def fail() -> None:
         raise RuntimeError("driver failed")
 
-    try:
+    with async_sql_scheduler() as (scheduler, store):
+        store._pending_row_locks = ["sql:users"]
         with pytest.raises(RuntimeError, match="driver failed"):
             await sql_cursor_async_mod._report_and_execute_sql_async(
                 "SELECT * FROM users",
@@ -468,8 +461,6 @@ async def test_shared_async_sql_pipeline_error_policy(
             )
         assert scheduler.scheduled == 1
         assert len(scheduler.release_calls) == expected_releases
-    finally:
-        _restore_async_sql_scheduler(tokens)
 
 
 @pytest.mark.asyncio
@@ -912,9 +903,7 @@ class TestAsyncUpdateZeroRowRelease:
     """Async PostgreSQL zero-row handling mirrors transaction lock ownership."""
 
     @pytest.mark.asyncio
-    async def test_zero_row_update_releases_only_current_statement_row_lock(
-        self, async_sql_scheduler: AsyncSqlScheduler
-    ) -> None:
+    async def test_zero_row_update_releases_only_current_statement_row_lock(self) -> None:
         class FakeConnection:
             autocommit = False
 
@@ -925,15 +914,13 @@ class TestAsyncUpdateZeroRowRelease:
             rowcount = -1
 
         prior = "sql:accounts:(('id', '1'),)"
-        scheduler = async_sql_scheduler
-        store, tokens = _install_async_sql_scheduler(scheduler)
-        scheduler.held.add(prior)
-        store._held_row_locks = {prior}
 
         async def execute(cursor: FakeCursor, _operation: object, _parameters: object) -> None:
             cursor.rowcount = 0
 
-        try:
+        with async_sql_scheduler() as (scheduler, store):
+            scheduler.held.add(prior)
+            store._held_row_locks = {prior}
             await _intercept_execute_async(
                 execute,
                 FakeCursor(),
@@ -945,8 +932,6 @@ class TestAsyncUpdateZeroRowRelease:
             assert scheduler.release_calls == [scheduler.acquired]
             assert scheduler.held == {prior}
             assert store._held_row_locks == {prior}
-        finally:
-            _restore_async_sql_scheduler(tokens)
 
     @pytest.mark.parametrize(
         ("method_name", "result", "releases"),
@@ -957,7 +942,6 @@ class TestAsyncUpdateZeroRowRelease:
         method_name: str,
         result: Any,
         releases: bool,
-        async_sql_scheduler: AsyncSqlScheduler,
     ) -> None:
         from frontrun._sql_cursor_async import _intercept_asyncpg_execute
 
@@ -965,13 +949,11 @@ class TestAsyncUpdateZeroRowRelease:
             pass
 
         FakeConnection.__module__ = "asyncpg.connection"
-        scheduler = async_sql_scheduler
-        store, tokens = _install_async_sql_scheduler(scheduler)
 
         async def execute(_connection: object, _operation: object) -> Any:
             return result
 
-        try:
+        with async_sql_scheduler() as (scheduler, store):
             actual = await _intercept_asyncpg_execute(
                 execute,
                 FakeConnection(),
@@ -986,8 +968,6 @@ class TestAsyncUpdateZeroRowRelease:
             else:
                 assert scheduler.release_calls == []
                 assert store._held_row_locks == set(scheduler.acquired)
-        finally:
-            _restore_async_sql_scheduler(tokens)
 
 
 # ---------------------------------------------------------------------------
