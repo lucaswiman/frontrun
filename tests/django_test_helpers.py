@@ -1,7 +1,7 @@
 """Opt-in Django integration-test setup.
 
-This module is imported only by Django integration tests, after their optional
-dependency guards have run; it must not be imported from the global conftest.
+This module is imported only by Django integration tests and has no Django
+imports at module load time; it must not be imported from global conftest.
 """
 
 import pytest
@@ -18,7 +18,7 @@ def configure_django(django, settings, db_name: str) -> None:
         django.setup()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="module", name="_pg_available")
 def pg_available():
     """Ensure Postgres is available and own setup/teardown of Django tables."""
     from django.conf import settings
