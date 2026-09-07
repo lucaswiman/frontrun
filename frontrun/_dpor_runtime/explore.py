@@ -218,9 +218,9 @@ def _explore_dpor(  # pyright: ignore[reportUnusedFunction]  # called cross-modu
 
     clear_sql_metadata()
 
-    # Warm SQL parsers (sqlglot) BEFORE the first _patch_locks() call.
+    # Warm SQL parsers (sqlglot) BEFORE the first cooperative-lock patch.
     # sqlglot creates a module-level _import_lock = threading.RLock() on
-    # first import.  If that import happens after _patch_locks() replaces
+    # first import.  If that import happens after cooperative lock patching replaces
     # threading.RLock with CooperativeRLock, the lock becomes cooperative.
     # If a worker thread is then killed while holding it (e.g. timeout),
     # the underlying real lock stays locked forever, causing deadlocks in
