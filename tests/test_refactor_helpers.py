@@ -486,75 +486,34 @@ def _make_result() -> Any:
     return r
 
 
-def test_record_dpor_failure_sets_property_holds_false() -> None:
-    """record_dpor_failure marks the result as failing."""
+def test_record_dpor_failure_contract() -> None:
+    """Failures accumulate, while the first constructive counterexample wins."""
     from frontrun._dpor_core import record_dpor_failure
 
     result = _make_result()
-    record_dpor_failure(result, [0, 1, 0], "boom")
+    first, second, third = [0, 1, 0], [1, 0], [2]
+    result.num_explored = 1
+    assert record_dpor_failure(result, first, "first", races_detected=False) is first
     assert result.property_holds is False
+    assert result.failures == [(1, first)]
+    assert result.counterexample is first and result.explanation == "first"
+    assert result.races_detected is False
 
-
-def test_record_dpor_failure_appends_to_failures() -> None:
-    from frontrun._dpor_core import record_dpor_failure
-
-    result = _make_result()
-    schedule = [1, 0, 1]
-    record_dpor_failure(result, schedule, "oops")
-    assert result.failures == [(3, schedule)]
-
-
-def test_record_dpor_failure_sets_counterexample_once() -> None:
-    """Only the first failure becomes the counterexample."""
-    from frontrun._dpor_core import record_dpor_failure
-
-    result = _make_result()
-    result.num_explored = 1
-    record_dpor_failure(result, [0, 1], "first")
     result.num_explored = 2
-    record_dpor_failure(result, [1, 0], "second")
-    assert result.counterexample == [0, 1]
-    assert result.explanation == "first"
-
-
-def test_record_dpor_failure_sets_races_detected() -> None:
-    from frontrun._dpor_core import record_dpor_failure
-
-    result = _make_result()
-    record_dpor_failure(result, [0], "race", races_detected=True)
+    assert record_dpor_failure(result, second, "second", races_detected=True) is second
+    assert result.failures == [(1, first), (2, second)]
+    assert result.counterexample is first and result.explanation == "first"
     assert result.races_detected is True
 
-
-def test_record_dpor_failure_races_detected_cumulative() -> None:
-    """races_detected is OR-accumulated across calls."""
-    from frontrun._dpor_core import record_dpor_failure
-
-    result = _make_result()
-    result.num_explored = 1
-    record_dpor_failure(result, [0], "no race", races_detected=False)
-    result.num_explored = 2
-    record_dpor_failure(result, [1], "race!", races_detected=True)
-    assert result.races_detected is True
-
-
-def test_record_dpor_failure_returns_schedule_list() -> None:
-    """record_dpor_failure returns the schedule it recorded."""
-    from frontrun._dpor_core import record_dpor_failure
-
-    result = _make_result()
-    sched = [0, 1, 0]
-    returned = record_dpor_failure(result, sched, "x")
-    assert returned is sched
+    result.num_explored = 3
+    assert record_dpor_failure(result, third, "third", races_detected=False) is third
+    assert result.failures == [(1, first), (2, second), (3, third)]
+    assert result.counterexample is first and result.races_detected is True
 
 
 # ---------------------------------------------------------------------------
 # Target 2: shared RowLockRegistry
 # ---------------------------------------------------------------------------
-
-
-def test_row_lock_registry_exists_in_dpor_core() -> None:
-    """RowLockRegistry is importable from frontrun._dpor_core."""
-    from frontrun._dpor_core import RowLockRegistry  # noqa: F401
 
 
 def test_row_lock_registry_int_id_monotonic() -> None:
@@ -596,34 +555,6 @@ def test_row_lock_registry_has_active_and_task_dicts() -> None:
     assert hasattr(reg, "_task_row_locks")
     assert isinstance(reg._active_row_locks, dict)
     assert isinstance(reg._task_row_locks, dict)
-
-
-def test_dpor_scheduler_uses_row_lock_registry() -> None:
-    """DporScheduler._row_lock_int_id delegates to its RowLockRegistry."""
-    # This test verifies the call site was updated, not just the helper.
-    # Import is guarded so the test is skipped if _dpor is not built.
-    pytest.importorskip("frontrun._dpor")
-    from frontrun._dpor_core import RowLockRegistry
-    from frontrun._dpor_runtime.scheduler import DporScheduler
-
-    # DporScheduler should have a _row_lock_registry attribute that is a RowLockRegistry.
-    assert hasattr(DporScheduler, "__init__")
-    # We can't instantiate without a real engine; just verify the attribute exists
-    # by inspecting __init__'s source or by checking that RowLockRegistry is used.
-    # Minimal smoke-test: RowLockRegistry._row_lock_int_id is the same function.
-    reg = RowLockRegistry()
-    assert callable(reg._row_lock_int_id)
-
-
-def test_async_dpor_scheduler_uses_row_lock_registry() -> None:
-    """AsyncDporScheduler delegates row-lock operations to RowLockRegistry."""
-    pytest.importorskip("frontrun._dpor")
-    from frontrun._dpor_core import RowLockRegistry
-    from frontrun.async_dpor import AsyncDporScheduler
-
-    assert hasattr(AsyncDporScheduler, "__init__")
-    reg = RowLockRegistry()
-    assert callable(reg._row_lock_int_id)
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +639,23 @@ class _StubStableIds:
         self.resets += 1
 
 
+def _run_stub_exploration(
+    num_executions: int, engine_lock: Any, *, total_deadline: float | None = None
+) -> tuple[_StubEngine, _StubStableIds, list[Any]]:
+    """Construct the common engine/lock/IDs harness and consume its steps."""
+    from frontrun._dpor_core import dpor_exploration_iter
+
+    engine = _StubEngine(num_executions)
+    stable_ids = _StubStableIds()
+    engine.current_lock = engine_lock if isinstance(engine_lock, _RecordingLock) else None
+    seen = list(
+        dpor_exploration_iter(
+            engine=engine, engine_lock=engine_lock, stable_ids=stable_ids, total_deadline=total_deadline
+        )
+    )
+    return engine, stable_ids, seen
+
+
 def test_stable_object_preregistration_uses_dict_insertion_order_not_key_repr() -> None:
     """Object-key repr (often containing an address) must not renumber anchors."""
     from frontrun._opcode_observer import StableObjectIds
@@ -728,22 +676,9 @@ def test_stable_object_preregistration_uses_dict_insertion_order_not_key_repr() 
 
 
 def test_dpor_exploration_iter_yields_one_step_per_execution() -> None:
-    from frontrun._dpor_core import dpor_exploration_iter
-
-    engine = _StubEngine(num_executions=3)
     lock = _RecordingLock()
-    engine.current_lock = lock
-    stable_ids = _StubStableIds()
-
-    seen: list[Any] = [
-        step.execution
-        for step in dpor_exploration_iter(
-            engine=engine,
-            engine_lock=lock,
-            stable_ids=stable_ids,
-            total_deadline=None,
-        )
-    ]
+    engine, _, steps = _run_stub_exploration(3, lock)
+    seen = [step.execution for step in steps]
 
     assert len(seen) == 3
     assert all(isinstance(e, _StubExecution) for e in seen)
@@ -754,20 +689,8 @@ def test_dpor_exploration_iter_yields_one_step_per_execution() -> None:
 
 
 def test_dpor_exploration_iter_resets_state_each_iteration() -> None:
-    from frontrun._dpor_core import dpor_exploration_iter
-
-    engine = _StubEngine(num_executions=2)
     lock = _RecordingLock()
-    engine.current_lock = lock
-    stable_ids = _StubStableIds()
-
-    for _ in dpor_exploration_iter(
-        engine=engine,
-        engine_lock=lock,
-        stable_ids=stable_ids,
-        total_deadline=None,
-    ):
-        pass
+    engine, stable_ids, _ = _run_stub_exploration(2, lock)
 
     assert stable_ids.resets == 2
 
@@ -801,22 +724,9 @@ def test_dpor_exploration_iter_permits_baseline_after_total_deadline() -> None:
     """An elapsed positive budget still permits the required baseline execution."""
     import time
 
-    from frontrun._dpor_core import dpor_exploration_iter
-
-    engine = _StubEngine(num_executions=10)
     lock = _RecordingLock()
-    engine.current_lock = lock
-    stable_ids = _StubStableIds()
-
     past = time.monotonic() - 1.0
-    seen = list(
-        dpor_exploration_iter(
-            engine=engine,
-            engine_lock=lock,
-            stable_ids=stable_ids,
-            total_deadline=past,
-        )
-    )
+    engine, _, seen = _run_stub_exploration(10, lock, total_deadline=past)
     assert [step.index for step in seen] == [1]
     assert engine._begin_calls == 1
 
@@ -825,7 +735,7 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If the deadline expires after some iterations, the loop exits cleanly."""
-    from frontrun._dpor_core import concurrency, dpor_exploration_iter
+    from frontrun._dpor_core import concurrency
 
     # Fake clock that advances by 1.0 on each call.
     fake_now = [0.0]
@@ -837,21 +747,11 @@ def test_dpor_exploration_iter_stops_when_deadline_expires_mid_run(
 
     monkeypatch.setattr(concurrency.time, "monotonic", _monotonic)
 
-    engine = _StubEngine(num_executions=10)
     lock = _RecordingLock()
-    engine.current_lock = lock
-    stable_ids = _StubStableIds()
 
     # The first iteration is guaranteed without consulting the clock. Each
     # subsequent iteration checks after both its body and path planning.
-    seen = list(
-        dpor_exploration_iter(
-            engine=engine,
-            engine_lock=lock,
-            stable_ids=stable_ids,
-            total_deadline=2.5,
-        )
-    )
+    engine, _, seen = _run_stub_exploration(10, lock, total_deadline=2.5)
     assert len(seen) == 2
     assert engine._next_calls == 2, "the engine must not run a schedule planned after the deadline expires"
 
@@ -891,40 +791,16 @@ def test_dpor_exploration_iter_does_not_run_schedule_planned_after_deadline(
 
 def test_dpor_exploration_iter_works_with_real_threading_lock() -> None:
     """A real threading.Lock is accepted (sync DPOR's engine_lock)."""
-    from frontrun._dpor_core import dpor_exploration_iter
-
     real_lock = threading.Lock()
-    engine = _StubEngine(num_executions=2)
-    engine.current_lock = None  # the real lock has no `.entered` attribute
-    stable_ids = _StubStableIds()
-
-    seen = list(
-        dpor_exploration_iter(
-            engine=engine,
-            engine_lock=real_lock,
-            stable_ids=stable_ids,
-            total_deadline=None,
-        )
-    )
+    engine, _, seen = _run_stub_exploration(2, real_lock)
     assert len(seen) == 2
 
 
 def test_dpor_exploration_iter_works_with_noop_lock() -> None:
     """The shared NoOpLock works as engine_lock (async DPOR's contract)."""
-    from frontrun._dpor_core import NoOpLock, dpor_exploration_iter
+    from frontrun._dpor_core import NoOpLock
 
-    engine = _StubEngine(num_executions=2)
-    engine.current_lock = None  # NoOpLock doesn't expose `.entered`
-    stable_ids = _StubStableIds()
-
-    seen = list(
-        dpor_exploration_iter(
-            engine=engine,
-            engine_lock=NoOpLock(),
-            stable_ids=stable_ids,
-            total_deadline=None,
-        )
-    )
+    engine, _, seen = _run_stub_exploration(2, NoOpLock())
     assert len(seen) == 2
 
 
