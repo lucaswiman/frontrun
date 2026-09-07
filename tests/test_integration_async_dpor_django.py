@@ -15,9 +15,7 @@ import os
 
 import pytest
 
-from tests.django_test_helpers import configure_django
-
-pytest_plugins = ("tests.django_test_helpers",)
+from tests.django_test_helpers import _pg_available_fixture, configure_django  # noqa: F401
 
 # Allow sync Django ORM from async context in tests
 os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
