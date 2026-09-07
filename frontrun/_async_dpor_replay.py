@@ -314,9 +314,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
 
     def _on_error_set(self) -> None:
         _async_cooperative._wake_parked_async_primitive_waiters()
-        protocol = getattr(self, "_row_lock_protocol", None)
-        if protocol is not None:
-            protocol.wake_all()
+        self._row_lock_protocol.wake_all()
 
     async def acquire_row_locks_async(self, task_id: int, resource_ids: list[str]) -> list[str]:
         return await self._row_lock_protocol.acquire(task_id, resource_ids)
