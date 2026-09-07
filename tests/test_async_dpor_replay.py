@@ -45,14 +45,23 @@ from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active
 
 
-def test_replay_timeout_guarded_row_lock_wait_is_not_a_deadlock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replay must mirror exploration's timeout-aware wait-for graph."""
+@pytest.mark.parametrize("mode", ["exploration", "replay"])
+def test_timeout_guarded_row_lock_wait_is_not_a_deadlock(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    """Exploration and replay must share timeout-aware wait-for graph semantics."""
 
     async def run() -> None:
         graph = WaitForGraph()
         monkeypatch.setattr(async_cooperative, "_async_wait_graph", graph)
         clock = VirtualClock()
-        scheduler = _ReplayAsyncScheduler([1, 0, 1], 2, virtual_clock=clock, clock_actor_id=2)
+        if mode == "exploration":
+            from frontrun._dpor import PyDporEngine
+
+            engine = PyDporEngine(3)
+            scheduler = AsyncDporScheduler(
+                engine, engine.begin_execution(), 2, virtual_clock=clock, clock_actor_id=2, clock_mode="virtual"
+            )
+        else:
+            scheduler = _ReplayAsyncScheduler([1, 0, 1], 2, virtual_clock=clock, clock_actor_id=2)
 
         async def no_op(*_args: object, **_kwargs: object) -> None:
             return None
