@@ -7,8 +7,10 @@ mechanism.  Tests mirror the structure of test_sql_cursor.py.
 from __future__ import annotations
 
 import inspect
+import sys
 import threading
 from collections.abc import Generator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,7 +18,13 @@ import pytest
 aiosqlite = pytest.importorskip("aiosqlite")
 
 import frontrun._sql_cursor_async as sql_cursor_async_mod
-from frontrun._io_detection import _io_tls, set_io_reporter
+from frontrun._io_detection import (
+    _io_tls,
+    set_dpor_scheduler_task,
+    set_dpor_thread_id_task,
+    set_io_reporter,
+    set_tx_store_task,
+)
 from frontrun._sql_cursor_async import (
     _ASYNC_ORIGINAL_METHODS,
     _ASYNC_PATCHES,
@@ -42,6 +50,50 @@ async def _make_async_db() -> aiosqlite.Connection:
     await conn.execute("INSERT INTO orders VALUES (1, 1, 99.99)")
     await conn.commit()
     return conn
+
+
+class AsyncSqlScheduler:
+    def __init__(self, held: set[str] | None = None) -> None:
+        self.held = set() if held is None else held.copy()
+        self.acquired: list[str] = []
+        self.release_calls: list[list[str] | None] = []
+        self.scheduled = 0
+
+    def report_and_wait(self, _frame: object, _task_id: int) -> bool:
+        self.scheduled += 1
+        return True
+
+    def acquire_row_locks(self, _task_id: int, resources: list[str]) -> list[str]:
+        self.acquired.extend(resources)
+        self.held.update(resources)
+        return resources
+
+    def release_row_locks(self, _task_id: int, resources: list[str] | None = None) -> None:
+        self.release_calls.append(resources)
+        if resources is None:
+            self.held.clear()
+        else:
+            self.held.difference_update(resources)
+
+
+@pytest.fixture
+def async_sql_scheduler() -> Generator[tuple[AsyncSqlScheduler, Any], None, None]:
+    scheduler = AsyncSqlScheduler()
+    store = set_tx_store_task()
+    store._in_transaction = True
+    store._is_autobegin = True
+    store._held_row_locks = set()
+    store._pending_row_locks = []
+    set_dpor_scheduler_task(scheduler)
+    set_dpor_thread_id_task(0)
+    set_io_reporter(IOLog())
+    try:
+        yield scheduler, store
+    finally:
+        set_dpor_scheduler_task(None)
+        set_dpor_thread_id_task(None)
+        set_tx_store_task()
+        set_io_reporter(None)
 
 
 # ---------------------------------------------------------------------------
@@ -383,54 +435,68 @@ async def test_executemany() -> None:
     assert any(r.startswith("sql:users") and k == "write" for r, k in log.events)
 
 
-class TestExecutemanyPatching:
-    def test_patched_executemany_uses_dpor_schedule_and_suppress(self) -> None:
-        """_patched_executemany delegates DPOR scheduling to _dpor_schedule_and_suppress_async.
+@pytest.mark.parametrize(("release_on_error", "expected_releases"), [(True, 1), (False, 0)])
+@pytest.mark.asyncio
+async def test_shared_async_sql_pipeline_error_policy(
+    release_on_error: bool,
+    expected_releases: int,
+    async_sql_scheduler: tuple[AsyncSqlScheduler, Any],
+) -> None:
+    scheduler, store = async_sql_scheduler
+    store._pending_row_locks = ["sql:users"]
 
-        The delegation is transitive: ``_patched_executemany`` calls the shared
-        ``_report_and_execute_deferred_tx`` helper (factored out of the
-        near-identical psycopg/aiomysql/asyncpg patch bodies), which in turn
-        calls ``_dpor_schedule_and_suppress_async``.
-        """
-        import ast
-        import inspect
+    async def fail() -> None:
+        raise RuntimeError("driver failed")
 
-        source = inspect.getsource(sql_cursor_async_mod)
-        tree = ast.parse(source)
+    with pytest.raises(RuntimeError, match="driver failed"):
+        await sql_cursor_async_mod._report_and_execute_sql_async(
+            "SELECT * FROM users",
+            None,
+            db_obj=object(),
+            is_executemany=True,
+            paramstyle="dollar",
+            call_orig=fail,
+            release_locks_on_error=release_on_error,
+        )
 
-        def _calls_name(node: ast.AST, name: str) -> bool:
-            for child in ast.walk(node):
-                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == name:
-                    return True
-            return False
-
-        found = False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_patched_executemany":
-                if _calls_name(node, "_dpor_schedule_and_suppress_async") or _calls_name(
-                    node, "_report_and_execute_deferred_tx"
-                ):
-                    found = True
-                    break
-        assert found, "_patched_executemany should delegate to _dpor_schedule_and_suppress_async"
-
-        assert _calls_name(
-            ast.parse(inspect.getsource(sql_cursor_async_mod._report_and_execute_deferred_tx)),
-            "_dpor_schedule_and_suppress_async",
-        ), "_report_and_execute_deferred_tx should itself delegate to _dpor_schedule_and_suppress_async"
-
-    def test_dpor_schedule_and_suppress_acquires_and_releases_row_locks(self) -> None:
-        """_dpor_schedule_and_suppress_async acquires row locks and releases on exception."""
-        import inspect
-
-        source = inspect.getsource(sql_cursor_async_mod._dpor_schedule_and_suppress_async)
-        assert "_acquire_pending_row_locks" in source
-        assert "_release_dpor_row_locks" in source
+    assert scheduler.scheduled == 1
+    assert len(scheduler.release_calls) == expected_releases
 
 
-# ---------------------------------------------------------------------------
-# 3. Cursor-level interception
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_asyncpg_executemany_pipeline_attributes_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[Any, ...]] = []
+    seen: list[tuple[Any, bool, str]] = []
+
+    def report(_query: Any, _params: Any, **kwargs: Any) -> bool:
+        seen.append((kwargs["db_obj"], kwargs["is_executemany"], kwargs["paramstyle"]))
+        return True
+
+    class Connection:
+        async def executemany(self, query: Any, args: Any, **kwargs: Any) -> str:
+            calls.append((self, query, args, kwargs))
+            return "ok"
+
+    async def noop(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    for name in ("execute", "fetch", "fetchrow", "fetchval", "commit", "rollback", "close"):
+        setattr(Connection, name, noop)
+
+    monkeypatch.setattr(sql_cursor_async_mod, "_report_sql_access", report)
+    fake_asyncpg = SimpleNamespace(
+        Connection=Connection, prepared_stmt=SimpleNamespace(PreparedStatement=type("PS", (), {}))
+    )
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+    monkeypatch.setitem(sys.modules, "asyncpg.prepared_stmt", fake_asyncpg.prepared_stmt)
+    sql_cursor_async_mod._patch_asyncpg()
+    connection = Connection()
+    try:
+        assert await connection.executemany("INSERT INTO users VALUES ($1)", [(1,), (2,)], timeout=1) == "ok"
+    finally:
+        unpatch_sql_async()
+    assert seen == [(connection, True, "dollar")]
+    assert calls == [(connection, "INSERT INTO users VALUES ($1)", [(1,), (2,)], {"timeout": 1})]
 
 
 @pytest.mark.asyncio
@@ -837,13 +903,9 @@ class TestAsyncUpdateZeroRowRelease:
     """Async PostgreSQL zero-row handling mirrors transaction lock ownership."""
 
     @pytest.mark.asyncio
-    async def test_zero_row_update_releases_only_current_statement_row_lock(self) -> None:
-        from frontrun._io_detection import (
-            set_dpor_scheduler_task,
-            set_dpor_thread_id_task,
-            set_tx_store_task,
-        )
-
+    async def test_zero_row_update_releases_only_current_statement_row_lock(
+        self, async_sql_scheduler: tuple[AsyncSqlScheduler, Any]
+    ) -> None:
         class FakeConnection:
             autocommit = False
 
@@ -853,162 +915,63 @@ class TestAsyncUpdateZeroRowRelease:
             connection = FakeConnection()
             rowcount = -1
 
-        class FakeScheduler:
-            def __init__(self, prior: str) -> None:
-                self.held = {prior}
-                self.acquired: list[str] = []
-                self.release_calls: list[list[str] | None] = []
-
-            def report_and_wait(self, _frame: object, _task_id: int) -> bool:
-                return True
-
-            def acquire_row_locks(self, _task_id: int, resources: list[str]) -> list[str]:
-                self.acquired.extend(resources)
-                self.held.update(resources)
-                return resources
-
-            def release_row_locks(self, _task_id: int, resources: list[str] | None = None) -> None:
-                self.release_calls.append(resources)
-                if resources is None:
-                    self.held.clear()
-                else:
-                    self.held.difference_update(resources)
-
         prior = "sql:accounts:(('id', '1'),)"
-        scheduler = FakeScheduler(prior)
-        store = set_tx_store_task()
-        store._in_transaction = True
-        store._is_autobegin = True
+        scheduler, store = async_sql_scheduler
+        scheduler.held.add(prior)
         store._held_row_locks = {prior}
-        store._pending_row_locks = []
-        set_dpor_scheduler_task(scheduler)
-        set_dpor_thread_id_task(0)
-        set_io_reporter(IOLog())
 
         async def execute(cursor: FakeCursor, _operation: object, _parameters: object) -> None:
             cursor.rowcount = 0
 
-        try:
-            await _intercept_execute_async(
-                execute,
-                FakeCursor(),
-                "UPDATE accounts SET balance = %s WHERE id = %s",
-                (100, 2),
-                paramstyle="format",
-            )
-
-            assert len(scheduler.acquired) == 1
-            assert scheduler.release_calls == [scheduler.acquired]
-            assert scheduler.held == {prior}
-            assert store._held_row_locks == {prior}
-        finally:
-            set_dpor_scheduler_task(None)
-            set_dpor_thread_id_task(None)
-            set_tx_store_task()
-            set_io_reporter(None)
-
-    def test_source_has_update_match(self) -> None:
-        """_intercept_execute_async should extract _RE_UPDATE_TABLE match like the sync version."""
-        import inspect
-
-        source = inspect.getsource(_intercept_execute_async)
-        assert "_RE_UPDATE_TABLE" in source or "update_match" in source, (
-            "_intercept_execute_async should check for UPDATE statements "
-            "to release row locks on 0-row matches (Defect #6 fix)"
+        await _intercept_execute_async(
+            execute,
+            FakeCursor(),
+            "UPDATE accounts SET balance = %s WHERE id = %s",
+            (100, 2),
+            paramstyle="format",
         )
+
+        assert len(scheduler.acquired) == 1
+        assert scheduler.release_calls == [scheduler.acquired]
+        assert scheduler.held == {prior}
+        assert store._held_row_locks == {prior}
 
     @pytest.mark.parametrize(
         ("method_name", "result", "releases"),
         [("fetch", [], True), ("fetchrow", None, True), ("fetchval", None, False)],
     )
     async def test_asyncpg_result_shape_controls_statement_lock_release(
-        self, method_name: str, result: Any, releases: bool
+        self,
+        method_name: str,
+        result: Any,
+        releases: bool,
+        async_sql_scheduler: tuple[AsyncSqlScheduler, Any],
     ) -> None:
-        from frontrun._io_detection import (
-            set_dpor_scheduler_task,
-            set_dpor_thread_id_task,
-            set_tx_store_task,
-        )
         from frontrun._sql_cursor_async import _intercept_asyncpg_execute
-
-        class FakeScheduler:
-            def __init__(self) -> None:
-                self.acquired: list[str] = []
-                self.release_calls: list[list[str] | None] = []
-
-            def report_and_wait(self, _frame: object, _task_id: int) -> bool:
-                return True
-
-            def acquire_row_locks(self, _task_id: int, resources: list[str]) -> list[str]:
-                self.acquired.extend(resources)
-                return resources
-
-            def release_row_locks(self, _task_id: int, resources: list[str] | None = None) -> None:
-                self.release_calls.append(resources)
 
         class FakeConnection:
             pass
 
         FakeConnection.__module__ = "asyncpg.connection"
-        scheduler = FakeScheduler()
-        store = set_tx_store_task()
-        store._in_transaction = True
-        store._is_autobegin = True
-        store._held_row_locks = set()
-        store._pending_row_locks = []
-        set_dpor_scheduler_task(scheduler)
-        set_dpor_thread_id_task(0)
-        set_io_reporter(IOLog())
+        scheduler, store = async_sql_scheduler
 
         async def execute(_connection: object, _operation: object) -> Any:
             return result
 
-        try:
-            actual = await _intercept_asyncpg_execute(
-                execute,
-                FakeConnection(),
-                "UPDATE accounts SET balance = 100 WHERE id = 2 RETURNING id",
-                method_name=method_name,
-            )
-            assert actual == result
-            assert len(scheduler.acquired) == 1
-            if releases:
-                assert scheduler.release_calls == [scheduler.acquired]
-                assert store._held_row_locks == set()
-            else:
-                assert scheduler.release_calls == []
-                assert store._held_row_locks == set(scheduler.acquired)
-        finally:
-            set_dpor_scheduler_task(None)
-            set_dpor_thread_id_task(None)
-            set_tx_store_task()
-            set_io_reporter(None)
-
-
-class TestAsyncpgExecutemanyDbObj:
-    """Verify asyncpg _patched_executemany passes db_obj to _report_sql_access."""
-
-    def test_executemany_passes_db_obj(self) -> None:
-        """_patched_executemany should pass db_obj=self for correct database scoping."""
-        import inspect
-
-        source = inspect.getsource(sql_cursor_async_mod)
-        # Find the _patched_executemany function definition
-        idx = source.find("async def _patched_executemany")
-        assert idx != -1, "_patched_executemany not found in source"
-        # Extract the function body (next ~15 lines)
-        func_body = source[idx : idx + 600]
-        assert "db_obj=self" in func_body, "_patched_executemany should pass db_obj=self to _report_sql_access"
-
-    def test_executemany_has_dpor_scheduling_point(self) -> None:
-        """_patched_executemany should have a DPOR scheduling point via the shared helper."""
-        import inspect
-
-        # The scheduling point is now in _dpor_schedule_and_suppress_async
-        source = inspect.getsource(sql_cursor_async_mod._dpor_schedule_and_suppress_async)
-        assert "_get_dpor_context" in source, (
-            "_dpor_schedule_and_suppress_async should call _get_dpor_context for DPOR scheduling"
+        actual = await _intercept_asyncpg_execute(
+            execute,
+            FakeConnection(),
+            "UPDATE accounts SET balance = 100 WHERE id = 2 RETURNING id",
+            method_name=method_name,
         )
+        assert actual == result
+        assert len(scheduler.acquired) == 1
+        if releases:
+            assert scheduler.release_calls == [scheduler.acquired]
+            assert store._held_row_locks == set()
+        else:
+            assert scheduler.release_calls == []
+            assert store._held_row_locks == set(scheduler.acquired)
 
 
 # ---------------------------------------------------------------------------
