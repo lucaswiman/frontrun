@@ -47,6 +47,7 @@ from .coordinator import (
     _launch_error,
     accept_hello_live,
     bind_coordination_listener,
+    incomplete_result,
     validate_worker_id,
     worker_targets,
 )
@@ -530,18 +531,6 @@ class DporCrossProcessCoordinator:
         # thread-mode InterleavingResult.failures — with stop_on_first=False
         # later failing schedules must not be discarded.
         failures: list[tuple[int, list[int]]] = []
-        # Sticky across executions within this exploration, reset per explore()
-        # call: True once any execution's scheduler observed a row-lock-blocked
-        # redirect (issue #250). The engine step for the waiter was already
-        # committed via before_sync_retry when acquire_row_locks handed
-        # execution to the lock holder, so the engine's schedule and the
-        # physical execution can diverge at row-lock boundaries and follow-on
-        # races in derived executions can be suppressed. Used ONLY to demote
-        # the coverage claim (exhausted) fail-closed — never ok/failure
-        # reporting. The proper fix (defer engine-step commitment until
-        # row-lock arbitration decides) is a scheduler-protocol change tracked
-        # in issue #250.
-        row_lock_redirected = False
         # Pass-certificate evidence: workers observed to send a clean DONE in
         # at least one counted iteration; and, when the search was truncated,
         # the machine-readable cause (feeds the inconclusive reason for
@@ -636,19 +625,9 @@ class DporCrossProcessCoordinator:
                     truncation = str(exc)
                     break
                 except _RelayNoProgressError:
-                    # The workers connected and an execution began, but the
-                    # relay watchdog had to abort it.  Diagnose from the
-                    # scheduler's latched TimeoutError so this is reported as
-                    # an execution timeout with its schedule, not as a startup
-                    # / transport connection failure.
-                    num_explored += 1
-                    result = self._evaluate(
-                        execution, scheduler, engine_lock, invariant, worker_errors, accesses, num_explored
-                    )
-                    assert result is not None
-                    if result.failing_schedule is not None:
-                        failures.append((num_explored, list(result.failing_schedule)))
-                    return replace(result, failures=failures)
+                    # The watchdog latched its TimeoutError on the scheduler;
+                    # use the common evaluation path below to classify it.
+                    pass
                 except (TimeoutError, OSError) as exc:
                     return replace(_connection_failure(exc, num_explored + 1), failures=failures)
                 except WorkerSerializationError as exc:
@@ -658,45 +637,29 @@ class DporCrossProcessCoordinator:
                     # broader (a generic TypeError from launch machinery) is a
                     # bug and must propagate rather than be mislabeled.
                     return replace(_serialization_failure(exc, num_explored + 1), failures=failures)
-                # Latch before evaluation so the demotion survives no matter
-                # how this execution is scored (the per-execution scheduler is
-                # discarded below; the exception paths above already return
-                # exhausted=False results).
-                if scheduler._row_lock_redirected:
-                    row_lock_redirected = True
-                num_explored += 1
-                for wid in completed:
-                    workers_ran[wid] = True
-
                 result = self._evaluate(
-                    execution, scheduler, engine_lock, invariant, worker_errors, accesses, num_explored
+                    execution, scheduler, engine_lock, invariant, worker_errors, accesses, num_explored + 1
                 )
                 if result is not None:
+                    if result.ok is None:
+                        if first_failure is not None:
+                            return replace(first_failure, iterations=num_explored, exhausted=False, failures=failures)
+                        return replace(result, iterations=num_explored, failures=failures)
+                    num_explored += 1
                     if result.failing_schedule is not None:
                         failures.append((num_explored, list(result.failing_schedule)))
                     if self.stop_on_first:
                         return replace(result, failures=failures)
-                    if first_failure is None or (
-                        first_failure.failure_kind == "nondeterministic" and result.failure_kind != "nondeterministic"
-                    ):
+                    if first_failure is None:
                         first_failure = result
-                    # An aborted execution (deadlock or worker error) unwinds its
-                    # workers via SchedulerAbort before their remaining accesses
-                    # are reported, so the engine never seeds the wakeup tree from
-                    # this trace and next_execution() can return False with
-                    # interleavings still unexplored. Demote exhausted rather than
-                    # over-claim coverage (mirrors _evaluate building these results
-                    # with exhausted=False; an invariant failure completes fully so
-                    # it does NOT demote). Only max_executions/total_timeout were
-                    # previously handled, in the for..else below.
-                    if result.failure_kind in (
-                        "deadlock",
-                        "worker_error",
-                        "timeout",
-                        "branch_limit",
-                        "nondeterministic",
-                    ):
+                    # An aborted execution (deadlock or worker error) unwinds
+                    # before its remaining accesses seed the wakeup tree.
+                    if result.failure_kind in ("deadlock", "worker_error"):
                         exhausted = False
+                else:
+                    num_explored += 1
+                    for wid in completed:
+                        workers_ran[wid] = True
 
                 # A worker aborted mid-iteration leaves its persistent stream
                 # at an unknown frame boundary. Processes are safely killable:
@@ -730,15 +693,6 @@ class DporCrossProcessCoordinator:
                 elif deadline is not None and time.monotonic() > deadline:
                     exhausted = False
                     truncation = f"total_timeout={self.total_timeout}s expired before the search space was covered"
-            if row_lock_redirected:
-                # A row-lock-blocked redirect desynchronized at least one
-                # execution's engine trace from its physical statement order
-                # (issue #250), so derived executions may have been pruned:
-                # even when the engine reports the search tree fully explored,
-                # coverage cannot be certified. Demote only the coverage claim
-                # — ok/failure reporting for the executions that did run is
-                # untouched (fail-closed).
-                exhausted = False
             if first_failure is not None:
                 return replace(first_failure, iterations=num_explored, exhausted=exhausted, failures=failures)
             return CrossProcessResult(
@@ -983,33 +937,31 @@ class DporCrossProcessCoordinator:
         # with half-executed state. The schedule-length guard keeps a
         # hypothetical other aborted=True source from being mislabeled.
         if engine_aborted and len(schedule_trace) >= self.max_branches:
-            return _fail(
+            return incomplete_result(
+                num_explored,
                 f"execution truncated at max_branches={self.max_branches} scheduling points; the "
-                "schedule shown is the truncated prefix, not a verified counterexample. Raise "
+                "incomplete prefix is not a verified counterexample. Raise "
                 "max_branches if the workload legitimately needs more steps per execution, or "
                 "check for a nonterminating worker.",
-                "branch_limit",
             )
         if scheduler._row_lock_redirected:
-            return _fail(
+            return incomplete_result(
+                num_explored,
                 "cross-process row-lock contention redirected physical execution after the DPOR engine had already "
                 "committed the waiter step; this run cannot provide an exact replay schedule, so frontrun is failing "
                 "closed instead of certifying the result",
-                "nondeterministic",
             )
         # A scheduler fallback TimeoutError means the run free-ran unscheduled
         # (unmodeled DB-level blocking, or a statement slower than
         # deadlock_timeout). Its final state describes no DPOR schedule, so the
-        # invariant is skipped — but the execution must count as a failure, not
-        # a clean pass: the schedule was never driven to completion and nothing
-        # was verified.
+        # invariant is skipped and the execution is inconclusive.
         if isinstance(err, TimeoutError):
-            return _fail(
+            return incomplete_result(
+                num_explored,
                 f"scheduler timed out (deadlock_timeout={self.deadlock_timeout}s expired): {err}. "
                 "A worker blocked outside frontrun's model (e.g. database-level locking) or a "
                 "statement ran longer than deadlock_timeout; raise deadlock_timeout if the "
                 "workload is just slow.",
-                "timeout",
             )
         if worker_errors:
             wid = min(worker_errors)

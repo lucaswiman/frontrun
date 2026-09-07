@@ -31,17 +31,17 @@ def _locker(first: str, second: str):
 
 
 def test_detects_cross_worker_lock_cycle() -> None:
-    # A merely redirected trace is not replay-exact and therefore fails
-    # closed. Keep exploring so a later concrete lock cycle can supersede it.
+    # A redirected trace is incomplete and cannot be explored further safely.
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
     result = coord.explore(
         worker_set=ThreadLauncher([_locker(ROW1, ROW2), _locker(ROW2, ROW1)]),
         setup=lambda: None,
         invariant=lambda: True,
     )
-    assert not result.ok
-    assert result.failure_kind == "deadlock"
-    assert result.failing_schedule is not None
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
+    assert "exact replay schedule" in (result.truncation or "")
 
 
 def test_same_order_locking_fails_closed_without_claiming_deadlock() -> None:
@@ -54,5 +54,6 @@ def test_same_order_locking_fails_closed_without_claiming_deadlock() -> None:
         setup=lambda: None,
         invariant=lambda: True,
     )
-    assert not result.ok
-    assert result.failure_kind == "nondeterministic"
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert result.failing_schedule is None

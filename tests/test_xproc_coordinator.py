@@ -185,10 +185,10 @@ def test_replay_divergence_reported_as_nondeterministic() -> None:
         invariant=lambda: True,
         max_iterations=50,
     )
-    assert not result.ok
-    assert result.failure_kind == "nondeterministic"
-    assert result.failure_kind != "deadlock"
-    assert "reproducible" in (result.failure or "")
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
+    assert "reproducible" in (result.truncation or "")
 
 
 def test_active_lock_owner_public_accessor() -> None:

@@ -98,7 +98,9 @@ def test_reuse_stops_safely_on_deadlock() -> None:
         invariant=lambda: True,
     )
     assert not result.ok
-    assert result.failure_kind == "deadlock"
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
 
 
 def test_reuse_restarts_killable_workers_after_unclean_iteration(monkeypatch: pytest.MonkeyPatch) -> None:
