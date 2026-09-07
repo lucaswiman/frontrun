@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-from collections import OrderedDict
+import asyncio
 from typing import Any
 
-from frontrun._async_cooperative import _CooperativeAsyncQueue
+import pytest
+
+from frontrun._async_cooperative import _AsyncWaiters, _CooperativeAsyncQueue
 
 
-class _Future:
-    def __init__(self, done: bool = False) -> None:
-        self._done = done
-
-    def done(self) -> bool:
-        return self._done
-
-
-class _CountingWaiters(OrderedDict[Any, int]):
+class _CountingWaiters(_AsyncWaiters):
     def __init__(self) -> None:
         super().__init__()
         self.oldest_pops = 0
@@ -25,10 +19,13 @@ class _CountingWaiters(OrderedDict[Any, int]):
         return super().popitem(last=last)
 
 
-def test_queue_pop_waiter_skips_cancelled_in_constant_time_fifo_steps() -> None:
+@pytest.mark.asyncio
+async def test_queue_pop_waiter_skips_cancelled_in_constant_time_fifo_steps() -> None:
     queue = _CooperativeAsyncQueue()
-    cancelled = [_Future(done=True) for _ in range(32)]
-    pending = _Future()
+    cancelled = [asyncio.get_running_loop().create_future() for _ in range(32)]
+    for future in cancelled:
+        future.cancel()
+    pending = asyncio.get_running_loop().create_future()
     waiters = _CountingWaiters()
     waiters.update((future, task_id) for task_id, future in enumerate([*cancelled, pending]))
 
