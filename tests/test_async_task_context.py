@@ -69,6 +69,7 @@ def test_sql_reporter_belongs_to_each_task(
             assert _io_detection.get_io_reporter() is reporter
         finally:
             scheduler._cleanup_task_context(task_id)
+            assert _io_detection.get_io_reporter() is None
             scheduler._tasks_done.add(task_id)
 
     async def scenario() -> None:
