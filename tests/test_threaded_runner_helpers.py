@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from types import ModuleType
+
 import pytest
 
+import frontrun._dpor_runtime.runner as dpor_runner_module
+import frontrun.bytecode as bytecode_module
+from frontrun._dpor_runtime.runner import DporBytecodeRunner
 from frontrun._real_threading import condition as _real_condition
 from frontrun._real_threading import lock as _real_lock
-from frontrun._threaded_runner import PatchScope, instrumentation_scope, notify_scheduler_timeout
+from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
+from frontrun.bytecode import BytecodeShuffler
 
 
 def test_patch_scope_runs_all_cleanups_even_if_one_raises():
@@ -56,20 +62,76 @@ def test_notify_scheduler_timeout_preserves_first_error():
     assert sched._error is original, f"notify_scheduler_timeout overwrote the first error with {sched._error!r}"
 
 
-def test_instrumentation_scope_is_lazy_and_rolls_back_partial_install():
+_COMMON_PATCHES = [
+    ("install_wait_for_graph", "uninstall_wait_for_graph", "graph"),
+    ("patch_locks", "unpatch_locks", "locks"),
+    ("patch_io", "unpatch_io", "io"),
+    ("patch_sql", "unpatch_sql", "sql"),
+]
+
+
+@pytest.mark.parametrize(
+    ("module", "runner_type", "patches"),
+    [
+        (bytecode_module, BytecodeShuffler, [*_COMMON_PATCHES, ("_patch_sleep", "unpatch_sleep", "sleep")]),
+        (
+            dpor_runner_module,
+            DporBytecodeRunner,
+            [*_COMMON_PATCHES, ("patch_redis", "unpatch_redis", "redis"), ("_patch_sleep", "unpatch_sleep", "sleep")],
+        ),
+    ],
+)
+def test_runner_patch_scope_rolls_back_each_install_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    runner_type: type[BytecodeShuffler] | type[DporBytecodeRunner],
+    patches: list[tuple[str, str, str]],
+) -> None:
+    for fail_at in range(len(patches)):
+        calls: list[str] = []
+        with monkeypatch.context() as patcher:
+            for index, (patch_name, unpatch_name, label) in enumerate(patches):
+
+                def install(*, _index: int = index, _label: str = label) -> None:
+                    calls.append(f"+{_label}")
+                    if _index == fail_at:
+                        raise RuntimeError(f"failed {_label}")
+
+                effective_patch_name = patch_name if hasattr(module, patch_name) else "patch_sleep"
+                patcher.setattr(module, effective_patch_name, install)
+                patcher.setattr(module, unpatch_name, lambda _label=label: calls.append(f"-{_label}"))
+
+            scope = runner_type(_FakeScheduler()).patch_scope()
+            assert calls == []
+            with pytest.raises(RuntimeError, match="failed"):
+                with scope:
+                    pass
+
+        installed = [label for _, _, label in patches[: fail_at + 1]]
+        cleaned = [label for _, _, label in reversed(patches[:fail_at])]
+        assert calls == [*(f"+{label}" for label in installed), *(f"-{label}" for label in cleaned)]
+
+
+@pytest.mark.parametrize(
+    ("module", "runner_type"),
+    [(bytecode_module, BytecodeShuffler), (dpor_runner_module, DporBytecodeRunner)],
+)
+def test_runner_patch_scope_honors_disabled_io_and_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    runner_type: type[BytecodeShuffler] | type[DporBytecodeRunner],
+) -> None:
     calls: list[str] = []
+    patch_names = [
+        *_COMMON_PATCHES,
+        ("patch_redis", "unpatch_redis", "redis"),
+        ("_patch_sleep", "unpatch_sleep", "sleep"),
+    ]
+    for patch_name, unpatch_name, label in patch_names:
+        if hasattr(module, patch_name):
+            monkeypatch.setattr(module, patch_name, lambda _label=label: calls.append(f"+{_label}"))
+            monkeypatch.setattr(module, unpatch_name, lambda _label=label: calls.append(f"-{_label}"))
 
-    def fail() -> None:
-        calls.append("patch-sql")
-        raise RuntimeError("install failed")
-
-    scope = instrumentation_scope(
-        [(lambda: calls.append("patch-io"), lambda: calls.append("unpatch-io"), True), (fail, lambda: None, True)]
-    )
-    assert calls == []
-
-    with pytest.raises(RuntimeError, match="install failed"):
-        with scope:
-            pass
-
-    assert calls == ["patch-io", "patch-sql", "unpatch-io"]
+    with runner_type(_FakeScheduler(), detect_io=False).patch_scope(patch_sleep=False):
+        assert calls == ["+graph", "+locks"]
+    assert calls == ["+graph", "+locks", "-locks", "-graph"]
