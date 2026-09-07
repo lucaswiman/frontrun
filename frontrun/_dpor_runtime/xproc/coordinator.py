@@ -219,11 +219,11 @@ def accept_hello_live(
 class CrossProcessResult:
     """Outcome of a cross-process exploration."""
 
-    # True: no failure in at least one completed execution. False: concrete
-    # failure. None: inconclusive because no execution completed (for example,
-    # total_timeout expired during startup).  Keeping the zero-work state
-    # distinct prevents direct explore_processes() callers from reading a
-    # vacuous ``ok=True`` as a pass.
+    # True: completed executions found no failure. False: concrete failure.
+    # None: inconclusive because an execution was incomplete (possibly after
+    # earlier executions completed), or because no execution began. Keeping
+    # incomplete evidence distinct prevents callers from treating a truncated
+    # run as either a pass or a counterexample.
     ok: bool | None
     iterations: int
     # True only when the search space was genuinely fully covered: any
@@ -253,8 +253,8 @@ class CrossProcessResult:
     # cross_process._to_interleaving_result.
     workers_executed: list[bool] = field(default_factory=list)
     # Why the search stopped before its natural end (e.g. total_timeout expiry
-    # during startup), when known. Feeds the inconclusive reason for ok=True
-    # results with zero iterations.
+    # or an in-flight execution bound), when known. Feeds the reason on
+    # inconclusive results.
     truncation: str | None = None
 
 

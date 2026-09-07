@@ -903,10 +903,10 @@ class DporCrossProcessCoordinator:
         accesses: list[tuple[int, str, str]],
         num_explored: int,
     ) -> CrossProcessResult | None:
-        """Return a failing result for this execution, or None if it held.
+        """Return a failing or incomplete result, or None if this execution held.
 
         The caller decides whether to stop (``stop_on_first``) or keep
-        exploring; this never silently drops a failure.
+        exploring; incomplete prefixes never become counterexamples.
         """
         with engine_lock:
             schedule_trace = list(execution.schedule_trace)
