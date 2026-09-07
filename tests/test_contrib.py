@@ -1,6 +1,9 @@
-"""Tests for bugs and simplification seams in contrib wrappers."""
+"""Dispatch and resource-lifecycle contracts for framework wrappers."""
 
 from __future__ import annotations
+
+import asyncio
+from typing import Any
 
 import pytest
 
@@ -146,3 +149,58 @@ def test_sqlalchemy_setup_suppression(async_engine: bool, fails: bool) -> None:
     else:
         assert wrapper() == "state"
     assert not is_sync_suppressed()
+
+
+def test_dispatch_threads_or_tasks_selects_correct_impl() -> None:
+    from frontrun.contrib._shared import dispatch_threads_or_tasks
+
+    sync_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    async_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def sync_impl(*args: Any, **kwargs: Any) -> str:
+        sync_calls.append((args, kwargs))
+        return "sync"
+
+    async def async_impl(*args: Any, **kwargs: Any) -> str:
+        async_calls.append((args, kwargs))
+        return "async"
+
+    assert dispatch_threads_or_tasks(sync_impl, async_impl, setup=object, threads=[lambda _: None]) == "sync"
+    assert sync_calls and not async_calls
+
+    result = asyncio.run(
+        dispatch_threads_or_tasks(
+            sync_impl,
+            async_impl,
+            setup=object,
+            tasks=[lambda _: _noop()],
+        )
+    )
+    assert result == "async"
+    assert len(async_calls) == 1
+
+
+def test_dispatch_threads_or_tasks_requires_exactly_one_mode() -> None:
+    from frontrun.contrib._shared import dispatch_threads_or_tasks
+
+    def sync_impl(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def async_impl(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    with pytest.raises(TypeError, match="requires exactly one"):
+        dispatch_threads_or_tasks(sync_impl, async_impl, setup=object)
+
+    with pytest.raises(TypeError, match="requires exactly one"):
+        dispatch_threads_or_tasks(
+            sync_impl,
+            async_impl,
+            setup=object,
+            threads=[lambda _: None],
+            tasks=[lambda _: _noop()],
+        )
+
+
+async def _noop() -> None:
+    return None

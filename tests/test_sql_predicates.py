@@ -14,6 +14,7 @@ import pytest
 
 sqlglot = pytest.importorskip("sqlglot")
 
+from frontrun._sql_parsing import parse_sql_access
 from frontrun._sql_predicates import (
     EqualityPredicate,
     InListPredicate,
@@ -451,3 +452,20 @@ class TestParameterizedPredicateExtraction:
         resolved = resolve_parameters(sql, (42,), "pyformat")
         preds = extract_equality_predicates(resolved)
         assert EqualityPredicate("id", "42") in preds
+
+
+def test_insert_three_string_rows():
+    sql = """
+        INSERT INTO users (name, email) VALUES
+          ('Alice', 'a@x'),
+          ('Bob', 'b@x'),
+          ('Carol', 'c@x')
+        """
+    (r, w, *_) = parse_sql_access(sql)
+    assert w == {"users"}
+    rows = extract_row_level_access(sql)
+    assert rows is not None
+    assert len(rows) == 3
+    assert rows[0] == [EqualityPredicate("name", "Alice"), EqualityPredicate("email", "a@x")]
+    assert rows[1] == [EqualityPredicate("name", "Bob"), EqualityPredicate("email", "b@x")]
+    assert rows[2] == [EqualityPredicate("name", "Carol"), EqualityPredicate("email", "c@x")]

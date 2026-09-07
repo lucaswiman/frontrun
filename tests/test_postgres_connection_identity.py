@@ -1,4 +1,4 @@
-"""Regression test for FRONTRUN_DEFECTS.md #1: LD_PRELOAD shared socket deadlock.
+"""Separate PostgreSQL connections must not be mistaken for a shared socket.
 
 When the LD_PRELOAD library is active, two DPOR threads that each open their
 own psycopg2 connection to the same PostgreSQL server (via Unix socket) must

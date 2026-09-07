@@ -522,6 +522,31 @@ class TestWakeupTreeEngine:
 
 
 class TestExploreDpor:
+    def test_stop_on_first_preserves_failure_and_limits_exploration(self):
+        class Counter:
+            def __init__(self):
+                self.value = 0
+
+            def increment(self):
+                temp = self.value
+                self.value = temp + 1
+
+        results = [
+            frontrun.explore(
+                setup=Counter,
+                workers=[lambda c: c.increment(), lambda c: c.increment()],
+                invariant=lambda c: c.value == 2,
+                stop_on_first=stop,
+            )
+            for stop in (True, False)
+        ]
+        early, full = results
+        for result in results:
+            assert result.property_holds is False
+            assert result.counterexample is not None
+            assert result.failures
+        assert full.num_explored >= early.num_explored
+
     def test_worker_timeout_error_is_not_scheduler_timeout(self) -> None:
         """A user TimeoutError is a worker failure, not an inconclusive harness timeout."""
 

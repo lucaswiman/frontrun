@@ -6,6 +6,7 @@ Demonstrates both:
 2. Property-based exploration (find bad interleavings via random search)
 """
 
+import random
 import threading
 
 import pytest
@@ -629,3 +630,70 @@ def test_explore_random_records_dynamic_schedule_extension(monkeypatch: pytest.M
     assert result.counterexample[:2] == [0, 1]
     assert len(result.counterexample) > 2
     assert result.explanation and "IndexError: crash after extension" in result.explanation
+
+
+def test_random_round_robin_schedule_is_fair_and_deterministic() -> None:
+    from frontrun._random_schedules import random_round_robin_schedule
+
+    rng = random.Random(0)
+    schedule = random_round_robin_schedule(rng, num_actors=3, max_ops=12)
+
+    # Every entry is a valid actor id.
+    assert schedule, "schedule should not be empty"
+    assert all(0 <= entry < 3 for entry in schedule)
+
+    # Fairness: each round contains every actor (so every actor appears at
+    # least once), even though per-round burst lengths now vary so the counts
+    # are no longer exactly equal (finding 5 — drift > 1 opcode).
+    assert all(actor in schedule for actor in range(3))
+
+    # Same RNG seed -> same schedule (determinism preserved for replay).
+    rng2 = random.Random(0)
+    assert random_round_robin_schedule(rng2, num_actors=3, max_ops=12) == schedule
+
+
+def test_random_round_robin_schedule_can_express_drift() -> None:
+    """The generator must be able to emit per-actor bursts longer than 1.
+
+    Pure lockstep round-robin (one slot per actor per round) cannot express
+    relative opcode drift > 1 between threads; variable-length bursts can.
+    """
+    from frontrun._random_schedules import random_round_robin_schedule
+
+    saw_burst = False
+    for seed in range(20):
+        schedule = random_round_robin_schedule(random.Random(seed), num_actors=2, max_ops=40)
+        # A burst is two or more consecutive identical actor ids.
+        # strict=False: pairwise scan, the operands differ in length by one by design.
+        if any(a == b for a, b in zip(schedule, schedule[1:], strict=False)):
+            saw_burst = True
+            break
+    assert saw_burst, "generator never produced a burst (drift > 1 unreachable)"
+
+
+def test_random_round_robin_schedule_respects_max_ops_cap() -> None:
+    from frontrun._random_schedules import random_round_robin_schedule
+
+    rng = random.Random(123)
+    schedule = random_round_robin_schedule(rng, num_actors=4, max_ops=4)
+    assert len(schedule) <= 4
+    assert set(schedule) == {0, 1, 2, 3}
+
+
+def test_fair_schedule_strategy_covers_every_actor_per_round() -> None:
+    pytest.importorskip("hypothesis")
+    from hypothesis import HealthCheck, given, settings
+
+    from frontrun._random_schedules import fair_schedule_strategy
+
+    # Property: every generated schedule is non-empty, contains only valid
+    # actor ids, and includes every actor at least once (fairness).  Lengths
+    # are no longer multiples of num_actors because of variable bursts.
+    @given(schedule=fair_schedule_strategy(num_actors=3, max_ops=15))
+    @settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def _check(schedule: list[int]) -> None:
+        assert schedule, "fair schedule should be non-empty"
+        assert all(0 <= entry < 3 for entry in schedule)
+        assert set(schedule) == {0, 1, 2}, "every actor must appear (fairness)"
+
+    _check()
