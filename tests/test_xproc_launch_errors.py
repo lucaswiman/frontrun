@@ -322,6 +322,9 @@ class _FakePopenProc:
     def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002 - fake
         return 0
 
+    def poll(self) -> int | None:
+        return None if self._alive else 0
+
 
 def test_subprocess_launcher_cleans_up_on_partial_launch(monkeypatch, tmp_path) -> None:
     # Same leak for the subprocess backend: if the 2nd Popen construction raises,
