@@ -741,12 +741,43 @@ def test_dpor_branch_cap_is_reported_as_branch_limit_not_a_fabricated_timeout() 
         setup=lambda: None,
         invariant=lambda: True,
     )
-    assert not result.ok
-    assert result.failure_kind == "branch_limit", f"got {result.failure_kind!r}: {result.failure!r}"
-    failure = result.failure or ""
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
+    truncation = result.truncation or ""
     # The message must point at the knob that actually ends the truncation...
-    assert "max_branches" in failure
+    assert "max_branches" in truncation
     # ...not at deadlock_timeout, which cannot help.
-    assert "raise deadlock_timeout" not in failure
+    assert "raise deadlock_timeout" not in truncation
     # A truncated search must never claim full coverage.
     assert not result.exhausted
+
+
+def test_dpor_branch_cap_does_not_run_invariant_on_truncated_prefix() -> None:
+    """A branch-bound prefix is incomplete evidence, never a counterexample."""
+
+    class Execution:
+        aborted = True
+        schedule_trace = [0]
+
+    class Scheduler:
+        _error = TimeoutError("induced worker timeout")
+        _row_lock_redirected = False
+
+    invariant_called = False
+
+    def invariant() -> bool:
+        nonlocal invariant_called
+        invariant_called = True
+        return False
+
+    result = DporCrossProcessCoordinator(num_workers=1, max_branches=1)._evaluate(
+        Execution(), Scheduler(), threading.Lock(), invariant, {}, [], 1  # type: ignore[arg-type]
+    )
+
+    assert result is not None
+    assert result.ok is None
+    assert result.failing_schedule is None
+    assert result.failure_kind is None
+    assert "max_branches=1" in (result.truncation or "")
+    assert not invariant_called

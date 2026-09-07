@@ -313,6 +313,23 @@ def test_xproc_ok_zero_iterations_is_inconclusive() -> None:
     assert "total_timeout" in ir.inconclusive_reason
 
 
+@pytest.mark.parametrize("kind", ["branch_limit", "step_limit", "timeout"])
+def test_xproc_incomplete_execution_is_not_converted_to_counterexample(kind: str) -> None:
+    from frontrun._dpor_runtime.xproc.coordinator import CrossProcessResult
+    from frontrun.cross_process import _to_interleaving_result
+
+    cp = CrossProcessResult(
+        ok=None,
+        iterations=1,
+        exhausted=False,
+        truncation=f"{kind} interrupted the execution",
+    )
+    ir = _to_interleaving_result(cp)
+    assert ir.property_holds is None
+    assert ir.counterexample is None
+    assert kind in (ir.inconclusive_reason or "")
+
+
 def test_xproc_ok_with_worker_evidence_certifies() -> None:
     from frontrun._dpor_runtime.xproc.coordinator import CrossProcessResult
     from frontrun.cross_process import _to_interleaving_result

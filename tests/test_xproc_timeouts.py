@@ -387,10 +387,11 @@ def test_exhaustive_step_cap_aborts_nonterminating_worker() -> None:
         invariant=lambda: True,
         max_iterations=4,
     )
-    assert not result.ok
-    assert result.failure_kind == "step_limit"
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
     assert not result.exhausted
-    assert "max_steps_per_run" in (result.failure or "")
+    assert "max_steps_per_run" in (result.truncation or "")
 
 
 def test_exhaustive_step_cap_default_does_not_limit_normal_workloads() -> None:
