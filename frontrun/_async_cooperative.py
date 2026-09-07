@@ -711,7 +711,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
 
     def _wake_waiter(
         self,
-        waiters: OrderedDict[asyncio.Future[None], int],
+        waiters: _AsyncWaiters,
         ctx: _AsyncDporContext | None,
     ) -> None:
         waiter_info = self._pop_waiter(waiters)
