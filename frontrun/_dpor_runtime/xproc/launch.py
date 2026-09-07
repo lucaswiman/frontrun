@@ -45,41 +45,70 @@ class WorkerTerminationError(RuntimeError):
     """Poisoned worker processes survived forced termination."""
 
 
-def _terminate_procs(procs: Sequence[Any], timeout: float = 1.0) -> None:
-    """Terminate/kill and reap already-started multiprocessing children.
+@dataclass(frozen=True)
+class _ProcessOps:
+    wait: Callable[[Any, float], None]
+    alive: Callable[[Any], bool]
+    exit_code: Callable[[Any], int | None]
 
-    Used to clean up after a partial launch so a spawn failure mid-loop never
-    orphans the children that did start. Every child is checked after SIGTERM
-    and SIGKILL: replacement workers must never overlap a surviving old child.
-    """
-    for proc in procs:
-        try:
-            proc.terminate()
-        except Exception:  # noqa: BLE001 - best-effort teardown
-            pass
+
+def _popen_wait(proc: Any, timeout: float) -> None:
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+_MP_OPS = _ProcessOps(
+    wait=lambda proc, timeout: proc.join(timeout),
+    alive=lambda proc: bool(proc.is_alive()),
+    exit_code=lambda proc: proc.exitcode,
+)
+_POPEN_OPS = _ProcessOps(
+    wait=_popen_wait,
+    alive=lambda proc: proc.poll() is None,
+    exit_code=lambda proc: proc.poll(),
+)
+
+
+def _wait_alive(procs: Sequence[Any], timeout: float, ops: _ProcessOps, *, best_effort: bool = False) -> list[Any]:
+    """Wait against one shared deadline and return survivors at that deadline."""
     deadline = time.monotonic() + max(0.0, timeout)
     for proc in procs:
         try:
-            proc.join(max(0.0, deadline - time.monotonic()))
-        except Exception:  # noqa: BLE001 - best-effort teardown
-            pass
-    survivors = [proc for proc in procs if proc.is_alive()]
-    for proc in survivors:
+            ops.wait(proc, max(0.0, deadline - time.monotonic()))
+        except Exception:
+            if not best_effort:
+                raise
+    return [proc for proc in procs if ops.alive(proc)]
+
+
+def _retire_procs(procs: Sequence[Any], timeout: float, ops: _ProcessOps, *, terminate_first: bool) -> None:
+    """Signal, reap against shared deadlines, and reject surviving workers."""
+    procs = list(procs)
+    for proc in procs:
         try:
-            proc.kill()
-        except Exception:  # noqa: BLE001 - final liveness check is authoritative
+            (proc.terminate if terminate_first else proc.kill)()
+        except Exception:
             pass
-    kill_deadline = time.monotonic() + max(0.0, timeout)
-    for proc in survivors:
-        try:
-            proc.join(max(0.0, kill_deadline - time.monotonic()))
-        except Exception:  # noqa: BLE001 - final liveness check is authoritative
-            pass
-    survivors = [proc for proc in survivors if proc.is_alive()]
+    survivors = _wait_alive(procs, timeout, ops, best_effort=True)
+    if terminate_first and survivors:
+        for proc in survivors:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        survivors = _wait_alive(survivors, timeout, ops, best_effort=True)
     if survivors:
+        action = "terminate/kill" if terminate_first else "kill"
         raise WorkerTerminationError(
-            f"{len(survivors)} worker process(es) still alive after terminate/kill; refusing to relaunch"
+            f"{len(survivors)} worker process(es) still alive after {action}; refusing to relaunch"
         )
+
+
+def _terminate_procs(procs: Sequence[Any], timeout: float = 1.0) -> None:
+    """Terminate/kill multiprocessing children and reject survivors."""
+    _retire_procs(procs, timeout, _MP_OPS, terminate_first=True)
 
 
 def _make_stderr_file(worker_id: int) -> str:
@@ -132,6 +161,45 @@ def _unlink_all(paths: Sequence[str]) -> None:
         try:
             os.unlink(path)
         except OSError:
+            pass
+
+
+def _diagnose_processes(handles: Sequence[Any], stderr_files: Sequence[str], ops: _ProcessOps) -> str | None:
+    """Describe nonzero worker exits, preferring captured traceback details."""
+    parts: list[str] = []
+    for i, proc in enumerate(handles):
+        code = ops.exit_code(proc)
+        if code in (None, 0):
+            continue
+        path = stderr_files[i] if i < len(stderr_files) else None
+        detail = _stderr_last_line(path) or f"process exited with code {code}"
+        parts.append(f"worker {i}: {detail}")
+    return "; ".join(parts) or None
+
+
+class _ProcessLifecycle:
+    _ops: _ProcessOps
+    _stderr_files: list[str]
+
+    def any_exited(self, handles: Any) -> bool:
+        """Whether any worker crashed; clean exits do not count."""
+        return any(self._ops.exit_code(proc) not in (None, 0) for proc in handles)
+
+    def all_exited(self, handles: Any) -> bool:
+        """Whether every worker exited, including clean exits."""
+        return all(self._ops.exit_code(proc) is not None for proc in handles)
+
+    def diagnose(self, handles: Any) -> str | None:
+        return _diagnose_processes(handles, self._stderr_files, self._ops)
+
+    def _cleanup_stderr_files(self) -> None:
+        _unlink_all(self._stderr_files)
+        self._stderr_files = []
+
+    def __del__(self) -> None:
+        try:
+            self._cleanup_stderr_files()
+        except Exception:  # noqa: BLE001 - interpreter-shutdown best effort
             pass
 
 
@@ -241,7 +309,7 @@ def _mp_worker_entry(
         _connect_and_serve(socket_path, worker_id, body)
 
 
-class MpLauncher:
+class MpLauncher(_ProcessLifecycle):
     """Spawn Python worker callables via ``multiprocessing`` (the primary backend).
 
     ``worker_fns`` are callables serialised with dill, so closures and lambdas
@@ -251,6 +319,8 @@ class MpLauncher:
     ``FRONTRUN_IO_FD`` so children do not inherit the C-level I/O preload (whose
     event pipe has no reader here).
     """
+
+    _ops = _MP_OPS
 
     def __init__(
         self,
@@ -338,12 +408,7 @@ class MpLauncher:
         return {"t": proto.ITER_START, "payload": base64.b64encode(payload).decode("ascii")}
 
     def join(self, handles: Any, timeout: float) -> list[Any]:
-        deadline = time.monotonic() + max(0.0, timeout)
-        alive: list[Any] = []
-        for proc in handles:
-            proc.join(max(0.0, deadline - time.monotonic()))
-            if proc.is_alive():
-                alive.append(proc)
+        alive = _wait_alive(handles, timeout, _MP_OPS)
         if alive:
             # Terminate the whole set concurrently, then reap against one
             # shared deadline; cleanup must not scale as timeout * workers.
@@ -355,55 +420,6 @@ class MpLauncher:
         _terminate_procs(handles, timeout)
         if handles is self._procs:
             self._procs = None
-
-    def any_exited(self, handles: Any) -> bool:
-        """Non-destructive: has any worker process crashed (nonzero exit)?
-
-        Only an abnormal exit counts, mirroring ``diagnose``'s nonzero filter: a
-        worker that connected, ran no scheduled access, and exited cleanly (0)
-        must not fast-fail the accept loop of a co-worker still sending HELLO.
-        """
-        return any(proc.exitcode not in (None, 0) for proc in handles)
-
-    def all_exited(self, handles: Any) -> bool:
-        """Non-destructive: has *every* worker process exited (any code)?
-
-        Unlike ``any_exited`` this counts clean (0) exits too, so the accept loop
-        can fail fast when a target exits before HELLO (e.g. ``sys.exit(0)`` at
-        import) instead of waiting the whole connect budget.
-        """
-        return all(proc.exitcode is not None for proc in handles)
-
-    def diagnose(self, handles: Any) -> str | None:
-        """Describe any worker that exited before connecting (nonzero exit code).
-
-        When the child's captured stderr holds a traceback, surface its last
-        line (e.g. a ``dill.loads``/``ModuleNotFoundError`` failure) instead of a
-        bare exit code, matching ``SubprocessLauncher.diagnose``.
-        """
-        parts: list[str] = []
-        for i, proc in enumerate(handles):
-            if proc.exitcode in (None, 0):
-                continue
-            path = self._stderr_files[i] if i < len(self._stderr_files) else None
-            detail = _stderr_last_line(path) or f"process exited with code {proc.exitcode}"
-            parts.append(f"worker {i}: {detail}")
-        return "; ".join(parts) or None
-
-    def _cleanup_stderr_files(self) -> None:
-        """Best-effort removal of the previous launch's stderr capture files."""
-        _unlink_all(self._stderr_files)
-        self._stderr_files = []
-
-    def __del__(self) -> None:
-        # The per-launch cleanup only runs on the *next* launch, so the final
-        # iteration's capture files would leak once the exploration finishes.
-        # diagnose() may be read after join(), so this finalizer is the earliest
-        # safe point to drop them.
-        try:
-            self._cleanup_stderr_files()
-        except Exception:  # noqa: BLE001 - interpreter-shutdown best effort
-            pass
 
 
 @dataclass(frozen=True)
@@ -424,7 +440,9 @@ class Subprocess:
     args: tuple[Any, ...] = field(default_factory=tuple)
 
 
-class SubprocessLauncher:
+class SubprocessLauncher(_ProcessLifecycle):
+    _ops = _POPEN_OPS
+
     def __init__(self, specs: list[Subprocess], *, reuse: bool = False) -> None:
         self._specs = specs
         self._reuse = reuse
@@ -462,103 +480,17 @@ class SubprocessLauncher:
 
     @staticmethod
     def _reap_partial(procs: Sequence[subprocess.Popen[bytes]]) -> None:
-        for proc in procs:
-            try:
-                proc.kill()
-            except Exception:  # noqa: BLE001 - best-effort teardown
-                pass
-        for proc in procs:
-            try:
-                proc.wait(timeout=2.0)
-            except Exception:  # noqa: BLE001 - best-effort teardown
-                pass
+        _retire_procs(procs, 2.0, _POPEN_OPS, terminate_first=False)
 
     def join(self, handles: Any, timeout: float) -> list[subprocess.Popen[bytes]]:
-        deadline = time.monotonic() + max(0.0, timeout)
-        alive: list[subprocess.Popen[bytes]] = []
-        for proc in handles:
-            try:
-                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                alive.append(proc)
-        for proc in alive:
-            try:
-                proc.kill()
-            except Exception:  # noqa: BLE001 - best-effort; poll below is authoritative
-                pass
-        reap_deadline = time.monotonic() + min(max(0.0, timeout), 2.0)
-        for proc in alive:
-            try:
-                proc.wait(timeout=max(0.0, reap_deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                pass
+        alive = _wait_alive(handles, timeout, _POPEN_OPS)
+        if alive:
+            _retire_procs(alive, min(max(0.0, timeout), 2.0), _POPEN_OPS, terminate_first=False)
         return alive
 
     def terminate(self, handles: Any, timeout: float) -> None:
         """Forcibly retire poisoned persistent children so they can be replaced."""
-        for proc in handles:
-            try:
-                proc.kill()
-            except Exception:  # noqa: BLE001 - final poll verifies death
-                pass
-        deadline = time.monotonic() + max(0.0, timeout)
-        for proc in handles:
-            try:
-                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-            except Exception:  # noqa: BLE001 - final poll verifies death
-                pass
-        survivors = [proc for proc in handles if proc.poll() is None]
-        if survivors:
-            raise WorkerTerminationError(
-                f"{len(survivors)} worker process(es) still alive after kill; refusing to relaunch"
-            )
-
-    def any_exited(self, handles: Any) -> bool:
-        """Non-destructive: has any worker process crashed (nonzero exit)?
-
-        A clean exit (returncode 0) is not a crash and must not fast-fail the
-        accept loop; only nonzero or signal deaths do, matching ``diagnose``.
-        """
-        return any(proc.poll() not in (None, 0) for proc in handles)
-
-    def all_exited(self, handles: Any) -> bool:
-        """Non-destructive: has *every* worker process exited (any code)?
-
-        Counts clean (0) exits too, so the accept loop can fail fast when a
-        target exits before HELLO (e.g. ``sys.exit(0)`` at import) rather than
-        blocking for the full connect budget.
-        """
-        return all(proc.poll() is not None for proc in handles)
-
-    def diagnose(self, handles: Any) -> str | None:
-        """Recover the real cause when a worker died before connecting.
-
-        A bad ``module:callable`` target makes the child exit with a traceback on
-        stderr; surface its last line so the coordinator reports e.g.
-        ``ModuleNotFoundError`` instead of a bare connection timeout.
-        """
-        parts: list[str] = []
-        for i, proc in enumerate(handles):
-            rc = proc.poll()
-            if rc is None or rc == 0:
-                continue
-            path = self._stderr_files[i] if i < len(self._stderr_files) else None
-            last = _stderr_last_line(path) or f"exit code {rc}"
-            parts.append(f"worker {i}: {last}")
-        return "; ".join(parts) or None
-
-    def _cleanup_stderr_files(self) -> None:
-        """Best-effort removal of the previous launch's stderr capture files."""
-        _unlink_all(self._stderr_files)
-        self._stderr_files = []
-
-    def __del__(self) -> None:
-        # Same finalizer contract as MpLauncher: the per-launch cleanup only
-        # runs on the next launch, so drop the final launch's files here.
-        try:
-            self._cleanup_stderr_files()
-        except Exception:  # noqa: BLE001 - interpreter-shutdown best effort
-            pass
+        _retire_procs(handles, timeout, _POPEN_OPS, terminate_first=False)
 
     @staticmethod
     def _child_env_base() -> dict[str, str]:
