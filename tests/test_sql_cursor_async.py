@@ -77,8 +77,11 @@ class AsyncSqlScheduler:
 
 
 @pytest.fixture
-def async_sql_scheduler() -> Generator[tuple[AsyncSqlScheduler, Any], None, None]:
-    scheduler = AsyncSqlScheduler()
+def async_sql_scheduler() -> AsyncSqlScheduler:
+    return AsyncSqlScheduler()
+
+
+def _install_async_sql_scheduler(scheduler: AsyncSqlScheduler) -> Any:
     store = set_tx_store_task()
     store._in_transaction = True
     store._is_autobegin = True
@@ -87,13 +90,7 @@ def async_sql_scheduler() -> Generator[tuple[AsyncSqlScheduler, Any], None, None
     set_dpor_scheduler_task(scheduler)
     set_dpor_thread_id_task(0)
     set_io_reporter(IOLog())
-    try:
-        yield scheduler, store
-    finally:
-        set_dpor_scheduler_task(None)
-        set_dpor_thread_id_task(None)
-        set_tx_store_task()
-        set_io_reporter(None)
+    return store
 
 
 # ---------------------------------------------------------------------------
@@ -440,27 +437,33 @@ async def test_executemany() -> None:
 async def test_shared_async_sql_pipeline_error_policy(
     release_on_error: bool,
     expected_releases: int,
-    async_sql_scheduler: tuple[AsyncSqlScheduler, Any],
+    async_sql_scheduler: AsyncSqlScheduler,
 ) -> None:
-    scheduler, store = async_sql_scheduler
+    scheduler = async_sql_scheduler
+    store = _install_async_sql_scheduler(scheduler)
     store._pending_row_locks = ["sql:users"]
 
     async def fail() -> None:
         raise RuntimeError("driver failed")
 
-    with pytest.raises(RuntimeError, match="driver failed"):
-        await sql_cursor_async_mod._report_and_execute_sql_async(
-            "SELECT * FROM users",
-            None,
-            db_obj=object(),
-            is_executemany=True,
-            paramstyle="dollar",
-            call_orig=fail,
-            release_locks_on_error=release_on_error,
-        )
-
-    assert scheduler.scheduled == 1
-    assert len(scheduler.release_calls) == expected_releases
+    try:
+        with pytest.raises(RuntimeError, match="driver failed"):
+            await sql_cursor_async_mod._report_and_execute_sql_async(
+                "SELECT * FROM users",
+                None,
+                db_obj=object(),
+                is_executemany=True,
+                paramstyle="dollar",
+                call_orig=fail,
+                release_locks_on_error=release_on_error,
+            )
+        assert scheduler.scheduled == 1
+        assert len(scheduler.release_calls) == expected_releases
+    finally:
+        set_dpor_scheduler_task(None)
+        set_dpor_thread_id_task(None)
+        set_tx_store_task()
+        set_io_reporter(None)
 
 
 @pytest.mark.asyncio
@@ -904,7 +907,7 @@ class TestAsyncUpdateZeroRowRelease:
 
     @pytest.mark.asyncio
     async def test_zero_row_update_releases_only_current_statement_row_lock(
-        self, async_sql_scheduler: tuple[AsyncSqlScheduler, Any]
+        self, async_sql_scheduler: AsyncSqlScheduler
     ) -> None:
         class FakeConnection:
             autocommit = False
@@ -916,7 +919,8 @@ class TestAsyncUpdateZeroRowRelease:
             rowcount = -1
 
         prior = "sql:accounts:(('id', '1'),)"
-        scheduler, store = async_sql_scheduler
+        scheduler = async_sql_scheduler
+        store = _install_async_sql_scheduler(scheduler)
         scheduler.held.add(prior)
         store._held_row_locks = {prior}
 
@@ -945,7 +949,7 @@ class TestAsyncUpdateZeroRowRelease:
         method_name: str,
         result: Any,
         releases: bool,
-        async_sql_scheduler: tuple[AsyncSqlScheduler, Any],
+        async_sql_scheduler: AsyncSqlScheduler,
     ) -> None:
         from frontrun._sql_cursor_async import _intercept_asyncpg_execute
 
@@ -953,7 +957,8 @@ class TestAsyncUpdateZeroRowRelease:
             pass
 
         FakeConnection.__module__ = "asyncpg.connection"
-        scheduler, store = async_sql_scheduler
+        scheduler = async_sql_scheduler
+        store = _install_async_sql_scheduler(scheduler)
 
         async def execute(_connection: object, _operation: object) -> Any:
             return result
