@@ -44,12 +44,21 @@ def test_dpor_context_is_task_aware() -> None:
     assert observed["task1"] == (1, (sentinel_scheduler, 1)), observed
 
 
-@pytest.mark.parametrize("scheduler_type", [AwaitScheduler, _ReplayAsyncScheduler])
+@pytest.mark.parametrize("scheduler_type", [AwaitScheduler, _ReplayAsyncScheduler, AsyncDporScheduler])
 def test_sql_reporter_belongs_to_each_task(
-    scheduler_type: type[AwaitScheduler] | type[_ReplayAsyncScheduler],
+    scheduler_type: type[AwaitScheduler] | type[_ReplayAsyncScheduler] | type[AsyncDporScheduler],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A copied cleared context must not suppress the next scheduler's reporter."""
-    scheduler = scheduler_type([], 2, detect_sql=True)
+    from frontrun._dpor import PyDporEngine
+
+    scheduler = (
+        AsyncDporScheduler(engine := PyDporEngine(2), engine.begin_execution(), 2, detect_sql=True)
+        if scheduler_type is AsyncDporScheduler
+        else scheduler_type([], 2, detect_sql=True)
+    )
+    parent_reporter = object()
+    monkeypatch.setattr(_io_detection._io_tls, "io_reporter", parent_reporter, raising=False)
 
     async def worker(task_id: int) -> None:
         scheduler._setup_task_context(task_id)
@@ -60,11 +69,13 @@ def test_sql_reporter_belongs_to_each_task(
             assert _io_detection.get_io_reporter() is reporter
         finally:
             scheduler._cleanup_task_context(task_id)
+            scheduler._tasks_done.add(task_id)
 
     async def scenario() -> None:
         token = _io_detection._io_reporter_var.set(None)
         try:
             await asyncio.gather(worker(0), worker(1))
+            assert _io_detection._io_tls.io_reporter is parent_reporter
         finally:
             _io_detection._io_reporter_var.reset(token)
 
