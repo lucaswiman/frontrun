@@ -39,6 +39,7 @@ from hypothesis import strategies as st
 
 import frontrun
 from frontrun.common import InterleavingResult
+from tests import _clock_differential_helpers as oracle
 
 KEY = "counter"
 MAX_EXECUTIONS = 200
@@ -159,77 +160,15 @@ def _explore_random_real(spec: AsyncProgramSpec) -> InterleavingResult:
 
 def _certified_pass(result: InterleavingResult, *, cap: int = MAX_EXECUTIONS) -> bool:
     """Full-coverage pass proxy — see the sync module docstring."""
-    return result.property_holds and result.exhausted is not False and result.num_explored < cap
-
-
-def _found_counterexample(result: InterleavingResult) -> bool:
-    """True only for a *constructive* failure.
-
-    ``property_holds=False`` with ``counterexample=None`` is an inconclusive
-    search (timed-out or budget-exhausted attempts), not a counterexample; it
-    cannot contradict a certification.
-    """
-    return not result.property_holds and result.counterexample is not None
+    return oracle.certified_pass(result, cap)
 
 
 def _assert_failure_evidence(result: InterleavingResult, label: str, spec: AsyncProgramSpec) -> None:
-    assert result.counterexample is not None, f"[{label}] failure without a counterexample schedule; spec={spec}"
-    assert result.explanation is not None, f"[{label}] failure without an explanation; spec={spec}"
-    if result.reproduction_attempts:
-        assert result.reproduction_successes == result.reproduction_attempts, (
-            f"[{label}] counterexample replay reproduced only "
-            f"{result.reproduction_successes}/{result.reproduction_attempts}; spec={spec}"
-        )
+    oracle.assert_failure_evidence(result, label, spec, require_failures=False)
 
 
 def _run_oracle(spec: AsyncProgramSpec) -> None:
-    result_virtual = _explore_dpor(spec, "virtual")
-    result_virtual_again = _explore_dpor(spec, "virtual")
-
-    # Assertion 2: determinism.
-    assert result_virtual.property_holds == result_virtual_again.property_holds, (
-        f"async virtual-clock outcome is nondeterministic: {result_virtual.property_holds} vs "
-        f"{result_virtual_again.property_holds}; spec={spec}"
-    )
-    assert result_virtual.num_explored == result_virtual_again.num_explored, (
-        f"async virtual-clock num_explored is nondeterministic: {result_virtual.num_explored} vs "
-        f"{result_virtual_again.num_explored}; spec={spec}"
-    )
-    assert result_virtual.counterexample == result_virtual_again.counterexample, (
-        f"async virtual-clock counterexample is nondeterministic; spec={spec}"
-    )
-
-    result_explored = _explore_dpor(spec, "explored")
-
-    # Assertion 3: found failures are constructive proofs.  (A failure without
-    # a counterexample is an *inconclusive* search — e.g. a timed-out
-    # execution — which is neither a pass nor a proof; nothing to assert.)
-    if _found_counterexample(result_virtual):
-        _assert_failure_evidence(result_virtual, "clock=virtual", spec)
-    if _found_counterexample(result_explored):
-        _assert_failure_evidence(result_explored, "clock=explored", spec)
-
-    # failures(virtual) ⊆ failures(explored).
-    if _certified_pass(result_explored):
-        assert not _found_counterexample(result_virtual), (
-            f"clock='explored' certified a pass (exhausted after {result_explored.num_explored} executions) "
-            f"but clock='virtual' found a counterexample:\n{result_virtual.explanation}\nspec={spec}"
-        )
-
-    # Assertion 1: no false certification against the real clock.
-    if _certified_pass(result_explored):
-        result_real = _explore_dpor(spec, "real", reproduce=0)
-        assert not _found_counterexample(result_real), (
-            f"SOUNDNESS: async clock='explored' certified a pass (exhausted after "
-            f"{result_explored.num_explored} executions, preemption_bound=None) but real-clock DPOR found a "
-            f"counterexample:\n{result_real.explanation}\nspec={spec}"
-        )
-        result_random = _explore_random_real(spec)
-        assert not _found_counterexample(result_random), (
-            f"SOUNDNESS: async clock='explored' certified a pass (exhausted after "
-            f"{result_explored.num_explored} executions, preemption_bound=None) but random real-clock "
-            f"exploration found a counterexample:\n{result_random.explanation}\nspec={spec}"
-        )
+    oracle.run_clock_oracle(spec, _explore_dpor, _explore_random_real, cap=MAX_EXECUTIONS)
 
 
 # ---------------------------------------------------------------------------
