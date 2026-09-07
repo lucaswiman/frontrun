@@ -84,6 +84,7 @@ class TestRedisCounterRace:
             reproduce_on_failure=0,
         )
         assert not result.property_holds, "DPOR should detect lost-update on Redis counter"
+        assert result.num_explored >= 2, "DPOR must explore multiple interleavings to find the race"
         assert result.explanation is not None
 
     def test_locked_counter_is_safe(self, redis_port: int) -> None:
@@ -168,6 +169,7 @@ class TestRedisCheckThenAct:
             reproduce_on_failure=0,
         )
         assert not result.property_holds, "DPOR should detect double-initialization race"
+        assert result.num_explored >= 2, "DPOR must explore multiple interleavings to find the race"
         assert result.explanation is not None
 
     def test_setnx_prevents_double_init(self, redis_port: int) -> None:
@@ -258,6 +260,7 @@ class TestRedisInventoryRace:
             reproduce_on_failure=0,
         )
         assert not result.property_holds, "DPOR should detect oversell race"
+        assert result.num_explored >= 2, "DPOR must explore multiple interleavings to find the race"
         assert result.explanation is not None
 
     def test_locked_buy_is_safe(self, redis_port: int) -> None:
@@ -357,6 +360,7 @@ class TestRedisTransferRace:
             reproduce_on_failure=0,
         )
         assert not result.property_holds, "DPOR should detect transfer lost-update"
+        assert result.num_explored >= 2, "DPOR must explore multiple interleavings to find the race"
         assert result.explanation is not None
 
     def test_locked_transfer_is_safe(self, redis_port: int) -> None:
