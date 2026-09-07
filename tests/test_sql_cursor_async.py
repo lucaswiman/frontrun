@@ -55,8 +55,8 @@ async def _make_async_db() -> aiosqlite.Connection:
 
 
 class AsyncSqlScheduler:
-    def __init__(self, held: set[str] | None = None) -> None:
-        self.held = set() if held is None else held.copy()
+    def __init__(self) -> None:
+        self.held: set[str] = set()
         self.acquired: list[str] = []
         self.release_calls: list[list[str] | None] = []
         self.scheduled = 0
