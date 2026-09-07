@@ -24,7 +24,8 @@ from frontrun._async_cooperative import (
     _real_asyncio_sleep,
     _release_task_async_locks,
 )
-from frontrun._deadlock import DeadlockError, format_cycle
+from frontrun._async_row_locks import AsyncRowLockProtocol
+from frontrun._deadlock import DeadlockError
 from frontrun._dpor_core import (
     ReplayEngine,
     ReplayExecution,
@@ -84,7 +85,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         self._expected_deadlock = expected_deadlock
         self._row_lock_registry = RowLockRegistry()
         self._active_row_locks = self._row_lock_registry._active_row_locks
-        self._row_lock_waiters: dict[str, list[tuple[int, asyncio.Future[None]]]] = {}
+        self._row_lock_protocol = AsyncRowLockProtocol(self, self._row_lock_registry)
         self._lock_blocked: dict[int, int] = {}
         self._current_task: int | None = None
         self._current_task_consumed = False
@@ -313,64 +314,15 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
 
     def _on_error_set(self) -> None:
         _async_cooperative._wake_parked_async_primitive_waiters()
-        for waiters in self._row_lock_waiters.values():
-            for _task_id, future in waiters:
-                if not future.done():
-                    future.set_result(None)
+        protocol = getattr(self, "_row_lock_protocol", None)
+        if protocol is not None:
+            protocol.wake_all()
 
     async def acquire_row_locks_async(self, task_id: int, resource_ids: list[str]) -> list[str]:
-        graph = _async_cooperative._async_wait_graph
-        acquired: list[str] = []
-        for res_id in resource_ids:
-            lock_id = self._row_lock_registry._row_lock_int_id(res_id)
-            while (holder := self._active_row_locks.get(res_id)) is not None and holder != task_id:
-                # Match exploration: a pending virtual timeout guarantees this
-                # wait can be cancelled, so it cannot close a permanent cycle.
-                if graph is not None and not self._deadlines.in_timed_wait(task_id):
-                    cycle = graph.add_waiting(task_id, lock_id, kind="row_lock")
-                    if cycle is not None:
-                        graph.remove_waiting(task_id, lock_id, kind="row_lock")
-                        desc = format_cycle(cycle, self._row_lock_registry.id_to_resource())
-                        error = DeadlockError(f"Row-lock deadlock detected: {desc}", desc)
-                        await self._report_error(error)
-                        raise error
-                future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-                self._row_lock_waiters.setdefault(res_id, []).append((task_id, future))
-                self._event_blocked.add(task_id)
-                self._lock_blocked[task_id] = holder
-                depth = _in_scheduler_pause.get()
-                _in_scheduler_pause.set(depth + 1)
-                try:
-                    await self.kick_stalled_schedule(task_id)
-                    await future
-                    self._event_blocked.discard(task_id)
-                    self._lock_blocked.pop(task_id, None)
-                    if self._error is not None:
-                        raise self._error
-                    await self.wait_until_scheduled_after_block(task_id, "SQL row lock")
-                    if self._error is not None:
-                        raise self._error
-                finally:
-                    if graph is not None:
-                        graph.remove_waiting(task_id, lock_id, kind="row_lock")
-                    waiters = self._row_lock_waiters.get(res_id)
-                    if waiters is not None:
-                        waiters[:] = [entry for entry in waiters if entry[1] is not future]
-                        if not waiters:
-                            self._row_lock_waiters.pop(res_id, None)
-                    self._event_blocked.discard(task_id)
-                    self._lock_blocked.pop(task_id, None)
-                    _in_scheduler_pause.set(depth)
-            self._row_lock_registry.record_acquire(task_id, res_id, graph)
-            acquired.append(res_id)
-        return acquired
+        return await self._row_lock_protocol.acquire(task_id, resource_ids)
 
     def release_row_locks(self, task_id: int, resources: list[str] | None = None) -> None:
-        graph = _async_cooperative._async_wait_graph
-        for res_id, _lock_id in self._row_lock_registry.pop(task_id, graph, resources):
-            for _waiter, future in self._row_lock_waiters.get(res_id, []):
-                if not future.done():
-                    future.set_result(None)
+        self._row_lock_protocol.release(task_id, resources)
 
     def report_and_wait(self, _frame: Any, _task_id: int) -> bool:
         """Match the SQL interception scheduler port during replay.
