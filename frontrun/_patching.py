@@ -40,8 +40,8 @@ def patch_method(
     if original is None:
         return False
 
-    originals[key] = original
     setattr(target, attr_name, make_wrapper(original))
+    originals[key] = original
     patches.append((target, attr_name, original))
     return True
 

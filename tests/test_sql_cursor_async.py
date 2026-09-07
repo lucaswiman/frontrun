@@ -25,41 +25,11 @@ from frontrun._sql_cursor_async import (
     patch_sql_async,
     unpatch_sql_async,
 )
+from tests.io_test_helpers import IOLog
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class IOLog:
-    """Collects IO events reported to the reporter callback."""
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, str]] = []
-        self._lock = threading.Lock()
-
-    def __call__(self, resource_id: str, kind: str) -> None:
-        with self._lock:
-            self.events.append((resource_id, kind))
-
-    def clear(self) -> None:
-        with self._lock:
-            self.events.clear()
-
-    @property
-    def resource_ids(self) -> list[str]:
-        with self._lock:
-            return [r for r, _ in self.events]
-
-    @property
-    def kinds(self) -> list[str]:
-        with self._lock:
-            return [k for _, k in self.events]
-
-    def events_for_table(self, table: str) -> list[tuple[str, str]]:
-        prefix = f"sql:{table}"
-        with self._lock:
-            return [(r, k) for r, k in self.events if r == prefix or r.startswith(f"{prefix}:")]
 
 
 async def _make_async_db() -> aiosqlite.Connection:

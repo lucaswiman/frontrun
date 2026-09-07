@@ -10,6 +10,10 @@ Covers:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 import frontrun
 from frontrun._trace_format import (
     SourceLineEvent,
@@ -30,21 +34,19 @@ from frontrun._trace_format import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def recording_frame() -> SimpleNamespace:
+    return SimpleNamespace(
+        f_code=SimpleNamespace(co_filename="counter.py", co_name="increment"), f_lineno=10, f_lasti=0
+    )
+
+
 class TestTraceRecorder:
-    def test_record_basic(self) -> None:
+    def test_record_basic(self, recording_frame: SimpleNamespace) -> None:
         """Recording an event captures frame info."""
 
-        class FakeCode:
-            co_filename = "counter.py"
-            co_name = "increment"
-
-        class FakeFrame:
-            f_code = FakeCode()
-            f_lineno = 10
-            f_lasti = 0
-
         recorder = TraceRecorder()
-        recorder.record(thread_id=0, frame=FakeFrame(), opcode="LOAD_ATTR", access_type="read", attr_name="value")
+        recorder.record(thread_id=0, frame=recording_frame, opcode="LOAD_ATTR", access_type="read", attr_name="value")
 
         assert len(recorder.events) == 1
         ev = recorder.events[0]
@@ -56,60 +58,33 @@ class TestTraceRecorder:
         assert ev.access_type == "read"
         assert ev.attr_name == "value"
 
-    def test_record_captures_obj_type(self) -> None:
+    def test_record_captures_obj_type(self, recording_frame: SimpleNamespace) -> None:
         """Object type name is captured from the object."""
 
         class Counter:
             value = 0
 
-        class FakeCode:
-            co_filename = "counter.py"
-            co_name = "increment"
-
-        class FakeFrame:
-            f_code = FakeCode()
-            f_lineno = 10
-            f_lasti = 0
-
         recorder = TraceRecorder()
         recorder.record(
-            thread_id=0, frame=FakeFrame(), opcode="LOAD_ATTR", access_type="read", attr_name="value", obj=Counter()
+            thread_id=0, frame=recording_frame, opcode="LOAD_ATTR", access_type="read", attr_name="value", obj=Counter()
         )
 
         assert recorder.events[0].obj_type_name == "Counter"
 
-    def test_disabled_recorder_skips(self) -> None:
+    def test_disabled_recorder_skips(self, recording_frame: SimpleNamespace) -> None:
         """When disabled, record() is a no-op."""
 
-        class FakeCode:
-            co_filename = "test.py"
-            co_name = "f"
-
-        class FakeFrame:
-            f_code = FakeCode()
-            f_lineno = 1
-            f_lasti = 0
-
         recorder = TraceRecorder(enabled=False)
-        recorder.record(thread_id=0, frame=FakeFrame(), opcode="LOAD_ATTR", access_type="read")
+        recorder.record(thread_id=0, frame=recording_frame, opcode="LOAD_ATTR", access_type="read")
         assert len(recorder.events) == 0
 
-    def test_step_index_increments(self) -> None:
+    def test_step_index_increments(self, recording_frame: SimpleNamespace) -> None:
         """Each recorded event gets a sequential step index."""
 
-        class FakeCode:
-            co_filename = "test.py"
-            co_name = "f"
-
-        class FakeFrame:
-            f_code = FakeCode()
-            f_lineno = 1
-            f_lasti = 0
-
         recorder = TraceRecorder()
-        recorder.record(thread_id=0, frame=FakeFrame(), opcode="LOAD_ATTR", access_type="read")
-        recorder.record(thread_id=1, frame=FakeFrame(), opcode="LOAD_ATTR", access_type="read")
-        recorder.record(thread_id=0, frame=FakeFrame(), opcode="STORE_ATTR", access_type="write")
+        recorder.record(thread_id=0, frame=recording_frame, opcode="LOAD_ATTR", access_type="read")
+        recorder.record(thread_id=1, frame=recording_frame, opcode="LOAD_ATTR", access_type="read")
+        recorder.record(thread_id=0, frame=recording_frame, opcode="STORE_ATTR", access_type="write")
 
         assert [ev.step_index for ev in recorder.events] == [0, 1, 2]
 
@@ -335,16 +310,20 @@ class TestConflictClassification:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def lost_update_events() -> list[TraceEvent]:
+    return [
+        TraceEvent(0, 0, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
+        TraceEvent(1, 1, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
+        TraceEvent(2, 0, "counter.py", 11, "increment", "STORE_ATTR", "write", "value", "Counter"),
+        TraceEvent(3, 1, "counter.py", 11, "increment", "STORE_ATTR", "write", "value", "Counter"),
+    ]
+
+
 class TestFormatting:
-    def test_basic_format(self) -> None:
+    def test_basic_format(self, lost_update_events: list[TraceEvent]) -> None:
         """format_trace produces readable output for a lost-update race."""
-        events = [
-            TraceEvent(0, 0, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-            TraceEvent(1, 1, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-            TraceEvent(2, 0, "counter.py", 11, "increment", "STORE_ATTR", "write", "value", "Counter"),
-            TraceEvent(3, 1, "counter.py", 11, "increment", "STORE_ATTR", "write", "value", "Counter"),
-        ]
-        output = format_trace(events, num_threads=2, num_explored=3)
+        output = format_trace(lost_update_events, num_threads=2, num_explored=3)
         assert "Race condition found after 3 interleavings" in output
         assert "Thread 0" in output
         assert "Thread 1" in output
@@ -392,49 +371,32 @@ class TestFormatting:
         assert "LOAD_ATTR" in output
         assert "STORE_ATTR" in output
 
-    def test_reproduction_stats_shown(self) -> None:
-        """Reproduction stats are included in the output when provided."""
-        events = [
-            TraceEvent(0, 0, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-            TraceEvent(1, 1, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-            TraceEvent(2, 0, "counter.py", 11, "increment", "STORE_ATTR", "write", "value", "Counter"),
-            TraceEvent(3, 1, "counter.py", 11, "increment", "STORE_ATTR", "write", "value", "Counter"),
-        ]
-        output = format_trace(events, num_threads=2, num_explored=3, reproduction_attempts=10, reproduction_successes=7)
-        assert "7/10" in output
-        assert "70%" in output
+    @pytest.mark.parametrize(
+        ("attempts", "successes", "fraction", "percentage"),
+        [(10, 7, "7/10", "70%"), (10, 0, "0/10", "0%"), (3, 2, "2/3", "67%")],
+        ids=["successes", "zero-successes", "rounds-not-truncates"],
+    )
+    def test_reproduction_stats(
+        self,
+        lost_update_events: list[TraceEvent],
+        attempts: int,
+        successes: int,
+        fraction: str,
+        percentage: str,
+    ) -> None:
+        output = format_trace(
+            lost_update_events,
+            num_threads=2,
+            reproduction_attempts=attempts,
+            reproduction_successes=successes,
+        )
+        assert fraction in output
+        assert percentage in output
 
-    def test_reproduction_stats_not_shown_when_zero(self) -> None:
+    def test_reproduction_stats_not_shown_when_zero(self, lost_update_events: list[TraceEvent]) -> None:
         """When reproduction_attempts=0, no reproduction line is shown."""
-        events = [
-            TraceEvent(0, 0, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-            TraceEvent(1, 1, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-        ]
-        output = format_trace(events, num_threads=2, reproduction_attempts=0, reproduction_successes=0)
+        output = format_trace(lost_update_events[:2], num_threads=2, reproduction_attempts=0, reproduction_successes=0)
         assert "Reproduced" not in output
-
-    def test_reproduction_stats_zero_successes(self) -> None:
-        """When the race never reproduces, show 0/N."""
-        events = [
-            TraceEvent(0, 0, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-            TraceEvent(1, 1, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-        ]
-        output = format_trace(events, num_threads=2, reproduction_attempts=10, reproduction_successes=0)
-        assert "0/10" in output
-        assert "0%" in output
-
-    def test_reproduction_percentage_rounds_not_truncates(self) -> None:
-        """Reproduction percentage should be rounded, not floor-divided.
-
-        2/3 = 66.67% → should display 67%, not 66%.
-        """
-        events = [
-            TraceEvent(0, 0, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-            TraceEvent(1, 1, "counter.py", 10, "increment", "LOAD_ATTR", "read", "value", "Counter"),
-        ]
-        output = format_trace(events, num_threads=2, reproduction_attempts=3, reproduction_successes=2)
-        assert "2/3" in output
-        assert "67%" in output
 
 
 # ---------------------------------------------------------------------------

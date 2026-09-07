@@ -27,36 +27,11 @@ from frontrun._io_detection import (
     set_io_reporter,
     unpatch_io,
 )
+from tests.io_test_helpers import IOLog
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class IOLog:
-    """Collects IO events reported to the reporter callback."""
-
-    def __init__(self):
-        self.events: list[tuple[str, str]] = []
-        self._lock = threading.Lock()
-
-    def __call__(self, resource_id: str, kind: str) -> None:
-        with self._lock:
-            self.events.append((resource_id, kind))
-
-    def clear(self):
-        with self._lock:
-            self.events.clear()
-
-    @property
-    def resource_ids(self) -> list[str]:
-        with self._lock:
-            return [r for r, _ in self.events]
-
-    @property
-    def kinds(self) -> list[str]:
-        with self._lock:
-            return [k for _, k in self.events]
 
 
 @pytest.fixture(autouse=True)

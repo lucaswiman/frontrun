@@ -55,6 +55,7 @@ class SqlAccessResult(NamedTuple):
     temporal_clauses: dict[str, str] | None
     ast: Any | None = None  # Pre-parsed sqlglot AST (when available from _sqlglot_parse)
     delete_tables: set[str] | None = None  # Tables targeted by DELETE (for phantom read detection)
+    insert_tables: set[str] | None = None  # Explicit INSERT targets, including targets also read
 
 
 _EMPTY = SqlAccessResult(set(), set(), None, None, None, None, None)
@@ -374,6 +375,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
     all_write: set[str] = set()
     all_read: set[str] = set()
     all_delete: set[str] = set()
+    all_insert: set[str] = set()
     all_lock_intent: LockIntent | None = None
     all_tx_op: TxControl | None = None
     all_temporal: dict[str, str] | None = None
@@ -511,6 +513,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                     target_node = tbl if isinstance(tbl, exp.Table) else None
                     if target_node is not None:
                         write.add(target_node.name)
+                        all_insert.add(target_node.name)
                     # Source tables: read every table except the INSERT target
                     # node itself.  Identity comparison (not name) preserves
                     # self-table INSERT...SELECT (read AND write of the same
@@ -537,6 +540,12 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
                     if isinstance(target, exp.Table):
                         write.add(target.name)
                         read.add(target.name)
+                        for when in node.find_all(exp.When):
+                            action = when.args.get("then")
+                            if isinstance(action, exp.Insert):
+                                all_insert.add(target.name)
+                            elif isinstance(action, exp.Var) and action.name.upper() == "DELETE":
+                                all_delete.add(target.name)
                     for t in node.find_all(exp.Table):
                         if t.name not in write:
                             read.add(t.name)
@@ -565,7 +574,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
             # the write set before the top-level node's source-read pass runs.
             for cte_node in ctes:
                 inner = cte_node.this
-                if isinstance(inner, (exp.Update, exp.Delete, exp.Insert)):
+                if isinstance(inner, (exp.Update, exp.Delete, exp.Insert, exp.Merge)):
                     _classify_node(inner, top_level=False)
 
             _classify_node(ast, top_level=True)
@@ -592,6 +601,7 @@ def _sqlglot_parse(sql: str) -> SqlAccessResult | None:
         all_temporal,
         result_ast,
         all_delete if all_delete else None,
+        all_insert if all_insert else None,
     )
 
 

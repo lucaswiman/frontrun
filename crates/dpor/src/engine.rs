@@ -755,44 +755,53 @@ mod tests {
         assert_eq!(engine.executions_completed(), 1);
     }
 
-    #[test]
-    fn test_two_threads_write_write_conflict() {
-        let mut engine = DporEngine::new(2, None, 1000, None, SearchStrategy::Dfs);
-        let mut exec_count = 0;
-
+    /// Explore programs in which each thread performs one memory access.
+    /// An unfinished execution must fail the test, not count as a trace.
+    fn single_access_trace_count(accesses: &[(ObjectId, AccessKind)]) -> u64 {
+        let mut engine = DporEngine::new(accesses.len(), None, 100_000, None, SearchStrategy::Dfs);
         loop {
             let mut execution = engine.begin_execution();
-            let first = engine.schedule(&mut execution).unwrap();
-            engine.process_access(&mut execution, first, 1, AccessKind::Write);
-            execution.finish_thread(first);
-
-            let second = engine.schedule(&mut execution).unwrap();
-            engine.process_access(&mut execution, second, 1, AccessKind::Write);
-            execution.finish_thread(second);
-
-            exec_count += 1;
+            for _ in accesses {
+                let chosen = engine.schedule(&mut execution).expect("unfinished program");
+                let (object, kind) = accesses[chosen];
+                engine.process_access(&mut execution, chosen, object, kind);
+                execution.finish_thread(chosen);
+            }
+            assert!(execution.runnable_threads().is_empty());
             if !engine.next_execution() {
-                break;
+                return engine.executions_completed();
             }
         }
-
-        assert_eq!(exec_count, 2);
     }
 
     #[test]
-    fn test_read_read_no_conflict() {
-        let mut engine = DporEngine::new(2, None, 1000, None, SearchStrategy::Dfs);
-        let mut execution = engine.begin_execution();
+    fn test_single_access_trace_counts() {
+        use AccessKind::{Read as R, Write as W};
+        let cases: &[(&str, &[(ObjectId, AccessKind)], u64)] = &[
+            ("independent writes", &[(0, W), (1, W)], 1),
+            ("independent reads", &[(1, R), (1, R)], 1),
+            ("two writers", &[(1, W), (1, W)], 2),
+            ("three writers", &[(1, W), (1, W), (1, W)], 6),
+            ("four writers", &[(1, W), (1, W), (1, W), (1, W)], 24),
+            // Each subset of readers before the writer defines a distinct trace.
+            // Both initial writer positions guard against losing earlier readers.
+            ("readers then writer", &[(1, R), (1, R), (1, W)], 4),
+            ("writer then readers", &[(1, W), (1, R), (1, R)], 4),
+            ("four readers", &[(1, W), (1, R), (1, R), (1, R), (1, R)], 16),
+            ("independent pairs", &[(1, W), (1, W), (2, W), (2, W)], 4),
+        ];
+        for &(name, accesses, expected) in cases {
+            assert_eq!(single_access_trace_count(accesses), expected, "{name}");
+        }
+    }
 
-        let first = engine.schedule(&mut execution).unwrap();
-        engine.process_access(&mut execution, first, 1, AccessKind::Read);
-        execution.finish_thread(first);
-
-        let second = engine.schedule(&mut execution).unwrap();
-        engine.process_access(&mut execution, second, 1, AccessKind::Read);
-        execution.finish_thread(second);
-
-        assert!(!engine.next_execution());
+    #[test]
+    fn test_independent_intermediate_trace_bound() {
+        use AccessKind::Write;
+        // Two trace classes; hybrid inline/deferred wakeups may revisit one
+        // via an independent intermediate. Preserve the existing bounded claim.
+        let count = single_access_trace_count(&[(1, Write), (2, Write), (1, Write)]);
+        assert!((2..=4).contains(&count), "independent intermediate: {count}");
     }
 
     #[test]
@@ -859,23 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn test_independent_threads_one_execution() {
-        let mut engine = DporEngine::new(2, None, 1000, None, SearchStrategy::Dfs);
-        let mut execution = engine.begin_execution();
-
-        let t0 = engine.schedule(&mut execution).unwrap();
-        engine.process_access(&mut execution, t0, 0, AccessKind::Write);
-        execution.finish_thread(t0);
-
-        let t1 = engine.schedule(&mut execution).unwrap();
-        engine.process_access(&mut execution, t1, 1, AccessKind::Write);
-        execution.finish_thread(t1);
-
-        assert!(!engine.next_execution());
-        assert_eq!(engine.executions_completed(), 1);
-    }
-
-    #[test]
     fn test_post_release_access_races_with_post_acquire_access() {
         let mut engine = DporEngine::new(2, None, 1000, None, SearchStrategy::Dfs);
         let mut execution = engine.begin_execution();
@@ -911,42 +903,6 @@ mod tests {
         engine.process_access(&mut execution, 1, OBJECT, AccessKind::Read);
 
         assert!(engine.pending_races.is_empty(), "the release/acquire edge must still order the published prefix");
-    }
-
-    #[test]
-    fn test_three_threads_write_conflict() {
-        // Regression test: with the old single-last-access tracking,
-        // Thread A's access would be overwritten by Thread B's, so the
-        // conflict between A and C was never explored. The per-thread
-        // map ensures all conflicts are detected.
-        let mut engine = DporEngine::new(3, None, 1000, None, SearchStrategy::Dfs);
-        let mut exec_count = 0;
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            // Each thread writes to the same object (id=1)
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                engine.process_access(&mut execution, chosen, 1, AccessKind::Write);
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        // 3 threads all writing to the same object: 3! = 6 orderings
-        assert_eq!(exec_count, 6);
     }
 
     /// Model of the multi-lock race (defect #11):
@@ -1096,117 +1052,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_three_threads_read_write_conflict() {
-        // Thread A reads, Thread B reads, Thread C writes — all same object.
-        // With the old implementation, Thread A's read could be lost.
-        let mut engine = DporEngine::new(3, None, 1000, None, SearchStrategy::Dfs);
-        let mut exec_count = 0;
-        let thread_kinds = [AccessKind::Read, AccessKind::Read, AccessKind::Write];
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                engine.process_access(&mut execution, chosen, 1, thread_kinds[chosen]);
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        // Read-Read is independent, but Read-Write and Write-Read conflict.
-        // C(write) conflicts with both A(read) and B(read), so C must be
-        // explored in all positions relative to both A and B.
-        // Expected: 3 orderings (C before both, C between, C after both)
-        assert!(exec_count >= 3, "expected at least 3 executions, got {exec_count}");
-    }
-
-    /// Four threads each doing one write to the same object.
-    /// Verifies that the wakeup tree correctly handles 4-way write conflicts.
-    /// All 4! = 24 orderings are distinct traces and must be explored.
-    #[test]
-    fn test_four_threads_write_conflict() {
-        let mut engine = DporEngine::new(4, None, 10000, None, SearchStrategy::Dfs);
-        let mut exec_count = 0;
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                engine.process_access(&mut execution, chosen, 1, AccessKind::Write);
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        // 4 threads all writing to the same object: 4! = 24 orderings
-        assert_eq!(exec_count, 24);
-    }
-
-    /// Two independent pairs: T0/T1 write X, T2/T3 write Y.
-    /// Should explore 2 * 2 = 4 orderings (independent pairs don't cross).
-    #[test]
-    fn test_two_independent_pairs() {
-        let mut engine = DporEngine::new(4, None, 10000, None, SearchStrategy::Dfs);
-        let mut exec_count = 0;
-        // T0 and T1 write object 1; T2 and T3 write object 2
-        let thread_objects = [1u64, 1, 2, 2];
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                engine.process_access(
-                    &mut execution,
-                    chosen,
-                    thread_objects[chosen],
-                    AccessKind::Write,
-                );
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        // Two independent pairs: 2! * 2! = 4 orderings
-        assert_eq!(exec_count, 4);
-    }
-
     /// Model of dining philosophers (simplified):
     /// 2 threads, each locks two resources in opposite order.
     /// Thread 0: write(A), write(B)
@@ -1267,174 +1112,6 @@ mod tests {
             exec_count >= 3,
             "expected at least 3 executions for 2-philosopher, got {exec_count}"
         );
-    }
-
-    /// Writer-Readers: T0 writes x, T1 reads x, T2 reads x.
-    ///
-    /// There are exactly 4 distinct Mazurkiewicz traces (modulo the
-    /// independence of read-read on the same object):
-    ///
-    ///   1. W-R1-R2  (≡ W-R2-R1 since R1♦R2)
-    ///   2. R1-W-R2
-    ///   3. R2-W-R1
-    ///   4. R1-R2-W  (≡ R2-R1-W since R1♦R2)
-    ///
-    /// Without sleep set propagation, classic DPOR explores 5+ executions
-    /// because it doesn't recognize that e.g. R1-R2-W and R2-R1-W are
-    /// equivalent traces (the reads commute).
-    ///
-    /// With sleep set propagation (Algorithm 2 line 16, JACM'17 p.24:
-    ///   Sleep' = {q ∈ sleep(E) | E ⊢ p♦q}
-    /// ), after exploring R2-W-R1 with T0 visited/sleeping at position 0,
-    /// when we explore T2 at position 0 (T2-...), T1 is also sleeping and
-    /// independent of T2 (read♦read), so T1 stays asleep. This prevents
-    /// exploring both T2-T0-T1 and T2-T1-T0, collapsing them into one.
-    ///
-    /// Paper ref: JACM'17 Section 11 Table 1 (p.36): the "readers" benchmark
-    /// with n=3 has 4 source-set traces vs more for classic DPOR.
-    #[test]
-    fn test_writer_readers_sleep_propagation() {
-        let mut engine = DporEngine::new(3, None, 10000, None, SearchStrategy::Dfs);
-        let thread_kinds = [AccessKind::Write, AccessKind::Read, AccessKind::Read];
-        let mut exec_count = 0;
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                engine.process_access(&mut execution, chosen, 1, thread_kinds[chosen]);
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        // With trace caching (Phase 2b), sleep set propagation extends to new
-        // branches. The cached per-thread access unions allow the independence
-        // check to work at new positions: read♦read → readers stay asleep.
-        // This collapses equivalent reader orderings, giving exactly 4 traces
-        // (one per write position: before both, between R1-R2, between R2-R1, after both).
-        //
-        // Paper ref: JACM'17 Table 1 (p.36) — readers(2) with source sets = 4.
-        // Previously 5 with replay-only propagation (one redundant reader ordering).
-        assert_eq!(
-            exec_count, 4,
-            "writer-readers (1W + 2R) should explore exactly 4 traces with trace caching, got {exec_count}"
-        );
-    }
-
-    /// Five threads: T0 writes x, T1-T4 all read x.
-    ///
-    /// The distinct Mazurkiewicz traces are determined by where the write
-    /// appears relative to the reads. Since all reads are mutually
-    /// independent (read♦read), the optimal number of traces is 5
-    /// (one per position of W in the sequence).
-    ///
-    /// With Phase 1 sleep set propagation alone, we get 16 traces
-    /// (= sum of C(4,k) for k=0..4 — the binomial coefficients counting
-    /// how many readers appear before W). Full optimality (5 traces)
-    /// requires source set filtering (Phase 2, JACM'17 Def 4.3 p.15):
-    /// adding only one thread per race prevents the combinatorial blowup
-    /// of reader orderings.
-    ///
-    /// Paper ref: JACM'17 Table 1 (p.36), "readers" benchmark.
-    #[test]
-    fn test_writer_four_readers_sleep_propagation() {
-        let mut engine = DporEngine::new(5, None, 100_000, None, SearchStrategy::Dfs);
-        let thread_kinds = [
-            AccessKind::Write,
-            AccessKind::Read,
-            AccessKind::Read,
-            AccessKind::Read,
-            AccessKind::Read,
-        ];
-        let mut exec_count = 0;
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                engine.process_access(&mut execution, chosen, 1, thread_kinds[chosen]);
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        // With trace caching (Phase 2b), sleep set propagation extends to new
-        // branches. For readers(N), the optimal count with source sets is 2^N
-        // (JACM'17 Table 1 p.36): each subset of {R1,...,RN} that appears
-        // before the writer gives a distinct Mazurkiewicz trace. For N=4: 2^4 = 16.
-        //
-        // Previously ~65 with replay-only propagation. Trace caching enables
-        // reader-reader independence at new branches, collapsing equivalent
-        // reader orderings within each "before/after" partition.
-        assert_eq!(
-            exec_count, 16,
-            "writer-readers (1W + 4R) should explore exactly 16 traces with trace caching, got {exec_count}"
-        );
-    }
-
-    /// Sleep set propagation must not break independent-pair reduction.
-    /// T0/T1 write X, T2/T3 write Y — two independent pairs should still
-    /// explore exactly 2! × 2! = 4 orderings with propagation enabled.
-    #[test]
-    fn test_independent_pairs_with_propagation() {
-        let mut engine = DporEngine::new(4, None, 10000, None, SearchStrategy::Dfs);
-        let thread_objects = [1u64, 1, 2, 2];
-        let mut exec_count = 0;
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                engine.process_access(
-                    &mut execution,
-                    chosen,
-                    thread_objects[chosen],
-                    AccessKind::Write,
-                );
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        // Independent pairs: 2! × 2! = 4 orderings — same as without propagation
-        assert_eq!(exec_count, 4);
     }
 
     /// Lastzero(3): models the lastzero benchmark from POPL'14 Fig.4 (p.11).
@@ -1547,140 +1224,6 @@ mod tests {
         assert!(
             exec_count <= 60,
             "lastzero(3) should explore at most 60 traces, got {exec_count}"
-        );
-    }
-
-    // --- Deferred race detection tests (Phase 3) ---
-
-    /// Three threads: T0 and T2 race on X, T1 is independent (writes Y).
-    /// With deferred race detection and notdep sequences, DPOR computes
-    /// notdep(e0, E).e2 = [T1, T2] (T1 is independent of T0's write to X).
-    ///
-    /// The notdep sequence [T1, T2] guides exploration to replay T1 first
-    /// (independent), then run T2 (the racing thread) before T0's write.
-    /// Since T1 is fully independent, sleep sets collapse it: the two
-    /// Mazurkiewicz traces are {T0<T2, T2<T0} on X, with T1 anywhere.
-    #[test]
-    fn test_notdep_three_threads_independent_intermediate() {
-        let mut engine = DporEngine::new(3, None, 1000, None, SearchStrategy::Dfs);
-        // T0 writes X, T1 writes Y, T2 writes X
-        let thread_objects = [1u64, 2, 1];
-        let mut exec_count = 0;
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                engine.process_access(
-                    &mut execution,
-                    chosen,
-                    thread_objects[chosen],
-                    AccessKind::Write,
-                );
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        // T1 is fully independent (writes Y, not X). The two distinct
-        // Mazurkiewicz traces are determined by the relative order of
-        // T0 and T2's writes to X. T1 can go anywhere without changing
-        // the trace equivalence class. With pure deferred+notdep, this
-        // gives exactly 2. With the hybrid approach (inline wakeup +
-        // deferred notdep), the inline insertions may add single-thread
-        // entries that create a few extra explorations, but the count
-        // should remain small.
-        assert!(
-            exec_count <= 4,
-            "3 threads (T0/T2 race on X, T1 independent on Y): ≤4 traces, got {exec_count}"
-        );
-        assert!(
-            exec_count >= 2,
-            "3 threads (T0/T2 race on X, T1 independent on Y): ≥2 traces, got {exec_count}"
-        );
-    }
-
-    /// Basic deferred race: 2 threads with write-write conflict.
-    /// Should still explore exactly 2 executions with deferred detection.
-    #[test]
-    fn test_deferred_two_threads_write_conflict() {
-        let mut engine = DporEngine::new(2, None, 1000, None, SearchStrategy::Dfs);
-        let mut exec_count = 0;
-
-        loop {
-            let mut execution = engine.begin_execution();
-            let first = engine.schedule(&mut execution).unwrap();
-            engine.process_access(&mut execution, first, 1, AccessKind::Write);
-            execution.finish_thread(first);
-
-            let second = engine.schedule(&mut execution).unwrap();
-            engine.process_access(&mut execution, second, 1, AccessKind::Write);
-            execution.finish_thread(second);
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        assert_eq!(
-            exec_count, 2,
-            "2 threads write-write conflict with deferred detection: 2 executions, got {exec_count}"
-        );
-    }
-
-    /// Notdep should skip dependent intermediate: T0/T2 write X, T1 also writes X.
-    /// T1 is DEPENDENT on T0 (same object, write-write), so notdep = [T2] only.
-    /// All 3 threads conflict on X → 3! = 6 orderings, but with sleep sets
-    /// this may be reduced. Should be ≤ 24 at most.
-    #[test]
-    fn test_notdep_skips_dependent_intermediate() {
-        let mut engine = DporEngine::new(3, None, 1000, None, SearchStrategy::Dfs);
-        let mut exec_count = 0;
-
-        loop {
-            let mut execution = engine.begin_execution();
-
-            loop {
-                let runnable = execution.runnable_threads();
-                if runnable.is_empty() {
-                    break;
-                }
-                let chosen = match engine.schedule(&mut execution) {
-                    Some(t) => t,
-                    None => break,
-                };
-                // All 3 threads write to the same object
-                engine.process_access(&mut execution, chosen, 1, AccessKind::Write);
-                execution.finish_thread(chosen);
-            }
-
-            exec_count += 1;
-            if !engine.next_execution() {
-                break;
-            }
-        }
-
-        assert!(
-            exec_count <= 24,
-            "3 threads all writing same object: should explore ≤ 24 traces, got {exec_count}"
-        );
-        // With full 3-way conflict, we expect 6 (3! orderings)
-        assert!(
-            exec_count >= 6,
-            "3 threads all writing same object: should explore ≥ 6 traces, got {exec_count}"
         );
     }
 

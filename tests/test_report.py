@@ -8,6 +8,8 @@ import tempfile
 import threading
 import time
 
+import pytest
+
 from frontrun._report import (
     ExecutionRecord,
     ExplorationReport,
@@ -147,7 +149,8 @@ def test_generate_html_report():
         os.unlink(path)
 
 
-def test_explore_dpor_with_report():
+@pytest.mark.parametrize("stop_on_first", [True, False])
+def test_explore_dpor_with_report(stop_on_first: bool):
     """explore() generates a report when _global_report_path is set."""
     import frontrun._report
 
@@ -170,6 +173,7 @@ def test_explore_dpor_with_report():
             workers=[lambda c: c.increment(), lambda c: c.increment()],
             invariant=lambda c: c.value == 2,
             preemption_bound=2,
+            stop_on_first=stop_on_first,
         )
 
         # Should have generated a report file
@@ -202,8 +206,10 @@ def test_explore_dpor_with_report():
         total_switches = sum(len(ex["switch_points"]) for ex in data["executions"])
         assert total_switches > 0, "Expected at least one switch point"
 
-        # Check switch point structure
-        for ex in data["executions"]:
+        failed_executions = {n for n, _ in result.failures}
+        assert failed_executions
+        for execution_number, ex in enumerate(data["executions"], start=1):
+            assert ex["invariant_held"] == (execution_number not in failed_executions)
             for sp in ex["switch_points"]:
                 assert "schedule_index" in sp
                 assert "from_thread" in sp

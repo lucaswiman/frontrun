@@ -211,10 +211,7 @@ def _handle_tx_op(reporter: Any, tx: Any, *, release_locks: bool = True) -> None
         store._is_autobegin = False
         store._tx_buffer = []
         store._tx_savepoints = {}
-    elif tx is TxOp.COMMIT:
-        _prepare_tx_end(reporter, tx)
-        _finalize_tx_end(tx, release_locks=release_locks)
-    elif tx is TxOp.ROLLBACK:
+    elif tx in (TxOp.COMMIT, TxOp.ROLLBACK):
         _prepare_tx_end(reporter, tx)
         _finalize_tx_end(tx, release_locks=release_locks)
     else:  # SavepointOp

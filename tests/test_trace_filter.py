@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import inspect
 import os
 import threading
+from contextlib import nullcontext
 
 import pytest
 
@@ -214,32 +213,6 @@ class TestActiveFilter:
         assert results == [True], "Worker thread should see the active trace filter"
 
 
-class TestTraceFilterFinalization:
-    def _assert_no_unconditional_clear(self, source: str) -> None:
-        tree = ast.parse(source)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Try) and node.finalbody:
-                for stmt in node.finalbody:
-                    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-                        func = stmt.value.func
-                        if isinstance(func, ast.Name) and func.id == "_set_active_trace_filter":
-                            args = stmt.value.args
-                            if len(args) == 1 and isinstance(args[0], ast.Constant) and args[0].value is None:
-                                raise AssertionError(
-                                    "_set_active_trace_filter(None) is called unconditionally in finally"
-                                )
-
-    def test_sync_dpor_finally_is_conditional(self) -> None:
-        from frontrun._dpor_runtime.explore import _explore_dpor
-
-        self._assert_no_unconditional_clear(inspect.getsource(_explore_dpor))
-
-    def test_async_dpor_finally_is_conditional(self) -> None:
-        from frontrun.async_dpor import _explore_async_dpor
-
-        self._assert_no_unconditional_clear(inspect.getsource(_explore_async_dpor))
-
-
 # ---------------------------------------------------------------------------
 # Unit tests for is_cmdline_user_code (python -c tracing)
 # ---------------------------------------------------------------------------
@@ -344,78 +317,39 @@ class TestTraceFilterCleanupOnException:
         # The trace filter must be restored, not leaked
         assert get_active_trace_filter() == old_filter, "Trace filter leaked after exception in explore_random setup"
 
-    def test_dpor_explore_cleans_filter_on_setup_error(self) -> None:
-        """If serializable_invariant setup raises, trace filter is cleaned up."""
-        import frontrun
-
-        def bad_setup():
-            raise RuntimeError("setup failed!")
-
-        old_filter = get_active_trace_filter()
-        with pytest.raises(RuntimeError, match="setup failed"):
-            frontrun.explore(
-                setup=bad_setup,
-                workers=[lambda s: None],
-                invariant=lambda s: True,
-                serializable_invariant=True,
-                trace_packages=["my_package"],
-                reproduce_on_failure=0,
-            )
-        assert get_active_trace_filter() == old_filter, "Trace filter leaked after exception in explore setup"
-
-    def test_async_dpor_restores_filter_on_baseline_setup_error(self) -> None:
-        """Async baseline failures must restore the surrounding trace filter."""
+    @pytest.mark.parametrize("strategy,asynchronous", [("dpor", False), ("dpor", True), ("random", False)])
+    @pytest.mark.parametrize("setup_error", [False, True])
+    @pytest.mark.parametrize("trace_packages", [None, ["inner.*"]])
+    def test_exploration_restores_surrounding_filter(self, strategy, asynchronous, setup_error, trace_packages) -> None:
         import frontrun
 
         surrounding = TraceFilter(["surrounding.*"])
 
-        def bad_setup() -> object:
-            raise RuntimeError("async setup failed!")
+        def setup():
+            if setup_error:
+                raise RuntimeError("setup failed")
+            return object()
 
-        async def worker(_state: object) -> None:
+        async def async_worker(_state):
             pass
 
         old_filter = get_active_trace_filter()
         set_active_trace_filter(surrounding)
         try:
-            with pytest.raises(RuntimeError, match="async setup failed"):
-                asyncio.run(
-                    frontrun.explore(
-                        setup=bad_setup,
-                        workers=[worker],
-                        invariant=lambda _state: True,
-                        serializable_invariant=True,
-                        trace_packages=["inner.*"],
-                        reproduce_on_failure=0,
-                    )
-                )
-            assert get_active_trace_filter() is surrounding
-        finally:
-            set_active_trace_filter(old_filter)
-
-    def test_async_dpor_restores_filter_after_success(self) -> None:
-        """A normal async exploration must preserve an outer trace filter."""
-        import frontrun
-
-        surrounding = TraceFilter(["surrounding.*"])
-
-        async def worker(_state: object) -> None:
-            pass
-
-        old_filter = get_active_trace_filter()
-        set_active_trace_filter(surrounding)
-        try:
-            result = asyncio.run(
-                frontrun.explore(
-                    setup=object,
-                    workers=[worker],
+            with pytest.raises(RuntimeError, match="setup failed") if setup_error else nullcontext():
+                result = frontrun.explore(
+                    strategy=strategy,
+                    setup=setup,
+                    workers=[async_worker] if asynchronous else [lambda _state: None],
                     invariant=lambda _state: True,
-                    max_executions=1,
-                    trace_packages=["inner.*"],
+                    serializable_invariant=setup_error,
+                    trace_packages=trace_packages,
                     reproduce_on_failure=0,
+                    **({"max_executions": 1} if strategy == "dpor" else {"max_attempts": 1}),
                 )
-            )
-            assert result.property_holds
+                if asynchronous:
+                    result = asyncio.run(result)
+                assert result.property_holds
             assert get_active_trace_filter() is surrounding
         finally:
             set_active_trace_filter(old_filter)

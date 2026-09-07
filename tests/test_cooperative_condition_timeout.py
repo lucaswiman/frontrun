@@ -11,6 +11,8 @@ Finding 9c: ``CooperativeCondition.wait`` must fully release a reentrant lock
 ``threading.Condition._release_save``.
 """
 
+import pytest
+
 from frontrun._cooperative import (
     CooperativeCondition,
     CooperativeLock,
@@ -18,79 +20,19 @@ from frontrun._cooperative import (
 )
 
 
-def test_cancelled_ticket_does_not_absorb_notification():
-    """A timed-out (cancelled) ticket must not consume a future notify().
-
-    Scenario from the finding:
-      - T1 wait(timeout) times out: ticket 0 leaked/cancelled.
-      - T2 wait(): ticket 1, still waiting.
-      - T3 notify(): must wake T2, not be absorbed by the dead ticket 0.
-    """
+@pytest.mark.parametrize("expected_served", [[True], [True, False]])
+def test_cancelled_ticket_does_not_absorb_notification(expected_served: list[bool]) -> None:
+    """notify(1) skips a cancelled ticket and serves exactly one live waiter."""
     lock = CooperativeLock()
     cond = CooperativeCondition(lock)
 
-    lock.acquire()
+    with lock:
+        cond._next_ticket = 1
+        cond._cancel_ticket(0)
+        cond._next_ticket += len(expected_served)
+        cond.notify(1)
 
-    # Ticket 0 was taken by a waiter that timed out and cancelled it.
-    cond._next_ticket = 1
-    cond._cancel_ticket(0)
-
-    # Ticket 1 is taken by a live waiter T2.
-    live_ticket = cond._next_ticket
-    cond._next_ticket += 1
-
-    # T3 notifies once: this must serve the live waiter, not the dead ticket.
-    cond.notify(1)
-
-    lock.release()
-
-    assert cond._ticket_served(live_ticket), (
-        f"notify(1) was absorbed by the cancelled ticket; live waiter "
-        f"(ticket {live_ticket}) was not served. served={cond._served} "
-        f"cancelled={cond._cancelled}"
-    )
-
-
-def test_cancel_then_notify_only_serves_live():
-    """notify(1) with one cancelled + one live ticket serves exactly the live one."""
-    lock = CooperativeLock()
-    cond = CooperativeCondition(lock)
-    lock.acquire()
-
-    # tickets 0 (cancelled), 1 (live), 2 (live)
-    cond._next_ticket = 3
-    cond._cancel_ticket(0)
-
-    cond.notify(1)
-    lock.release()
-
-    assert cond._ticket_served(1), "first live ticket should be served by notify(1)"
-    assert not cond._ticket_served(2), "second live ticket should NOT be served by notify(1)"
-
-
-def test_full_timeout_then_real_wait_does_not_hang():
-    """End-to-end: a timed-out waiter must not steal the next notify().
-
-    Uses a real CooperativeRLock-free path with no scheduler context so wait()
-    times out quickly, but the ticket bookkeeping is still exercised.
-    """
-    lock = CooperativeLock()
-    cond = CooperativeCondition(lock)
-
-    lock.acquire()
-    # Simulate a waiter that already timed out and cancelled its ticket.
-    cond._next_ticket = 1
-    cond._cancel_ticket(0)
-    lock.release()
-
-    # A subsequent live waiter takes a ticket and gets notified.
-    lock.acquire()
-    live = cond._next_ticket
-    cond._next_ticket += 1
-    cond.notify(1)
-    lock.release()
-
-    assert cond._ticket_served(live)
+    assert [cond._ticket_served(ticket) for ticket in range(1, cond._next_ticket)] == expected_served
 
 
 def test_rlock_wait_fully_releases_and_restores():

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from frontrun._tracing import set_active_trace_filter as _set_active_trace_filter
 from frontrun.common import (
     compute_serializable_states,
     compute_serializable_states_async,
@@ -21,17 +20,11 @@ def compute_serializable_baseline_sync(
     """Return ``(serial_valid_states, serial_hash_fn)`` for the sync driver.
 
     When *serializable_invariant* is ``False``, returns ``(None, repr)``.
-    On any exception the active trace filter is cleared before re-raising.
     """
     if serializable_invariant is False:
         return None, repr
-    try:
-        hash_fn: Callable[[Any], Any] = resolve_serializable_hash_fn(serializable_invariant) or repr
-        valid = compute_serializable_states(setup, threads, state_hash=hash_fn)
-    except BaseException:
-        _set_active_trace_filter(None)
-        raise
-    return valid, hash_fn
+    hash_fn: Callable[[Any], Any] = resolve_serializable_hash_fn(serializable_invariant) or repr
+    return compute_serializable_states(setup, threads, state_hash=hash_fn), hash_fn
 
 
 async def compute_serializable_baseline_async(
@@ -42,13 +35,8 @@ async def compute_serializable_baseline_async(
     """Async counterpart to :func:`compute_serializable_baseline_sync`."""
     if serializable_invariant is False:
         return None, repr
-    try:
-        hash_fn: Callable[[Any], Any] = resolve_serializable_hash_fn(serializable_invariant) or repr
-        valid = await compute_serializable_states_async(setup, tasks, state_hash=hash_fn)
-    except BaseException:
-        _set_active_trace_filter(None)
-        raise
-    return valid, hash_fn
+    hash_fn: Callable[[Any], Any] = resolve_serializable_hash_fn(serializable_invariant) or repr
+    return await compute_serializable_states_async(setup, tasks, state_hash=hash_fn), hash_fn
 
 
 def format_race_failure_explanation(
