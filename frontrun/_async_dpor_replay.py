@@ -348,13 +348,13 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
             from frontrun._io_detection import (
                 set_dpor_scheduler_task,
                 set_dpor_thread_id_task,
-                set_io_reporter,
+                set_io_reporter_task,
                 set_tx_store_task,
             )
 
             set_dpor_scheduler_task(self)
             set_dpor_thread_id_task(task_id)
-            set_io_reporter(lambda _resource_id, _kind: None)
+            set_io_reporter_task(lambda _resource_id, _kind: None)
             store = set_tx_store_task()
             store._in_transaction = False
             store._is_autobegin = False
@@ -371,12 +371,11 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
         _scheduler_var.set(None)
         _task_id_var.set(None)
         if self._detect_sql or self._detect_redis:
-            from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter
+            from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter_task
 
             set_dpor_scheduler_task(None)
             set_dpor_thread_id_task(None)
-            if len(self._tasks_done) + 1 >= self._num_replay_tasks:
-                set_io_reporter(None)
+            set_io_reporter_task(None)
 
     def finish_task(self, task_id: int) -> None:
         self._tasks_done.add(task_id)

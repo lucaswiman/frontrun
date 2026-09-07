@@ -870,10 +870,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         if self._detect_sql or self._detect_redis:
 
             def _io_reporter(resource_id: str, kind: str) -> None:
-                # Dynamically read the current task ID so that when multiple
-                # async tasks share the same thread-local reporter, each
-                # I/O event is attributed to the task that actually runs the
-                # Redis/SQL command, not whichever task was set up last.
+                # Attribute accesses to the current task, falling back to the
+                # creator when invoked outside a managed task context.
                 current_task = _task_id_var.get()
                 if current_task is None:
                     current_task = task_id
@@ -968,7 +966,6 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         from frontrun._io_detection import (
             set_dpor_scheduler_task,
             set_dpor_thread_id_task,
-            set_io_reporter,
             set_io_reporter_task,
         )
 
@@ -978,14 +975,6 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         set_dpor_scheduler_task(None)
         set_dpor_thread_id_task(None)
         set_io_reporter_task(None)
-
-        # The IO reporter is per-OS-thread (shared by all tasks on the event
-        # loop), so only clear it when ALL tasks are done — clearing it when
-        # one task finishes would break I/O detection for the rest.
-        # Note: _cleanup_task_context runs BEFORE _mark_done, so the current
-        # task_id is not yet in _tasks_done; +1 accounts for it.
-        if len(self._tasks_done) + 1 >= self._num_engine_tasks and (self._detect_sql or self._detect_redis):
-            set_io_reporter(None)
 
     def get_shadow_stack(self, frame_id: int) -> ShadowStack:
         stack = self._shadow_stacks.get(frame_id)
