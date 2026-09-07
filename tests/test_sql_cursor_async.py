@@ -19,9 +19,10 @@ aiosqlite = pytest.importorskip("aiosqlite")
 
 import frontrun._sql_cursor_async as sql_cursor_async_mod
 from frontrun._io_detection import (
+    _dpor_scheduler_var,
+    _dpor_thread_id_var,
     _io_tls,
-    set_dpor_scheduler_task,
-    set_dpor_thread_id_task,
+    _tx_store_var,
     set_io_reporter,
     set_tx_store_task,
 )
@@ -81,16 +82,24 @@ def async_sql_scheduler() -> AsyncSqlScheduler:
     return AsyncSqlScheduler()
 
 
-def _install_async_sql_scheduler(scheduler: AsyncSqlScheduler) -> Any:
+def _install_async_sql_scheduler(scheduler: AsyncSqlScheduler) -> tuple[Any, tuple[Any, Any, Any]]:
+    tx_token = _tx_store_var.set(_tx_store_var.get())
     store = set_tx_store_task()
     store._in_transaction = True
     store._is_autobegin = True
     store._held_row_locks = set()
     store._pending_row_locks = []
-    set_dpor_scheduler_task(scheduler)
-    set_dpor_thread_id_task(0)
+    scheduler_token = _dpor_scheduler_var.set(scheduler)
+    thread_token = _dpor_thread_id_var.set(0)
     set_io_reporter(IOLog())
-    return store
+    return store, (scheduler_token, thread_token, tx_token)
+
+
+def _restore_async_sql_scheduler(tokens: tuple[Any, Any, Any]) -> None:
+    _dpor_scheduler_var.reset(tokens[0])
+    _dpor_thread_id_var.reset(tokens[1])
+    _tx_store_var.reset(tokens[2])
+    set_io_reporter(None)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +449,7 @@ async def test_shared_async_sql_pipeline_error_policy(
     async_sql_scheduler: AsyncSqlScheduler,
 ) -> None:
     scheduler = async_sql_scheduler
-    store = _install_async_sql_scheduler(scheduler)
+    store, tokens = _install_async_sql_scheduler(scheduler)
     store._pending_row_locks = ["sql:users"]
 
     async def fail() -> None:
@@ -460,10 +469,7 @@ async def test_shared_async_sql_pipeline_error_policy(
         assert scheduler.scheduled == 1
         assert len(scheduler.release_calls) == expected_releases
     finally:
-        set_dpor_scheduler_task(None)
-        set_dpor_thread_id_task(None)
-        set_tx_store_task()
-        set_io_reporter(None)
+        _restore_async_sql_scheduler(tokens)
 
 
 @pytest.mark.asyncio
@@ -920,25 +926,27 @@ class TestAsyncUpdateZeroRowRelease:
 
         prior = "sql:accounts:(('id', '1'),)"
         scheduler = async_sql_scheduler
-        store = _install_async_sql_scheduler(scheduler)
+        store, tokens = _install_async_sql_scheduler(scheduler)
         scheduler.held.add(prior)
         store._held_row_locks = {prior}
 
         async def execute(cursor: FakeCursor, _operation: object, _parameters: object) -> None:
             cursor.rowcount = 0
 
-        await _intercept_execute_async(
-            execute,
-            FakeCursor(),
-            "UPDATE accounts SET balance = %s WHERE id = %s",
-            (100, 2),
-            paramstyle="format",
-        )
-
-        assert len(scheduler.acquired) == 1
-        assert scheduler.release_calls == [scheduler.acquired]
-        assert scheduler.held == {prior}
-        assert store._held_row_locks == {prior}
+        try:
+            await _intercept_execute_async(
+                execute,
+                FakeCursor(),
+                "UPDATE accounts SET balance = %s WHERE id = %s",
+                (100, 2),
+                paramstyle="format",
+            )
+            assert len(scheduler.acquired) == 1
+            assert scheduler.release_calls == [scheduler.acquired]
+            assert scheduler.held == {prior}
+            assert store._held_row_locks == {prior}
+        finally:
+            _restore_async_sql_scheduler(tokens)
 
     @pytest.mark.parametrize(
         ("method_name", "result", "releases"),
@@ -958,25 +966,28 @@ class TestAsyncUpdateZeroRowRelease:
 
         FakeConnection.__module__ = "asyncpg.connection"
         scheduler = async_sql_scheduler
-        store = _install_async_sql_scheduler(scheduler)
+        store, tokens = _install_async_sql_scheduler(scheduler)
 
         async def execute(_connection: object, _operation: object) -> Any:
             return result
 
-        actual = await _intercept_asyncpg_execute(
-            execute,
-            FakeConnection(),
-            "UPDATE accounts SET balance = 100 WHERE id = 2 RETURNING id",
-            method_name=method_name,
-        )
-        assert actual == result
-        assert len(scheduler.acquired) == 1
-        if releases:
-            assert scheduler.release_calls == [scheduler.acquired]
-            assert store._held_row_locks == set()
-        else:
-            assert scheduler.release_calls == []
-            assert store._held_row_locks == set(scheduler.acquired)
+        try:
+            actual = await _intercept_asyncpg_execute(
+                execute,
+                FakeConnection(),
+                "UPDATE accounts SET balance = 100 WHERE id = 2 RETURNING id",
+                method_name=method_name,
+            )
+            assert actual == result
+            assert len(scheduler.acquired) == 1
+            if releases:
+                assert scheduler.release_calls == [scheduler.acquired]
+                assert store._held_row_locks == set()
+            else:
+                assert scheduler.release_calls == []
+                assert store._held_row_locks == set(scheduler.acquired)
+        finally:
+            _restore_async_sql_scheduler(tokens)
 
 
 # ---------------------------------------------------------------------------
