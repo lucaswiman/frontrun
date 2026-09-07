@@ -19,7 +19,7 @@ def configure_django(django, settings, db_name: str) -> None:
 
 
 @pytest.fixture(scope="module", name="_pg_available")
-def pg_available():
+def _pg_available_fixture():
     """Ensure Postgres is available and own setup/teardown of Django tables."""
     from django.conf import settings
     from django.contrib.auth import get_user_model

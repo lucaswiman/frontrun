@@ -22,9 +22,7 @@ except ImportError:
     pytest.skip("psycopg2 not installed", allow_module_level=True)
 
 from frontrun.cli import require_active
-from tests.django_test_helpers import configure_django
-
-pytest_plugins = ("tests.django_test_helpers",)
+from tests.django_test_helpers import _pg_available_fixture, configure_django  # noqa: F401
 
 pytestmark = pytest.mark.integration
 
