@@ -13,8 +13,7 @@ import time
 import pytest
 
 from frontrun._dpor_core.worker import WorkerSet, WorkerTarget
-from frontrun._dpor_runtime.worker_set import ThreadWorkerSet
-from frontrun._threaded_runner import _POST_TIMEOUT_CLEANUP_JOIN_SECONDS
+from frontrun._threaded_runner import _POST_TIMEOUT_CLEANUP_JOIN_SECONDS, ThreadWorkerSet
 
 
 def _targets(funcs):
@@ -140,3 +139,33 @@ def test_run_invokes_teardown_when_launch_fails() -> None:
         )
 
     assert torn_down == [True], "teardown must run even when launch() fails"
+
+
+def test_partial_start_wakes_and_joins_started_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    release = threading.Event()
+    original_start = threading.Thread.start
+    starts = 0
+
+    def fail_second_start(thread: threading.Thread) -> None:
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            raise RuntimeError("can't start new thread")
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_second_start)
+    seen_alive: list[threading.Thread] = []
+
+    def wake(alive: list[threading.Thread]) -> None:
+        seen_alive.extend(alive)
+        release.set()
+
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        ThreadWorkerSet().run(
+            _targets([release.wait, lambda: None]),
+            timeout=1.0,
+            on_timeout=wake,
+        )
+
+    assert len(seen_alive) == 1
+    assert not seen_alive[0].is_alive()

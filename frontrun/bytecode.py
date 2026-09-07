@@ -48,15 +48,17 @@ from frontrun._certificate import PassEvidence, certify_pass
 from frontrun._cooperative import (
     clear_context,
     patch_locks,
-    patch_sleep,
     real_condition,
     real_lock,
     set_context,
     unpatch_locks,
     unpatch_sleep,
 )
+from frontrun._cooperative import (
+    patch_sleep as _patch_sleep,
+)
 from frontrun._deadlock import DeadlockError, SchedulerAbort, install_wait_for_graph, uninstall_wait_for_graph
-from frontrun._dpor_core import VirtualClockPort, noop_on_wake
+from frontrun._dpor_core import VirtualClockPort, WorkerTarget, noop_on_wake
 from frontrun._io_detection import (
     patch_io,
     set_dpor_scheduler,
@@ -78,7 +80,7 @@ from frontrun._random_schedules import (
 )
 from frontrun._sql_cursor import patch_sql, unpatch_sql
 from frontrun._sql_insert_tracker import clear_insert_tracker, ensure_no_uncaptured_inserts
-from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout, run_thread_group
+from frontrun._threaded_runner import ThreadWorkerSet, instrumentation_scope, notify_scheduler_timeout
 from frontrun._trace_format import TraceRecorder, build_call_chain, format_trace
 from frontrun._tracing import should_trace_file as _should_trace_file
 from frontrun._tracing import trace_filter_scope
@@ -524,59 +526,20 @@ class BytecodeShuffler:
         self.threads: list[threading.Thread] = []
         self.errors: dict[int, BaseException] = {}
         self.worker_originated_errors: dict[int, BaseException] = {}
-        self._lock_patched = False
-        self._io_patched = False
-        self._sleep_patched = False
         self._opcode_handle: OpcodeTraceHandle | None = None
 
-    def _patch_locks(self):
-        """Replace threading and queue primitives with cooperative versions."""
-        install_wait_for_graph()
-        patch_locks()
-        self._lock_patched = True
-
-    def _unpatch_locks(self):
-        """Restore the original threading and queue primitives."""
-        if self._lock_patched:
-            unpatch_locks()
-
-            uninstall_wait_for_graph()
-            self._lock_patched = False
-
-    def _patch_sleep(self):
-        """Replace time.sleep with the cooperative scheduler hook."""
-        patch_sleep()
-        self._sleep_patched = True
-
-    def _unpatch_sleep(self):
-        """Restore original time.sleep."""
-        if self._sleep_patched:
-            unpatch_sleep()
-            self._sleep_patched = False
-
-    def _patch_io(self):
-        """Replace socket and open with traced versions."""
-        if not self.detect_io:
-            return
-        patch_io()
-        patch_sql()
-        self._io_patched = True
-
-    def _unpatch_io(self):
-        """Restore original socket and open implementations."""
-        if self._io_patched:
-            unpatch_sql()
-            unpatch_io()
-            self._io_patched = False
-
-    def patch_scope(self, *, patch_sleep: bool = True) -> PatchScope:
+    def patch_scope(self, *, patch_sleep: bool = True):
         # The time.* patch is owned by the caller's clock_scope, held once
         # across setup/run/invariant, rather than churned here per phase.
-        scope = PatchScope()
-        scope.add(self._patch_locks, self._unpatch_locks)
-        scope.add(self._patch_io, self._unpatch_io)
-        scope.add(self._patch_sleep, self._unpatch_sleep, enabled=patch_sleep)
-        return scope
+        return instrumentation_scope(
+            [
+                (install_wait_for_graph, uninstall_wait_for_graph, True),
+                (patch_locks, unpatch_locks, True),
+                (patch_io, unpatch_io, self.detect_io),
+                (patch_sql, unpatch_sql, self.detect_io),
+                (_patch_sleep, unpatch_sleep, patch_sleep),
+            ]
+        )
 
     def _start_opcode_trace(self) -> None:
         """Construct opcode tracing via the tracer-backend.
@@ -744,30 +707,17 @@ class BytecodeShuffler:
         self._start_opcode_trace()
         run_thread = self._run_thread
 
-        thread_args = [(a, kw) for a, kw in zip(args, kwargs, strict=True)]
-
-        def make_thread_target(
-            thread_id: int,
-            func: Callable[..., None],
-            packed_args: tuple[Any, ...],
-        ) -> Callable[[], None]:
-            a, kw = packed_args
-
-            def target() -> None:
-                run_thread(thread_id, func, a, kw)
-
-            return target
+        targets = [
+            WorkerTarget(worker_id=i, func=run_thread, args=(i, func, a, kw))
+            for i, (func, a, kw) in enumerate(zip(funcs, args, kwargs, strict=True))
+        ]
 
         def on_timeout(alive: list[threading.Thread]) -> None:
             notify_scheduler_timeout(self.scheduler, alive)
 
-        run_thread_group(
-            funcs=funcs,
-            args=thread_args,
-            make_thread_target=make_thread_target,
-            name_prefix="frontrun",
+        ThreadWorkerSet(name_prefix="frontrun", thread_store=self.threads).run(
+            targets,
             timeout=timeout,
-            thread_store=self.threads,
             teardown=self._stop_opcode_trace,
             on_timeout=on_timeout,
         )

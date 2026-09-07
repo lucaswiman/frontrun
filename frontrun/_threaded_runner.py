@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from typing import Any
 
+from frontrun._dpor_core.worker import WorkerTarget
 from frontrun._virtual_clock import real_monotonic
 
 _POST_TIMEOUT_CLEANUP_JOIN_SECONDS = 0.5
@@ -17,7 +19,7 @@ class PatchScope:
 
     def add(
         self,
-        patch: Callable[[], None],
+        patch: Callable[[], Any],
         unpatch: Callable[[], None],
         *,
         enabled: bool = True,
@@ -45,6 +47,17 @@ class PatchScope:
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.close()
+
+
+@contextmanager
+def instrumentation_scope(
+    patches: Sequence[tuple[Callable[[], Any], Callable[[], None], bool]],
+):
+    """Install instrumentation transactionally after entering the context."""
+    with PatchScope() as scope:
+        for patch, unpatch, enabled in patches:
+            scope.add(patch, unpatch, enabled=enabled)
+        yield
 
 
 def join_threads_with_deadline(
@@ -79,38 +92,61 @@ def notify_scheduler_timeout(scheduler: Any, alive: list[threading.Thread]) -> N
         scheduler._condition.notify_all()
 
 
-def run_thread_group(
-    *,
-    funcs: Sequence[Callable[..., None]],
-    args: Sequence[tuple[Any, ...]],
-    make_thread_target: Callable[[int, Callable[..., None], tuple[Any, ...]], Callable[[], None]],
-    name_prefix: str,
-    timeout: float,
-    thread_store: list[threading.Thread],
-    setup: Callable[[], None] | None = None,
-    teardown: Callable[[], None] | None = None,
-    on_timeout: Callable[[list[threading.Thread]], None] | None = None,
-) -> list[threading.Thread]:
-    """Start a thread group, join it against a deadline, and return alive threads."""
-    if setup is not None:
-        setup()
-    try:
-        for i, (func, thread_args) in enumerate(zip(funcs, args, strict=True)):
+class ThreadWorkerSet:
+    """Concrete in-process launcher shared by systematic and random runners."""
+
+    def __init__(self, *, name_prefix: str = "dpor", thread_store: list[threading.Thread] | None = None) -> None:
+        self.name_prefix = name_prefix
+        self.threads = thread_store if thread_store is not None else []
+
+    def launch(
+        self,
+        targets: Sequence[WorkerTarget],
+        *,
+        on_partial_start: Callable[[list[threading.Thread]], None] | None = None,
+    ) -> list[threading.Thread]:
+        threads: list[threading.Thread] = []
+        for target in targets:
+            if target.func is None:
+                raise TypeError("ThreadWorkerSet requires WorkerTarget.func")
             thread = threading.Thread(
-                target=make_thread_target(i, func, thread_args),
-                name=f"{name_prefix}-{i}",
+                target=target.func,
+                args=target.args,
+                name=f"{self.name_prefix}-{target.worker_id}",
                 daemon=True,
             )
-            thread_store.append(thread)
-
-        for thread in thread_store:
-            thread.start()
-
-        alive = join_threads_with_deadline(thread_store, timeout)
-        if alive and on_timeout is not None:
-            on_timeout(alive)
+            self.threads.append(thread)
+            threads.append(thread)
+        started: list[threading.Thread] = []
+        try:
+            for thread in threads:
+                thread.start()
+                started.append(thread)
+        except BaseException:
+            alive = [thread for thread in started if thread.is_alive()]
+            if alive and on_partial_start is not None:
+                on_partial_start(alive)
             join_threads_with_deadline(alive, _POST_TIMEOUT_CLEANUP_JOIN_SECONDS)
-        return alive
-    finally:
-        if teardown is not None:
-            teardown()
+            raise
+        return threads
+
+    def join(self, handles: Sequence[threading.Thread], timeout: float) -> list[threading.Thread]:
+        return join_threads_with_deadline(handles, timeout)
+
+    def run(
+        self,
+        targets: Sequence[WorkerTarget],
+        *,
+        timeout: float,
+        on_timeout: Callable[[list[threading.Thread]], None] | None = None,
+        teardown: Callable[[], None] | None = None,
+    ) -> None:
+        try:
+            handles = self.launch(targets, on_partial_start=on_timeout)
+            alive = self.join(handles, timeout)
+            if alive and on_timeout is not None:
+                on_timeout(alive)
+                self.join(alive, _POST_TIMEOUT_CLEANUP_JOIN_SECONDS)
+        finally:
+            if teardown is not None:
+                teardown()
