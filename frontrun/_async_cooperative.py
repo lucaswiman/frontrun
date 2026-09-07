@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any, ParamSpec, TypeVar
@@ -676,6 +677,14 @@ def _unpatch_asyncio_event() -> None:
 # ---------------------------------------------------------------------------
 
 
+class _AsyncWaiters(OrderedDict[asyncio.Future[None], int]):
+    """Identity-keyed FIFO shared by cooperative Queue and Condition."""
+
+    def append(self, waiter: tuple[int, asyncio.Future[None]]) -> None:
+        task_id, fut = waiter
+        self[fut] = task_id
+
+
 class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-type]
     """asyncio.Queue wrapper whose get/put waiters are visible to DPOR."""
 
@@ -686,23 +695,23 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         # replace it with the same cooperative abstraction used elsewhere.
         self._finished = _CooperativeAsyncEvent()
         self._finished.set()
-        self._frontrun_get_waiters: list[tuple[int, asyncio.Future[None]]] = []
-        self._frontrun_put_waiters: list[tuple[int, asyncio.Future[None]]] = []
+        self._frontrun_get_waiters = _AsyncWaiters()
+        self._frontrun_put_waiters = _AsyncWaiters()
 
     @classmethod
     def __class_getitem__(cls, item: Any) -> Any:
         return cls
 
-    def _pop_waiter(self, waiters: list[tuple[int, asyncio.Future[None]]]) -> tuple[int, asyncio.Future[None]] | None:
+    def _pop_waiter(self, waiters: _AsyncWaiters) -> tuple[int, asyncio.Future[None]] | None:
         while waiters:
-            waiter, fut = waiters.pop(0)
+            fut, waiter = waiters.popitem(last=False)
             if not fut.done():
                 return waiter, fut
         return None
 
     def _wake_waiter(
         self,
-        waiters: list[tuple[int, asyncio.Future[None]]],
+        waiters: OrderedDict[asyncio.Future[None], int],
         ctx: _AsyncDporContext | None,
     ) -> None:
         waiter_info = self._pop_waiter(waiters)
@@ -717,9 +726,10 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
         fut.set_result(None)
 
     def _wake_all_for_abort(self) -> None:
-        for _waiter, fut in self._frontrun_get_waiters + self._frontrun_put_waiters:
-            if not fut.done():
-                fut.set_result(None)
+        for waiters in (self._frontrun_get_waiters, self._frontrun_put_waiters):
+            for fut in waiters:
+                if not fut.done():
+                    fut.set_result(None)
 
     async def _yield_after_handoff(self, scheduler: Any, task_id: int, operation: str) -> None:
         """End the releaser segment after making a parked peer runnable."""
@@ -775,9 +785,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             self._frontrun_get_waiters.append((task_id, fut))
 
             def _cleanup(fut: asyncio.Future[None] = fut) -> None:
-                self._frontrun_get_waiters = [
-                    (waiter, waiter_fut) for waiter, waiter_fut in self._frontrun_get_waiters if waiter_fut is not fut
-                ]
+                self._frontrun_get_waiters.pop(fut, None)
                 if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
                     _async_parked_queues.discard(self)
 
@@ -792,7 +800,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             )
             if not self.empty():
                 break
-        woke_putter = any(not fut.done() for _waiter, fut in self._frontrun_put_waiters)
+        woke_putter = any(not fut.done() for fut in self._frontrun_put_waiters)
         item = self.get_nowait()
         if woke_putter:
             await self._yield_after_handoff(scheduler, task_id, "queue_get")
@@ -817,9 +825,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
             self._frontrun_put_waiters.append((task_id, fut))
 
             def _cleanup(fut: asyncio.Future[None] = fut) -> None:
-                self._frontrun_put_waiters = [
-                    (waiter, waiter_fut) for waiter, waiter_fut in self._frontrun_put_waiters if waiter_fut is not fut
-                ]
+                self._frontrun_put_waiters.pop(fut, None)
                 if not self._frontrun_get_waiters and not self._frontrun_put_waiters:
                     _async_parked_queues.discard(self)
 
@@ -832,7 +838,7 @@ class _CooperativeAsyncQueue(_real_asyncio_queue):  # type: ignore[misc,valid-ty
                 reason="queue put",
                 cleanup=_cleanup,
             )
-        woke_getter = any(not fut.done() for _waiter, fut in self._frontrun_get_waiters)
+        woke_getter = any(not fut.done() for fut in self._frontrun_get_waiters)
         self.put_nowait(item)
         if woke_getter:
             await self._yield_after_handoff(scheduler, task_id, "queue_put")
@@ -882,7 +888,7 @@ class _CooperativeAsyncCondition:
         # _CooperativeAsyncLock duck-types asyncio.Lock (used only on the
         # no-scheduler-context fallback path).
         self._real_condition = _real_asyncio_condition(self._lock)  # type: ignore[arg-type]
-        self._waiters: list[tuple[int, asyncio.Future[None]]] = []
+        self._waiters = _AsyncWaiters()
 
     def locked(self) -> bool:
         locked = getattr(self._lock, "locked", None)
@@ -902,7 +908,7 @@ class _CooperativeAsyncCondition:
         self.release()
 
     def _wake_all_for_abort(self) -> None:
-        for _waiter, fut in self._waiters:
+        for fut in self._waiters:
             if not fut.done():
                 fut.set_result(None)
 
@@ -935,7 +941,7 @@ class _CooperativeAsyncCondition:
             acquired = True
 
         def _cleanup() -> None:
-            self._waiters = [(waiter, waiter_fut) for waiter, waiter_fut in self._waiters if waiter_fut is not fut]
+            self._waiters.pop(fut, None)
             if not self._waiters:
                 _async_parked_conditions.discard(self)
 
@@ -1016,7 +1022,7 @@ class _CooperativeAsyncCondition:
     def _wake_cooperative_waiters(self, n: int, ctx: _AsyncDporContext | None) -> None:
         woke = 0
         while self._waiters and woke < n:
-            waiter, fut = self._waiters.pop(0)
+            fut, waiter = self._waiters.popitem(last=False)
             if fut.done():
                 continue
             if ctx is not None and not ctx.errored:
