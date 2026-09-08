@@ -304,7 +304,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._opcode_handle: OpcodeTraceHandle | None = None
         self._stable_ids = stable_ids if stable_ids is not None else StableObjectIds()
         # Pending I/O accesses per task (from SQL interception)
-        self._pending_io: dict[int, list[tuple[int, str, bool]]] = {i: [] for i in range(num_tasks)}
+        self._pending_io: dict[int, list[tuple[int, str]]] = {i: [] for i in range(num_tasks)}
         self._pending_io_lock = threading.Lock()
 
         # Track tasks blocked on asyncio.Lock: task_id → lock-holder task_id.
@@ -877,7 +877,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                     current_task = task_id
                 object_key = _make_object_key(hash(resource_id), resource_id)
                 with self._pending_io_lock:
-                    self._pending_io.setdefault(current_task, []).append((object_key, kind, True))
+                    self._pending_io.setdefault(current_task, []).append((object_key, kind))
 
             set_io_reporter_task(_io_reporter)
 
@@ -1118,12 +1118,8 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         with self._pending_io_lock:
             pending = self._pending_io.get(task_id, [])
             self._pending_io[task_id] = []
-        if pending:
-            for obj_key, kind, synced in pending:
-                if synced:
-                    self.engine.report_synced_io_access(self.execution, task_id, obj_key, kind)
-                else:
-                    self.engine.report_io_access(self.execution, task_id, obj_key, kind)
+        for obj_key, kind in pending:
+            self.engine.report_synced_io_access(self.execution, task_id, obj_key, kind)
 
     def report_and_wait(self, frame: Any, thread_id: int) -> bool:
         """Compatibility method for SQL cursor interception.

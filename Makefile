@@ -1,4 +1,4 @@
-.PHONY: test clean docs docs-clean docs-html docs-clean-build lint type-check check test-integration test-e2e build-all screenshot
+.PHONY: test clean docs docs-clean docs-html docs-clean-build lint type-check check test-integration test-e2e screenshot
 .PRECIOUS: .venv-% .venv-%/activate
 
 # Python versions to test
@@ -8,9 +8,6 @@ PYTEST_ARGS?=--tb=short -v
 
 # Virtual environment setup
 VENV_BIN := .venv-3.10/bin/
-PYTHON := $(VENV_BIN)python
-PYTEST := $(VENV_BIN)pytest
-MATURIN := $(VENV_BIN)maturin
 
 # Rust source files in dpor crate (PyO3 extension)
 DPOR_RUST_SOURCES := $(wildcard crates/dpor/src/*.rs) crates/dpor/Cargo.toml Cargo.toml
