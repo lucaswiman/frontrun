@@ -25,6 +25,7 @@ from frontrun._dpor_runtime.xproc.launch import (
     Subprocess,
     SubprocessLauncher,
     WorkerSerializationError,
+    WorkerTerminationError,
     _dumps_worker,
     _mp_worker_entry,
     _stderr_last_line,
@@ -321,6 +322,9 @@ class _FakePopenProc:
     def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002 - fake
         return 0
 
+    def poll(self) -> int | None:
+        return None if self._alive else 0
+
 
 def test_subprocess_launcher_cleans_up_on_partial_launch(monkeypatch, tmp_path) -> None:
     # Same leak for the subprocess backend: if the 2nd Popen construction raises,
@@ -343,6 +347,33 @@ def test_subprocess_launcher_cleans_up_on_partial_launch(monkeypatch, tmp_path) 
         ws.launch([WorkerTarget(worker_id=0, args=(sock,)), WorkerTarget(worker_id=1, args=(sock,))])
     assert len(made) == 1
     assert made[0].killed
+
+
+def test_subprocess_partial_cleanup_uses_one_shared_reap_deadline(monkeypatch) -> None:
+    """Partial-launch cleanup must not wait two seconds per started child."""
+    from frontrun._dpor_runtime.xproc import launch as launch_mod
+
+    now = 100.0
+    waits: list[float | None] = []
+
+    class SlowUnkillablePopen:
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            nonlocal now
+            waits.append(timeout)
+            now += timeout or 0.0
+            raise subprocess.TimeoutExpired("worker", timeout)
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(launch_mod.time, "monotonic", lambda: now)
+    with pytest.raises(WorkerTerminationError, match="still alive"):
+        SubprocessLauncher._reap_partial([SlowUnkillablePopen(), SlowUnkillablePopen()])
+
+    assert waits == [2.0, 0.0]
 
 
 # --- Change 2: MpLauncher.join escalates to SIGKILL -----------------------
