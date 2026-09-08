@@ -18,10 +18,33 @@ from __future__ import annotations
 import math
 import queue
 import threading
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
 import frontrun
+
+
+def _explore_backend(
+    backend: str,
+    setup: Callable[[], Any],
+    workers: list[Callable[[Any], Any]],
+    invariant: Callable[[Any], bool],
+    *,
+    dpor_options: dict[str, Any],
+    random_options: dict[str, Any],
+) -> Any:
+    """Run one scenario through either backend, keeping its settings explicit."""
+    options = dpor_options if backend == "dpor" else random_options
+    return frontrun.explore(
+        setup=setup,
+        workers=workers,
+        invariant=invariant,
+        strategy="dpor" if backend == "dpor" else "random",
+        **options,
+    )
+
 
 # ============================================================================
 # Category 1: Lock-based safe patterns
@@ -40,34 +63,20 @@ class _LockProtectedState:
 class TestLockProtectedCounter:
     """Lock-protected counter should never report a race."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def inc(state: _LockProtectedState) -> None:
             with state.lock:
                 temp = state.value
                 state.value = temp + 1
 
-        result = frontrun.explore(
-            setup=_LockProtectedState,
-            workers=[inc, inc],
-            invariant=lambda s: s.value == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on lock-protected counter: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def inc(state: _LockProtectedState) -> None:
-            with state.lock:
-                temp = state.value
-                state.value = temp + 1
-
-        result = frontrun.explore_random(
-            setup=_LockProtectedState,
-            threads=[inc, inc],
-            invariant=lambda s: s.value == 2,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _LockProtectedState,
+            [inc, inc],
+            lambda s: s.value == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on lock-protected counter: {result}"
 
@@ -133,7 +142,8 @@ class _SemaphoreState:
 class TestSemaphoreProtected:
     """Binary semaphore guarding a critical section."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def inc(state: _SemaphoreState) -> None:
             state.sem.acquire()
             try:
@@ -142,31 +152,13 @@ class TestSemaphoreProtected:
             finally:
                 state.sem.release()
 
-        result = frontrun.explore(
-            setup=_SemaphoreState,
-            workers=[inc, inc],
-            invariant=lambda s: s.value == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on semaphore-protected: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def inc(state: _SemaphoreState) -> None:
-            state.sem.acquire()
-            try:
-                temp = state.value
-                state.value = temp + 1
-            finally:
-                state.sem.release()
-
-        result = frontrun.explore_random(
-            setup=_SemaphoreState,
-            threads=[inc, inc],
-            invariant=lambda s: s.value == 2,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _SemaphoreState,
+            [inc, inc],
+            lambda s: s.value == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on semaphore-protected: {result}"
 
@@ -242,36 +234,21 @@ class _TwoLocksState:
 class TestMultipleLocksCorrectOrder:
     """Two locks always acquired in the same order — no deadlock possible."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def transfer(state: _TwoLocksState) -> None:
             with state.lock_a:
                 with state.lock_b:
                     state.a += 1
                     state.b += 1
 
-        result = frontrun.explore(
-            setup=_TwoLocksState,
-            workers=[transfer, transfer],
-            invariant=lambda s: s.a == 2 and s.b == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on ordered locks: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def transfer(state: _TwoLocksState) -> None:
-            with state.lock_a:
-                with state.lock_b:
-                    state.a += 1
-                    state.b += 1
-
-        result = frontrun.explore_random(
-            setup=_TwoLocksState,
-            threads=[transfer, transfer],
-            invariant=lambda s: s.a == 2 and s.b == 2,
-            max_attempts=50,
-            max_ops=300,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _TwoLocksState,
+            [transfer, transfer],
+            lambda s: s.a == 2 and s.b == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 300, "seed": 42},
         )
         assert result.property_holds, f"False positive on ordered locks: {result}"
 
@@ -300,24 +277,15 @@ class _ClosureLockState:
 class TestLockProtectedClosure:
     """nonlocal variable protected by lock in closure."""
 
-    def test_dpor_safe(self) -> None:
-        result = frontrun.explore(
-            setup=_ClosureLockState,
-            workers=[lambda s: s.inc(), lambda s: s.inc()],
-            invariant=lambda s: s.get() == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on lock-protected closure: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        result = frontrun.explore_random(
-            setup=_ClosureLockState,
-            threads=[lambda s: s.inc(), lambda s: s.inc()],
-            invariant=lambda s: s.get() == 2,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
+        result = _explore_backend(
+            backend,
+            _ClosureLockState,
+            [lambda s: s.inc(), lambda s: s.inc()],
+            lambda s: s.get() == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on lock-protected closure: {result}"
 
@@ -338,36 +306,21 @@ class _ThreadLocalState:
 class TestThreadLocalStorage:
     """Each thread writes to its own index in a list — no sharing."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def write_0(state: _ThreadLocalState) -> None:
             state.slots[0] = 42
 
         def write_1(state: _ThreadLocalState) -> None:
             state.slots[1] = 99
 
-        result = frontrun.explore(
-            setup=_ThreadLocalState,
-            workers=[write_0, write_1],
-            invariant=lambda s: s.slots[0] == 42 and s.slots[1] == 99,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on thread-local storage: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def write_0(state: _ThreadLocalState) -> None:
-            state.slots[0] = 42
-
-        def write_1(state: _ThreadLocalState) -> None:
-            state.slots[1] = 99
-
-        result = frontrun.explore_random(
-            setup=_ThreadLocalState,
-            threads=[write_0, write_1],
-            invariant=lambda s: s.slots[0] == 42 and s.slots[1] == 99,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _ThreadLocalState,
+            [write_0, write_1],
+            lambda s: s.slots[0] == 42 and s.slots[1] == 99,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on thread-local storage: {result}"
 
@@ -384,30 +337,18 @@ class _IndependentAttrsState:
 class TestIndependentAttributes:
     """Thread 1 writes state.a, Thread 2 writes state.b — no conflict."""
 
-    def test_dpor_safe(self) -> None:
-        result = frontrun.explore(
-            setup=_IndependentAttrsState,
-            workers=[
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
+        result = _explore_backend(
+            backend,
+            _IndependentAttrsState,
+            [
                 lambda s: setattr(s, "a", 1),
                 lambda s: setattr(s, "b", 1),
             ],
-            invariant=lambda s: s.a == 1 and s.b == 1,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on independent attrs: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        result = frontrun.explore_random(
-            setup=_IndependentAttrsState,
-            threads=[
-                lambda s: setattr(s, "a", 1),
-                lambda s: setattr(s, "b", 1),
-            ],
-            invariant=lambda s: s.a == 1 and s.b == 1,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+            lambda s: s.a == 1 and s.b == 1,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on independent attrs: {result}"
 
@@ -424,7 +365,8 @@ class _IndependentDictsState:
 class TestIndependentDicts:
     """Each thread operates on its own dict — no sharing."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def fill_a(state: _IndependentDictsState) -> None:
             state.dict_a["x"] = 1
             state.dict_a["y"] = 2
@@ -433,31 +375,13 @@ class TestIndependentDicts:
             state.dict_b["x"] = 10
             state.dict_b["y"] = 20
 
-        result = frontrun.explore(
-            setup=_IndependentDictsState,
-            workers=[fill_a, fill_b],
-            invariant=lambda s: s.dict_a.get("x") == 1 and s.dict_b.get("x") == 10,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on independent dicts: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def fill_a(state: _IndependentDictsState) -> None:
-            state.dict_a["x"] = 1
-            state.dict_a["y"] = 2
-
-        def fill_b(state: _IndependentDictsState) -> None:
-            state.dict_b["x"] = 10
-            state.dict_b["y"] = 20
-
-        result = frontrun.explore_random(
-            setup=_IndependentDictsState,
-            threads=[fill_a, fill_b],
-            invariant=lambda s: s.dict_a.get("x") == 1 and s.dict_b.get("x") == 10,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _IndependentDictsState,
+            [fill_a, fill_b],
+            lambda s: s.dict_a.get("x") == 1 and s.dict_b.get("x") == 10,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on independent dicts: {result}"
 
@@ -576,7 +500,8 @@ class TestHappensBeforeEvent:
     """
 
     @pytest.mark.timeout(10)
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def writer(state: _EventSyncState) -> None:
             state.value = 42
             state.event.set()
@@ -585,31 +510,13 @@ class TestHappensBeforeEvent:
             state.event.wait()
             _ = state.value
 
-        result = frontrun.explore(
-            setup=_EventSyncState,
-            workers=[writer, reader],
-            invariant=lambda s: s.value == 42,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on event sync: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def writer(state: _EventSyncState) -> None:
-            state.value = 42
-            state.event.set()
-
-        def reader(state: _EventSyncState) -> None:
-            state.event.wait()
-            _ = state.value
-
-        result = frontrun.explore_random(
-            setup=_EventSyncState,
-            threads=[writer, reader],
-            invariant=lambda s: s.value == 42,
-            max_attempts=50,
-            max_ops=300,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _EventSyncState,
+            [writer, reader],
+            lambda s: s.value == 42,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 300, "seed": 42},
         )
         assert result.property_holds, f"False positive on event sync: {result}"
 
@@ -626,36 +533,21 @@ class _QueueCommState:
 class TestQueueCommunication:
     """Thread 1 puts to queue, Thread 2 gets — linearized by queue."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def producer(state: _QueueCommState) -> None:
             state.q.put(42)
 
         def consumer(state: _QueueCommState) -> None:
             state.received = state.q.get()
 
-        result = frontrun.explore(
-            setup=_QueueCommState,
-            workers=[producer, consumer],
-            invariant=lambda s: s.received == 42,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on queue comm: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def producer(state: _QueueCommState) -> None:
-            state.q.put(42)
-
-        def consumer(state: _QueueCommState) -> None:
-            state.received = state.q.get()
-
-        result = frontrun.explore_random(
-            setup=_QueueCommState,
-            threads=[producer, consumer],
-            invariant=lambda s: s.received == 42,
-            max_attempts=50,
-            max_ops=300,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _QueueCommState,
+            [producer, consumer],
+            lambda s: s.received == 42,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 300, "seed": 42},
         )
         assert result.property_holds, f"False positive on queue comm: {result}"
 
@@ -672,7 +564,8 @@ class _LockHandoffState:
 class TestLockHandoff:
     """Thread 1 writes under lock, Thread 2 reads under same lock — serialized."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def writer(state: _LockHandoffState) -> None:
             with state.lock:
                 state.value = 42
@@ -681,31 +574,13 @@ class TestLockHandoff:
             with state.lock:
                 _ = state.value
 
-        result = frontrun.explore(
-            setup=_LockHandoffState,
-            workers=[writer, reader],
-            invariant=lambda s: s.value == 42,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on lock handoff: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def writer(state: _LockHandoffState) -> None:
-            with state.lock:
-                state.value = 42
-
-        def reader(state: _LockHandoffState) -> None:
-            with state.lock:
-                _ = state.value
-
-        result = frontrun.explore_random(
-            setup=_LockHandoffState,
-            threads=[writer, reader],
-            invariant=lambda s: s.value == 42,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _LockHandoffState,
+            [writer, reader],
+            lambda s: s.value == 42,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on lock handoff: {result}"
 
@@ -723,7 +598,8 @@ class _CondVarState:
 class TestConditionVariableSignaling:
     """Producer writes state under lock, signals condition; consumer waits and reads."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def producer(state: _CondVarState) -> None:
             with state.cond:
                 state.value = 42
@@ -736,35 +612,13 @@ class TestConditionVariableSignaling:
                     state.cond.wait()
                 _ = state.value
 
-        result = frontrun.explore(
-            setup=_CondVarState,
-            workers=[producer, consumer],
-            invariant=lambda s: s.value == 42,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on condvar: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def producer(state: _CondVarState) -> None:
-            with state.cond:
-                state.value = 42
-                state.ready = True
-                state.cond.notify()
-
-        def consumer(state: _CondVarState) -> None:
-            with state.cond:
-                while not state.ready:
-                    state.cond.wait()
-                _ = state.value
-
-        result = frontrun.explore_random(
-            setup=_CondVarState,
-            threads=[producer, consumer],
-            invariant=lambda s: s.value == 42,
-            max_attempts=50,
-            max_ops=300,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _CondVarState,
+            [producer, consumer],
+            lambda s: s.value == 42,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 300, "seed": 42},
         )
         assert result.property_holds, f"False positive on condvar: {result}"
 
@@ -788,7 +642,8 @@ class _NestedLocksState:
 class TestManyNestedLocks:
     """Deeply nested lock acquisition — tests cooperative lock stack depth."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def deep_inc(state: _NestedLocksState) -> None:
             with state.lock1:
                 with state.lock2:
@@ -796,30 +651,13 @@ class TestManyNestedLocks:
                         temp = state.value
                         state.value = temp + 1
 
-        result = frontrun.explore(
-            setup=_NestedLocksState,
-            workers=[deep_inc, deep_inc],
-            invariant=lambda s: s.value == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on nested locks: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def deep_inc(state: _NestedLocksState) -> None:
-            with state.lock1:
-                with state.lock2:
-                    with state.lock3:
-                        temp = state.value
-                        state.value = temp + 1
-
-        result = frontrun.explore_random(
-            setup=_NestedLocksState,
-            threads=[deep_inc, deep_inc],
-            invariant=lambda s: s.value == 2,
-            max_attempts=50,
-            max_ops=400,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _NestedLocksState,
+            [deep_inc, deep_inc],
+            lambda s: s.value == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 400, "seed": 42},
         )
         assert result.property_holds, f"False positive on nested locks: {result}"
 
@@ -836,35 +674,20 @@ class _LockLoopState:
 class TestLockAcquireReleaseLoop:
     """Rapid lock cycling — tests spin-yield performance."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def loop_inc(state: _LockLoopState) -> None:
             for _ in range(3):
                 with state.lock:
                     state.value += 1
 
-        result = frontrun.explore(
-            setup=_LockLoopState,
-            workers=[loop_inc, loop_inc],
-            invariant=lambda s: s.value == 6,
-            detect_io=False,
-            deadlock_timeout=5.0,
-            max_executions=100,
-        )
-        assert result.property_holds, f"False positive on lock loop: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def loop_inc(state: _LockLoopState) -> None:
-            for _ in range(3):
-                with state.lock:
-                    state.value += 1
-
-        result = frontrun.explore_random(
-            setup=_LockLoopState,
-            threads=[loop_inc, loop_inc],
-            invariant=lambda s: s.value == 6,
-            max_attempts=50,
-            max_ops=500,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _LockLoopState,
+            [loop_inc, loop_inc],
+            lambda s: s.value == 6,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0, "max_executions": 100},
+            random_options={"max_attempts": 50, "max_ops": 500, "seed": 42},
         )
         assert result.property_holds, f"False positive on lock loop: {result}"
 
@@ -882,32 +705,19 @@ class _ManyThreadsState:
 class TestManyThreadsIndependent:
     """Three threads all writing to independent state."""
 
-    def test_dpor_safe(self) -> None:
-        result = frontrun.explore(
-            setup=_ManyThreadsState,
-            workers=[
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
+        result = _explore_backend(
+            backend,
+            _ManyThreadsState,
+            [
                 lambda s: setattr(s, "a", 1),
                 lambda s: setattr(s, "b", 2),
                 lambda s: setattr(s, "c", 3),
             ],
-            invariant=lambda s: s.a == 1 and s.b == 2 and s.c == 3,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on many independent threads: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        result = frontrun.explore_random(
-            setup=_ManyThreadsState,
-            threads=[
-                lambda s: setattr(s, "a", 1),
-                lambda s: setattr(s, "b", 2),
-                lambda s: setattr(s, "c", 3),
-            ],
-            invariant=lambda s: s.a == 1 and s.b == 2 and s.c == 3,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+            lambda s: s.a == 1 and s.b == 2 and s.c == 3,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on many independent threads: {result}"
 
@@ -925,7 +735,8 @@ class _ExceptionInLockState:
 class TestExceptionInThreadWithLock:
     """Thread raises and catches exception while holding lock — tests lock cleanup."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def safe_inc_with_error(state: _ExceptionInLockState) -> None:
             with state.lock:
                 try:
@@ -940,37 +751,13 @@ class TestExceptionInThreadWithLock:
                 temp = state.value
                 state.value = temp + 1
 
-        result = frontrun.explore(
-            setup=_ExceptionInLockState,
-            workers=[safe_inc_with_error, normal_inc],
-            invariant=lambda s: s.value == 2 and s.error_handled,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on exception in lock: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def safe_inc_with_error(state: _ExceptionInLockState) -> None:
-            with state.lock:
-                try:
-                    temp = state.value
-                    raise ValueError("test")
-                except ValueError:
-                    state.error_handled = True
-                    state.value = temp + 1
-
-        def normal_inc(state: _ExceptionInLockState) -> None:
-            with state.lock:
-                temp = state.value
-                state.value = temp + 1
-
-        result = frontrun.explore_random(
-            setup=_ExceptionInLockState,
-            threads=[safe_inc_with_error, normal_inc],
-            invariant=lambda s: s.value == 2 and s.error_handled,
-            max_attempts=50,
-            max_ops=300,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _ExceptionInLockState,
+            [safe_inc_with_error, normal_inc],
+            lambda s: s.value == 2 and s.error_handled,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 300, "seed": 42},
         )
         assert result.property_holds, f"False positive on exception in lock: {result}"
 
@@ -1020,7 +807,8 @@ class _MixedSyncState:
 class TestMixedSyncPrimitives:
     """Lock + Event + Queue all used together correctly."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def producer(state: _MixedSyncState) -> None:
             with state.lock:
                 state.value = 42
@@ -1033,35 +821,13 @@ class TestMixedSyncPrimitives:
             with state.lock:
                 _ = val
 
-        result = frontrun.explore(
-            setup=_MixedSyncState,
-            workers=[producer, consumer],
-            invariant=lambda s: s.value == 42,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on mixed sync: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def producer(state: _MixedSyncState) -> None:
-            with state.lock:
-                state.value = 42
-            state.q.put(state.value)
-            state.event.set()
-
-        def consumer(state: _MixedSyncState) -> None:
-            state.event.wait()
-            val = state.q.get()
-            with state.lock:
-                _ = val
-
-        result = frontrun.explore_random(
-            setup=_MixedSyncState,
-            threads=[producer, consumer],
-            invariant=lambda s: s.value == 42,
-            max_attempts=50,
-            max_ops=400,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _MixedSyncState,
+            [producer, consumer],
+            lambda s: s.value == 42,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 400, "seed": 42},
         )
         assert result.property_holds, f"False positive on mixed sync: {result}"
 
@@ -1135,7 +901,8 @@ class _FreshObjectsState:
 class TestCreatingFreshObjects:
     """Each thread creates fresh objects, no sharing."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def create_list(state: _FreshObjectsState) -> None:
             local_list = [1, 2, 3]
             local_list.append(4)
@@ -1146,33 +913,13 @@ class TestCreatingFreshObjects:
             local_dict["c"] = 3
             state.len_b = len(local_dict)
 
-        result = frontrun.explore(
-            setup=_FreshObjectsState,
-            workers=[create_list, create_dict],
-            invariant=lambda s: s.len_a == 4 and s.len_b == 3,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on fresh objects: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def create_list(state: _FreshObjectsState) -> None:
-            local_list = [1, 2, 3]
-            local_list.append(4)
-            state.len_a = len(local_list)
-
-        def create_dict(state: _FreshObjectsState) -> None:
-            local_dict = {"a": 1, "b": 2}
-            local_dict["c"] = 3
-            state.len_b = len(local_dict)
-
-        result = frontrun.explore_random(
-            setup=_FreshObjectsState,
-            threads=[create_list, create_dict],
-            invariant=lambda s: s.len_a == 4 and s.len_b == 3,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _FreshObjectsState,
+            [create_list, create_dict],
+            lambda s: s.len_a == 4 and s.len_b == 3,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on fresh objects: {result}"
 
@@ -1189,32 +936,19 @@ class _AugAssignLockState:
 class TestLockProtectedAugmentedAssignment:
     """The += pattern under lock — should be safe despite being a non-atomic operation."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def inc(state: _AugAssignLockState) -> None:
             with state.lock:
                 state.value += 1
 
-        result = frontrun.explore(
-            setup=_AugAssignLockState,
-            workers=[inc, inc],
-            invariant=lambda s: s.value == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on aug assign under lock: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def inc(state: _AugAssignLockState) -> None:
-            with state.lock:
-                state.value += 1
-
-        result = frontrun.explore_random(
-            setup=_AugAssignLockState,
-            threads=[inc, inc],
-            invariant=lambda s: s.value == 2,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _AugAssignLockState,
+            [inc, inc],
+            lambda s: s.value == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on aug assign under lock: {result}"
 
@@ -1231,32 +965,19 @@ class _DictSubscriptLockState:
 class TestLockProtectedDictSubscript:
     """Dict subscript read-modify-write under lock — safe."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def inc(state: _DictSubscriptLockState) -> None:
             with state.lock:
                 state.data["count"] = state.data["count"] + 1
 
-        result = frontrun.explore(
-            setup=_DictSubscriptLockState,
-            workers=[inc, inc],
-            invariant=lambda s: s.data["count"] == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on dict subscript under lock: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def inc(state: _DictSubscriptLockState) -> None:
-            with state.lock:
-                state.data["count"] = state.data["count"] + 1
-
-        result = frontrun.explore_random(
-            setup=_DictSubscriptLockState,
-            threads=[inc, inc],
-            invariant=lambda s: s.data["count"] == 2,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _DictSubscriptLockState,
+            [inc, inc],
+            lambda s: s.data["count"] == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on dict subscript under lock: {result}"
 
@@ -1274,34 +995,20 @@ class _ListAppendLockState:
 class TestLockProtectedListAppend:
     """Check-then-act on list under lock — safe because lock serializes."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def safe_append(state: _ListAppendLockState) -> None:
             with state.lock:
                 if len(state.items) < state.max_size:
                     state.items.append("item")
 
-        result = frontrun.explore(
-            setup=_ListAppendLockState,
-            workers=[safe_append, safe_append],
-            invariant=lambda s: len(s.items) <= s.max_size,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on list append under lock: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def safe_append(state: _ListAppendLockState) -> None:
-            with state.lock:
-                if len(state.items) < state.max_size:
-                    state.items.append("item")
-
-        result = frontrun.explore_random(
-            setup=_ListAppendLockState,
-            threads=[safe_append, safe_append],
-            invariant=lambda s: len(s.items) <= s.max_size,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _ListAppendLockState,
+            [safe_append, safe_append],
+            lambda s: len(s.items) <= s.max_size,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on list append under lock: {result}"
 
@@ -1391,36 +1098,21 @@ class _SingleWriterState:
 class TestSingleWriterMultipleValues:
     """One thread writes, one reads — invariant accepts either order."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def writer(state: _SingleWriterState) -> None:
             state.value = 42
 
         def noop(state: _SingleWriterState) -> None:
             pass
 
-        result = frontrun.explore(
-            setup=_SingleWriterState,
-            workers=[writer, noop],
-            invariant=lambda s: s.value == 42,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on single writer: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def writer(state: _SingleWriterState) -> None:
-            state.value = 42
-
-        def noop(state: _SingleWriterState) -> None:
-            pass
-
-        result = frontrun.explore_random(
-            setup=_SingleWriterState,
-            threads=[writer, noop],
-            invariant=lambda s: s.value == 42,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _SingleWriterState,
+            [writer, noop],
+            lambda s: s.value == 42,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on single writer: {result}"
 
@@ -1437,32 +1129,19 @@ class _ComplexMutationState:
 class TestLockProtectedComplexMutation:
     """Complex dict + list mutation under lock — safe."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def append_and_sort(state: _ComplexMutationState) -> None:
             with state.lock:
                 state.data["items"].append(1)
 
-        result = frontrun.explore(
-            setup=_ComplexMutationState,
-            workers=[append_and_sort, append_and_sort],
-            invariant=lambda s: len(s.data["items"]) == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on complex mutation under lock: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def append_and_sort(state: _ComplexMutationState) -> None:
-            with state.lock:
-                state.data["items"].append(1)
-
-        result = frontrun.explore_random(
-            setup=_ComplexMutationState,
-            threads=[append_and_sort, append_and_sort],
-            invariant=lambda s: len(s.data["items"]) == 2,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _ComplexMutationState,
+            [append_and_sort, append_and_sort],
+            lambda s: len(s.data["items"]) == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on complex mutation under lock: {result}"
 
@@ -1518,7 +1197,8 @@ class _SwapLockState:
 class TestLockProtectedSwap:
     """Tuple swap under lock — safe despite reading two attributes."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def swap(state: _SwapLockState) -> None:
             with state.lock:
                 state.a, state.b = state.b, state.a
@@ -1527,31 +1207,13 @@ class TestLockProtectedSwap:
             with state.lock:
                 _ = state.a + state.b
 
-        result = frontrun.explore(
-            setup=_SwapLockState,
-            workers=[swap, read],
-            invariant=lambda s: s.a + s.b == 3,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on lock-protected swap: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def swap(state: _SwapLockState) -> None:
-            with state.lock:
-                state.a, state.b = state.b, state.a
-
-        def read(state: _SwapLockState) -> None:
-            with state.lock:
-                _ = state.a + state.b
-
-        result = frontrun.explore_random(
-            setup=_SwapLockState,
-            threads=[swap, read],
-            invariant=lambda s: s.a + s.b == 3,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _SwapLockState,
+            [swap, read],
+            lambda s: s.a + s.b == 3,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on lock-protected swap: {result}"
 
@@ -1643,24 +1305,15 @@ class _SafeClosureCellState:
 class TestLockProtectedClosureCell:
     """nonlocal variable (closure cell) protected by lock — safe."""
 
-    def test_dpor_safe(self) -> None:
-        result = frontrun.explore(
-            setup=_SafeClosureCellState,
-            workers=[lambda s: s.increment(), lambda s: s.increment()],
-            invariant=lambda s: s.get() == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on closure cell under lock: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        result = frontrun.explore_random(
-            setup=_SafeClosureCellState,
-            threads=[lambda s: s.increment(), lambda s: s.increment()],
-            invariant=lambda s: s.get() == 2,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
+        result = _explore_backend(
+            backend,
+            _SafeClosureCellState,
+            [lambda s: s.increment(), lambda s: s.increment()],
+            lambda s: s.get() == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on closure cell under lock: {result}"
 
@@ -1677,7 +1330,8 @@ class _SetattrLockState:
 class TestLockProtectedSetattrGetattr:
     """setattr/getattr under lock — safe despite passthrough builtin tracking."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def inc(state: _SetattrLockState) -> None:
             with state.lock:
                 # B009/B010 suppressed: these builtins are the subject under
@@ -1685,29 +1339,13 @@ class TestLockProtectedSetattrGetattr:
                 temp = getattr(state, "value")  # noqa: B009
                 setattr(state, "value", temp + 1)  # noqa: B010
 
-        result = frontrun.explore(
-            setup=_SetattrLockState,
-            workers=[inc, inc],
-            invariant=lambda s: s.value == 2,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on setattr/getattr under lock: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def inc(state: _SetattrLockState) -> None:
-            with state.lock:
-                # B009/B010 suppressed: see test_dpor_safe above.
-                temp = getattr(state, "value")  # noqa: B009
-                setattr(state, "value", temp + 1)  # noqa: B010
-
-        result = frontrun.explore_random(
-            setup=_SetattrLockState,
-            threads=[inc, inc],
-            invariant=lambda s: s.value == 2,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _SetattrLockState,
+            [inc, inc],
+            lambda s: s.value == 2,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on setattr/getattr under lock: {result}"
 
@@ -1724,7 +1362,8 @@ class _MultiStepIndependentState:
 class TestMultiStepIndependent:
     """Each thread does multi-step computation on its own attribute."""
 
-    def test_dpor_safe(self) -> None:
+    @pytest.mark.parametrize("backend", ["dpor", "bytecode"])
+    def test_safe(self, backend: str) -> None:
         def compute_a(state: _MultiStepIndependentState) -> None:
             state.sum_a = 0
             state.sum_a += 10
@@ -1736,33 +1375,12 @@ class TestMultiStepIndependent:
             state.sum_b += 100
             state.sum_b += 200
 
-        result = frontrun.explore(
-            setup=_MultiStepIndependentState,
-            workers=[compute_a, compute_b],
-            invariant=lambda s: s.sum_a == 60 and s.sum_b == 300,
-            detect_io=False,
-            deadlock_timeout=5.0,
-        )
-        assert result.property_holds, f"False positive on multi-step independent: {result}"
-
-    def test_bytecode_safe(self) -> None:
-        def compute_a(state: _MultiStepIndependentState) -> None:
-            state.sum_a = 0
-            state.sum_a += 10
-            state.sum_a += 20
-            state.sum_a += 30
-
-        def compute_b(state: _MultiStepIndependentState) -> None:
-            state.sum_b = 0
-            state.sum_b += 100
-            state.sum_b += 200
-
-        result = frontrun.explore_random(
-            setup=_MultiStepIndependentState,
-            threads=[compute_a, compute_b],
-            invariant=lambda s: s.sum_a == 60 and s.sum_b == 300,
-            max_attempts=50,
-            max_ops=200,
-            seed=42,
+        result = _explore_backend(
+            backend,
+            _MultiStepIndependentState,
+            [compute_a, compute_b],
+            lambda s: s.sum_a == 60 and s.sum_b == 300,
+            dpor_options={"detect_io": False, "deadlock_timeout": 5.0},
+            random_options={"max_attempts": 50, "max_ops": 200, "seed": 42},
         )
         assert result.property_holds, f"False positive on multi-step independent: {result}"
