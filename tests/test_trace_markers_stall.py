@@ -19,6 +19,17 @@ from frontrun.common import Schedule, Step
 from frontrun.trace_markers import TraceExecutor
 
 
+def test_incomplete_schedule_reports_missing_marker():
+    schedule = Schedule([Step("t1", "marker_that_exists"), Step("t1", "marker_that_does_not_exist")])
+
+    def worker():
+        x = 1  # frontrun: marker_that_exists
+        _ = x + 1
+
+    with pytest.raises(TimeoutError, match="Schedule incomplete.*marker_that_does_not_exist"):
+        TraceExecutor(schedule).run({"t1": worker}, timeout=5.0)
+
+
 def _marker_worker():
     x = 1  # frontrun: m
     return x

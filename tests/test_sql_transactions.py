@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from frontrun._io_detection import set_io_reporter, tx_store
-from frontrun._sql_cursor import _run_connection_tx_method
+from frontrun._sql_cursor import _intercept_execute, _run_connection_tx_method
 from frontrun._sql_transactions import handle_connection_commit
 
 
@@ -73,3 +73,58 @@ class TestHandleConnectionCommitReporterNone:
             store._in_transaction = False
             store._tx_buffer = []
             store._tx_savepoints = {}
+
+
+@pytest.fixture
+def transaction_cursor():
+    from unittest.mock import Mock
+
+    from frontrun._io_detection import _io_tls
+
+    reporter = Mock()
+    set_io_reporter(reporter)
+    for attr in ("_in_transaction", "_tx_buffer", "_tx_savepoints"):
+        if hasattr(_io_tls, attr):
+            delattr(_io_tls, attr)
+
+    class Cursor:
+        pass
+
+    try:
+        yield reporter, Cursor(), lambda self, op, params=None: None
+    finally:
+        set_io_reporter(None)
+
+
+class TestInterceptedTransactionBoundaries:
+    def test_transaction_grouping_begin_commit(self, transaction_cursor):
+        (reporter, cursor, mock_orig) = transaction_cursor
+        _intercept_execute(mock_orig, cursor, "BEGIN")
+        reporter.assert_not_called()
+        _intercept_execute(mock_orig, cursor, "SELECT * FROM accounts WHERE id = 1")
+        reporter.assert_not_called()
+        _intercept_execute(mock_orig, cursor, "UPDATE accounts SET balance = 0 WHERE id = 1")
+        reporter.assert_not_called()
+        _intercept_execute(mock_orig, cursor, "COMMIT")
+        expected_id = "sql:accounts:(('id', '1'),)"
+        reporter.assert_any_call(expected_id, "read")
+        reporter.assert_any_call(expected_id, "write")
+
+    def test_savepoint_tracking(self, transaction_cursor):
+        (reporter, cursor, mock_orig) = transaction_cursor
+        _intercept_execute(mock_orig, cursor, "BEGIN")
+        _intercept_execute(mock_orig, cursor, "UPDATE t1 SET x=1")
+        _intercept_execute(mock_orig, cursor, "SAVEPOINT sp1")
+        _intercept_execute(mock_orig, cursor, "UPDATE t2 SET x=2")
+        _intercept_execute(mock_orig, cursor, "ROLLBACK TO SAVEPOINT sp1")
+        _intercept_execute(mock_orig, cursor, "COMMIT")
+        reporter.assert_any_call("sql:t1", "write")
+        for call in reporter.call_args_list:
+            assert "sql:t2" not in call.args[0]
+
+    def test_rollback_transaction_boundary(self, transaction_cursor):
+        (reporter, cursor, mock_orig) = transaction_cursor
+        _intercept_execute(mock_orig, cursor, "BEGIN")
+        _intercept_execute(mock_orig, cursor, "DELETE FROM sensitive_data WHERE id = 1")
+        _intercept_execute(mock_orig, cursor, "ROLLBACK")
+        reporter.assert_not_called()

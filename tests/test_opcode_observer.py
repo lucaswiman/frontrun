@@ -758,3 +758,24 @@ class TestReportHelperDispatch:
 
         expected_key = _make_object_key(sids.get(obj), "some_attr")
         assert engine.calls[0][1] == expected_key
+
+
+def test_stable_object_preregistration_uses_dict_insertion_order_not_key_repr() -> None:
+    """Object-key repr (often containing an address) must not renumber anchors."""
+    from frontrun._opcode_observer import StableObjectIds
+
+    class Key:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def __repr__(self) -> str:
+            return self.label
+
+    first = object()
+    second = object()
+    stable_ids = StableObjectIds()
+    stable_ids.pre_register({Key("z-last-by-repr"): first, Key("a-first-by-repr"): second})
+
+    assert stable_ids.is_preregistered(first)
+    assert stable_ids.is_preregistered(second)
+    assert stable_ids.get(first) < stable_ids.get(second)

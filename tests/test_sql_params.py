@@ -5,62 +5,45 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
+import pytest
+
 from frontrun._sql_params import _python_to_sql_literal, resolve_parameters
 
 
 class TestPythonToSqlLiteral:
-    def test_none(self):
-        assert _python_to_sql_literal(None) == "NULL"
-
-    def test_true(self):
-        assert _python_to_sql_literal(True) == "TRUE"
-
-    def test_false(self):
-        assert _python_to_sql_literal(False) == "FALSE"
-
-    def test_bool_before_int(self):
-        # bool is a subclass of int; must be handled before int check
-        assert _python_to_sql_literal(True) == "TRUE"
-        assert _python_to_sql_literal(False) == "FALSE"
-        assert _python_to_sql_literal(True) != "1"
-        assert _python_to_sql_literal(False) != "0"
-
-    def test_int_zero(self):
-        assert _python_to_sql_literal(0) == "0"
-
-    def test_int_positive(self):
-        assert _python_to_sql_literal(42) == "42"
-
-    def test_int_negative(self):
-        assert _python_to_sql_literal(-17) == "-17"
-
-    def test_int_large(self):
-        assert _python_to_sql_literal(10**18) == "1000000000000000000"
-
-    def test_float_positive(self):
-        assert _python_to_sql_literal(3.14) == "3.14"
-
-    def test_float_negative(self):
-        assert _python_to_sql_literal(-2.5) == "-2.5"
-
-    def test_float_zero(self):
-        assert _python_to_sql_literal(0.0) == "0.0"
-
-    def test_float_inf(self):
-        assert _python_to_sql_literal(float("inf")) == "inf"
-
-    def test_float_neg_inf(self):
-        assert _python_to_sql_literal(float("-inf")) == "-inf"
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            pytest.param(None, "NULL", id="none"),
+            pytest.param(True, "TRUE", id="true"),
+            pytest.param(False, "FALSE", id="false"),
+            pytest.param(0, "0", id="int_zero"),
+            pytest.param(42, "42", id="int_positive"),
+            pytest.param(-17, "-17", id="int_negative"),
+            pytest.param(10**18, "1000000000000000000", id="int_large"),
+            pytest.param(3.14, "3.14", id="float_positive"),
+            pytest.param(-2.5, "-2.5", id="float_negative"),
+            pytest.param(0.0, "0.0", id="float_zero"),
+            pytest.param(float("inf"), "inf", id="float_inf"),
+            pytest.param(float("-inf"), "-inf", id="float_neg_inf"),
+            pytest.param(b"", "X''", id="bytes_empty"),
+            pytest.param(b"\xde\xad\xbe\xef", "X'deadbeef'", id="bytes_simple"),
+            pytest.param(bytearray(b"\x01\x02\x03"), "X'010203'", id="bytearray"),
+            pytest.param(memoryview(b"\xca\xfe"), "X'cafe'", id="memoryview"),
+            pytest.param("hello", "'hello'", id="string_simple"),
+            pytest.param("", "''", id="string_empty"),
+            pytest.param("O'Brien", "'O''Brien'", id="string_single_quote"),
+            pytest.param("it's a 'test'", "'it''s a ''test'''", id="string_multiple_quotes"),
+            pytest.param("'''", "''''''''", id="string_only_quotes"),
+            pytest.param('say "hello"', "'say \"hello\"'", id="string_nested_double_quotes"),
+        ],
+    )
+    def test_literal(self, value, expected):
+        assert _python_to_sql_literal(value) == expected
 
     def test_float_nan(self):
         result = _python_to_sql_literal(float("nan"))
         assert math.isnan(float(result))
-
-    def test_bytes_empty(self):
-        assert _python_to_sql_literal(b"") == "X''"
-
-    def test_bytes_simple(self):
-        assert _python_to_sql_literal(b"\xde\xad\xbe\xef") == "X'deadbeef'"
 
     def test_bytes_long(self):
         data = bytes(range(256))
@@ -68,31 +51,6 @@ class TestPythonToSqlLiteral:
         assert result.startswith("X'")
         assert result.endswith("'")
         assert len(result) == 2 + 512 + 1  # X' + 512 hex chars + '
-
-    def test_bytearray(self):
-        assert _python_to_sql_literal(bytearray(b"\x01\x02\x03")) == "X'010203'"
-
-    def test_memoryview(self):
-        assert _python_to_sql_literal(memoryview(b"\xca\xfe")) == "X'cafe'"
-
-    def test_string_simple(self):
-        assert _python_to_sql_literal("hello") == "'hello'"
-
-    def test_string_empty(self):
-        assert _python_to_sql_literal("") == "''"
-
-    def test_string_single_quote(self):
-        assert _python_to_sql_literal("O'Brien") == "'O''Brien'"
-
-    def test_string_multiple_quotes(self):
-        assert _python_to_sql_literal("it's a 'test'") == "'it''s a ''test'''"
-
-    def test_string_only_quotes(self):
-        # "'''" has 3 single quotes; each becomes '' → 6 chars, wrapped = 8 chars total
-        assert _python_to_sql_literal("'''") == "''''''''"
-
-    def test_string_nested_double_quotes(self):
-        assert _python_to_sql_literal('say "hello"') == "'say \"hello\"'"
 
     def test_string_unicode(self):
         result = _python_to_sql_literal("caf\u00e9")

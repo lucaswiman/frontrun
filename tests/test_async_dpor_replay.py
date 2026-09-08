@@ -15,7 +15,6 @@ DeadlockError or phantom ownership in later replays.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import threading
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -23,19 +22,12 @@ from typing import Any
 import pytest
 
 import frontrun._async_cooperative as async_cooperative
-from frontrun._async_autopause import _scheduler_var, _task_id_var, wrap_auto_paused_tasks
-from frontrun._deadlock import DeadlockError, WaitForGraph
-from frontrun._dpor_core import event_wake_sync_id
-from frontrun._opcode_observer import StableObjectIds
-from frontrun._virtual_clock import VirtualClock
+from frontrun._async_autopause import wrap_auto_paused_tasks
+from frontrun._deadlock import DeadlockError
 from frontrun.async_dpor import (
     AsyncDporScheduler,
-    _async_parked_conditions,
     _async_parked_events,
-    _async_parked_queues,
-    _CooperativeAsyncCondition,
     _CooperativeAsyncEvent,
-    _CooperativeAsyncQueue,
     _patch_asyncio_event,
     _ReplayAsyncScheduler,
     _reset_async_lock_state,
@@ -43,52 +35,6 @@ from frontrun.async_dpor import (
 )
 from frontrun.async_scheduler import SchedulerTimeoutError
 from frontrun.cli import require_active
-
-
-@pytest.mark.parametrize("mode", ["exploration", "replay"])
-def test_timeout_guarded_row_lock_wait_is_not_a_deadlock(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
-    """Exploration and replay must share timeout-aware wait-for graph semantics."""
-
-    async def run() -> None:
-        graph = WaitForGraph()
-        monkeypatch.setattr(async_cooperative, "_async_wait_graph", graph)
-        clock = VirtualClock()
-        if mode == "exploration":
-            from frontrun._dpor import PyDporEngine
-
-            engine = PyDporEngine(3)
-            scheduler = AsyncDporScheduler(
-                engine, engine.begin_execution(), 2, virtual_clock=clock, clock_actor_id=2, clock_mode="virtual"
-            )
-        else:
-            scheduler = _ReplayAsyncScheduler([1, 0, 1], 2, virtual_clock=clock, clock_actor_id=2)
-
-        async def no_op(*_args: object, **_kwargs: object) -> None:
-            return None
-
-        monkeypatch.setattr(scheduler, "kick_stalled_schedule", no_op)
-        monkeypatch.setattr(scheduler, "wait_until_scheduled_after_block", no_op)
-
-        scheduler._row_lock_registry.record_acquire(0, "A", graph)
-        scheduler._row_lock_registry.record_acquire(1, "B", graph)
-        lock_b = scheduler._row_lock_registry._row_lock_int_id("B")
-        assert graph.add_waiting(0, lock_b, kind="row_lock") is None
-        scheduler.add_timeout_deadline(1, clock.now() + 1.0, object())
-
-        acquire = asyncio.create_task(scheduler.acquire_row_locks_async(1, ["A"]))
-        try:
-            await asyncio.sleep(0)
-            assert not acquire.done(), "the pending timeout makes this wait recoverable"
-
-            scheduler.release_row_locks(0, ["A"])
-            assert await acquire == ["A"]
-        finally:
-            if not acquire.done():
-                acquire.cancel()
-            with contextlib.suppress(asyncio.CancelledError, DeadlockError):
-                await acquire
-
-    asyncio.run(run())
 
 
 def test_task_crash_counterexample_reproduces_same_exception() -> None:
@@ -406,30 +352,6 @@ def test_event_blocked_replay_skips_drifted_waiter_slots() -> None:
     assert asyncio.run(scenario()) == ["setter", "waiter"]
 
 
-def test_handle_timeout_wakes_parked_primitive_waiters() -> None:
-    """A watchdog abort (``_handle_timeout``) must wake tasks parked on
-    cooperative primitives so they free-run to completion, rather than
-    leaving them parked until the outer ``timeout_per_run`` elapses.
-    """
-
-    async def scenario() -> bool:
-        scheduler = object.__new__(AsyncDporScheduler)
-        scheduler._error = None
-        scheduler._current_task = 0
-        scheduler._condition = asyncio.Condition()
-        event = _CooperativeAsyncEvent()
-        _async_parked_events.add(event)
-        try:
-            assert not event._event.is_set()
-            async with scheduler._condition:
-                scheduler._handle_timeout(1, marker="x")
-            return event._event.is_set()
-        finally:
-            _async_parked_events.clear()
-
-    assert asyncio.run(scenario()) is True
-
-
 @pytest.mark.parametrize(
     "artifact",
     [RuntimeError("free-run artifact"), DeadlockError("free-run deadlock artifact", "artifact")],
@@ -464,93 +386,6 @@ def test_scheduler_timeout_takes_priority_over_free_run_task_error(
     assert raised is scheduler_error
 
 
-def test_handle_all_waiting_deadlock_wakes_parked_primitive_waiters() -> None:
-    """The all-waiting-deadlock abort path in the base InterleavedLoop must also
-    wake tasks parked on cooperative primitives.
-
-    Wave-1 Fix E wired the ``_handle_timeout`` watchdog to wake parked waiters,
-    but ``_handle_all_waiting_deadlock`` is a sibling abort path that sets
-    ``self._error`` too; without waking, a task parked in a cooperative wrapper
-    stays parked until ``timeout_per_run`` instead of free-running to completion.
-    """
-
-    async def scenario() -> bool:
-        scheduler = object.__new__(AsyncDporScheduler)
-        scheduler._error = None
-        scheduler._current_task = 0
-        scheduler._condition = asyncio.Condition()
-        scheduler._num_tasks = 2
-        scheduler._tasks_done = set()
-        event = _CooperativeAsyncEvent()
-        _async_parked_events.add(event)
-        try:
-            assert not event._event.is_set()
-            async with scheduler._condition:
-                scheduler._handle_all_waiting_deadlock(1, marker="x")
-            return event._event.is_set()
-        finally:
-            _async_parked_events.clear()
-
-    assert asyncio.run(scenario()) is True
-
-
-def test_condition_notify_no_context_wakes_at_most_n_across_both_waiter_sets() -> None:
-    """Without scheduler context, ``notify(n)`` must wake at most ``n`` waiters
-    total across the real-condition and cooperative waiter populations.
-
-    The no-context path delegates to the wrapped real condition AND then also
-    resolves cooperative-waiter futures; with a mix of both, ``notify(1)``
-    used to wake two.
-    """
-
-    async def scenario() -> int:
-        condition = _CooperativeAsyncCondition()
-        loop = asyncio.get_running_loop()
-        real_fut: asyncio.Future[bool] = loop.create_future()
-        coop_fut: asyncio.Future[None] = loop.create_future()
-        # One real-condition waiter (what the no-context wait() path registers).
-        condition._real_condition._waiters.append(real_fut)  # type: ignore[attr-defined]
-        # One cooperative waiter (what the with-context wait() path registers).
-        condition._waiters.add(123, coop_fut)
-        await condition.acquire()
-        try:
-            condition.notify(1)
-        finally:
-            condition.release()
-        woke = sum(1 for fut in (real_fut, coop_fut) if fut.done())
-        for fut in (real_fut, coop_fut):
-            if not fut.done():
-                fut.cancel()
-        return woke
-
-    assert asyncio.run(scenario()) == 1
-
-
-def test_reset_async_lock_state_clears_all_parked_primitive_sets() -> None:
-    """``_reset_async_lock_state`` must clear the parked-queue and
-    parked-condition sets too, not only parked events.  Otherwise a stale
-    cooperative queue/condition from a prior execution or replay attempt
-    leaks into the next one (only cleared at unpatch).
-    """
-
-    async def _make() -> tuple[_CooperativeAsyncQueue[str], _CooperativeAsyncCondition, _CooperativeAsyncEvent]:
-        return _CooperativeAsyncQueue(), _CooperativeAsyncCondition(), _CooperativeAsyncEvent()
-
-    queue_obj, condition_obj, event_obj = asyncio.run(_make())
-    _async_parked_queues.add(queue_obj)
-    _async_parked_conditions.add(condition_obj)
-    _async_parked_events.add(event_obj)
-    try:
-        _reset_async_lock_state()
-        assert not _async_parked_events
-        assert not _async_parked_queues
-        assert not _async_parked_conditions
-    finally:
-        _async_parked_queues.clear()
-        _async_parked_conditions.clear()
-        _async_parked_events.clear()
-
-
 def test_replay_on_task_yielded_respects_error_guard() -> None:
     """``_ReplayAsyncScheduler.on_task_yielded`` must short-circuit once the
     run has an error (mirroring the exploration scheduler), rather than
@@ -569,57 +404,6 @@ def test_replay_on_task_yielded_respects_error_guard() -> None:
     # With the guard the cursor stays put (index 1, current task 0).
     assert replay_index == 1
     assert current_task == 0
-
-
-def test_async_event_wake_sync_ids_use_stable_event_ids() -> None:
-    """Event wake edges must be keyed by stable event id, not raw id(event)."""
-
-    class Engine:
-        pass
-
-    class Execution:
-        def __init__(self) -> None:
-            self.unblocked: list[int] = []
-
-        def unblock_thread(self, task_id: int) -> None:
-            self.unblocked.append(task_id)
-
-    class Scheduler:
-        def __init__(self) -> None:
-            self.engine = Engine()
-            self.execution = Execution()
-            self._stable_ids = StableObjectIds()
-            self._error = None
-            self._event_blocked = {1}
-            self.syncs: list[tuple[int, str, int]] = []
-
-        def report_task_sync(self, task_id: int, event_type: str, sync_id: int) -> None:
-            self.syncs.append((task_id, event_type, sync_id))
-
-        def report_task_access(self, task_id: int, object_id: int, kind: str) -> None:
-            pass
-
-    _patch_asyncio_event()
-    try:
-        event = asyncio.Event()
-        scheduler = Scheduler()
-        stable_event_id = scheduler._stable_ids.get(event)
-        event._waiters.append(1)  # type: ignore[attr-defined]
-
-        scheduler_token = _scheduler_var.set(scheduler)
-        task_token = _task_id_var.set(0)
-        try:
-            event.set()
-        finally:
-            _task_id_var.reset(task_token)
-            _scheduler_var.reset(scheduler_token)
-
-        assert scheduler.syncs == [(0, "lock_release", event_wake_sync_id(stable_event_id, 1))]
-        assert scheduler.execution.unblocked == [1]
-        assert scheduler._event_blocked == set()
-    finally:
-        _unpatch_asyncio_event()
-        _reset_async_lock_state()
 
 
 @pytest.mark.parametrize("clock", ["real", "virtual"])

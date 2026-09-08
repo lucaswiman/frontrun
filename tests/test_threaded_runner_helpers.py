@@ -2,17 +2,48 @@
 
 from __future__ import annotations
 
+import time
 from types import ModuleType
 
 import pytest
+from frontrun._dpor import PyDporEngine
 
 import frontrun._dpor_runtime.runner as dpor_runner_module
 import frontrun.bytecode as bytecode_module
 from frontrun._dpor_runtime.runner import DporBytecodeRunner
 from frontrun._real_threading import condition as _real_condition
+from frontrun._real_threading import event as _real_event
 from frontrun._real_threading import lock as _real_lock
 from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
-from frontrun.bytecode import BytecodeShuffler
+from frontrun.bytecode import BytecodeShuffler, OpcodeScheduler
+from frontrun.dpor import DporScheduler
+
+
+@pytest.mark.parametrize("strategy", ["random", "dpor"])
+def test_runner_timeout_is_one_deadline_for_all_threads(strategy):
+    if strategy == "random":
+        scheduler = OpcodeScheduler([0] * 10, num_threads=3)
+        runner = BytecodeShuffler(scheduler)
+    else:
+        engine = PyDporEngine(num_threads=3)
+        scheduler = DporScheduler(engine, engine.begin_execution(), num_threads=3)
+        runner = DporBytecodeRunner(scheduler)
+    release = _real_event()
+
+    def hang():
+        release.wait(100)
+
+    started = time.monotonic()
+    try:
+        runner.run([hang, hang, hang], timeout=1.0)
+        elapsed = time.monotonic() - started
+        assert len(runner.threads) == 3
+        assert isinstance(scheduler._error, TimeoutError)
+        assert elapsed < 2.0, f"per-thread deadlines accumulated: {elapsed:.1f}s"
+    finally:
+        release.set()
+        for thread in runner.threads:
+            thread.join(timeout=2.0)
 
 
 def test_patch_scope_runs_all_cleanups_even_if_one_raises():

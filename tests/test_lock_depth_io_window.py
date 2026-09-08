@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from frontrun._deadlock import install_wait_for_graph, uninstall_wait_for_graph
 from frontrun.dpor import DporBytecodeRunner, DporScheduler, _dpor_tls
 
@@ -55,37 +57,28 @@ class TestLockDepthIoWindow:
         _dpor_tls.lock_depth = 0
         uninstall_wait_for_graph()
 
-    def test_flushes_current_thread_pending_io_immediately_outside_lock(self) -> None:
+    @pytest.mark.parametrize(
+        ("lock_depth", "runnable", "object_id", "kind"),
+        [(0, [0], 123, "write"), (1, [0, 1], 456, "read")],
+        ids=["outside-lock", "inside-lock"],
+    )
+    def test_current_thread_io_is_deferred_only_inside_lock(
+        self, lock_depth: int, runnable: list[int], object_id: int, kind: str
+    ) -> None:
         engine = _FakeEngine()
-        execution = _FakeExecution([0])
-        scheduler = DporScheduler(engine, execution, num_threads=1)
+        execution = _FakeExecution(runnable)
+        scheduler = DporScheduler(engine, execution, num_threads=len(runnable))
 
-        pending_io = [(123, "write", False)]
+        pending_io = [(object_id, kind, False)]
         scheduler._pending_io_by_thread[0] = pending_io
-        scheduler._lock_depth_by_thread[0] = 0
+        scheduler._lock_depth_by_thread[0] = lock_depth
         _dpor_tls.pending_io = pending_io
-        _dpor_tls.lock_depth = 0
+        _dpor_tls.lock_depth = lock_depth
 
         assert scheduler._report_and_wait(None, 0)
 
-        assert engine.io_calls == [(0, 123, "write")]
-        assert _dpor_tls.pending_io == []
-
-    def test_keeps_current_thread_pending_io_buffered_inside_lock(self) -> None:
-        engine = _FakeEngine()
-        execution = _FakeExecution([0, 1])
-        scheduler = DporScheduler(engine, execution, num_threads=2)
-
-        pending_io = [(456, "read", False)]
-        scheduler._pending_io_by_thread[0] = pending_io
-        scheduler._lock_depth_by_thread[0] = 1
-        _dpor_tls.pending_io = pending_io
-        _dpor_tls.lock_depth = 1
-
-        assert scheduler._report_and_wait(None, 0)
-
-        assert engine.io_calls == []
-        assert _dpor_tls.pending_io == [(456, "read", False)]
+        assert engine.io_calls == ([] if lock_depth else [(0, object_id, kind)])
+        assert _dpor_tls.pending_io == ([(object_id, kind, False)] if lock_depth else [])
 
     def test_flushes_other_threads_deferred_io_when_current_thread_reaches_io_boundary(self) -> None:
         engine = _FakeEngine()

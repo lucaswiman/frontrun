@@ -9,8 +9,7 @@ no opcode tracing — only the external-access patches are active, and between
 accesses the worker's own code runs uncontrolled (independent by construction,
 since separate processes share no Python memory).
 
-This is the worker half of Phase 1 (``ideas/cross_process_exploration.md``),
-scoped to the SQL hot path:
+The proxy covers synchronous external-access scheduling:
 
 * :meth:`report_and_wait` — force a scheduling point at a SQL statement.
 * :meth:`acquire_row_locks` / :meth:`release_row_locks` — ``SELECT FOR UPDATE``
@@ -18,8 +17,10 @@ scoped to the SQL hot path:
   the in-process scheduler uses.
 * :meth:`io_report` — the io-reporter callable (installed via
   ``set_io_reporter``) that funnels ``(resource_id, kind)`` access reports.
+* :meth:`before_io` / :meth:`after_io` — two-phase Redis I/O boundaries.
 
-Redis (``before_io`` / ``after_io``) and async (``pause``) are Phase 2.
+Async exploration uses a separate scheduler path; this proxy is not an async
+worker interface.
 """
 
 from __future__ import annotations

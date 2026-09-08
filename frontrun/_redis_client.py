@@ -516,16 +516,6 @@ def _report_redis_access(
     if reporter is None:
         return False
 
-    pubsub_commands = {
-        "PUBLISH",
-        "SPUBLISH",
-        "SUBSCRIBE",
-        "PSUBSCRIBE",
-        "SSUBSCRIBE",
-        "UNSUBSCRIBE",
-        "PUNSUBSCRIBE",
-        "SUNSUBSCRIBE",
-    }
     access = parse_redis_access(cmd_name, cmd_args)
     # Unknown/unparseable commands must not default to zero accesses or a
     # silently-narrow scope: anything without positive modeling evidence gets
@@ -541,7 +531,7 @@ def _report_redis_access(
         and not access.read_keys
         and not access.write_keys
         and access.keyspace is None
-        and upper not in pubsub_commands
+        and upper not in _PUBSUB_CMDS
         and upper != "PUBSUB"
     ):
         return False
@@ -573,7 +563,7 @@ def _report_redis_access(
             key_accesses.extend((key, "write", db_scope) for key in migrate_keys)
         destination_scope = _migrate_destination_scope(cmd_args, connection_kwargs=connection_kwargs)
         key_accesses.extend((key, "write", destination_scope) for key in migrate_keys)
-    elif upper in pubsub_commands:
+    elif upper in _PUBSUB_CMDS:
         channel_scope = _format_redis_server_scope(scope_parts[0], scope_parts[1]) if scope_parts is not None else None
         key_accesses.extend((key, "read", channel_scope) for key in access.read_keys)
         key_accesses.extend((key, "write", channel_scope) for key in access.write_keys)
