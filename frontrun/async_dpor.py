@@ -87,6 +87,7 @@ from frontrun._async_cooperative import (
     _wake_parked_async_primitive_waiters,
 )
 from frontrun._async_dpor_replay import _ReplayAsyncScheduler
+from frontrun._async_row_locks import AsyncRowLockProtocol
 from frontrun._async_virtual_timeouts import (
     _patch_asyncio_sleep,
     _patch_asyncio_timeouts,
@@ -323,7 +324,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         self._active_row_locks: dict[str, int] = self._row_lock_registry._active_row_locks
         self._task_row_locks: dict[int, set[str]] = self._row_lock_registry._task_row_locks
         self._row_lock_ids: dict[str, int] = self._row_lock_registry._row_lock_ids
-        self._row_lock_waiters: dict[str, list[tuple[int, asyncio.Future[None]]]] = {}
+        self._row_lock_protocol = AsyncRowLockProtocol(self, self._row_lock_registry)
 
         # The clock actor starts blocked; it becomes runnable only when a
         # deadline is pending (see _sync_clock_actor / _schedule_next).
@@ -836,10 +837,9 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         # _wait_watching_progress, sleep_until, and the exact-deadlock confirm —
         # goes through one mechanism.
         _wake_parked_async_primitive_waiters()
-        for waiters in getattr(self, "_row_lock_waiters", {}).values():
-            for _task_id, future in waiters:
-                if not future.done():
-                    future.set_result(None)
+        protocol = getattr(self, "_row_lock_protocol", None)
+        if protocol is not None:
+            protocol.wake_all()
 
     def _handle_timeout(self, task_id: Any, marker: Any = None) -> bool:
         self._error = SchedulerTimeoutError(
@@ -1117,75 +1117,12 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
         optimistically transferred ownership before awaiting the driver, which
         hid that future cycle and let SQLite/PostgreSQL block outside the model.
         """
-        graph = _async_cooperative._async_wait_graph
-        acquired: list[str] = []
         self.engine.report_access(self.execution, task_id, _SHARED_SYNC_ACQUIRE_KEY, "write")
-        for res_id in resource_ids:
-            lock_int_id = self._row_lock_int_id(res_id)
-            while (holder := self._active_row_locks.get(res_id)) is not None and holder != task_id:
-                # A waiter guarded by a virtual timeout deadline registers no
-                # wait edge: the clock actor cancels it at the deadline, so
-                # the wait cannot close a *permanent* cycle (timeout-based
-                # deadlock avoidance — mirrors the async lock wrapper and the
-                # sync _timed_acquire_state rule).
-                if graph is not None and not self._deadlines.in_timed_wait(task_id):
-                    cycle = graph.add_waiting(task_id, lock_int_id, kind="row_lock")
-                    if cycle is not None:
-                        graph.remove_waiting(task_id, lock_int_id, kind="row_lock")
-                        desc = format_cycle(cycle, self._row_lock_registry.id_to_resource())
-                        error = DeadlockError(f"Row-lock deadlock detected: {desc}", desc)
-                        await self._report_error(error)
-                        raise error
-
-                future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-                waiters = self._row_lock_waiters.setdefault(res_id, [])
-                waiters.append((task_id, future))
-                self._event_blocked.add(task_id)
-                self._lock_blocked[task_id] = holder
-                self.execution.block_thread(task_id)
-                depth = _in_scheduler_pause.get()
-                _in_scheduler_pause.set(depth + 1)
-                unblocked = False
-                try:
-                    await self.kick_stalled_schedule(task_id)
-                    await future
-                    self.execution.unblock_thread(task_id)
-                    unblocked = True
-                    self._event_blocked.discard(task_id)
-                    self._lock_blocked.pop(task_id, None)
-                    if self._error is not None:
-                        raise self._error
-                    await self.wait_until_scheduled_after_block(task_id, "SQL row lock")
-                    if self._error is not None:
-                        raise self._error
-                finally:
-                    if graph is not None:
-                        graph.remove_waiting(task_id, lock_int_id, kind="row_lock")
-                    current_waiters = self._row_lock_waiters.get(res_id)
-                    if current_waiters is not None:
-                        current_waiters[:] = [entry for entry in current_waiters if entry[1] is not future]
-                        if not current_waiters:
-                            self._row_lock_waiters.pop(res_id, None)
-                    self._event_blocked.discard(task_id)
-                    self._lock_blocked.pop(task_id, None)
-                    if not unblocked:
-                        self.execution.unblock_thread(task_id)
-                    _in_scheduler_pause.set(depth)
-
-            self._row_lock_registry.record_acquire(task_id, res_id, graph)
-            acquired.append(res_id)
-        return acquired
+        return await self._row_lock_protocol.acquire(task_id, resource_ids)
 
     def release_row_locks(self, thread_id: int, resources: list[str] | None = None) -> None:
         """Release selected row locks, or all locks on COMMIT/ROLLBACK."""
-        graph = _async_cooperative._async_wait_graph
-        # Shared release logic via registry (sync also uses pop; async skips
-        # engine.report_sync because row-lock release is tracked at await points).
-        released = self._row_lock_registry.pop(thread_id, graph, resources)
-        for res_id, _lock_id in released:
-            for _waiter, future in self._row_lock_waiters.get(res_id, []):
-                if not future.done():
-                    future.set_result(None)
+        self._row_lock_protocol.release(thread_id, resources)
 
     def _flush_pending_io(self, task_id: int) -> None:
         """Flush pending I/O accesses to the DPOR engine."""
