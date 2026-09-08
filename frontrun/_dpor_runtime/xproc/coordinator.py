@@ -219,11 +219,11 @@ def accept_hello_live(
 class CrossProcessResult:
     """Outcome of a cross-process exploration."""
 
-    # True: no failure in at least one completed execution. False: concrete
-    # failure. None: inconclusive because no execution completed (for example,
-    # total_timeout expired during startup).  Keeping the zero-work state
-    # distinct prevents direct explore_processes() callers from reading a
-    # vacuous ``ok=True`` as a pass.
+    # True: completed executions found no failure. False: concrete failure.
+    # None: inconclusive because an execution was incomplete (possibly after
+    # earlier executions completed), or because no execution began. Keeping
+    # incomplete evidence distinct prevents callers from treating a truncated
+    # run as either a pass or a counterexample.
     ok: bool | None
     iterations: int
     # True only when the search space was genuinely fully covered: any
@@ -232,9 +232,9 @@ class CrossProcessResult:
     exhausted: bool
     failing_schedule: list[int] | None = None
     failure: str | None = None
-    # One of: "invariant", "worker_error", "deadlock", "timeout",
-    # "nondeterministic", "step_limit" (exhaustive: max_steps_per_run hit),
-    # "branch_limit" (DPOR: max_branches hit), None.
+    # One of: "invariant", "worker_error", "deadlock", None. Incomplete
+    # executions (timeouts, nondeterminism, and scheduling bounds) use
+    # ok=None plus truncation; they are not verified counterexamples.
     failure_kind: str | None = None
     accesses: list[tuple[int, str, str]] | None = None
     # Mapping-input labels keyed by the dense numeric ids used in schedules and
@@ -253,9 +253,14 @@ class CrossProcessResult:
     # cross_process._to_interleaving_result.
     workers_executed: list[bool] = field(default_factory=list)
     # Why the search stopped before its natural end (e.g. total_timeout expiry
-    # during startup), when known. Feeds the inconclusive reason for ok=True
-    # results with zero iterations.
+    # or an in-flight execution bound), when known. Feeds the reason on
+    # inconclusive results.
     truncation: str | None = None
+
+
+def incomplete_result(iterations: int, reason: str) -> CrossProcessResult:
+    """Return an incomplete exploration without fabricating a counterexample."""
+    return CrossProcessResult(ok=None, iterations=iterations, exhausted=False, truncation=reason)
 
 
 class _Conn:
@@ -389,27 +394,15 @@ class CrossProcessCoordinator:
                 )
             if outcome.timeouts:
                 _wid, msg = next(iter(sorted(outcome.timeouts.items())))
-                return CrossProcessResult(
-                    ok=False,
-                    iterations=iterations,
-                    exhausted=False,
-                    failing_schedule=outcome.schedule,
-                    failure=msg,
-                    failure_kind="timeout",
-                    accesses=outcome.accesses,
-                    failures=[(iterations, list(outcome.schedule))],
-                )
+                return incomplete_result(iterations, msg)
             if outcome.stop == "step_limit":
-                return CrossProcessResult(
-                    ok=False,
-                    iterations=iterations,
-                    exhausted=False,
-                    failure=(
+                return incomplete_result(
+                    iterations,
+                    (
                         f"run exceeded max_steps_per_run={self.max_steps_per_run} scheduling points without "
                         "completing; a worker may be nonterminating (e.g. an unbounded loop around scheduled "
                         "statements). Raise max_steps_per_run if the workload genuinely runs this long."
                     ),
-                    failure_kind="step_limit",
                 )
             if outcome.stop == "deadlock":
                 return CrossProcessResult(
@@ -423,15 +416,8 @@ class CrossProcessCoordinator:
                     failures=[(iterations, list(outcome.schedule))],
                 )
             if outcome.stop == "nondeterministic":
-                return CrossProcessResult(
-                    ok=False,
-                    iterations=iterations,
-                    exhausted=False,
-                    failing_schedule=outcome.schedule,
-                    failure="recorded schedule no longer reproducible (nondeterministic workload?)",
-                    failure_kind="nondeterministic",
-                    accesses=outcome.accesses,
-                    failures=[(iterations, list(outcome.schedule))],
+                return incomplete_result(
+                    iterations, "recorded schedule no longer reproducible (nondeterministic workload?)"
                 )
             if not invariant():
                 detail = getattr(invariant, "last_failure_message", None)

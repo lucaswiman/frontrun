@@ -138,9 +138,9 @@ def test_dpor_genuine_stall_is_diagnosed_as_timeout_not_worker_error() -> None:
     finally:
         release.set()  # let the stalled worker unwind promptly
         _join_worker_threads()
-    assert not result.ok
-    assert result.failure_kind == "timeout", f"got {result.failure_kind!r}: {result.failure!r}"
-    assert "deadlock_timeout" in (result.failure or "")
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert "deadlock_timeout" in (result.truncation or "")
 
 
 def test_dpor_relay_no_progress_backstop_is_diagnosed_as_timeout() -> None:
@@ -164,9 +164,10 @@ def test_dpor_relay_no_progress_backstop_is_diagnosed_as_timeout() -> None:
         release.set()
         _join_worker_threads()
 
-    assert not result.ok
-    assert result.failure_kind == "timeout", f"got {result.failure_kind!r}: {result.failure!r}"
-    assert "no progress" in (result.failure or "")
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert "deadlock_timeout" in (result.truncation or "")
+    assert "no progress" in (result.truncation or "")
 
 
 def test_dpor_worker_disconnect_still_reported_as_worker_error() -> None:
@@ -282,9 +283,9 @@ def test_exhaustive_slow_worker_is_diagnosed_as_timeout() -> None:
     finally:
         release.set()
         _join_worker_threads()
-    assert not result.ok
-    assert result.failure_kind == "timeout", f"got {result.failure_kind!r}: {result.failure!r}"
-    assert "deadlock_timeout" in (result.failure or "")
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert "deadlock_timeout" in (result.truncation or "")
 
 
 def test_exhaustive_disconnected_worker_still_reported_as_worker_error() -> None:
@@ -387,10 +388,11 @@ def test_exhaustive_step_cap_aborts_nonterminating_worker() -> None:
         invariant=lambda: True,
         max_iterations=4,
     )
-    assert not result.ok
-    assert result.failure_kind == "step_limit"
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
     assert not result.exhausted
-    assert "max_steps_per_run" in (result.failure or "")
+    assert "max_steps_per_run" in (result.truncation or "")
 
 
 def test_exhaustive_step_cap_default_does_not_limit_normal_workloads() -> None:

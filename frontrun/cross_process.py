@@ -74,7 +74,19 @@ def _to_interleaving_result(result: CrossProcessResult) -> Any:
     from frontrun._certificate import PassEvidence, certify_pass
     from frontrun.common import InterleavingResult
 
-    if result.ok is not False:
+    if result.ok is None:
+        reason = (
+            result.truncation
+            or "cross-process exploration was inconclusive; increase the budget or reduce the workload"
+        )
+        return InterleavingResult(
+            property_holds=None,
+            num_explored=result.iterations,
+            unique_interleavings=result.iterations,
+            exhausted=False,
+            inconclusive_reason=reason,
+        )
+    if result.ok:
         return certify_pass(
             result=InterleavingResult(
                 property_holds=None,

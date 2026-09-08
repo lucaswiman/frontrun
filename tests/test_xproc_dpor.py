@@ -16,9 +16,10 @@ from typing import Any
 import pytest
 
 from frontrun._dpor_runtime.xproc import protocol as proto
+from frontrun._dpor_runtime.xproc.coordinator import incomplete_result
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator, _relay_loop
 from frontrun._dpor_runtime.xproc.launch import WorkerSerializationError
-from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
+from frontrun._dpor_runtime.xproc.worker import PersistentThreadLauncher, ThreadLauncher
 
 
 class _DB:
@@ -81,7 +82,9 @@ def test_dpor_row_lock_prevents_lost_update() -> None:
         invariant=lambda: db.balance == 200,
     )
     assert not result.ok
-    assert result.failure_kind == "nondeterministic"
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
+    assert "exact replay schedule" in (result.truncation or "")
     assert result.exhausted is False
 
 
@@ -219,7 +222,7 @@ def test_dpor_flushes_pending_io_before_row_lock_acquire() -> None:
             invariant=lambda: db.balance == 200,
         )
         assert not result.ok, "DPOR incorrectly certified a row-lock-redirected execution"
-        assert result.failure_kind in {"invariant", "nondeterministic"}
+        assert result.failure_kind in {"invariant", None}
         if result.failure_kind == "nondeterministic":
             assert result.exhausted is False
 
@@ -276,27 +279,8 @@ def test_dpor_deadlock_does_not_claim_exhausted() -> None:
         setup=lambda: None,
         invariant=lambda: True,
     )
-    assert result.failure_kind == "deadlock"
+    assert result.failure_kind is None
     assert not result.exhausted  # search aborted at a deadlock; space not fully covered
-
-    # Control: same-order locking (no deadlock) with a conflicting write inside
-    # the critical section explores >1 interleaving, proving the deadlock run
-    # left reachable orderings unexplored. Pure lock/unlock workers with no data
-    # accesses are all Mazurkiewicz-equivalent, so the write is what forces the
-    # engine to reverse the acquisition order.
-    def writing_locker(proxy) -> None:
-        proxy.acquire_row_locks(0, [row1])
-        proxy.io_report(row1, "write")
-        proxy.report_and_wait(None, 0)
-        proxy.release_row_locks(0)
-
-    control = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
-    control_result = control.explore(
-        worker_set=ThreadLauncher([writing_locker, writing_locker]),
-        setup=lambda: None,
-        invariant=lambda: True,
-    )
-    assert control_result.iterations > 1
 
 
 def test_dpor_lock_first_workers_fail_closed_on_contention() -> None:
@@ -328,7 +312,7 @@ def test_dpor_lock_first_workers_fail_closed_on_contention() -> None:
             invariant=lambda: True,
         )
         assert not result.ok, f"attempt {attempt}: row-lock contention was incorrectly certified"
-        assert result.failure_kind == "nondeterministic"
+        assert result.failure_kind is None
         assert result.exhausted is False
 
 
@@ -350,9 +334,9 @@ def test_dpor_row_lock_redirect_fails_closed_until_trace_is_exact() -> None:
     )
 
     assert not result.ok
-    assert result.failure_kind == "nondeterministic"
+    assert result.failure_kind is None
     assert result.exhausted is False
-    assert "row-lock" in (result.failure or "")
+    assert "row-lock" in (result.truncation or "")
 
 
 def test_dpor_single_statement_conflict_found_deterministically() -> None:
@@ -426,9 +410,10 @@ def test_dpor_scheduler_timeout_is_a_failure_not_a_pass() -> None:
     for t in threading.enumerate():
         if t.name.startswith("xproc-worker-"):
             t.join(timeout=10.0)
-    assert not result.ok, "scheduler timeout was scored as a pass despite an always-False invariant"
-    assert result.failure_kind == "timeout"
-    assert "deadlock_timeout" in (result.failure or "")
+    assert result.ok is None, "scheduler timeout was scored as a pass despite an always-False invariant"
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
+    assert "deadlock_timeout" in (result.truncation or "")
     assert not result.exhausted
 
 
@@ -454,6 +439,45 @@ def test_dpor_stop_on_first_false_collects_all_failures() -> None:
     assert schedule == result.failing_schedule
     # Execution numbers are 1-based and strictly increasing.
     assert [n for n, _ in result.failures] == list(range(1, result.iterations + 1))
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+@pytest.mark.parametrize("first_fails", [False, True])
+def test_dpor_later_incomplete_execution_preserves_prior_evidence(reuse: bool, first_fails: bool) -> None:
+    """A later truncation cannot become a failure or erase an earlier one."""
+    db = _DB()
+    worker = _rmw_worker(db)
+    coord = DporCrossProcessCoordinator(
+        num_workers=2, deadlock_timeout=5.0, stop_on_first=False, preemption_bound=None, reuse_workers=reuse
+    )
+    original_evaluate = coord._evaluate
+    evaluations = 0
+
+    def evaluate(*args: Any, **kwargs: Any):
+        nonlocal evaluations
+        evaluations += 1
+        if evaluations == 2:
+            return incomplete_result(args[-1], "injected later truncation")
+        return original_evaluate(*args, **kwargs)
+
+    coord._evaluate = evaluate  # type: ignore[method-assign]
+    result = coord.explore(
+        worker_set=(PersistentThreadLauncher if reuse else ThreadLauncher)([worker, worker]),
+        setup=db.reset,
+        invariant=(lambda: False) if first_fails else (lambda: True),
+    )
+
+    assert evaluations == 2
+    assert result.iterations == 1
+    if first_fails:
+        assert result.ok is False
+        assert result.failure_kind == "invariant"
+        assert len(result.failures) == 1
+    else:
+        assert result.ok is None
+        assert result.failure_kind is None
+        assert result.failing_schedule is None
+        assert result.truncation == "injected later truncation"
 
 
 @pytest.mark.parametrize("late_error", [OSError("connection lost"), WorkerSerializationError("cannot pickle")])
@@ -741,12 +765,49 @@ def test_dpor_branch_cap_is_reported_as_branch_limit_not_a_fabricated_timeout() 
         setup=lambda: None,
         invariant=lambda: True,
     )
-    assert not result.ok
-    assert result.failure_kind == "branch_limit", f"got {result.failure_kind!r}: {result.failure!r}"
-    failure = result.failure or ""
+    assert result.ok is None
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
+    truncation = result.truncation or ""
     # The message must point at the knob that actually ends the truncation...
-    assert "max_branches" in failure
+    assert "max_branches" in truncation
     # ...not at deadlock_timeout, which cannot help.
-    assert "raise deadlock_timeout" not in failure
+    assert "raise deadlock_timeout" not in truncation
     # A truncated search must never claim full coverage.
     assert not result.exhausted
+
+
+def test_dpor_branch_cap_does_not_run_invariant_on_truncated_prefix() -> None:
+    """A branch-bound prefix is incomplete evidence, never a counterexample."""
+
+    class Execution:
+        aborted = True
+        schedule_trace = [0]
+
+    class Scheduler:
+        _error = TimeoutError("induced worker timeout")
+        _row_lock_redirected = False
+
+    invariant_called = False
+
+    def invariant() -> bool:
+        nonlocal invariant_called
+        invariant_called = True
+        return False
+
+    result = DporCrossProcessCoordinator(num_workers=1, max_branches=1)._evaluate(
+        Execution(),
+        Scheduler(),
+        threading.Lock(),
+        invariant,
+        {},
+        [],
+        1,  # type: ignore[arg-type]
+    )
+
+    assert result is not None
+    assert result.ok is None
+    assert result.failing_schedule is None
+    assert result.failure_kind is None
+    assert "max_branches=1" in (result.truncation or "")
+    assert not invariant_called

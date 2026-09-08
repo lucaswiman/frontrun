@@ -10,8 +10,8 @@ derived executions seeded from the desynced trace may be silently pruned.
 
 Until the protocol fix (defer engine-step commitment until row-lock
 arbitration decides) lands, any exploration that observed such a redirect must
-not certify coverage: ``exhausted`` is demoted to ``False`` — sticky across
-executions within one exploration — while ok/failure reporting is untouched.
+stop as inconclusive: it cannot certify coverage or present the inexact prefix
+as a counterexample.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from typing import Any
 import pytest
 
 import frontrun
-from frontrun._dpor_runtime.xproc.coordinator import CrossProcessResult
 from frontrun._dpor_runtime.xproc.dpor_coordinator import DporCrossProcessCoordinator
 from frontrun._dpor_runtime.xproc.worker import ThreadLauncher
 from frontrun._io_detection import tx_store
@@ -56,59 +55,8 @@ def _row_locked_worker(db: _DB):
     return worker
 
 
-class _NoRedirectFailureCoordinator(DporCrossProcessCoordinator):
-    """Suppress the per-execution redirect hard-fail to isolate the coverage claim.
-
-    ``_evaluate`` already fails a redirected execution closed with
-    ``failure_kind="nondeterministic"`` (which itself demotes ``exhausted``).
-    This subclass simulates the exact state the issue #250 audit describes —
-    the engine believes the search tree was fully explored and no failure is
-    surfaced — so the test pins the *sticky* coverage-claim demotion
-    independently of failure reporting.
-    """
-
-    def _evaluate(self, *args: Any, **kwargs: Any) -> CrossProcessResult | None:
-        result = super()._evaluate(*args, **kwargs)
-        if result is not None and result.failure_kind == "nondeterministic":
-            return None
-        return result
-
-
-def test_xproc_redirect_demotes_exhausted_even_without_failure() -> None:
-    """A row-lock redirect must demote exhausted even when no failure is reported.
-
-    Both workers take the same modeled row lock, so DPOR's lock-order
-    reversals deterministically drive one worker's ACQUIRE_LOCKS into
-    contention: its engine step is committed, then execution is redirected to
-    the holder. With the per-execution hard-fail filtered out, the engine
-    finishes the (unbounded) search believing it covered everything — the
-    coordinator must still refuse to certify coverage.
-    """
-    db = _DB()
-    worker = _row_locked_worker(db)
-    coord = _NoRedirectFailureCoordinator(
-        num_workers=2, deadlock_timeout=5.0, preemption_bound=None, stop_on_first=False
-    )
-    result = coord.explore(
-        worker_set=ThreadLauncher([worker, worker]),
-        setup=db.reset,
-        invariant=lambda: True,
-    )
-    # Fail-closed is about the coverage claim only: ok/failure reporting for
-    # the executions that ran must not be demoted by the sticky flag.
-    assert result.ok
-    assert result.exhausted is False, (
-        "engine-vs-physical divergence at a row-lock boundary (issue #250) must demote the coverage claim"
-    )
-
-
-def test_xproc_redirect_hard_fail_result_is_unchanged() -> None:
-    """Regression guard: the released per-execution fail-closed result stays.
-
-    The sticky exhausted demotion must not weaken the existing behavior of
-    refusing to certify a redirected trace as a counterexample-quality result
-    (``failure_kind="nondeterministic"``).
-    """
+def test_xproc_redirect_is_inconclusive_without_fabricated_counterexample() -> None:
+    """A row-lock redirect is incomplete evidence, not a failing schedule."""
     db = _DB()
     worker = _row_locked_worker(db)
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=5.0, preemption_bound=None)
@@ -117,9 +65,12 @@ def test_xproc_redirect_hard_fail_result_is_unchanged() -> None:
         setup=db.reset,
         invariant=lambda: True,
     )
-    assert not result.ok
-    assert result.failure_kind == "nondeterministic"
+    assert result.ok is None
     assert result.exhausted is False
+    assert result.failure_kind is None
+    assert result.failing_schedule is None
+    assert result.failures == []
+    assert "exact replay schedule" in (result.truncation or "")
 
 
 def _locked_increment(state: _DB) -> None:
