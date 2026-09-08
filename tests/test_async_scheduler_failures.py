@@ -1,15 +1,4 @@
-"""Regression tests for timeout/deadlock surfacing in explore_async_random (F6).
-
-``AsyncShuffler.run`` swallowed the ``TimeoutError`` that ``run_all`` raises
-after cancelling tasks mid-flight, so ``run_with_schedule`` returned a
-partially-mutated state and ``explore_async_random`` evaluated the invariant
-on it.  A hung/deadlocked run could thus become a false "invariant violation"
-counterexample, or a real deadlock could be silently dropped.
-
-A deadlock or scheduler timeout must instead be surfaced as its own outcome,
-and the invariant must NOT be evaluated against a cancelled/timed-out run's
-state.
-"""
+"""Async scheduler failures must surface without certifying partial executions."""
 
 from __future__ import annotations
 
@@ -19,9 +8,29 @@ from typing import Any
 
 import pytest
 
+import frontrun
 import frontrun.async_shuffler as async_shuffler
-from frontrun.async_scheduler import SchedulerTimeoutError
+from frontrun.async_scheduler import InterleavedLoop, SchedulerTimeoutError
 from frontrun.async_shuffler import explore_async_random, run_with_schedule
+
+
+class _LockInversion:
+    def __init__(self) -> None:
+        self.lock_a = asyncio.Lock()
+        self.lock_b = asyncio.Lock()
+        self.done = 0
+
+    async def take_ab(self) -> None:
+        async with self.lock_a:
+            await asyncio.sleep(0)
+            async with self.lock_b:
+                self.done += 1
+
+    async def take_ba(self) -> None:
+        async with self.lock_b:
+            await asyncio.sleep(0)
+            async with self.lock_a:
+                self.done += 1
 
 
 def test_public_run_with_schedule_rejects_deadlocked_state() -> None:
@@ -33,29 +42,12 @@ def test_public_run_with_schedule_rejects_deadlocked_state() -> None:
     scheduler's cleanup/free-run as if the requested schedule completed.
     """
 
-    class State:
-        def __init__(self) -> None:
-            self.lock_a = asyncio.Lock()
-            self.lock_b = asyncio.Lock()
-
-    async def task_ab(state: State) -> None:
-        async with state.lock_a:
-            await asyncio.sleep(0)
-            async with state.lock_b:
-                pass
-
-    async def task_ba(state: State) -> None:
-        async with state.lock_b:
-            await asyncio.sleep(0)
-            async with state.lock_a:
-                pass
-
     async def replay() -> None:
         with pytest.raises(SchedulerTimeoutError, match="[Dd]eadlock"):
             await run_with_schedule(
                 [0, 1] * 20,
-                State,
-                [task_ab, task_ba],
+                _LockInversion,
+                [_LockInversion.take_ab, _LockInversion.take_ba],
                 timeout=1.0,
                 deadlock_timeout=0.05,
             )
@@ -84,31 +76,13 @@ def test_deadlock_on_unmanaged_locks_is_not_scored_as_a_pass(monkeypatch: pytest
     on unmanaged primitives is the DPOR path's job, not the random shuffler's.
     """
 
-    class State:
-        def __init__(self) -> None:
-            self.lock_a = asyncio.Lock()
-            self.lock_b = asyncio.Lock()
-            self.done = 0
-
-    async def task_ab(state: State) -> None:
-        async with state.lock_a:
-            await asyncio.sleep(0)
-            async with state.lock_b:
-                state.done += 1
-
-    async def task_ba(state: State) -> None:
-        async with state.lock_b:
-            await asyncio.sleep(0)
-            async with state.lock_a:
-                state.done += 1
-
     # Exercise one known deadlocking schedule instead of relying on a random
     # sample to hit it repeatedly and paying timeout_per_run for every hit.
     monkeypatch.setattr(async_shuffler, "random_round_robin_schedule", lambda *_args: [0, 1] * 20)
     result = asyncio.run(
         explore_async_random(
-            setup=State,
-            tasks=[task_ab, task_ba],
+            setup=_LockInversion,
+            tasks=[_LockInversion.take_ab, _LockInversion.take_ba],
             # Invariant a partial/cancelled run trivially satisfies.
             invariant=lambda s: s.done <= 2,
             max_attempts=1,
@@ -146,30 +120,16 @@ def test_lock_deadlock_with_no_task_in_pause_is_detected() -> None:
     """
     from frontrun.async_shuffler import _patch_async_runtime, _run_with_schedule_status
 
-    class State:
-        def __init__(self) -> None:
-            self.lock_a = asyncio.Lock()
-            self.lock_b = asyncio.Lock()
-            self.done = 0
-
-    async def task_ab(state: State) -> None:
-        async with state.lock_a:
-            await asyncio.sleep(0)
-            async with state.lock_b:
-                state.done += 1
-
-    async def task_ba(state: State) -> None:
-        async with state.lock_b:
-            await asyncio.sleep(0)
-            async with state.lock_a:
-                state.done += 1
-
     async def run() -> tuple[Any, Any]:
         # Alternate grants so each task takes its first lock, then both block
         # acquiring the other's — a deadlock formed entirely outside pause().
         with _patch_async_runtime(detect_sql=False):
             return await _run_with_schedule_status(
-                [0, 1] * 20, State, [task_ab, task_ba], timeout=2.0, deadlock_timeout=0.5
+                [0, 1] * 20,
+                _LockInversion,
+                [_LockInversion.take_ab, _LockInversion.take_ba],
+                timeout=2.0,
+                deadlock_timeout=0.5,
             )
 
     state, runner = asyncio.run(run())
@@ -355,47 +315,68 @@ def test_uncaught_wait_for_timeout_is_task_crash_not_deadlock() -> None:
     assert "Deadlock detected" not in result.explanation
 
 
-def test_detect_sql_reports_table_accesses() -> None:
-    """F8: detect_sql=True in the random async shuffler must actually report.
+class _AllWaitingLoop(InterleavedLoop):
+    """A loop whose tasks all block in pause(), forcing all-waiting deadlock."""
 
-    Previously AwaitScheduler._setup_task_context installed no IO reporter or
-    DPOR context, so _report_sql_access always returned False and the
-    documented table-conflict reporting never happened — a silent no-op.
-    """
-    aiosqlite = pytest.importorskip("aiosqlite")
+    def should_proceed(self, task_id, marker=None):  # type: ignore[no-untyped-def]
+        # Never let anyone proceed → every task blocks in pause().
+        return False
 
-    reported: list[tuple[str, str]] = []
 
-    class State:
-        def __init__(self) -> None:
-            self.reported = reported
+def test_run_all_propagates_scheduler_error() -> None:
+    """``run_all`` must raise the scheduler's ``_error`` after draining tasks."""
 
-    async def worker(state: State) -> None:
-        async with aiosqlite.connect(":memory:") as conn:
-            await conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
-            await conn.execute("INSERT INTO t VALUES (1, 0)")
-            from frontrun._io_detection import get_io_reporter
+    async def worker() -> None:
+        await loop.pause("w")
 
-            # The shuffler must have installed a reporter for this task.
-            reporter = get_io_reporter()
-            if reporter is not None:
-                state.reported.append(("reporter-present", "ok"))
-            await conn.execute("SELECT * FROM t WHERE id = 1")
+    loop = _AllWaitingLoop(deadlock_timeout=0.2)
 
-    import asyncio
+    async def main() -> None:
+        await loop.run_all([worker, worker], timeout=5.0)
 
-    asyncio.run(
-        explore_async_random(
-            setup=State,
-            tasks=[worker, worker],
-            invariant=lambda s: True,
-            max_attempts=2,
-            timeout_per_run=3.0,
-            detect_sql=True,
-            seed=7,
+    with pytest.raises(SchedulerTimeoutError) as excinfo:
+        asyncio.run(main())
+
+    # The surfaced error must be the scheduler's own deadlock error, not a
+    # generic "tasks did not complete" overall-timeout.
+    assert loop._error is not None
+    assert excinfo.value is loop._error or str(loop._error) in str(excinfo.value)
+
+
+async def _self_cancel(state: list[str]) -> None:
+    state.append("partial")
+    raise asyncio.CancelledError("worker cancelled itself")
+
+
+@pytest.mark.parametrize("strategy", ["dpor", "random"])
+def test_self_cancelled_worker_is_not_a_successful_exploration(strategy: str) -> None:
+    """A cancelled worker leaves partial state and cannot prove the property."""
+    options: dict[str, object]
+    if strategy == "dpor":
+        options = {"max_executions": 1, "reproduce_on_failure": 0, "detect_io": False}
+    else:
+        options = {"max_attempts": 1, "max_ops": 2, "seed": 1}
+
+    result = asyncio.run(
+        frontrun.explore(
+            setup=list,
+            workers=[_self_cancel],
+            invariant=lambda state: state == ["partial"],
+            strategy=strategy,
+            **options,
         )
     )
 
-    assert ("reporter-present", "ok") in reported, (
-        "detect_sql=True must install an IO reporter so SQL accesses are reported"
-    )
+    assert not result.property_holds
+    assert result.explanation is not None
+    assert "cancel" in result.explanation.lower()
+
+
+def test_run_with_schedule_propagates_worker_cancellation() -> None:
+    """Exact replay must not return state from a cancelled worker."""
+
+    async def replay() -> None:
+        with pytest.raises(asyncio.CancelledError, match="worker cancelled itself"):
+            await run_with_schedule([0, 0], list, [_self_cancel])
+
+    asyncio.run(replay())

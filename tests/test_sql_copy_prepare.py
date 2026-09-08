@@ -13,6 +13,8 @@ class TestCopyStatementParsing:
         r = parse_sql_access("COPY users FROM STDIN")
         assert r.write_tables == {"users"}
         assert r.read_tables == set()
+        assert r.lock_intent is None
+        assert r.tx_op is None
 
     def test_copy_from_stdin_with_format(self):
         """COPY table FROM STDIN WITH (FORMAT csv) should be a write."""
@@ -54,16 +56,6 @@ class TestCopyStatementParsing:
         """COPY with schema-qualified table."""
         r = parse_sql_access("COPY public.users FROM STDIN")
         assert r.write_tables == {"users"}
-
-    def test_copy_no_lock_intent(self):
-        """COPY should not set lock intent."""
-        r = parse_sql_access("COPY users FROM STDIN")
-        assert r.lock_intent is None
-
-    def test_copy_no_tx_op(self):
-        """COPY should not be a transaction control statement."""
-        r = parse_sql_access("COPY users FROM STDIN")
-        assert r.tx_op is None
 
 
 class TestPrepareStatementParsing:

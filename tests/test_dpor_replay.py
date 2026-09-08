@@ -205,7 +205,8 @@ class TestIOAnchoredReplayScheduler:
         assert not scheduler.before_sync_retry(1)
         assert isinstance(scheduler._error, DeadlockError)
 
-    def test_positional_replay_detects_exact_event_deadlock(self) -> None:
+    @pytest.mark.parametrize("io_anchored", [False, True], ids=["positional", "io-anchored"])
+    def test_replay_detects_exact_event_deadlock(self, io_anchored: bool) -> None:
         """Replaying a schedule that ends in an Event-wait cycle must raise
         DeadlockError promptly, not spin out the op budget and die with a
         plain TimeoutError after deadlock_timeout."""
@@ -233,43 +234,9 @@ class TestIOAnchoredReplayScheduler:
                 State,
                 [w1, w2],
                 timeout=5.0,
-                detect_io=False,
+                detect_io=io_anchored,
+                io_schedule=[(0, "dummy")] if io_anchored else None,
                 deadlock_timeout=2.0,
-                clock="virtual",
-                virtual_clock=VirtualClock(),
-            )
-        wall_elapsed = time.monotonic() - wall_start
-        assert wall_elapsed < 1.5, f"replay deadlock detection took {wall_elapsed:.1f}s (fallback timeout burned?)"
-
-    def test_io_anchored_replay_detects_exact_event_deadlock(self) -> None:
-        """Same as above through the IO-anchored replay scheduler (defect #16 path)."""
-        from frontrun._deadlock import DeadlockError
-        from frontrun._dpor_runtime.replay import _run_dpor_schedule
-        from frontrun._virtual_clock import VirtualClock
-
-        class State:
-            def __init__(self) -> None:
-                self.e1 = threading.Event()
-                self.e2 = threading.Event()
-
-        def w1(s: State) -> None:
-            s.e1.wait()
-            s.e2.set()
-
-        def w2(s: State) -> None:
-            s.e2.wait()
-            s.e1.set()
-
-        wall_start = time.monotonic()
-        with pytest.raises(DeadlockError):
-            _run_dpor_schedule(
-                [0, 1],
-                State,
-                [w1, w2],
-                timeout=5.0,
-                detect_io=True,
-                deadlock_timeout=2.0,
-                io_schedule=[(0, "dummy")],
                 clock="virtual",
                 virtual_clock=VirtualClock(),
             )
@@ -530,45 +497,21 @@ class TestIOAnchoredReplayDesync:
         assert scheduler.before_io(*anchor) is False
         assert isinstance(scheduler._error, _ReplayDesyncError), type(scheduler._error)
 
-    def test_reproduction_absorbs_desync_instead_of_crashing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("desync", [True, False], ids=["absorb-desync", "propagate-internal-error"])
+    def test_reproduction_error_policy(self, monkeypatch: pytest.MonkeyPatch, desync: bool) -> None:
+        """Only replay desynchronisation is an expected non-reproduction."""
         import frontrun._dpor_runtime.replay as replay_mod
         from frontrun._dpor_runtime.replay import _ReplayDesyncError, _reproduce_dpor_counterexample
 
-        def always_desync(*_args: object, **_kwargs: object) -> object:
-            raise _ReplayDesyncError("DPOR IO-anchored replay desynchronised: simulated")
+        error = _ReplayDesyncError("simulated desync") if desync else RuntimeError("engine invariant broken")
 
-        monkeypatch.setattr(replay_mod, "_run_dpor_schedule", always_desync)
+        def fail_replay(*_args: object, **_kwargs: object) -> object:
+            raise error
 
-        # Must NOT raise — a desync is scored as a non-reproduction.
-        attempts, successes = _reproduce_dpor_counterexample(
-            schedule_list=[0, 1],
-            setup=lambda: object(),
-            threads=[lambda _s: None, lambda _s: None],
-            timeout_per_run=1.0,
-            deadlock_timeout=1.0,
-            reproduce_on_failure=3,
-            lock_timeout=None,
-            invariant=lambda _s: True,
-            detect_io=True,
-            io_schedule=[(0, "sql:accounts")],
-        )
-        assert attempts == 3
-        assert successes == 0
-
-    def test_reproduction_still_propagates_genuine_internal_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A non-desync RuntimeError is a real frontrun-internal bug and must
-        still propagate — the absorb path must not swallow every RuntimeError.
-        """
-        import frontrun._dpor_runtime.replay as replay_mod
-        from frontrun._dpor_runtime.replay import _reproduce_dpor_counterexample
-
-        def internal_bug(*_args: object, **_kwargs: object) -> object:
-            raise RuntimeError("engine invariant broken")
-
-        monkeypatch.setattr(replay_mod, "_run_dpor_schedule", internal_bug)
-
-        with pytest.raises(RuntimeError, match="engine invariant broken"):
-            _reproduce_dpor_counterexample(
+        monkeypatch.setattr(replay_mod, "_run_dpor_schedule", fail_replay)
+        expected = contextlib.nullcontext() if desync else pytest.raises(RuntimeError, match="engine invariant broken")
+        with expected:
+            attempts, successes = _reproduce_dpor_counterexample(
                 schedule_list=[0, 1],
                 setup=lambda: object(),
                 threads=[lambda _s: None, lambda _s: None],
@@ -580,3 +523,5 @@ class TestIOAnchoredReplayDesync:
                 detect_io=True,
                 io_schedule=[(0, "sql:accounts")],
             )
+            assert attempts == 3
+            assert successes == 0

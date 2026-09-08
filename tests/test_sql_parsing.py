@@ -26,82 +26,33 @@ from frontrun._sql_parsing import (
 
 
 class TestStripQuotes:
-    def test_unquoted_simple(self):
-        assert _strip_quotes("users") == "users"
-
-    def test_double_quoted(self):
-        assert _strip_quotes('"My Table"') == "My Table"
-
-    def test_backtick_quoted(self):
-        assert _strip_quotes("`orders`") == "orders"
-
-    def test_schema_qualified_unquoted(self):
-        assert _strip_quotes("public.users") == "users"
-
-    def test_schema_qualified_double_quoted(self):
-        # "public"."users" → extract table name 'users' from schema-qualified quoted identifier
-        assert _strip_quotes('"public"."users"') == "users"
-
-    def test_deep_dotted(self):
-        assert _strip_quotes("db.schema.table") == "table"
-
-    def test_no_quotes_no_schema(self):
-        assert _strip_quotes("accounts") == "accounts"
-
-    def test_quoted_schema_unquoted_table(self):
-        """Bug: _strip_quotes('"public".users') should return 'users' not 'user'.
-
-        When the schema is quoted but the table is not, the [1:-1] slice
-        intended to strip surrounding quotes incorrectly removes the last
-        character of the table name instead of a closing quote.
-        """
-        assert _strip_quotes('"public".users') == "users"
-
-    def test_backtick_schema_unquoted_table(self):
-        """Same bug with backtick-quoted schema and unquoted table."""
-        assert _strip_quotes("`myschema`.orders") == "orders"
-
-    def test_unquoted_schema_quoted_table(self):
-        """When schema is unquoted but table is quoted, extract table correctly."""
-        assert _strip_quotes('public."Special Table"') == "Special Table"
-
-    def test_backtick_schema_backtick_table(self):
-        """Backtick-quoted schema and backtick-quoted table."""
-        assert _strip_quotes("`myschema`.`users`") == "users"
-
-    def test_bracket_quoted_simple(self):
-        assert _strip_quotes("[users]") == "users"
-
-    def test_bracket_quoted_schema_qualified(self):
-        assert _strip_quotes("[dbo].[users]") == "users"
-
-    def test_bracket_quoted_table_only(self):
-        assert _strip_quotes("dbo.[users]") == "users"
-
-    def test_double_quoted_name_with_interior_dot(self):
-        """A fully-quoted identifier may contain a dot as part of the name.
-
-        Splitting ``"my.table"`` on the interior dot treats it as a schema
-        separator and returns ``'table'`` — a different resource id from the
-        ``my.table`` that sqlglot extracts for the same name in DML, so a
-        ``LOCK TABLE`` never conflicts with the rows it guards (an under-merge).
-        """
-        assert _strip_quotes('"my.table"') == "my.table"
-
-    def test_backtick_quoted_name_with_interior_dot(self):
-        assert _strip_quotes("`my.table`") == "my.table"
-
-    def test_bracket_quoted_name_with_interior_dot(self):
-        assert _strip_quotes("[my.table]") == "my.table"
-
-    def test_unquoted_schema_quoted_name_with_interior_dot(self):
-        assert _strip_quotes('public."my.table"') == "my.table"
-
-    def test_unquoted_schema_backtick_name_with_interior_dot(self):
-        assert _strip_quotes("public.`my.table`") == "my.table"
-
-    def test_unquoted_schema_bracket_name_with_interior_dot(self):
-        assert _strip_quotes("public.[my.table]") == "my.table"
+    @pytest.mark.parametrize(
+        "identifier, expected",
+        [
+            pytest.param("users", "users", id="unquoted_simple"),
+            pytest.param('"My Table"', "My Table", id="double_quoted"),
+            pytest.param("`orders`", "orders", id="backtick_quoted"),
+            pytest.param("public.users", "users", id="schema_qualified_unquoted"),
+            pytest.param('"public"."users"', "users", id="schema_qualified_double_quoted"),
+            pytest.param("db.schema.table", "table", id="deep_dotted"),
+            pytest.param("accounts", "accounts", id="no_quotes_no_schema"),
+            pytest.param('"public".users', "users", id="quoted_schema_unquoted_table"),
+            pytest.param("`myschema`.orders", "orders", id="backtick_schema_unquoted_table"),
+            pytest.param('public."Special Table"', "Special Table", id="unquoted_schema_quoted_table"),
+            pytest.param("`myschema`.`users`", "users", id="backtick_schema_backtick_table"),
+            pytest.param("[users]", "users", id="bracket_quoted_simple"),
+            pytest.param("[dbo].[users]", "users", id="bracket_quoted_schema_qualified"),
+            pytest.param("dbo.[users]", "users", id="bracket_quoted_table_only"),
+            pytest.param('"my.table"', "my.table", id="double_quoted_name_with_interior_dot"),
+            pytest.param("`my.table`", "my.table", id="backtick_quoted_name_with_interior_dot"),
+            pytest.param("[my.table]", "my.table", id="bracket_quoted_name_with_interior_dot"),
+            pytest.param('public."my.table"', "my.table", id="unquoted_schema_quoted_name_with_interior_dot"),
+            pytest.param("public.`my.table`", "my.table", id="unquoted_schema_backtick_name_with_interior_dot"),
+            pytest.param("public.[my.table]", "my.table", id="unquoted_schema_bracket_name_with_interior_dot"),
+        ],
+    )
+    def test_identifier(self, identifier, expected):
+        assert _strip_quotes(identifier) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -976,3 +927,36 @@ class TestLockTablesFallthroughBug:
             "LOCK TABLES should return an explicit lock_intent even when 0 tables "
             "are extracted, not fall through to sqlglot (which loses lock_intent)"
         )
+
+
+@pytest.mark.parametrize(
+    "sql, field, table",
+    [
+        pytest.param(
+            'SELECT * FROM "public"."users" WHERE id = 1', "read_tables", "users", id="quoted_schema_qualified_select"
+        ),
+        pytest.param(
+            'INSERT INTO "public"."orders" (id) VALUES (1)',
+            "write_tables",
+            "orders",
+            id="quoted_schema_qualified_insert",
+        ),
+        pytest.param(
+            'UPDATE "public"."accounts" SET balance = 100 WHERE id = 1',
+            "write_tables",
+            "accounts",
+            id="quoted_schema_qualified_update",
+        ),
+        pytest.param(
+            'DELETE FROM "public"."orders" WHERE id = 1', "write_tables", "orders", id="quoted_schema_qualified_delete"
+        ),
+        pytest.param(
+            "SELECT * FROM public.users WHERE id = 1", "read_tables", "users", id="unquoted_schema_qualified_works"
+        ),
+        pytest.param(
+            "SELECT * FROM `myschema`.`users` WHERE id = 1", "read_tables", "users", id="backtick_schema_qualified"
+        ),
+    ],
+)
+def test_schema_qualified_dml(sql, field, table):
+    assert table in getattr(parse_sql_access(sql), field)

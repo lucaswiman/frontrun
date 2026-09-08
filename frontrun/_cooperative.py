@@ -133,6 +133,34 @@ def _in_dpor_machinery() -> bool:
     return getattr(_scheduler_tls, "_in_dpor_machinery", False)
 
 
+def _set_owner_and_report(primitive: "CooperativeLock | CooperativeRLock", event: str) -> None:
+    """Set a lock-like primitive's owner from TLS and report the event."""
+    from frontrun._deadlock import get_wait_for_graph
+
+    ctx = get_context()
+    if ctx is not None:
+        _, thread_id = ctx
+        primitive._owner_thread_id = thread_id
+        graph = get_wait_for_graph()
+        if graph is not None:
+            graph.add_holding(thread_id, primitive._object_id)
+    primitive._report(event)
+
+
+def _report_sync_event(primitive: "CooperativeLock | CooperativeRLock | CooperativeSemaphore", event: str) -> None:
+    """Report a lock-like primitive event with the DPOR reentrancy guard."""
+    if is_sync_suppressed():
+        return
+    reporter = get_sync_reporter()
+    if reporter is not None:
+        prev = getattr(_scheduler_tls, "_in_dpor_machinery", False)
+        _scheduler_tls._in_dpor_machinery = True
+        try:
+            reporter(event, primitive._object_id, primitive)
+        finally:
+            _scheduler_tls._in_dpor_machinery = prev
+
+
 # ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
@@ -609,29 +637,10 @@ class CooperativeLock:
         self.release()
 
     def _set_owner_and_report(self, event: str) -> None:
-        """Set owner from TLS context and report the event."""
-        from frontrun._deadlock import get_wait_for_graph
-
-        ctx = get_context()
-        if ctx is not None:
-            _, thread_id = ctx
-            self._owner_thread_id = thread_id
-            graph = get_wait_for_graph()
-            if graph is not None:
-                graph.add_holding(thread_id, self._object_id)
-        self._report(event)
+        _set_owner_and_report(self, event)
 
     def _report(self, event: str) -> None:
-        if is_sync_suppressed():
-            return
-        reporter = get_sync_reporter()
-        if reporter is not None:
-            prev = getattr(_scheduler_tls, "_in_dpor_machinery", False)
-            _scheduler_tls._in_dpor_machinery = True
-            try:
-                reporter(event, self._object_id, self)
-            finally:
-                _scheduler_tls._in_dpor_machinery = prev
+        _report_sync_event(self, event)
 
     def __repr__(self) -> str:
         return f"<CooperativeLock locked={self.locked()}>"
@@ -849,29 +858,10 @@ class CooperativeRLock:
         return self._owner == threading.get_ident()
 
     def _set_owner_and_report(self, event: str) -> None:
-        """Set frontrun thread_id owner from TLS and report."""
-        from frontrun._deadlock import get_wait_for_graph
-
-        ctx = get_context()
-        if ctx is not None:
-            _, thread_id = ctx
-            self._owner_thread_id = thread_id
-            graph = get_wait_for_graph()
-            if graph is not None:
-                graph.add_holding(thread_id, self._object_id)
-        self._report(event)
+        _set_owner_and_report(self, event)
 
     def _report(self, event: str) -> None:
-        if is_sync_suppressed():
-            return
-        reporter = get_sync_reporter()
-        if reporter is not None:
-            prev = getattr(_scheduler_tls, "_in_dpor_machinery", False)
-            _scheduler_tls._in_dpor_machinery = True
-            try:
-                reporter(event, self._object_id, self)
-            finally:
-                _scheduler_tls._in_dpor_machinery = prev
+        _report_sync_event(self, event)
 
     def __repr__(self) -> str:
         return f"<CooperativeRLock owner={self._owner} count={self._count}>"
@@ -907,16 +897,7 @@ class CooperativeSemaphore:
         self._object_id = id(self)
 
     def _report(self, event: str) -> None:
-        if is_sync_suppressed():
-            return
-        reporter = get_sync_reporter()
-        if reporter is not None:
-            prev = getattr(_scheduler_tls, "_in_dpor_machinery", False)
-            _scheduler_tls._in_dpor_machinery = True
-            try:
-                reporter(event, self._object_id, self)
-            finally:
-                _scheduler_tls._in_dpor_machinery = prev
+        _report_sync_event(self, event)
 
     def _try_acquire(self) -> bool:
         """Attempt a non-blocking decrement; return True on success."""

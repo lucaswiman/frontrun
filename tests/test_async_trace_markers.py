@@ -489,3 +489,48 @@ class TestAsyncScheduleIncompleteness:
                 {"task_a": task_a, "task_b": task_b},
                 timeout=5.0,
             )
+
+
+def test_marker_fires_on_every_loop_iteration() -> None:
+    """A marker inside a loop should fire on every iteration, not just the first.
+
+    The sync TraceExecutor correctly fires on every hit. The async variant
+    has a processed_locations set that deduplicates by (filename, lineno),
+    causing markers in loops to fire only once.
+    """
+    results: list[int] = []
+
+    async def task1() -> None:
+        for i in range(2):
+            # frontrun: loop_marker
+            results.append(i)  # noqa: PERF402
+
+    async def task2() -> None:
+        for i in range(2):
+            # frontrun: loop_marker
+            results.append(10 + i)  # noqa: PERF401
+
+    # Schedule: task1 iter0, task2 iter0, task1 iter1, task2 iter1
+    schedule = Schedule(
+        [
+            Step("task1", "loop_marker"),
+            Step("task2", "loop_marker"),
+            Step("task1", "loop_marker"),
+            Step("task2", "loop_marker"),
+        ]
+    )
+
+    executor = AsyncTraceExecutor(schedule, deadlock_timeout=5.0)
+    executor.run(
+        {
+            "task1": task1,
+            "task2": task2,
+        },
+        timeout=10.0,
+    )
+
+    # With the bug, only 2 of 4 markers fire (one per task), so the schedule
+    # is incomplete and raises TimeoutError, or the order is wrong.
+    # After the fix, all 4 markers fire and the execution order is:
+    # task1 iter0 (append 0), task2 iter0 (append 10), task1 iter1 (append 1), task2 iter1 (append 11)
+    assert results == [0, 10, 1, 11]

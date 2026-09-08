@@ -10,11 +10,13 @@ Covers:
 
 from __future__ import annotations
 
+import dis
 from types import SimpleNamespace
 
 import pytest
 
 import frontrun
+from frontrun import _trace_format
 from frontrun._trace_format import (
     SourceLineEvent,
     TraceEvent,
@@ -975,3 +977,13 @@ class TestClassifyConflictObjTypeGrouping:
             "object types (Counter vs BankAccount) share the same attr_name 'value'. "
             f"Got pattern={result.pattern!r}, summary={result.summary!r}"
         )
+
+
+def test_instruction_cache_retains_code_objects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strong code-object keys prevent stale instructions from address reuse."""
+    monkeypatch.setattr(_trace_format, "_instr_cache", {})
+    programs = [compile(source, "<cache-test>", "exec") for source in ("x = 1", "y = 2")]
+    for code in programs:
+        for instruction in dis.get_instructions(code):
+            assert _trace_format._get_instruction(code, instruction.offset) == instruction
+    assert list(_trace_format._instr_cache) == programs

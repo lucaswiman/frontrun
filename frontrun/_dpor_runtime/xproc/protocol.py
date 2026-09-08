@@ -2,10 +2,10 @@
 
 One message is exchanged per external-access scheduling point between a worker
 (:class:`~frontrun._dpor_runtime.xproc.proxy.SchedulerProxy`) and the
-coordinator. JSON over the standard library keeps Phase 1 dependency-free; a
-msgpack codec can drop in behind :func:`send_msg` / :func:`recv_msg` later if
-framing overhead ever shows up (it is negligible next to the DB call each
-message brackets).
+coordinator. JSON over the standard library keeps the wire protocol
+dependency-free; a msgpack codec can drop in behind :func:`send_msg` /
+:func:`recv_msg` later if framing overhead ever shows up (it is negligible
+next to the DB call each message brackets).
 
 Every frame is a ``{"t": <type>, ...}`` object prefixed by its big-endian
 ``uint32`` byte length. The ``"w"`` field, where present, is the worker's dense

@@ -493,3 +493,37 @@ def test_scheduler_had_error():
         assert scheduler._error is error
 
     asyncio.run(_test())
+
+
+def test_detect_sql_reports_table_accesses() -> None:
+    """The public SQL option wires each task's accesses into its scheduler."""
+    from frontrun._async_autopause import _scheduler_var
+    from frontrun._io_detection import get_io_reporter
+
+    schedulers: set[AwaitScheduler] = set()
+
+    async def worker(_state: object) -> None:
+        await asyncio.sleep(0)
+        reporter = get_io_reporter()
+        assert reporter is not None
+        reporter("sql:t", "read")
+        scheduler = _scheduler_var.get()
+        assert isinstance(scheduler, AwaitScheduler)
+        schedulers.add(scheduler)
+
+    result = asyncio.run(
+        explore_async_random(
+            setup=object,
+            tasks=[worker, worker],
+            invariant=lambda s: True,
+            max_attempts=2,
+            timeout_per_run=3.0,
+            detect_sql=True,
+            seed=7,
+        )
+    )
+
+    assert result.property_holds, result.explanation
+    assert len(schedulers) == 2
+    for scheduler in schedulers:
+        assert sorted(scheduler.sql_accesses) == [(0, "sql:t", "read"), (1, "sql:t", "read")]

@@ -23,6 +23,8 @@ from typing import Any
 import pytest
 
 import frontrun
+from frontrun import _virtual_clock as virtual_clock_module
+from frontrun._async_virtual_timeouts import _VirtualLoopDeadline
 from frontrun._virtual_clock import VIRTUAL_EPOCH, VirtualClock
 from frontrun.bytecode import OpcodeScheduler, run_with_schedule
 from frontrun.common import InterleavingResult
@@ -2343,3 +2345,65 @@ def test_timed_wait_deadline_computed_under_scheduler_lock_survives_concurrent_a
     assert graph is None
     assert deadline == pytest.approx(clock.now() + 5.0)
     assert not _cooperative._timed_acquire_expired(deadline, clock)
+
+
+def test_virtual_timeout_deadline_keeps_provenance_through_additive_arithmetic() -> None:
+    clock = VirtualClock()
+    deadline = _VirtualLoopDeadline(100.0, 1_000_010.0, clock)
+
+    earlier = deadline - 2.0
+    later = 2.0 + deadline
+
+    assert isinstance(earlier, _VirtualLoopDeadline)
+    assert earlier.virtual_deadline == 1_000_008.0
+    assert earlier.clock is clock
+    assert isinstance(later, _VirtualLoopDeadline)
+    assert later.virtual_deadline == 1_000_012.0
+    assert later.clock is clock
+
+
+def test_run_with_schedule_validates_clock_diagnostics() -> None:
+    with pytest.raises(ValueError, match="clock_diagnostics"):
+        run_with_schedule(
+            [],
+            object,
+            [lambda _state: None],
+            clock="real",
+            clock_diagnostics=True,
+        )
+
+
+def test_clock_diagnostic_deduplication_uses_its_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CountingLock:
+        def __init__(self) -> None:
+            self.enters = 0
+            self._lock = threading.Lock()
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+            self.enters += 1
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+
+    class Frame:
+        f_code = (lambda: None).__code__
+        f_locals = {"captured": next(iter(virtual_clock_module._REAL_TIME_FUNCTIONS))}
+        f_globals: dict[str, object] = {}
+
+    lock = CountingLock()
+    virtual_clock_module._scanned_code_objects.discard(Frame.f_code)
+    virtual_clock_module._warned_captured_refs.clear()
+    monkeypatch.setattr(virtual_clock_module, "_diagnostics_lock", lock)
+
+    threads = [
+        threading.Thread(target=virtual_clock_module.warn_if_captured_time_reference, args=(Frame(),)) for _ in range(2)
+    ]
+    with pytest.warns(RuntimeWarning, match="captured real") as caught:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert len(caught) == 1
+    assert lock.enters >= 3

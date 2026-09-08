@@ -104,6 +104,26 @@ def _cleanup_sql_patch() -> Generator[None, None, None]:
 # ---------------------------------------------------------------------------
 
 
+def test_execute_and_executemany_wrappers_keep_distinct_flags(monkeypatch):
+    captured = []
+
+    class Cursor:
+        def execute(self, operation, parameters=None):
+            pass
+
+        def executemany(self, operation, parameters):
+            pass
+
+    def intercept(*args, **kwargs):
+        captured.append(kwargs.get("is_executemany", False))
+
+    monkeypatch.setattr(sql_cursor_mod, "_intercept_execute", intercept)
+    sql_cursor_mod._patch_class_methods(Cursor, "qmark")
+    Cursor().execute("SELECT 1")
+    Cursor().executemany("INSERT INTO t VALUES (?)", [(1,)])
+    assert captured == [False, True]
+
+
 def test_patch_patches_sqlite3_connect() -> None:
     orig_connect = sqlite3.connect
     patch_sql()

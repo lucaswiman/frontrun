@@ -5,7 +5,12 @@ marker-level schedules) and explore_marker_interleavings (exhaustive or
 random exploration of all marker-level interleavings).
 """
 
+import threading
+from typing import Any
+
+import pytest
 from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from frontrun.common import Schedule
 from frontrun.trace_markers import (
@@ -35,62 +40,24 @@ class BankAccount:
 # ---------------------------------------------------------------------------
 
 
-class TestMarkerScheduleStrategy:
-    """marker_schedule_strategy generates valid Schedule objects."""
-
-    def test_generates_schedule_objects(self):
-        """Strategy produces Schedule instances."""
-        strategy = marker_schedule_strategy(
-            threads={"t1": ["read", "write"], "t2": ["read", "write"]},
-        )
-        example = strategy.example()
-        assert isinstance(example, Schedule)
-
-    def test_preserves_per_thread_order(self):
-        """Each thread's markers appear in their declared order."""
-        strategy = marker_schedule_strategy(
-            threads={"t1": ["a", "b", "c"], "t2": ["x", "y"]},
-        )
-        for _ in range(50):
-            schedule = strategy.example()
-            t1_markers = [s.marker_name for s in schedule.steps if s.execution_name == "t1"]
-            t2_markers = [s.marker_name for s in schedule.steps if s.execution_name == "t2"]
-            assert t1_markers == ["a", "b", "c"], f"t1 order violated: {t1_markers}"
-            assert t2_markers == ["x", "y"], f"t2 order violated: {t2_markers}"
-
-    def test_total_step_count(self):
-        """Schedule contains exactly the sum of all markers."""
-        strategy = marker_schedule_strategy(
-            threads={"t1": ["a", "b"], "t2": ["x", "y", "z"]},
-        )
-        for _ in range(20):
-            schedule = strategy.example()
-            assert len(schedule.steps) == 5
-
-    def test_three_threads(self):
-        """Works with three or more threads."""
-        strategy = marker_schedule_strategy(
-            threads={"t1": ["a"], "t2": ["b"], "t3": ["c"]},
-        )
-        schedule = strategy.example()
-        assert len(schedule.steps) == 3
-        names = {s.execution_name for s in schedule.steps}
-        assert names == {"t1", "t2", "t3"}
-
-    @given(
-        schedule=marker_schedule_strategy(
-            threads={"w1": ["read", "write"], "w2": ["read", "write"]},
-        )
-    )
-    @settings(max_examples=100)
-    def test_hypothesis_integration(self, schedule: Schedule):
-        """Strategy works as a Hypothesis argument."""
-        assert isinstance(schedule, Schedule)
-        assert len(schedule.steps) == 4
-        w1 = [s.marker_name for s in schedule.steps if s.execution_name == "w1"]
-        w2 = [s.marker_name for s in schedule.steps if s.execution_name == "w2"]
-        assert w1 == ["read", "write"]
-        assert w2 == ["read", "write"]
+@pytest.mark.parametrize(
+    "threads",
+    [
+        {"t1": ["read", "write"], "t2": ["read", "write"]},
+        {"t1": ["a", "b", "c"], "t2": ["x", "y"]},
+        {"t1": ["a", "b"], "t2": ["x", "y", "z"]},
+        {"t1": ["a"], "t2": ["b"], "t3": ["c"]},
+    ],
+)
+@given(data=st.data())
+@settings(max_examples=100)
+def test_marker_schedule_strategy_preserves_all_markers_in_thread_order(threads, data):
+    schedule = data.draw(marker_schedule_strategy(threads=threads))
+    assert isinstance(schedule, Schedule)
+    assert len(schedule.steps) == sum(map(len, threads.values()))
+    assert {step.execution_name for step in schedule.steps} == set(threads)
+    for name, markers in threads.items():
+        assert [step.marker_name for step in schedule.steps if step.execution_name == name] == markers
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +220,7 @@ class TestExploreMarkerInterleavings:
             invariant=lambda s: s.value == 2,
         )
         assert not result.property_holds
+        assert "property_holds=False" in repr(result)
         # Should have stopped before exploring all 6
         assert result.num_explored < 6
 
@@ -485,3 +453,97 @@ class TestExploreMarkerInterleavingsFailClosed:
         )
         assert not result.property_holds
         assert "deferred body was not executed" in (result.explanation or "")
+
+
+def _make_completed_coordinator(num_steps: int = 1) -> Any:
+    from frontrun._marker_coordination import ThreadCoordinator
+    from frontrun.common import Schedule, Step
+
+    schedule = Schedule([Step(execution_name=f"t{i}", marker_name="m") for i in range(num_steps)])
+    coord = ThreadCoordinator(schedule)
+    coord.current_step = num_steps
+    coord.completed = True
+    return coord
+
+
+def test_finalize_marker_executor_run_no_op_when_clean() -> None:
+    from frontrun._marker_coordination import finalize_marker_executor_run
+
+    coord = _make_completed_coordinator(num_steps=2)
+    # Should not raise: no threads alive, no errors, schedule completed.
+    finalize_marker_executor_run(
+        threads=[],
+        timeout=None,
+        task_errors={},
+        coordinator=coord,
+        timeout_message=lambda alive: "unused",
+    )
+
+
+def test_finalize_marker_executor_run_raises_for_alive_threads() -> None:
+    from frontrun._marker_coordination import finalize_marker_executor_run
+
+    coord = _make_completed_coordinator()
+    blocker = threading.Event()
+    thread = threading.Thread(target=blocker.wait, name="stuck", daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(TimeoutError, match="custom-timeout-message: stuck"):
+            finalize_marker_executor_run(
+                threads=[thread],
+                timeout=0.05,
+                task_errors={},
+                coordinator=coord,
+                timeout_message=lambda alive: "custom-timeout-message: " + ", ".join(t.name for t in alive),
+            )
+    finally:
+        blocker.set()
+        thread.join(timeout=1.0)
+
+
+def test_finalize_marker_executor_run_reraises_first_task_error() -> None:
+    from frontrun._marker_coordination import finalize_marker_executor_run
+
+    coord = _make_completed_coordinator()
+    err1 = RuntimeError("first")
+    err2 = RuntimeError("second")
+    with pytest.raises(RuntimeError, match="first"):
+        finalize_marker_executor_run(
+            threads=[],
+            timeout=None,
+            task_errors={"a": err1, "b": err2},
+            coordinator=coord,
+            timeout_message=lambda alive: "unused",
+        )
+
+
+def test_finalize_marker_executor_run_detects_partial_schedule() -> None:
+    from frontrun._marker_coordination import ThreadCoordinator, finalize_marker_executor_run
+    from frontrun.common import Schedule, Step
+
+    schedule = Schedule(
+        [
+            Step(execution_name="t1", marker_name="m1"),
+            Step(execution_name="t2", marker_name="never_reached"),
+        ]
+    )
+    coord = ThreadCoordinator(schedule)
+    coord.current_step = 1  # one step consumed, second never reached
+    coord.completed = False
+
+    with pytest.raises(TimeoutError, match="Schedule incomplete.*never_reached"):
+        finalize_marker_executor_run(
+            threads=[],
+            timeout=None,
+            task_errors={},
+            coordinator=coord,
+            timeout_message=lambda alive: "unused",
+        )
+
+
+def test_trace_executor_task_errors_annotation_accepts_baseexceptions() -> None:
+    from typing import get_type_hints
+
+    from frontrun.trace_markers import TraceExecutor
+
+    assert get_type_hints(TraceExecutor.task_errors.fget)["return"] == dict[str, BaseException]  # type: ignore[union-attr]

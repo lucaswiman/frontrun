@@ -449,7 +449,7 @@ class AwaitScheduler(InterleavedLoop):
         from frontrun._io_detection import (
             set_dpor_scheduler_task,
             set_dpor_thread_id_task,
-            set_io_reporter,
+            set_io_reporter_task,
             set_tx_store_task,
         )
 
@@ -461,18 +461,15 @@ class AwaitScheduler(InterleavedLoop):
             current = _task_id_var.get()
             self.sql_accesses.append((current if current is not None else task_id, resource_id, kind))
 
-        set_io_reporter(_io_reporter)
+        set_io_reporter_task(_io_reporter)
 
     def _cleanup_task_context(self, task_id: Any) -> None:
         if self._detect_sql:
-            from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter
+            from frontrun._io_detection import set_dpor_scheduler_task, set_dpor_thread_id_task, set_io_reporter_task
 
             set_dpor_scheduler_task(None)
             set_dpor_thread_id_task(None)
-            # Reporter is per-OS-thread (shared by all tasks); only clear when
-            # all tasks are done so remaining tasks keep reporting.
-            if len(self._tasks_done) + 1 >= self.num_tasks:
-                set_io_reporter(None)
+            set_io_reporter_task(None)
         _scheduler_var.set(None)
         _task_id_var.set(None)
 

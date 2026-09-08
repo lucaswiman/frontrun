@@ -1,4 +1,4 @@
-"""Coordinator for cross-process DPOR exploration (Phase 1: no Rust engine).
+"""Exhaustive coordinator for cross-process exploration.
 
 The coordinator owns the exploration: it accepts worker connections over an
 ``AF_UNIX`` socket, and drives one interleaving per iteration by granting a
@@ -7,13 +7,12 @@ separate workers share no memory, the only ordering that matters is the order
 of external accesses — so the coordinator enumerates interleavings at that
 (coarse) granularity.
 
-Phase 1 enumerates the interleaving space *exhaustively* by depth-first search
-with spawn-per-iteration replay: each iteration re-runs ``setup`` then all
-workers, replaying a chosen decision prefix and then diverging to an unexplored
-branch. Row-lock (``SELECT FOR UPDATE``) arbitration reuses the shared
-:class:`RowLockRegistry`. Feeding accesses into the Rust DPOR engine (to prune
-equivalent interleavings) is a later slice; the protocol and worker side are
-already engine-agnostic.
+This coordinator enumerates the interleaving space *exhaustively* by
+depth-first search with spawn-per-iteration replay: each iteration re-runs
+``setup`` then all workers, replaying a chosen decision prefix and then
+diverging to an unexplored branch. Row-lock (``SELECT FOR UPDATE``)
+arbitration reuses the shared :class:`RowLockRegistry`. The DPOR variant lives
+in :mod:`dpor_coordinator` and shares the worker protocol and launch layer.
 """
 
 from __future__ import annotations
