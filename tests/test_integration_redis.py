@@ -1,17 +1,15 @@
 """Tests for DPOR detection of Redis-based race conditions.
 
 These tests connect to a real Redis server and exercise DPOR's ability
-to detect application-level race conditions that manifest through
-network I/O (TCP socket calls to Redis).
+to detect application-level race conditions through Redis interception.
 
 The race conditions are in the APPLICATION code, not in Redis itself.
 Individual Redis commands (GET, SET, EXISTS) are atomic, but compound
 read-modify-write sequences are not — two threads can read a stale
 value and overwrite each other's updates.
 
-DPOR detects these races through the LD_PRELOAD I/O interception
-library, which intercepts libc-level send/recv calls to the Redis
-socket and reports them as I/O accesses to the DPOR engine.
+The configured interception reports Redis activity to the DPOR engine;
+the tests assert the resulting application-level race verdicts.
 
 Requirements::
 
@@ -84,6 +82,7 @@ class TestRedisCounterRace:
             reproduce_on_failure=0,
         )
         assert not result.property_holds, "DPOR should detect lost-update on Redis counter"
+        assert result.num_explored >= 2, "DPOR must explore multiple interleavings to find the race"
         assert result.explanation is not None
 
     def test_locked_counter_is_safe(self, redis_port: int) -> None:
@@ -188,6 +187,44 @@ class TestRedisCheckThenAct:
                 # Atomic check-and-set: only one thread succeeds
                 was_set = r.set("resource", "initialized", nx=True)
                 if was_set:
+                    count = int(r.get("init_count"))  # type: ignore[arg-type]
+                    r.set("init_count", str(count + 1))
+                r.close()
+
+        def invariant(state: State) -> bool:
+            r = redis_lib.Redis(port=port, decode_responses=True)
+            result = int(r.get("init_count"))  # type: ignore[arg-type]
+            r.close()
+            return result == 1
+
+        result = frontrun.explore(
+            setup=State,
+            workers=[maybe_init, maybe_init],
+            invariant=invariant,
+            detect_io=True,
+            max_executions=50,
+            deadlock_timeout=15.0,
+            reproduce_on_failure=0,
+        )
+        assert result.property_holds, result.explanation
+
+    def test_locked_init_is_safe(self, redis_port: int) -> None:
+        """Initialization protected by a Python lock is safe."""
+        port = redis_port
+
+        class State:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                r = redis_lib.Redis(port=port, decode_responses=True)
+                r.delete("resource", "init_count")
+                r.set("init_count", "0")
+                r.close()
+
+        def maybe_init(state: State) -> None:
+            with state.lock:
+                r = redis_lib.Redis(port=port, decode_responses=True)
+                if not r.exists("resource"):
+                    r.set("resource", "initialized")
                     count = int(r.get("init_count"))  # type: ignore[arg-type]
                     r.set("init_count", str(count + 1))
                 r.close()
