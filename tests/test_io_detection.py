@@ -471,7 +471,6 @@ def test_bytecode_shuffler_with_socket_io():
         recorder = TraceRecorder()
         scheduler = OpcodeScheduler(schedule, num_threads=2, trace_recorder=recorder)
         runner = BytecodeShuffler(scheduler, detect_io=True)
-        runner._patch_io()
 
         def thread_func():
             client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -482,10 +481,8 @@ def test_bytecode_shuffler_with_socket_io():
             client.close()
             conn.close()
 
-        try:
+        with runner.patch_scope():
             runner.run([thread_func, thread_func])
-        finally:
-            runner._unpatch_io()
     finally:
         server.close()
 

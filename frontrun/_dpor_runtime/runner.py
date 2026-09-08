@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+from frontrun._cooperative import patch_sleep as _patch_sleep
 from frontrun._dpor_core import event_wake_sync_id as _event_wake_sync_id
 from frontrun._dpor_core.worker import WorkerTarget
 from frontrun._opcode_observer import (
@@ -14,7 +15,7 @@ from frontrun._opcode_observer import (
     stop_opcode_trace,
     uninstall_thread_opcode_trace,
 )
-from frontrun._threaded_runner import PatchScope, notify_scheduler_timeout
+from frontrun._threaded_runner import ThreadWorkerSet, instrumentation_scope, notify_scheduler_timeout
 from frontrun._virtual_clock import warn_if_captured_time_reference
 
 from ._shared import *
@@ -26,7 +27,6 @@ from ._shared import (
 )
 from .preload_bridge import _PreloadBridge
 from .scheduler import DporScheduler
-from .worker_set import ThreadWorkerSet
 
 
 def _lock_event_schedule_index(scheduler: DporScheduler, thread_id: int, trace_length: int) -> int:
@@ -56,54 +56,21 @@ class DporBytecodeRunner:
         self.errors: dict[int, BaseException] = {}
         self.worker_originated_errors: dict[int, BaseException] = {}
         self.timed_out = False
-        self._lock_patched = False
-        self._io_patched = False
-        self._sleep_patched = False
         self._opcode_handle: OpcodeTraceHandle | None = None
 
-    def _patch_locks(self) -> None:
-        install_wait_for_graph()
-        patch_locks()
-        self._lock_patched = True
-
-    def _unpatch_locks(self) -> None:
-        if self._lock_patched:
-            unpatch_locks()
-            uninstall_wait_for_graph()
-            self._lock_patched = False
-
-    def _patch_sleep(self) -> None:
-        patch_sleep()
-        self._sleep_patched = True
-
-    def _unpatch_sleep(self) -> None:
-        if self._sleep_patched:
-            unpatch_sleep()
-            self._sleep_patched = False
-
-    def _patch_io(self) -> None:
-        if not self.detect_io:
-            return
-        patch_io()
-        patch_sql()
-        patch_redis()
-        self._io_patched = True
-
-    def _unpatch_io(self) -> None:
-        if self._io_patched:
-            unpatch_redis()
-            unpatch_sql()
-            unpatch_io()
-            self._io_patched = False
-
-    def patch_scope(self, *, patch_sleep: bool = True) -> PatchScope:
+    def patch_scope(self, *, patch_sleep: bool = True):
         # The time.* patch is owned by the driver's clock_scope, held once
         # across setup/run/invariant, rather than churned here per phase.
-        scope = PatchScope()
-        scope.add(self._patch_locks, self._unpatch_locks)
-        scope.add(self._patch_io, self._unpatch_io)
-        scope.add(self._patch_sleep, self._unpatch_sleep, enabled=patch_sleep)
-        return scope
+        return instrumentation_scope(
+            [
+                (install_wait_for_graph, uninstall_wait_for_graph, True),
+                (patch_locks, unpatch_locks, True),
+                (patch_io, unpatch_io, self.detect_io),
+                (patch_sql, unpatch_sql, self.detect_io),
+                (patch_redis, unpatch_redis, self.detect_io),
+                (_patch_sleep, unpatch_sleep, patch_sleep),
+            ]
+        )
 
     def _start_opcode_trace(self) -> None:
         scheduler = self.scheduler
@@ -500,17 +467,15 @@ class DporBytecodeRunner:
         self._start_opcode_trace()
         run_thread = self._run_thread
 
-        targets = [
-            WorkerTarget(worker_id=i, func=run_thread, args=(i, func, tuple(thread_args)))
-            for i, (func, thread_args) in enumerate(zip(funcs, args, strict=True))
-        ]
-
         def on_timeout(alive: list[threading.Thread]) -> None:
             self.timed_out = True
             notify_scheduler_timeout(self.scheduler, alive)
 
-        worker_set = ThreadWorkerSet(name_prefix="dpor", thread_store=self.threads)
-        worker_set.run(
+        targets = [
+            WorkerTarget(worker_id=i, func=run_thread, args=(i, func, tuple(thread_args)))
+            for i, (func, thread_args) in enumerate(zip(funcs, args, strict=True))
+        ]
+        ThreadWorkerSet(name_prefix="dpor", thread_store=self.threads).run(
             targets,
             timeout=timeout,
             on_timeout=on_timeout,
