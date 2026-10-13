@@ -51,3 +51,10 @@ exercise both in-process scheduling and worker bootstrap/replay.
 For Python 3.15 support, start with `make build-dpor-3.15` and
 `make build-dpor-3.15t`. PyO3 0.25 fails this procedure because its maximum
 supported interpreter is Python 3.14.
+
+The artifact smoke test must also finish under the Makefile's preload wrapper:
+`make test-e2e-3.15 PYTEST_ARGS="-v tests/test_sdist_build.py"`. During the
+3.15 compatibility run, the wheel build stalled with a Cargo child blocked
+before executing rustc. Compiler subprocesses inherited the preload library;
+its process-local mutexes are unsafe across a multithreaded Cargo fork. Keep
+pytest instrumented while running these external build tools without preload.
