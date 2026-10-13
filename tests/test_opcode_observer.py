@@ -716,6 +716,69 @@ def test_common_constant_subscripts_match_dynamic_key_identity(literal: str, key
         assert scheduler._shadow.stack == []
 
 
+@pytest.mark.skipif(_PY < (3, 15), reason="Virtual iterator stack slots added in 3.15")
+def test_virtual_iterator_pair_preserves_outer_stack_and_reports_reads() -> None:
+    """FOR_ITER finds its source below the index slot, and POP_ITER removes both."""
+
+    def target(items: list[int]) -> None:
+        for _ in items:
+            pass
+
+    instructions = {instr.opname: instr for instr in dis.get_instructions(target)}
+    items = [1, 2]
+    outer = object()
+    engine = _EngineRecorder()
+    scheduler = _CoarseningSchedulerStub(engine)
+    frame = SimpleNamespace(
+        f_code=target.__code__,
+        f_locals={"items": items},
+        f_globals=target.__globals__,
+        f_builtins=builtins.__dict__,
+        f_lasti=instructions["GET_ITER"].offset,
+    )
+    scheduler._shadow.push(outer)
+    scheduler._shadow.push(items)
+    _process_opcode(frame, scheduler, 1)
+    assert len(scheduler._shadow.stack) == 3
+    assert scheduler._shadow.stack[0] is outer
+    assert scheduler._shadow.peek(1) == ["__iter_source__", items, 0]
+
+    engine.events.clear()
+    frame.f_lasti = instructions["FOR_ITER"].offset
+    yielded = process_opcode_with_coarsening(target.__code__, frame.f_lasti, frame, scheduler, 1, detect_io=False)
+    assert yielded is True
+    element_key = _make_object_key(scheduler._stable_ids.get(items), "0")
+    assert (element_key, "read", "first") in engine.events
+    assert scheduler._shadow.peek(2) == ["__iter_source__", items, 1]
+
+    frame.f_lasti = instructions["STORE_FAST"].offset
+    _process_opcode(frame, scheduler, 1)
+    frame.f_lasti = instructions["POP_ITER"].offset
+    _process_opcode(frame, scheduler, 1)
+    assert scheduler._shadow.stack == [outer]
+
+
+@pytest.mark.skipif(_PY < (3, 15), reason="SEND auxiliary stack slot added in 3.15")
+def test_end_send_preserves_result_above_outer_stack() -> None:
+    """END_SEND consumes the receiver and auxiliary slot, preserving its result."""
+
+    async def target(awaitable: Any) -> Any:
+        return await awaitable
+
+    instr = next(instr for instr in dis.get_instructions(target) if instr.opname == "END_SEND")
+    outer, receiver, result = object(), object(), object()
+    scheduler = _SchedulerStub(_EngineRecorder())
+    scheduler._shadow.stack.extend([outer, receiver, None, result])
+    frame = SimpleNamespace(
+        f_code=target.__code__,
+        f_locals={},
+        f_globals=target.__globals__,
+        f_lasti=instr.offset,
+    )
+    _process_opcode(frame, scheduler, 1)
+    assert scheduler._shadow.stack == [outer, result]
+
+
 # ---------------------------------------------------------------------------
 # 9. Access-reporting dispatch: pin which engine method each helper calls
 #    and which kind string it forwards.
