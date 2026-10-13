@@ -80,10 +80,11 @@ class ShadowStack:
     to identify which object is being accessed.
     """
 
-    __slots__ = ("stack",)
+    __slots__ = ("last_opcode", "stack")
 
     def __init__(self) -> None:
         self.stack: list[Any] = []
+        self.last_opcode: str | None = None
 
     def push(self, val: Any) -> None:
         self.stack.append(val)
@@ -97,6 +98,7 @@ class ShadowStack:
 
     def clear(self) -> None:
         self.stack.clear()
+        self.last_opcode = None
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +805,7 @@ def _get_iter_might_report_access(shadow: ShadowStack) -> bool:
 
 
 def _for_iter_might_report_access(shadow: ShadowStack) -> bool:
-    return _is_iter_source_marker(shadow.peek())
+    return _is_iter_source_marker(shadow.peek(1 if _PY_VERSION >= (3, 15) else 0))
 
 
 def _is_shared_opcode(code: Any, instruction_offset: int) -> bool:
@@ -846,7 +848,7 @@ def _process_opcode(
     - 3.14: LOAD_FAST_BORROW, LOAD_FAST_BORROW_LOAD_FAST_BORROW,
             STORE_FAST_LOAD_FAST, STORE_FAST_MAYBE_NULL, LOAD_FAST_AND_CLEAR,
             LOAD_SMALL_INT, BINARY_SUBSCR removal
-    - 3.15: LOAD_COMMON_CONSTANT
+    - 3.15: LOAD_COMMON_CONSTANT, virtual iterator index slots
     """
     code = frame.f_code
     instrs = _get_instructions(code)
@@ -856,6 +858,8 @@ def _process_opcode(
 
     shadow = scheduler.get_shadow_stack(id(frame))
     op = instr.opname
+    previous_opcode = shadow.last_opcode
+    shadow.last_opcode = op
     engine = scheduler.engine
     execution = scheduler.execution
     elock = scheduler._engine_lock
@@ -1298,8 +1302,8 @@ def _process_opcode(
     # so that FOR_ITER can report reads on the original container.
 
     elif op == "GET_ITER":
-        # stack: [iterable] → [iterator]
-        # GET_ITER pops the iterable and pushes an iterator (stack effect = 0).
+        # stack: [iterable] → [iterator, index_or_null] on 3.15,
+        # or [iterator] on earlier versions.
         # We record the iterable→iterator mapping via a mutable marker on the
         # shadow stack so that FOR_ITER can report per-element reads.
         iterable = shadow.peek()
@@ -1319,14 +1323,18 @@ def _process_opcode(
         else:
             shadow.pop()
             shadow.push(None)
+        if _PY_VERSION >= (3, 15):
+            # Virtual iterators keep an auxiliary index/null slot above the
+            # iterator.  Its value is internal; only its stack position matters.
+            shadow.push(None)
 
     elif op == "FOR_ITER":
-        # stack: [iterator] → [iterator, next_value] or [−iterator] (exhausted)
+        # The iterator is below its auxiliary index/null slot on 3.15.
         # FOR_ITER calls __next__ on the iterator. If the iterator was created
         # from a mutable container (tracked via GET_ITER), report reads on it.
         # stack effect = +1 (pushes the yielded value; TOS is the iterator).
         # We peek at the iterator marker to find the underlying container.
-        top = shadow.peek()
+        top = shadow.peek(1 if _PY_VERSION >= (3, 15) else 0)
         if isinstance(top, list) and len(top) == 3 and top[0] == "__iter_source__":
             _iter_container = top[1]
             _iter_counter = top[2]
@@ -1354,8 +1362,24 @@ def _process_opcode(
         shadow.pop()
 
     elif op == "POP_ITER":
-        # Python 3.14: pops the iterator itself at end of for loop.
+        # Exhausted FOR_ITER jumps over END_FOR, so its speculative yielded
+        # value must also be discarded.  A break reaches POP_ITER after the
+        # yielded value has already been consumed and needs no extra pop.
+        if previous_opcode == "FOR_ITER":
+            shadow.pop()
         shadow.pop()
+        if _PY_VERSION >= (3, 15):
+            shadow.pop()
+
+    elif op == "END_SEND":
+        # Preserve the result while consuming the receiver and, on 3.15,
+        # the auxiliary index/null slot.  Net stack effect alone would pop
+        # the result and leave the receiver's identity on top instead.
+        result = shadow.pop()
+        shadow.pop()
+        if _PY_VERSION >= (3, 15):
+            shadow.pop()
+        shadow.push(result)
 
     # === Function/method calls ===
 
