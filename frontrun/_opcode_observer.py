@@ -24,6 +24,7 @@ import threading
 import types
 from collections import deque
 from collections.abc import Callable
+from itertools import chain, dropwhile, islice
 from typing import Any, Literal
 
 from frontrun._cooperative import CooperativeLock as _CooperativeLock
@@ -808,6 +809,32 @@ def _for_iter_might_report_access(shadow: ShadowStack) -> bool:
     return _is_iter_source_marker(shadow.peek(1 if _PY_VERSION >= (3, 15) else 0))
 
 
+def _untraced_genexpr_source_name(code: Any) -> str | None:
+    """Identify a 3.15 generator source initialized before tracing begins."""
+    if _PY_VERSION < (3, 15) or code.co_name != "<genexpr>":
+        return None
+    instructions = iter(_get_instructions(code).values())
+    prologue = tuple(
+        islice(dropwhile(lambda instr: instr.opname in ("MAKE_CELL", "COPY_FREE_VARS"), instructions), 4)
+    )
+    if (
+        len(prologue) == 4
+        and prologue[0].opname == "RESUME"
+        and prologue[0].arg == 4
+        and prologue[1].opname == "LOAD_FAST"
+        and isinstance(prologue[1].argval, str)
+        and prologue[2].opname == "GET_ITER"
+        and prologue[3].opname == "RETURN_GENERATOR"
+    ):
+        return prologue[1].argval
+    for instr in chain(prologue, instructions):
+        if instr.opname == "RETURN_GENERATOR":
+            break
+        if instr.opname == "GET_ITER":
+            raise RuntimeError("Cannot identify the source of an untraced generator-expression iterator")
+    return None
+
+
 def _is_shared_opcode(code: Any, instruction_offset: int) -> bool:
     """Check whether an opcode at the given offset might access shared state.
 
@@ -865,6 +892,21 @@ def _process_opcode(
     elock = scheduler._engine_lock
     recorder = scheduler.trace_recorder
     sids = scheduler._stable_ids
+
+    if op == "RESUME" and instr.arg == 0 and not shadow.stack:
+        # 3.15 initializes generator-expression iterators before
+        # RETURN_GENERATOR, without emitting monitoring instruction events.
+        # The matching prologue proves that this local contains the original
+        # source, so restore the iterator pair when the body first resumes.
+        source_name = _untraced_genexpr_source_name(code)
+        if source_name is not None:
+            iterable = frame.f_locals[source_name]
+            if iterable is not None and not isinstance(iterable, _IMMUTABLE_TYPES):
+                shadow.push(["__iter_source__", iterable, 0])
+            else:
+                shadow.push(None)
+            shadow.push(None)
+        return
 
     # === LOAD instructions: push values onto the shadow stack ===
 
@@ -1332,7 +1374,7 @@ def _process_opcode(
         # The iterator is below its auxiliary index/null slot on 3.15.
         # FOR_ITER calls __next__ on the iterator. If the iterator was created
         # from a mutable container (tracked via GET_ITER), report reads on it.
-        # stack effect = +1 (pushes the yielded value; TOS is the iterator).
+        # stack effect = +1 (pushes the yielded value).
         # We peek at the iterator marker to find the underlying container.
         top = shadow.peek(1 if _PY_VERSION >= (3, 15) else 0)
         if isinstance(top, list) and len(top) == 3 and top[0] == "__iter_source__":
@@ -1900,6 +1942,13 @@ def make_monitoring_callbacks(
         # (e.g. dataclass __init__ from exec/compile in libraries).
         if detect_io and code.co_filename.startswith("<"):
             return mon.DISABLE  # type: ignore[attr-defined]
+        if _PY_VERSION >= (3, 15) and code.co_name == "<genexpr>":
+            # The initial RESUME has a PY_START event but no INSTRUCTION
+            # event.  Restore its untraced iterator before the first FOR_ITER.
+            thread_id = get_thread_id()
+            if thread_id is not None:
+                frame = sys._getframe(1)
+                on_opcode(code, instruction_offset, frame, thread_id)
         return None
 
     def handle_py_return(code: Any, instruction_offset: int, retval: Any) -> Any:
