@@ -58,3 +58,25 @@ The artifact smoke test must also finish under the Makefile's preload wrapper:
 before executing rustc. Compiler subprocesses inherited the preload library;
 its process-local mutexes are unsafe across a multithreaded Cargo fork. Keep
 pytest instrumented while running these external build tools without preload.
+
+## PostgreSQL driver baseline
+
+The PostgreSQL trace-count and SQLAlchemy helper fixtures probe psycopg2, the
+driver installed by `make build-integration-<version>`. SQLAlchemy 2.1 changed
+an unqualified `postgresql://` engine URL to select psycopg3 instead.
+
+With the native extensions already built and `DATABASE_URL` pointing at the
+test database, reproduce the driver mismatch with:
+
+```sh
+make -o build-dpor-3.15 -o build-io test-integration-3.15 \
+  PYTEST_ARGS="-v tests/test_exact_mazurkiewicz_trace_count.py::TestPostgreSQLTraceCount::test_two_threads_n_shared_rows_select_for_update[1] tests/test_integration_sqlalchemy_dpor.py::test_sqlalchemy_dpor_toctou_race"
+```
+
+The unqualified fixtures failed identically on Python 3.14 and 3.15 with the
+same dependencies: the one-row trace count was 8 instead of at most 6, and
+TOCTOU INSERT tracking raised `NondeterministicSQLError` because psycopg3 has no
+`lastrowid`. After explicitly selecting psycopg2 in these fixtures, rerun all
+three shared-row parameters and the TOCTOU test. Keep their trace bounds and
+nondeterminism guard enabled; the ORM fixture and real dual-driver cursor
+regression retain psycopg3 coverage.
