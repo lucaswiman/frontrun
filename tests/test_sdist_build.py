@@ -66,6 +66,16 @@ def _require_tooling(root: Path | None) -> Path:
     return root
 
 
+def _build_env() -> dict[str, str]:
+    env = os.environ.copy()
+    # Cargo forks compiler children from multiple threads. Inherited preload
+    # mutexes can deadlock before exec; external build tools need no scheduling.
+    env.pop("LD_PRELOAD", None)
+    env.pop("DYLD_INSERT_LIBRARIES", None)
+    env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
+    return env
+
+
 def _build_sdist(root: Path, out_dir: Path) -> Path:
     subprocess.run(
         [sys.executable, "-m", "maturin", "sdist", "--out", str(out_dir)],
@@ -74,6 +84,7 @@ def _build_sdist(root: Path, out_dir: Path) -> Path:
         capture_output=True,
         text=True,
         timeout=300,
+        env=_build_env(),
     )
     sdists = list(out_dir.glob("*.tar.gz"))
     assert len(sdists) == 1, f"expected exactly one sdist, got {sdists}"
@@ -126,14 +137,13 @@ def _build_wheel_from_sdist(sdist: Path, work_dir: Path, out_dir: Path) -> Path:
     # maturin's PEP 517 hook shells out to the ``maturin`` executable via PATH;
     # ensure the current interpreter's bin dir (where it lives in the venv) is
     # discoverable even when the test isn't run through the make PATH wrapper.
-    env = {**os.environ, "PATH": os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")])}
     result = subprocess.run(
         [sys.executable, "-c", driver],
         cwd=extracted,
         capture_output=True,
         text=True,
         timeout=1200,
-        env=env,
+        env=_build_env(),
     )
     assert result.returncode == 0, f"PEP 517 build_wheel failed:\n{result.stdout}\n{result.stderr}"
 
