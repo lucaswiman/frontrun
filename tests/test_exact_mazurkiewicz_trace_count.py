@@ -555,10 +555,11 @@ def _pg_available():
 
 @pytest.fixture()
 def pg_engine(_pg_available):
-    """Create a SQLAlchemy engine for tests."""
+    """Use the psycopg2 driver required by this trace-count model."""
     from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
 
-    eng = create_engine(_DB_URL)
+    eng = create_engine(make_url(_DB_URL).set(drivername="postgresql+psycopg2"))
     yield eng
     eng.dispose()
 
