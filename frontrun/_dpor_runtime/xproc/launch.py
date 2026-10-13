@@ -11,7 +11,6 @@ tests and real subprocess runs.
 from __future__ import annotations
 
 import base64
-import copy
 import json
 import marshal
 import multiprocessing
@@ -22,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import ChainMap
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -233,8 +233,8 @@ def _dumps_worker(worker_fn: Callable[[Any], Any], state: Any) -> bytes:
             # round-trips in the same interpreter version, including line tables.
             with BytesIO() as buffer:
                 pickler = dill.Pickler(buffer, protocol=dill.settings["protocol"])
-                pickler.dispatch = copy.copy(pickler.dispatch)
-                pickler.dispatch[CodeType] = _save_worker_code
+                # A live overlay preserves reducers dill registers lazily, e.g. NumPy.
+                pickler.dispatch = ChainMap({CodeType: _save_worker_code}, pickler.dispatch)
                 pickler.dump((worker_fn, state))
                 return buffer.getvalue()
         return dill.dumps((worker_fn, state))
