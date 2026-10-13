@@ -5,6 +5,7 @@ Uses sqlite3 (always available) to test the patching mechanism.
 
 from __future__ import annotations
 
+import importlib
 import os
 import sqlite3
 import threading
@@ -135,7 +136,10 @@ def test_patch_patches_sqlite3_connect() -> None:
 @pytest.mark.parametrize("driver_name", ["psycopg2", "psycopg"])
 def test_postgres_lock_timeout_injection_uses_driver_cursor(driver_name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Both PostgreSQL drivers must accept the cursor used during connection setup."""
-    driver = pytest.importorskip(driver_name)
+    try:
+        driver = importlib.import_module(driver_name)
+    except ImportError as exc:
+        pytest.skip(f"{driver_name} is unavailable: {exc}")
     dsn = os.environ.get("DATABASE_URL", "postgresql:///frontrun_test")
     try:
         available = driver.connect(dsn, connect_timeout=2)
