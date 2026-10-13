@@ -364,7 +364,7 @@ impl PyExecution {
 /// Python module definition.
 ///
 /// `gil_used = false` declares this extension supports free-threaded Python
-/// (3.13t/3.14t). The DPOR engine state is only mutated through Python calls
+/// (3.14t and later). The DPOR engine state is only mutated through Python calls
 /// serialized by our cooperative scheduler, so this is safe.
 #[pymodule(gil_used = false)]
 fn _dpor(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -9,6 +9,6 @@ name = "_dpor"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-pyo3 = { version = "0.25", features = ["extension-module"] }
+pyo3 = { version = "0.29.3", features = ["extension-module"] }
 
 [dev-dependencies]
