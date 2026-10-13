@@ -676,6 +676,46 @@ class TestPrePython314BinarySubscr:
         assert "BINARY_SUBSCR" in opcodes, "Expected BINARY_SUBSCR before 3.14"
 
 
+@pytest.mark.skipif(_PY < (3, 15), reason="LOAD_COMMON_CONSTANT added in 3.15")
+@pytest.mark.parametrize(("literal", "key"), [("-1", -1), ("True", True), ("False", False), ("''", "")])
+@pytest.mark.parametrize("access_kind", ["read", "write"])
+def test_common_constant_subscripts_match_dynamic_key_identity(literal: str, key: Any, access_kind: str) -> None:
+    """A literal key and the same key loaded from a local must conflict."""
+    namespace: dict[str, Any] = {}
+    statement = "shared[{key}] = 1" if access_kind == "write" else "return shared[{key}]"
+    exec(
+        "def literal_access(shared):\n    "
+        + statement.format(key=literal)
+        + "\ndef dynamic_access(shared, key):\n    "
+        + statement.format(key="key"),
+        namespace,
+    )
+    shared = {key: 0}
+    engine = _EngineRecorder()
+    scheduler = _SchedulerStub(engine)
+    expected_key = _make_object_key(scheduler._stable_ids.get(shared), key if isinstance(key, str) else repr(key))
+    literal_access = namespace["literal_access"]
+    assert any(instr.opname == "LOAD_COMMON_CONSTANT" for instr in dis.get_instructions(literal_access))
+
+    for fn in (literal_access, namespace["dynamic_access"]):
+        frame = SimpleNamespace(
+            f_code=fn.__code__,
+            f_locals={"shared": shared, "key": key},
+            f_globals=fn.__globals__,
+            f_builtins=builtins.__dict__,
+            f_lasti=0,
+        )
+        engine.events.clear()
+        for instr in dis.get_instructions(fn):
+            frame.f_lasti = instr.offset
+            _process_opcode(frame, scheduler, 1)
+            if instr.opname == "LOAD_COMMON_CONSTANT" and instr.argval is key:
+                assert scheduler._shadow.peek() is key
+
+        assert (expected_key, access_kind, "access") in engine.events
+        assert scheduler._shadow.stack == []
+
+
 # ---------------------------------------------------------------------------
 # 9. Access-reporting dispatch: pin which engine method each helper calls
 #    and which kind string it forwards.
