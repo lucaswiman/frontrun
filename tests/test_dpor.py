@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Any
 
@@ -23,6 +24,34 @@ from frontrun._deadlock import SchedulerAbort
 from frontrun._dpor_runtime.runner import DporBytecodeRunner
 from frontrun.common import InterleavingResult
 from frontrun.dpor import DporScheduler
+
+
+@pytest.mark.skipif(sys.version_info[:2] < (3, 15), reason="Generator-expression prologues changed in 3.15")
+def test_generator_expression_source_race_is_discovered_and_replayed() -> None:
+    """Untraced generator creation must not hide reads of the source container."""
+
+    class State:
+        def __init__(self) -> None:
+            self.values = [0]
+            self.snapshot: list[int] | None = None
+
+    def snapshot(state: State) -> None:
+        state.snapshot = list(item for item in state.values)
+
+    def mutate(state: State) -> None:
+        state.values[0] = 1
+
+    result = frontrun.explore(
+        setup=State,
+        workers=[snapshot, mutate],
+        invariant=lambda state: state.snapshot == [0],
+        detect_io=False,
+        max_executions=30,
+        reproduce_on_failure=3,
+    )
+
+    assert result.property_holds is False, "DPOR must expose mutation before the generator-expression read"
+    assert result.reproduction_successes == result.reproduction_attempts == 3
 
 
 class _CountingCondition:

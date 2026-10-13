@@ -758,7 +758,7 @@ def test_virtual_iterator_pair_preserves_outer_stack_and_reports_reads() -> None
     assert scheduler._shadow.stack == [outer]
 
 
-@pytest.mark.skipif(_PY < (3, 15), reason="SEND auxiliary stack slot added in 3.15")
+@pytest.mark.skipif(_PY < (3, 12), reason="END_SEND added in 3.12")
 def test_end_send_preserves_result_above_outer_stack() -> None:
     """END_SEND consumes the receiver and auxiliary slot, preserving its result."""
 
@@ -768,7 +768,10 @@ def test_end_send_preserves_result_above_outer_stack() -> None:
     instr = next(instr for instr in dis.get_instructions(target) if instr.opname == "END_SEND")
     outer, receiver, result = object(), object(), object()
     scheduler = _SchedulerStub(_EngineRecorder())
-    scheduler._shadow.stack.extend([outer, receiver, None, result])
+    scheduler._shadow.stack.extend([outer, receiver])
+    if _PY >= (3, 15):
+        scheduler._shadow.push(None)
+    scheduler._shadow.push(result)
     frame = SimpleNamespace(
         f_code=target.__code__,
         f_locals={},
