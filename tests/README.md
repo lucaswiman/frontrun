@@ -80,3 +80,20 @@ TOCTOU INSERT tracking raised `NondeterministicSQLError` because psycopg3 has no
 three shared-row parameters and the TOCTOU test. Keep their trace bounds and
 nondeterminism guard enabled; the ORM fixture and real dual-driver cursor
 regression retain psycopg3 coverage.
+
+Optional PostgreSQL drivers must also skip when their Python package is
+installed but its native dependency cannot load. In the prepared Python 3.15t
+environment, pure psycopg imports raise `ImportError` because libpq is absent.
+With pytest 9.1, the default `importorskip` catches only `ModuleNotFoundError`.
+Reproduce this availability failure without installing or rebuilding anything:
+
+```sh
+make -o build-dpor-3.15t -o build-integration-3.15t -o build-io test-integration-3.15t \
+  PYTEST_ARGS="-v tests/test_sql_cursor.py::test_postgres_lock_timeout_injection_uses_driver_cursor[psycopg] tests/test_integration_orm.py"
+```
+
+Before explicit import guards, this produced one failed cursor regression and
+five ORM fixture errors. The same six cases must skip with the original
+missing-libpq reason after the guards; normal Python 3.15 must still execute
+the real driver and ORM tests successfully. Catch only `ImportError` at driver
+loading, using APIs supported by the project's pytest 7 minimum.
