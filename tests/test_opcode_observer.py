@@ -779,6 +779,50 @@ def test_end_send_preserves_result_above_outer_stack() -> None:
     assert scheduler._shadow.stack == [outer, result]
 
 
+@pytest.mark.skipif(_PY < (3, 14), reason="POP_ITER cleanup added in 3.14")
+@pytest.mark.parametrize("loop_exit", ["exhaustion", "break"])
+def test_real_loop_trace_preserves_c_method_access(loop_exit: str) -> None:
+    """Iterator cleanup must retain a shared C method below a comprehension."""
+    from frontrun._opcode_observer import start_opcode_trace, stop_opcode_trace
+
+    if loop_exit == "exhaustion":
+
+        def target(items: list[int], sink: list[Any]) -> None:
+            sink.append([item for item in items])
+
+    else:
+
+        def target(items: list[int], sink: list[Any]) -> None:
+            for item in items:
+                break
+            sink.append(item)
+
+    engine = _EngineRecorder()
+    scheduler = _SchedulerStub(engine)
+    observed_calls: list[bool] = []
+
+    def on_opcode(code: Any, offset: int, frame: Any, thread_id: int) -> bool:
+        if code is target.__code__:
+            instr = _get_instructions(code)[offset]
+            if instr.opname == "CALL":
+                observed_calls.append(_call_might_report_access(scheduler._shadow, instr.arg or 0))
+            _process_opcode(frame, scheduler, thread_id)
+        return False
+
+    sink: list[Any] = []
+    handle = start_opcode_trace(get_thread_id=lambda: 1, on_opcode=on_opcode)
+    try:
+        target([1, 2], sink)
+        target([1, 2], sink)
+    finally:
+        stop_opcode_trace(handle)
+
+    expected_key = _make_object_key(scheduler._stable_ids.get(sink), "__cmethods__")
+    assert engine.events.count((expected_key, "write", "access")) == 2
+    assert observed_calls == [True, True]
+    assert scheduler._shadow.stack == []
+
+
 # ---------------------------------------------------------------------------
 # 9. Access-reporting dispatch: pin which engine method each helper calls
 #    and which kind string it forwards.
