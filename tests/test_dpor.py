@@ -12,7 +12,6 @@ Covers:
 
 from __future__ import annotations
 
-import sys
 import threading
 from typing import Any
 
@@ -26,8 +25,8 @@ from frontrun.common import InterleavingResult
 from frontrun.dpor import DporScheduler
 
 
-@pytest.mark.skipif(sys.version_info[:2] < (3, 15), reason="Generator-expression prologues changed in 3.15")
-def test_generator_expression_source_race_is_discovered_and_replayed() -> None:
+@pytest.mark.parametrize("expression_kind", ["direct", "closure", "cell"])
+def test_generator_expression_source_race_is_discovered_and_replayed(expression_kind: str) -> None:
     """Untraced generator creation must not hide reads of the source container."""
 
     class State:
@@ -36,7 +35,13 @@ def test_generator_expression_source_race_is_discovered_and_replayed() -> None:
             self.snapshot: list[int] | None = None
 
     def snapshot(state: State) -> None:
-        state.snapshot = list(item for item in state.values)
+        if expression_kind == "closure":
+            bias = 0
+            state.snapshot = list(item + bias for item in state.values)
+        elif expression_kind == "cell":
+            state.snapshot = list(read() for read in (lambda: item for item in state.values))
+        else:
+            state.snapshot = list(item for item in state.values)
 
     def mutate(state: State) -> None:
         state.values[0] = 1
