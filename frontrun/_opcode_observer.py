@@ -813,10 +813,8 @@ def _untraced_genexpr_source_name(code: Any) -> str | None:
     """Identify a 3.15 generator source initialized before tracing begins."""
     if _PY_VERSION < (3, 15) or code.co_name != "<genexpr>":
         return None
-    instructions = iter(_get_instructions(code).values())
-    prologue = tuple(
-        islice(dropwhile(lambda instr: instr.opname in ("MAKE_CELL", "COPY_FREE_VARS"), instructions), 4)
-    )
+    instructions = (instr for instr in _get_instructions(code).values() if instr.opname != "EXTENDED_ARG")
+    prologue = tuple(islice(dropwhile(lambda instr: instr.opname in ("MAKE_CELL", "COPY_FREE_VARS"), instructions), 4))
     if (
         len(prologue) == 4
         and prologue[0].opname == "RESUME"

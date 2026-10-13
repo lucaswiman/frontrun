@@ -37,11 +37,12 @@ def test_generator_expression_source_race_is_discovered_and_replayed(expression_
     def snapshot(state: State) -> None:
         if expression_kind == "closure":
             bias = 0
-            state.snapshot = list(item + bias for item in state.values)
+            source = (item + bias for item in state.values)
         elif expression_kind == "cell":
-            state.snapshot = list(read() for read in (lambda: item for item in state.values))
+            source = (read() for read in (lambda: item for item in state.values))
         else:
-            state.snapshot = list(item for item in state.values)
+            source = (item for item in state.values)
+        state.snapshot = list(source)
 
     def mutate(state: State) -> None:
         state.values[0] = 1
