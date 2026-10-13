@@ -841,11 +841,12 @@ def _process_opcode(
 ) -> None:
     """Process a single opcode, updating the shadow stack and reporting accesses.
 
-    Handles opcodes across Python 3.10-3.14, including:
+    Handles opcodes across Python 3.10-3.15, including:
     - 3.13: LOAD_FAST_LOAD_FAST, STORE_FAST_STORE_FAST
     - 3.14: LOAD_FAST_BORROW, LOAD_FAST_BORROW_LOAD_FAST_BORROW,
             STORE_FAST_LOAD_FAST, STORE_FAST_MAYBE_NULL, LOAD_FAST_AND_CLEAR,
             LOAD_SMALL_INT, BINARY_SUBSCR removal
+    - 3.15: LOAD_COMMON_CONSTANT
     """
     code = frame.f_code
     instrs = _get_instructions(code)
@@ -931,7 +932,7 @@ def _process_opcode(
         if varname in code.co_freevars or varname in code.co_cellvars:
             _report_access(engine, execution, thread_id, code, varname, elock, sids, "first_read")
 
-    elif op in ("LOAD_CONST", "LOAD_CONST_IMMORTAL", "LOAD_CONST_MORTAL"):
+    elif op in ("LOAD_CONST", "LOAD_CONST_IMMORTAL", "LOAD_CONST_MORTAL", "LOAD_COMMON_CONSTANT"):
         shadow.push(instr.argval)
 
     elif op == "LOAD_SMALL_INT":
