@@ -1314,7 +1314,7 @@ def patch_sql() -> None:
                 try:
                     _was_autocommit = conn.autocommit
                     conn.autocommit = True
-                    _lt_cur = conn.cursor(cursor_factory=default_cursor_cls)
+                    _lt_cur = default_cursor_cls(conn)
                     try:
                         _lock_timeout_sql = f"SET lock_timeout = '{int(_lock_timeout_ms)}ms'"
                         suppress_sql_write("BEGIN")
