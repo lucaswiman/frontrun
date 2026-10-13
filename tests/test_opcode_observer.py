@@ -791,14 +791,14 @@ def test_real_loop_trace_preserves_c_method_access(loop_exit: str) -> None:
     if loop_exit == "exhaustion":
 
         def target(items: list[int], sink: list[Any]) -> None:
-            sink.append([item for item in items])
+            sink.append([item for item in items])  # noqa: C416 - exercise inline comprehension stack cleanup
 
     else:
 
         def target(items: list[int], sink: list[Any]) -> None:
-            for item in items:
+            for _item in items:
                 break
-            sink.append(item)
+            sink.append(_item)
 
     engine = _EngineRecorder()
     scheduler = _SchedulerStub(engine)
@@ -824,6 +824,39 @@ def test_real_loop_trace_preserves_c_method_access(loop_exit: str) -> None:
     assert engine.events.count((expected_key, "write", "access")) == 2
     assert observed_calls == [True, True]
     assert scheduler._shadow.stack == []
+
+
+@pytest.mark.skipif(_PY < (3, 15), reason="Generator-expression prologues changed in 3.15")
+def test_wide_generator_cell_prologue_reports_source_reads() -> None:
+    """EXTENDED_ARG before cell setup must preserve the original iterable identity."""
+    from frontrun._opcode_observer import start_opcode_trace, stop_opcode_trace
+
+    names = ",".join(f"x{index}" for index in range(256))
+    source = f"def target(values):\n    return (lambda: ({names}) for {names} in values)\n"
+    namespace: dict[str, Any] = {}
+    exec(compile(source, __file__, "exec"), namespace)
+    target = namespace["target"]
+    generator_code = next(code for code in target.__code__.co_consts if isinstance(code, type(target.__code__)))
+    values = [tuple(range(256))]
+    engine = _EngineRecorder()
+    scheduler = _SchedulerStub(engine)
+
+    def on_opcode(code: Any, offset: int, frame: Any, thread_id: int) -> bool:
+        if code is generator_code:
+            _process_opcode(frame, scheduler, thread_id)
+        return False
+
+    handle = start_opcode_trace(get_thread_id=lambda: 1, on_opcode=on_opcode)
+    try:
+        readers = list(target(values))
+    finally:
+        stop_opcode_trace(handle)
+
+    assert readers[0]() == values[0]
+    source_key = _make_object_key(scheduler._stable_ids.get(values), "__cmethods__")
+    element_key = _make_object_key(scheduler._stable_ids.get(values), "0")
+    assert (source_key, "read", "access") in engine.events
+    assert (element_key, "read", "first") in engine.events
 
 
 # ---------------------------------------------------------------------------
