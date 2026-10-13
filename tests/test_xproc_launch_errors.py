@@ -101,7 +101,9 @@ def test_dumps_worker_preserves_nested_code_and_exception_metadata() -> None:
         except ZeroDivisionError:
             return adjusted(0)
 
+    code_serializer = dill.Pickler.dispatch[type(worker.__code__)]
     fn, state = dill.loads(_dumps_worker(worker, 0))
+    assert dill.Pickler.dispatch[type(worker.__code__)] is code_serializer
     assert fn(state) == 100
     assert fn(2) == 105
     assert fn.__code__ == worker.__code__
