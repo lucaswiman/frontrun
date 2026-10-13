@@ -39,3 +39,15 @@ different dependency/fixture boundary, not simply a new bug report.
 Run tests through the Makefile wrappers described in `CLAUDE.md`. If agents share
 one checkout, serialize those wrappers: concurrent native builds can replace
 the extension while another test process is starting.
+
+## Native Python compatibility
+
+For each newly supported interpreter, first build with `make build-dpor-<version>`
+without PyO3's forward-compatibility override. Import the resulting extension
+using that venv's Python and check that importing it leaves the GIL disabled on
+free-threaded builds. Run `make test-<version>` and `make test-e2e-<version>` to
+exercise both in-process scheduling and worker bootstrap/replay.
+
+For Python 3.15 support, start with `make build-dpor-3.15` and
+`make build-dpor-3.15t`. PyO3 0.25 fails this procedure because its maximum
+supported interpreter is Python 3.14.
