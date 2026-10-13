@@ -45,7 +45,7 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, target: x86_64, label: "Linux x86_64" }
-          - { os: ubuntu-latest, target: aarch64, label: "Linux aarch64" }
+          - { os: ubuntu-24.04-arm, target: aarch64, label: "Linux aarch64" }
           - { os: macos-14, target: aarch64, label: "macOS aarch64" }
     steps:
       - uses: actions/checkout@v7
@@ -56,12 +56,6 @@ jobs:
         run: |
           sed "s/^version = .*/version = \"${{ inputs.version }}\"/" Cargo.toml > Cargo.toml.tmp
           mv Cargo.toml.tmp Cargo.toml
-
-      - name: Set up QEMU
-        if: matrix.target == 'aarch64' && runner.os == 'Linux'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Rust
         if: runner.os != 'Linux'
@@ -77,25 +71,31 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13 3.14
+          # manylinux ships 3.15, but maturin's bundled cross-compilation
+          # sysconfig currently stops at 3.14. Pass the real interpreter path.
+          # https://github.com/pypa/manylinux#image-content
+          args: >-
+            --release --out dist --interpreter 3.10 3.11 3.12 3.13 3.14
+            ${{ runner.os == 'Linux' && '/opt/python/cp315-cp315/bin/python' || '' }}
           manylinux: auto
           before-script-linux: |
+            manylinux-interpreters ensure cp315-cp315
             cargo build --release --manifest-path crates/io/Cargo.toml
             cp crates/io/target/release/libfrontrun_io.so frontrun/libfrontrun_io.so 2>/dev/null || \
               cp crates/io/target/*/release/libfrontrun_io.so frontrun/libfrontrun_io.so
 
       - name: Build wheels (free-threaded)
-        if: runner.os != 'Linux'
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          # Only 3.14t: maturin resolves a cross-compile interpreter from its
-          # bundled sysconfig (because --target is set), and it only ships
-          # free-threaded sysconfig data for 3.14+. 3.13t free-threaded macOS
-          # wheels would need a real interpreter (see the Linux job below).
-          args: --release --out dist --interpreter 3.14t
+          # Paths bypass maturin's version/suffix lookup for the interpreters
+          # provided by manylinux. macOS 3.15 needs a real interpreter below.
+          args: >-
+            --release --out dist --interpreter
+            ${{ runner.os == 'Linux' && '/opt/python/cp314-cp314t/bin/python /opt/python/cp315-cp315t/bin/python' || '3.14t' }}
           manylinux: auto
           before-script-linux: |
+            manylinux-interpreters ensure cp314-cp314t cp315-cp315t
             cargo build --release --manifest-path crates/io/Cargo.toml
             cp crates/io/target/release/libfrontrun_io.so frontrun/libfrontrun_io.so 2>/dev/null || \
               cp crates/io/target/*/release/libfrontrun_io.so frontrun/libfrontrun_io.so
@@ -105,17 +105,13 @@ jobs:
           name: dist-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*.whl
 
-  linux-freethread:
-    name: "Linux ${{ matrix.target }} (free-threaded ${{ matrix.python-version }})"
-    runs-on: ${{ matrix.runner }}
+  macos-python315:
+    name: "macOS aarch64 (Python ${{ matrix.python-version }})"
+    runs-on: macos-14
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.13t', '3.14t']
-        target: [x86_64, aarch64]
-        include:
-          - { target: x86_64, runner: ubuntu-latest }
-          - { target: aarch64, runner: ubuntu-24.04-arm }
+        python-version: ['3.15', '3.15t']
     steps:
       - uses: actions/checkout@v7
 
@@ -129,28 +125,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Build I/O interception library
         run: |
           cargo build --release --manifest-path crates/io/Cargo.toml
-          cp crates/io/target/release/libfrontrun_io.so frontrun/libfrontrun_io.so
+          cp crates/io/target/release/libfrontrun_io.dylib frontrun/libfrontrun_io.dylib
 
-      - name: Build free-threaded wheel
+      - name: Build Python 3.15 wheel
         uses: PyO3/maturin-action@v1
         with:
-          # Build on the host (no Docker) because maturin inside the
-          # manylinux container treats free-threaded interpreters like
-          # python3.13t as cross-compilation and rejects the 't' suffix.
-          # manylinux_2_39 matches the Ubuntu 24.04 runner's glibc.
+          # No --target: use the installed interpreter instead of maturin's
+          # bundled cross-compilation sysconfig, which stops at Python 3.14.
           container: off
           args: >-
             --release --out dist
-            --compatibility manylinux_2_39
-            --interpreter python${{ matrix.python-version }}
+            --interpreter '${{ steps.python.outputs.python-path }}'
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dist-linux-${{ matrix.target }}-freethread-${{ matrix.python-version }}
+          name: dist-macos-aarch64-${{ matrix.python-version }}
           path: dist/*.whl

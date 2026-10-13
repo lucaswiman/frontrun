@@ -55,9 +55,9 @@ The full statement lives in `docs/design-principles.rst` (rendered in the Sphinx
 Use the Makefile to build virtualenvs. Prefer working in the **3.14** virtualenv:
 
 - `make build-dpor-3.14` — build the 3.14 venv with Rust DPOR extension (preferred)
-- `make build-dpor-3.10` / `make build-dpor-3.14t` — other versions
+- `make build-dpor-3.10` / `make build-dpor-3.14t` / `make build-dpor-3.15` / `make build-dpor-3.15t` — other versions
 - `make build-io` — build the LD_PRELOAD I/O interception library (libfrontrun_io.so)
-- Virtualenvs live at `.venv-3.14t/`, `.venv-3.10/`, `.venv-3.14/`
+- Virtualenvs live at `.venv-<version>/`, including `.venv-3.15/` and `.venv-3.15t/`
 - Run tools via e.g. `.venv-3.14/bin/pytest`, `.venv-3.14/bin/python`
 - Use `frontrun` CLI to run commands with I/O interception: `frontrun pytest -v tests/`
 
@@ -67,8 +67,8 @@ Use the Makefile to build virtualenvs. Prefer working in the **3.14** virtualenv
 
 Always use `make test-<version>` to run tests. This builds the DPOR extension and I/O library, then runs pytest through the `frontrun` CLI wrapper (which sets up `LD_PRELOAD` for C-level I/O interception). Do **not** run `.venv-3.14/bin/pytest` directly — tests that use `frontrun.explore()` will be skipped or misconfigured without the `frontrun` wrapper.
 
-- `make test-3.14` / `make test-3.10` / `make test-3.14t` — single version
-- `make test` — all Python versions (3.10, 3.11, 3.12, 3.13, 3.14, 3.14t)
+- `make test-3.14` / `make test-3.10` / `make test-3.14t` / `make test-3.15` / `make test-3.15t` — single version
+- `make test` — all Python versions (3.10, 3.11, 3.12, 3.13, 3.14, 3.14t, 3.15, 3.15t)
 - Override pytest args: `make test-3.14 PYTEST_ARGS="-v --timeout=120 -k test_name"`
 - Fast inner loop: scope with `-k` (e.g. `PYTEST_ARGS="-k test_dpor"`); the full suite is slow.
 
@@ -98,7 +98,7 @@ Integration tests require additional packages and services:
 
 ## Gotchas
 
-- 3.14t (free-threaded) routes opcode tracing through `sys.monitoring` rather than `sys.settrace` (CPython #118415). The choice is encapsulated in `_opcode_observer.py::start_opcode_trace`; callers don't pick. If you need a new tracer hook, extend the API there rather than reaching for `sys.*` directly.
+- 3.14t and 3.15t (free-threaded) route opcode tracing through `sys.monitoring` rather than `sys.settrace` (CPython #118415). The choice is encapsulated in `_opcode_observer.py::start_opcode_trace`; callers don't pick. If you need a new tracer hook, extend the API there rather than reaching for `sys.*` directly.
 - `_cooperative.py` is sync-only by design: asyncio is already cooperative, so async paths use stock primitives. Don't try to add an async mirror.
 - The async DPOR pipeline still lives in a single `async_dpor.py` instead of mirroring `_dpor_runtime/`. The shared `_dpor_core/` package is the staging area for pulling more out of both — currently holds engine construction, serializability-baseline computation, and race-failure formatting. The next slice (worker/scheduler abstraction) is not yet done.
 - When adding a new exploration approach, register it as a `Strategy` / `AsyncStrategy` adapter in `frontrun/_strategy.py` so `frontrun.explore(strategy=...)` picks it up — don't add another branch in `explore.py`.

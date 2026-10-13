@@ -2,7 +2,7 @@
 .PRECIOUS: .venv-% .venv-%/activate
 
 # Python versions to test
-PYTHON_VERSIONS := 3.14t 3.10 3.11 3.12 3.13 3.14
+PYTHON_VERSIONS := 3.14t 3.15t 3.10 3.11 3.12 3.13 3.14 3.15
 
 PYTEST_ARGS?=--tb=short -v
 
@@ -20,8 +20,10 @@ export CARGO_HOME := $(CURDIR)/.cargo-cache
 export UV_CACHE_DIR := $(CURDIR)/.uv-cache
 
 # Pattern rule for creating version-specific virtualenvs
+# uv permits free-threaded interpreters for normal 3.14+ requests, so require
+# the GIL-enabled variant unless the target explicitly ends in "t".
 .venv-%:
-	uv venv .venv-$* --python=$*
+	uv venv .venv-$* --python=$(if $(filter %t,$*),$*,$*+gil)
 
 # Pattern rule for installing dependencies in version-specific virtualenvs
 .venv-%/activate: .venv-% pyproject.toml

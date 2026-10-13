@@ -67,7 +67,7 @@ These are ordinary check-then-act and read-modify-write patterns — easy to wri
 
 Race conditions are hard to test because they depend on timing. A test that fails 5% of the time is worse than a test that always fails — it breeds false confidence, gets retried until green, and ships the bug. Frontrun replaces timing-dependent thread interleaving with deterministic scheduling, so a race either always happens or never happens, and a found counterexample is a constructive proof: run these operations in this exact order and the invariant fails.
 
-**Free-threaded Python raises the stakes.** The GIL never made `+=` atomic — it just kept race windows narrow enough that tests usually pass. On free-threaded builds (3.13t, 3.14t), threads run truly concurrently and the races the GIL used to hide become real. Frontrun supports free-threaded Python and exists for exactly this transition: enumerate the interleavings your code can experience, and prove which one is buggy before it ships.
+**Free-threaded Python raises the stakes.** The GIL never made `+=` atomic — it just kept race windows narrow enough that tests usually pass. On free-threaded builds (3.14t, 3.15t), threads run truly concurrently and the races the GIL used to hide become real. Frontrun supports Python 3.10–3.15, including free-threaded Python 3.14t and 3.15t, and exists for exactly this transition: enumerate the interleavings your code can experience, and prove which one is buggy before it ships.
 
 *About the name:* front-running is the insider-trading crime of using advance knowledge of order flow to time trades for maximum profit. The principle is the same here, except you use insider information about event ordering for maximum concurrency bugs.
 
