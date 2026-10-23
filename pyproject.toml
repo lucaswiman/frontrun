@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.15,<2.0"]
 # In-tree backend (build_backend.py) wrapping maturin. It compiles the native
 # crates/io preload library and drops it into frontrun/ before delegating to
 # maturin, so wheels built from the sdist (source installs) bundle it too. See
@@ -46,6 +46,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Testing",
 ]

@@ -7,7 +7,7 @@ Race conditions are hard to test because they depend on timing. A test that
 passes 95% of the time is worse than a test that always fails, because it
 breeds false confidence. Frontrun replaces timing-dependent thread interleaving
 with deterministic scheduling, so race conditions either always happen or
-never happen. Free-threaded Python (3.13t, 3.14t) raises the stakes: races the
+never happen. Free-threaded Python (3.14t, 3.15t) raises the stakes: races the
 GIL kept narrow become real, and frontrun --- which supports free-threaded
 builds --- exists to enumerate those interleavings and prove which one is buggy.
 

@@ -87,6 +87,50 @@ def test_dumps_worker_handles_closures() -> None:
     assert fn(state) == 101
 
 
+def test_dumps_worker_preserves_nested_code_and_exception_metadata() -> None:
+    import dill
+
+    bump = 100
+
+    def worker(state: int) -> int:
+        def adjusted(value: int) -> int:
+            return value + bump
+
+        try:
+            return adjusted(10 // state)
+        except ZeroDivisionError:
+            return adjusted(0)
+
+    code_serializer = dill.Pickler.dispatch[type(worker.__code__)]
+    fn, state = dill.loads(_dumps_worker(worker, 0))
+    assert dill.Pickler.dispatch[type(worker.__code__)] is code_serializer
+    assert fn(state) == 100
+    assert fn(2) == 105
+    assert fn.__code__ == worker.__code__
+    assert list(fn.__code__.co_lines()) == list(worker.__code__.co_lines())
+    if sys.version_info >= (3, 11):
+        assert list(fn.__code__.co_positions()) == list(worker.__code__.co_positions())
+        assert fn.__code__.co_exceptiontable == worker.__code__.co_exceptiontable
+
+
+def test_dumps_worker_preserves_numpy_subclass_attributes() -> None:
+    import dill
+
+    np = pytest.importorskip("numpy")
+
+    class TaggedArray(np.ndarray):
+        pass
+
+    state = np.array([1, 2]).view(TaggedArray)
+    state.label = "worker state"
+
+    def worker(array: Any) -> tuple[str, list[int]]:
+        return array.label, array.tolist()
+
+    fn, restored = dill.loads(_dumps_worker(worker, state))
+    assert fn(restored) == ("worker state", [1, 2])
+
+
 def test_dumps_worker_rejects_truly_unserialisable() -> None:
     # An open socket in the setup() state can't be serialised even by dill; the
     # error must be a clear frontrun message (as the dedicated type the

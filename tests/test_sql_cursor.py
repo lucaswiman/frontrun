@@ -5,6 +5,8 @@ Uses sqlite3 (always available) to test the patching mechanism.
 
 from __future__ import annotations
 
+import importlib
+import os
 import sqlite3
 import threading
 from collections.abc import Generator
@@ -128,6 +130,33 @@ def test_patch_patches_sqlite3_connect() -> None:
     orig_connect = sqlite3.connect
     patch_sql()
     assert sqlite3.connect is not orig_connect
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("driver_name", ["psycopg2", "psycopg"])
+def test_postgres_lock_timeout_injection_uses_driver_cursor(driver_name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both PostgreSQL drivers must accept the cursor used during connection setup."""
+    try:
+        driver = importlib.import_module(driver_name)
+    except ImportError as exc:
+        pytest.skip(f"{driver_name} is unavailable: {exc}")
+    dsn = os.environ.get("DATABASE_URL", "postgresql:///frontrun_test")
+    try:
+        available = driver.connect(dsn, connect_timeout=2)
+    except driver.OperationalError:
+        pytest.skip("PostgreSQL is unavailable")
+    available.close()
+
+    monkeypatch.setattr(sql_cursor_mod, "_lock_timeout_ms", 250)
+    patch_sql()
+    conn = driver.connect(dsn)
+    try:
+        assert conn.autocommit is False
+        with conn.cursor() as cur:
+            cur.execute("SHOW lock_timeout")
+            assert cur.fetchone()[0] == "250ms"
+    finally:
+        conn.close()
 
 
 def test_patch_wraps_pymysql_connection_transaction_methods(monkeypatch: pytest.MonkeyPatch) -> None:

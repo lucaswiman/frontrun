@@ -3,8 +3,18 @@ Changelog
 
 All releases: https://github.com/lucaswiman/frontrun/releases
 
-Unreleased
-----------
+0.8.0 (Unreleased)
+------------------
+
+* **Python 3.15 support.** Add standard Python 3.15 and free-threaded 3.15t to
+  the local test, CI, and wheel matrices. The PyO3 upgrade removes
+  support for 3.13t; supported free-threaded versions are now 3.14t and 3.15t.
+  Ordinary Python 3.13 remains supported.
+
+* **Python 3.15 exploration and workers.** Fix missed races in generator
+  expressions and preserve shared access tracking through updated constant,
+  iterator, and await bytecode. Worker function serialization preserves nested
+  code and exception metadata on Python 3.15, retaining deterministic replay.
 
 * **Virtual-clock exactness.** Explored clocks now cover the timeout-first and
   release-first outcomes when a timed lock waiter races a runnable holder or
@@ -23,7 +33,8 @@ Unreleased
 * **SQL and Redis lifecycle fixes.** SQL trace contexts and database identities
   are evicted safely, async connection commit/rollback/close methods retain
   their driver contracts, and SQLAlchemy async pools terminate without
-  ``MissingGreenlet`` or detached-pool growth. Redis ``MIGRATE`` now handles
+  ``MissingGreenlet`` or detached-pool growth. PostgreSQL lock-timeout setup
+  now works with both psycopg2 and psycopg 3. Redis ``MIGRATE`` now handles
   Unix-socket destinations, credentials, and ``COPY`` access modes precisely.
 
 * **Replay, marker, and packaging cleanup.** Replay anchors no longer depend on
