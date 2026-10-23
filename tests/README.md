@@ -97,3 +97,16 @@ five ORM fixture errors. The same six cases must skip with the original
 missing-libpq reason after the guards; normal Python 3.15 must still execute
 the real driver and ORM tests successfully. Catch only `ImportError` at driver
 loading, using APIs supported by the project's pytest 7 minimum.
+
+## Fresh interpreter selection
+
+Validate Makefile interpreter requests with an empty managed-Python directory,
+not only existing virtualenvs or system interpreters. PR CI with uv 0.13.5
+failed before linting because `make check` requested `3.10+gil`, which has no
+matching managed download. Python 3.10 through 3.13 should use plain version
+requests; only regular 3.14 and 3.15 need `+gil` to distinguish free-threading.
+The `3.14t` and `3.15t` requests must retain their `t` suffix.
+
+Check every `PYTHON_VERSIONS` target with `make --dry-run --always-make
+.venv-<version>`, then create a fresh managed 3.10 virtualenv with the selected
+request and verify that the interpreter is available without a system fallback.
