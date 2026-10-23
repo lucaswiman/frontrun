@@ -23,7 +23,15 @@ _async_global_augmented = 0
 
 async def _close_aiosqlite_connections(connections: list[Any]) -> None:
     for connection in connections:
-        await connection.close()
+        worker = getattr(connection, "_thread", connection)
+        if worker.ident is None:
+            continue
+        if connection._connection is not None:
+            await connection.close()
+        # close() can finish before the worker exits, including when entry
+        # was cancelled. Keep its event loop alive until it has stopped.
+        await asyncio.to_thread(worker.join, 5.0)
+        assert not worker.is_alive(), "aiosqlite worker did not stop after connection cleanup"
 
 
 def test_cancelled_aiosqlite_entry_finishes_owned_worker_before_loop_closes() -> None:
