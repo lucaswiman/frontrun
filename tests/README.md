@@ -113,3 +113,11 @@ Check every `PYTHON_VERSIONS` target with `make --dry-run --always-make
 .venv-<version>`, then create fresh managed 3.10, 3.14, 3.15, and 3.15t
 virtualenvs and verify their versions and GIL configuration without a system
 fallback.
+
+## Compatibility release notes
+
+For the Python 3.15 compatibility release, verify that the changelog has the
+next minor version after the latest merged release tag: ``0.8.0 (Unreleased)``.
+The unversioned ``Unreleased`` heading previously omitted this release target.
+Document the supported interpreter changes there; the release workflow checks
+the versioned heading and requires a release date before publication.
