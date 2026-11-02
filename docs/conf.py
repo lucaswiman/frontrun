@@ -23,6 +23,8 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
+    "sphinx_sitemap",
+    "sphinxext.opengraph",
 ]
 
 # Add any paths that contain templates here, relative to this directory
@@ -59,6 +61,22 @@ napoleon_use_rtype = True
 napoleon_preprocess_types = False
 napoleon_type_aliases = None
 napoleon_attr_annotations = True
+
+# --- SEO -------------------------------------------------------------------
+# Canonical base URL: furo emits <link rel="canonical"> from this, and
+# sphinx-sitemap uses it to build sitemap.xml (referenced from
+# https://lucaswiman.github.io/robots.txt, which governs this project site).
+html_baseurl = "https://lucaswiman.github.io/frontrun/"
+sitemap_url_scheme = "{link}"  # no lang/version prefix; docs are unversioned
+sitemap_excludes = ["search.html", "genindex.html", "py-modindex.html"]
+
+# Open Graph / Twitter card tags for link previews.
+ogp_site_url = html_baseurl
+ogp_site_name = "Frontrun"
+ogp_description_length = 200
+ogp_type = "website"
+ogp_custom_meta_tags = ['<meta name="twitter:card" content="summary">']
+ogp_social_cards = {"enable": False}  # avoid an implicit matplotlib dependency
 
 # Source links
 html_theme_options = {
