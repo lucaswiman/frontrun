@@ -68,7 +68,10 @@ class User(Base):
 @pytest.fixture(scope="module")
 def engine():
     """Create the engine and verify Postgres is reachable."""
-    eng = create_engine(_DB_URL)
+    try:
+        eng = create_engine(_DB_URL)
+    except ImportError as exc:
+        pytest.skip(f"PostgreSQL driver is unavailable: {exc}")
     try:
         with eng.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
