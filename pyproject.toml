@@ -72,6 +72,8 @@ dev = [
     "hypothesis>=6.0",
     "sphinx>=4.0",
     "furo",
+    "sphinx-sitemap",
+    "sphinxext-opengraph",
     # Pinned: ruff's formatter output changes across minor versions (e.g. how
     # implicit string concatenations are joined), and `make check` runs
     # `ruff format --check`, so an unpinned ruff breaks lint on unrelated files.

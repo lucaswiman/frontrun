@@ -1,3 +1,8 @@
+:og:description: Frontrun is a deterministic concurrency testing library for Python. It reproduces race conditions with DPOR, bytecode exploration and trace markers, including on free-threaded (no-GIL) Python.
+
+.. meta::
+   :description: Frontrun is a deterministic concurrency testing library for Python. It reproduces race conditions with DPOR, bytecode exploration and trace markers, including on free-threaded (no-GIL) Python.
+
 Frontrun Documentation
 ======================
 
