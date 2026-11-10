@@ -676,6 +676,189 @@ class TestPrePython314BinarySubscr:
         assert "BINARY_SUBSCR" in opcodes, "Expected BINARY_SUBSCR before 3.14"
 
 
+@pytest.mark.skipif(_PY < (3, 15), reason="LOAD_COMMON_CONSTANT added in 3.15")
+@pytest.mark.parametrize(("literal", "key"), [("-1", -1), ("True", True), ("False", False), ("''", "")])
+@pytest.mark.parametrize("access_kind", ["read", "write"])
+def test_common_constant_subscripts_match_dynamic_key_identity(literal: str, key: Any, access_kind: str) -> None:
+    """A literal key and the same key loaded from a local must conflict."""
+    namespace: dict[str, Any] = {}
+    statement = "shared[{key}] = 1" if access_kind == "write" else "return shared[{key}]"
+    exec(
+        "def literal_access(shared):\n    "
+        + statement.format(key=literal)
+        + "\ndef dynamic_access(shared, key):\n    "
+        + statement.format(key="key"),
+        namespace,
+    )
+    shared = {key: 0}
+    engine = _EngineRecorder()
+    scheduler = _SchedulerStub(engine)
+    expected_key = _make_object_key(scheduler._stable_ids.get(shared), key if isinstance(key, str) else repr(key))
+    literal_access = namespace["literal_access"]
+    assert any(instr.opname == "LOAD_COMMON_CONSTANT" for instr in dis.get_instructions(literal_access))
+
+    for fn in (literal_access, namespace["dynamic_access"]):
+        frame = SimpleNamespace(
+            f_code=fn.__code__,
+            f_locals={"shared": shared, "key": key},
+            f_globals=fn.__globals__,
+            f_builtins=builtins.__dict__,
+            f_lasti=0,
+        )
+        engine.events.clear()
+        for instr in dis.get_instructions(fn):
+            frame.f_lasti = instr.offset
+            _process_opcode(frame, scheduler, 1)
+            if instr.opname == "LOAD_COMMON_CONSTANT" and instr.argval is key:
+                assert scheduler._shadow.peek() is key
+
+        assert (expected_key, access_kind, "access") in engine.events
+        assert scheduler._shadow.stack == []
+
+
+@pytest.mark.skipif(_PY < (3, 15), reason="Virtual iterator stack slots added in 3.15")
+def test_virtual_iterator_pair_preserves_outer_stack_and_reports_reads() -> None:
+    """FOR_ITER finds its source below the index slot, and POP_ITER removes both."""
+
+    def target(items: list[int]) -> None:
+        for _ in items:
+            pass
+
+    instructions = {instr.opname: instr for instr in dis.get_instructions(target)}
+    items = [1, 2]
+    outer = object()
+    engine = _EngineRecorder()
+    scheduler = _CoarseningSchedulerStub(engine)
+    frame = SimpleNamespace(
+        f_code=target.__code__,
+        f_locals={"items": items},
+        f_globals=target.__globals__,
+        f_builtins=builtins.__dict__,
+        f_lasti=instructions["GET_ITER"].offset,
+    )
+    scheduler._shadow.push(outer)
+    scheduler._shadow.push(items)
+    _process_opcode(frame, scheduler, 1)
+    assert len(scheduler._shadow.stack) == 3
+    assert scheduler._shadow.stack[0] is outer
+    assert scheduler._shadow.peek(1) == ["__iter_source__", items, 0]
+
+    engine.events.clear()
+    frame.f_lasti = instructions["FOR_ITER"].offset
+    yielded = process_opcode_with_coarsening(target.__code__, frame.f_lasti, frame, scheduler, 1, detect_io=False)
+    assert yielded is True
+    element_key = _make_object_key(scheduler._stable_ids.get(items), "0")
+    assert (element_key, "read", "first") in engine.events
+    assert scheduler._shadow.peek(2) == ["__iter_source__", items, 1]
+
+    frame.f_lasti = instructions["STORE_FAST"].offset
+    _process_opcode(frame, scheduler, 1)
+    frame.f_lasti = instructions["POP_ITER"].offset
+    _process_opcode(frame, scheduler, 1)
+    assert scheduler._shadow.stack == [outer]
+
+
+@pytest.mark.skipif(_PY < (3, 12), reason="END_SEND added in 3.12")
+def test_end_send_preserves_result_above_outer_stack() -> None:
+    """END_SEND consumes the receiver and auxiliary slot, preserving its result."""
+
+    async def target(awaitable: Any) -> Any:
+        return await awaitable
+
+    instr = next(instr for instr in dis.get_instructions(target) if instr.opname == "END_SEND")
+    outer, receiver, result = object(), object(), object()
+    scheduler = _SchedulerStub(_EngineRecorder())
+    scheduler._shadow.stack.extend([outer, receiver])
+    if _PY >= (3, 15):
+        scheduler._shadow.push(None)
+    scheduler._shadow.push(result)
+    frame = SimpleNamespace(
+        f_code=target.__code__,
+        f_locals={},
+        f_globals=target.__globals__,
+        f_lasti=instr.offset,
+    )
+    _process_opcode(frame, scheduler, 1)
+    assert scheduler._shadow.stack == [outer, result]
+
+
+@pytest.mark.skipif(_PY < (3, 14), reason="POP_ITER cleanup added in 3.14")
+@pytest.mark.parametrize("loop_exit", ["exhaustion", "break"])
+def test_real_loop_trace_preserves_c_method_access(loop_exit: str) -> None:
+    """Iterator cleanup must retain a shared C method below a comprehension."""
+    from frontrun._opcode_observer import start_opcode_trace, stop_opcode_trace
+
+    if loop_exit == "exhaustion":
+
+        def target(items: list[int], sink: list[Any]) -> None:
+            sink.append([item for item in items])  # noqa: C416 - exercise inline comprehension stack cleanup
+
+    else:
+
+        def target(items: list[int], sink: list[Any]) -> None:
+            for _item in items:
+                break
+            sink.append(_item)
+
+    engine = _EngineRecorder()
+    scheduler = _SchedulerStub(engine)
+    observed_calls: list[bool] = []
+
+    def on_opcode(code: Any, offset: int, frame: Any, thread_id: int) -> bool:
+        if code is target.__code__:
+            instr = _get_instructions(code)[offset]
+            if instr.opname == "CALL":
+                observed_calls.append(_call_might_report_access(scheduler._shadow, instr.arg or 0))
+            _process_opcode(frame, scheduler, thread_id)
+        return False
+
+    sink: list[Any] = []
+    handle = start_opcode_trace(get_thread_id=lambda: 1, on_opcode=on_opcode)
+    try:
+        target([1, 2], sink)
+        target([1, 2], sink)
+    finally:
+        stop_opcode_trace(handle)
+
+    expected_key = _make_object_key(scheduler._stable_ids.get(sink), "__cmethods__")
+    assert engine.events.count((expected_key, "write", "access")) == 2
+    assert observed_calls == [True, True]
+    assert scheduler._shadow.stack == []
+
+
+@pytest.mark.skipif(_PY < (3, 15), reason="Generator-expression prologues changed in 3.15")
+def test_wide_generator_cell_prologue_reports_source_reads() -> None:
+    """EXTENDED_ARG before cell setup must preserve the original iterable identity."""
+    from frontrun._opcode_observer import start_opcode_trace, stop_opcode_trace
+
+    names = ",".join(f"x{index}" for index in range(256))
+    source = f"def target(values):\n    return (lambda: ({names}) for {names} in values)\n"
+    namespace: dict[str, Any] = {}
+    exec(compile(source, __file__, "exec"), namespace)
+    target = namespace["target"]
+    generator_code = next(code for code in target.__code__.co_consts if isinstance(code, type(target.__code__)))
+    values = [tuple(range(256))]
+    engine = _EngineRecorder()
+    scheduler = _SchedulerStub(engine)
+
+    def on_opcode(code: Any, offset: int, frame: Any, thread_id: int) -> bool:
+        if code is generator_code:
+            _process_opcode(frame, scheduler, thread_id)
+        return False
+
+    handle = start_opcode_trace(get_thread_id=lambda: 1, on_opcode=on_opcode)
+    try:
+        readers = list(target(values))
+    finally:
+        stop_opcode_trace(handle)
+
+    assert readers[0]() == values[0]
+    source_key = _make_object_key(scheduler._stable_ids.get(values), "__cmethods__")
+    element_key = _make_object_key(scheduler._stable_ids.get(values), "0")
+    assert (source_key, "read", "access") in engine.events
+    assert (element_key, "read", "first") in engine.events
+
+
 # ---------------------------------------------------------------------------
 # 9. Access-reporting dispatch: pin which engine method each helper calls
 #    and which kind string it forwards.

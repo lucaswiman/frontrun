@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from typing import Any
 
 import pytest
 
@@ -18,6 +19,70 @@ from frontrun.common import InterleavingResult
 
 _async_global_counter = 0
 _async_global_augmented = 0
+
+
+async def _close_aiosqlite_connections(connections: list[Any]) -> None:
+    for connection in connections:
+        worker = getattr(connection, "_thread", connection)
+        if worker.ident is None:
+            continue
+        if connection._connection is not None:
+            await connection.close()
+        # close() can finish before the worker exits, including when entry
+        # was cancelled. Keep its event loop alive until it has stopped.
+        await asyncio.to_thread(worker.join, 5.0)
+        assert not worker.is_alive(), "aiosqlite worker did not stop after connection cleanup"
+
+
+def test_cancelled_aiosqlite_entry_finishes_owned_worker_before_loop_closes() -> None:
+    """Cancellation during connection entry still requires its worker to exit."""
+    import aiosqlite  # type: ignore[import-untyped]
+
+    if not hasattr(aiosqlite.Connection, "stop"):
+        pytest.skip("requires aiosqlite's cancellation-safe connection stop API")
+
+    async def run() -> None:
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        connection = aiosqlite.connect(":memory:")
+        never_started = aiosqlite.connect(":memory:")
+        worker = getattr(connection, "_thread", connection)
+        connector = connection._connector
+
+        def gated_connector() -> Any:
+            loop.call_soon_threadsafe(started.set)
+            release.wait()
+            return connector()
+
+        connection._connector = gated_connector
+
+        async def enter() -> None:
+            async with connection:
+                pass
+
+        task = asyncio.create_task(enter())
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert worker.is_alive()
+            # Old close() returns immediately for a cancelled connection, so
+            # this release cannot run until cleanup actually awaits the worker.
+            loop.call_soon(release.set)
+            await _close_aiosqlite_connections([connection, never_started])
+            assert not worker.is_alive()
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if worker.ident is not None:
+                await asyncio.to_thread(worker.join, 5.0)
+                assert not worker.is_alive()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize(
@@ -927,6 +992,12 @@ class TestAsyncDporDeadlock:
 
         fd, db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
+        connections: list[aiosqlite.Connection] = []
+
+        def connect(path: str) -> aiosqlite.Connection:
+            connection = aiosqlite.connect(path)
+            connections.append(connection)
+            return connection
 
         class State:
             def __init__(self) -> None:
@@ -934,14 +1005,14 @@ class TestAsyncDporDeadlock:
                 self.db_path = db_path
 
         async def _setup_db() -> None:
-            async with aiosqlite.connect(db_path) as db:
+            async with connect(db_path) as db:
                 await db.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v INTEGER)")
                 await db.execute("INSERT OR REPLACE INTO t (id, v) VALUES (1, 0)")
                 await db.commit()
 
         async def coroutine1(state: State) -> None:
             # Acquire a SQL row lock (UPDATE inside tx), then try the app lock
-            async with aiosqlite.connect(state.db_path) as db:
+            async with connect(state.db_path) as db:
                 await db.execute("BEGIN")
                 await db.execute("UPDATE t SET v = 1 WHERE id = 1")
                 # Row lock on sql:t:(('id', 1)) is now held by this task
@@ -954,7 +1025,7 @@ class TestAsyncDporDeadlock:
             # Acquire the app lock first, then try to get the SQL row lock
             await state.app_lock.acquire()
             try:
-                async with aiosqlite.connect(state.db_path) as db:
+                async with connect(state.db_path) as db:
                     await db.execute("BEGIN")
                     # This tries to acquire the same row lock held by C1
                     await db.execute("UPDATE t SET v = 2 WHERE id = 1")
@@ -963,16 +1034,19 @@ class TestAsyncDporDeadlock:
                 state.app_lock.release()
 
         async def run() -> object:
-            await _setup_db()
-            return await frontrun.explore(
-                setup=State,
-                workers=[coroutine1, coroutine2],
-                strategy="dpor",
-                invariant=lambda s: True,
-                detect_sql=True,
-                deadlock_timeout=2.0,
-                timeout_per_run=5.0,
-            )
+            try:
+                await _setup_db()
+                return await frontrun.explore(
+                    setup=State,
+                    workers=[coroutine1, coroutine2],
+                    strategy="dpor",
+                    invariant=lambda s: True,
+                    detect_sql=True,
+                    deadlock_timeout=2.0,
+                    timeout_per_run=5.0,
+                )
+            finally:
+                await _close_aiosqlite_connections(connections)
 
         try:
             result = asyncio.run(run())

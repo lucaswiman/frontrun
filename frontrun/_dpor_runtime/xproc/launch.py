@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import marshal
 import multiprocessing
 import os
 import re
@@ -20,8 +21,11 @@ import sys
 import tempfile
 import threading
 import time
+from collections import ChainMap
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from io import BytesIO
+from types import CodeType
 from typing import Any
 
 from frontrun._dpor_core.worker import WorkerTarget
@@ -203,6 +207,10 @@ class _ProcessLifecycle:
             pass
 
 
+def _save_worker_code(pickler: Any, code: CodeType) -> None:
+    pickler.save_reduce(marshal.loads, (marshal.dumps(code),), obj=code)
+
+
 def _dumps_worker(worker_fn: Callable[[Any], Any], state: Any) -> bytes:
     """Serialise ``(worker_fn, state)`` with dill, raising a clear error on failure.
 
@@ -218,6 +226,17 @@ def _dumps_worker(worker_fn: Callable[[Any], Any], state: Any) -> bytes:
             "callables; install it with `pip install frontrun[process]`."
         ) from exc
     try:
+        if sys.version_info >= (3, 15):
+            # dill 0.4.1 reads co_lnotab, removed in Python 3.15. Remove this
+            # reducer once the minimum dill version includes the upstream fix.
+            # MpLauncher spawns with sys.executable, so marshal code always
+            # round-trips in the same interpreter version, including line tables.
+            with BytesIO() as buffer:
+                pickler = dill.Pickler(buffer, protocol=dill.settings["protocol"])
+                # A live overlay preserves reducers dill registers lazily, e.g. NumPy.
+                pickler.dispatch = ChainMap({CodeType: _save_worker_code}, pickler.dispatch)
+                pickler.dump((worker_fn, state))
+                return buffer.getvalue()
         return dill.dumps((worker_fn, state))
     except Exception as exc:  # noqa: BLE001 - surface any serialisation failure clearly
         raise WorkerSerializationError(

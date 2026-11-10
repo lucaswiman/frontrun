@@ -24,6 +24,7 @@ import threading
 import types
 from collections import deque
 from collections.abc import Callable
+from itertools import chain, dropwhile, islice
 from typing import Any, Literal
 
 from frontrun._cooperative import CooperativeLock as _CooperativeLock
@@ -80,10 +81,11 @@ class ShadowStack:
     to identify which object is being accessed.
     """
 
-    __slots__ = ("stack",)
+    __slots__ = ("last_opcode", "stack")
 
     def __init__(self) -> None:
         self.stack: list[Any] = []
+        self.last_opcode: str | None = None
 
     def push(self, val: Any) -> None:
         self.stack.append(val)
@@ -97,6 +99,7 @@ class ShadowStack:
 
     def clear(self) -> None:
         self.stack.clear()
+        self.last_opcode = None
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +806,31 @@ def _get_iter_might_report_access(shadow: ShadowStack) -> bool:
 
 
 def _for_iter_might_report_access(shadow: ShadowStack) -> bool:
-    return _is_iter_source_marker(shadow.peek())
+    return _is_iter_source_marker(shadow.peek(1 if _PY_VERSION >= (3, 15) else 0))
+
+
+def _untraced_genexpr_source_name(code: Any) -> str | None:
+    """Identify a 3.15 generator source initialized before tracing begins."""
+    if _PY_VERSION < (3, 15) or code.co_name != "<genexpr>":
+        return None
+    instructions = (instr for instr in _get_instructions(code).values() if instr.opname != "EXTENDED_ARG")
+    prologue = tuple(islice(dropwhile(lambda instr: instr.opname in ("MAKE_CELL", "COPY_FREE_VARS"), instructions), 4))
+    if (
+        len(prologue) == 4
+        and prologue[0].opname == "RESUME"
+        and prologue[0].arg == 4
+        and prologue[1].opname == "LOAD_FAST"
+        and isinstance(prologue[1].argval, str)
+        and prologue[2].opname == "GET_ITER"
+        and prologue[3].opname == "RETURN_GENERATOR"
+    ):
+        return prologue[1].argval
+    for instr in chain(prologue, instructions):
+        if instr.opname == "RETURN_GENERATOR":
+            break
+        if instr.opname == "GET_ITER":
+            raise RuntimeError("Cannot identify the source of an untraced generator-expression iterator")
+    return None
 
 
 def _is_shared_opcode(code: Any, instruction_offset: int) -> bool:
@@ -841,11 +868,12 @@ def _process_opcode(
 ) -> None:
     """Process a single opcode, updating the shadow stack and reporting accesses.
 
-    Handles opcodes across Python 3.10-3.14, including:
+    Handles opcodes across Python 3.10-3.15, including:
     - 3.13: LOAD_FAST_LOAD_FAST, STORE_FAST_STORE_FAST
     - 3.14: LOAD_FAST_BORROW, LOAD_FAST_BORROW_LOAD_FAST_BORROW,
             STORE_FAST_LOAD_FAST, STORE_FAST_MAYBE_NULL, LOAD_FAST_AND_CLEAR,
             LOAD_SMALL_INT, BINARY_SUBSCR removal
+    - 3.15: LOAD_COMMON_CONSTANT, virtual iterator index slots
     """
     code = frame.f_code
     instrs = _get_instructions(code)
@@ -855,11 +883,28 @@ def _process_opcode(
 
     shadow = scheduler.get_shadow_stack(id(frame))
     op = instr.opname
+    previous_opcode = shadow.last_opcode
+    shadow.last_opcode = op
     engine = scheduler.engine
     execution = scheduler.execution
     elock = scheduler._engine_lock
     recorder = scheduler.trace_recorder
     sids = scheduler._stable_ids
+
+    if op == "RESUME" and instr.arg == 0 and not shadow.stack:
+        # 3.15 initializes generator-expression iterators before
+        # RETURN_GENERATOR, without emitting monitoring instruction events.
+        # The matching prologue proves that this local contains the original
+        # source, so restore the iterator pair when the body first resumes.
+        source_name = _untraced_genexpr_source_name(code)
+        if source_name is not None:
+            iterable = frame.f_locals[source_name]
+            if iterable is not None and not isinstance(iterable, _IMMUTABLE_TYPES):
+                shadow.push(["__iter_source__", iterable, 0])
+            else:
+                shadow.push(None)
+            shadow.push(None)
+        return
 
     # === LOAD instructions: push values onto the shadow stack ===
 
@@ -931,7 +976,7 @@ def _process_opcode(
         if varname in code.co_freevars or varname in code.co_cellvars:
             _report_access(engine, execution, thread_id, code, varname, elock, sids, "first_read")
 
-    elif op in ("LOAD_CONST", "LOAD_CONST_IMMORTAL", "LOAD_CONST_MORTAL"):
+    elif op in ("LOAD_CONST", "LOAD_CONST_IMMORTAL", "LOAD_CONST_MORTAL", "LOAD_COMMON_CONSTANT"):
         shadow.push(instr.argval)
 
     elif op == "LOAD_SMALL_INT":
@@ -1297,8 +1342,8 @@ def _process_opcode(
     # so that FOR_ITER can report reads on the original container.
 
     elif op == "GET_ITER":
-        # stack: [iterable] → [iterator]
-        # GET_ITER pops the iterable and pushes an iterator (stack effect = 0).
+        # stack: [iterable] → [iterator, index_or_null] on 3.15,
+        # or [iterator] on earlier versions.
         # We record the iterable→iterator mapping via a mutable marker on the
         # shadow stack so that FOR_ITER can report per-element reads.
         iterable = shadow.peek()
@@ -1318,14 +1363,18 @@ def _process_opcode(
         else:
             shadow.pop()
             shadow.push(None)
+        if _PY_VERSION >= (3, 15):
+            # Virtual iterators keep an auxiliary index/null slot above the
+            # iterator.  Its value is internal; only its stack position matters.
+            shadow.push(None)
 
     elif op == "FOR_ITER":
-        # stack: [iterator] → [iterator, next_value] or [−iterator] (exhausted)
+        # The iterator is below its auxiliary index/null slot on 3.15.
         # FOR_ITER calls __next__ on the iterator. If the iterator was created
         # from a mutable container (tracked via GET_ITER), report reads on it.
-        # stack effect = +1 (pushes the yielded value; TOS is the iterator).
+        # stack effect = +1 (pushes the yielded value).
         # We peek at the iterator marker to find the underlying container.
-        top = shadow.peek()
+        top = shadow.peek(1 if _PY_VERSION >= (3, 15) else 0)
         if isinstance(top, list) and len(top) == 3 and top[0] == "__iter_source__":
             _iter_container = top[1]
             _iter_counter = top[2]
@@ -1353,8 +1402,24 @@ def _process_opcode(
         shadow.pop()
 
     elif op == "POP_ITER":
-        # Python 3.14: pops the iterator itself at end of for loop.
+        # Exhausted FOR_ITER jumps over END_FOR, so its speculative yielded
+        # value must also be discarded.  A break reaches POP_ITER after the
+        # yielded value has already been consumed and needs no extra pop.
+        if previous_opcode == "FOR_ITER":
+            shadow.pop()
         shadow.pop()
+        if _PY_VERSION >= (3, 15):
+            shadow.pop()
+
+    elif op == "END_SEND":
+        # Preserve the result while consuming the receiver and, on 3.15,
+        # the auxiliary index/null slot.  Net stack effect alone would pop
+        # the result and leave the receiver's identity on top instead.
+        result = shadow.pop()
+        shadow.pop()
+        if _PY_VERSION >= (3, 15):
+            shadow.pop()
+        shadow.push(result)
 
     # === Function/method calls ===
 
@@ -1875,6 +1940,13 @@ def make_monitoring_callbacks(
         # (e.g. dataclass __init__ from exec/compile in libraries).
         if detect_io and code.co_filename.startswith("<"):
             return mon.DISABLE  # type: ignore[attr-defined]
+        if _PY_VERSION >= (3, 15) and code.co_name == "<genexpr>":
+            # The initial RESUME has a PY_START event but no INSTRUCTION
+            # event.  Restore its untraced iterator before the first FOR_ITER.
+            thread_id = get_thread_id()
+            if thread_id is not None:
+                frame = sys._getframe(1)
+                on_opcode(code, instruction_offset, frame, thread_id)
         return None
 
     def handle_py_return(code: Any, instruction_offset: int, retval: Any) -> Any:
