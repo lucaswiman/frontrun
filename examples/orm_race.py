@@ -35,7 +35,7 @@ This example demonstrates detection using frontrun:
 
 Requirements::
 
-    make build-examples-3.14t build-io  # or build-examples-3.10
+    make build-examples-3.14t build-io  # or build-examples-3.11
     createdb frontrun_test              # or: sudo -u postgres createdb frontrun_test
 
 Running::

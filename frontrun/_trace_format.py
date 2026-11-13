@@ -66,19 +66,7 @@ class SourceLineEvent:
 
 def qualified_name(frame: Any) -> str:
     """Get a qualified function name from a frame (e.g. ``DB.dict``)."""
-    code = frame.f_code
-    qualname = getattr(code, "co_qualname", None)  # Python 3.11+
-    if qualname is not None:
-        return qualname
-    # Fallback for 3.10: try to get class from 'self'
-    name = code.co_name
-    try:
-        self_obj = frame.f_locals.get("self")
-        if self_obj is not None:
-            return f"{type(self_obj).__name__}.{name}"
-    except Exception:
-        pass
-    return name
+    return frame.f_code.co_qualname
 
 
 def build_call_chain(frame: Any, *, filter_fn: Any, max_depth: int = 3) -> list[str] | None:

@@ -108,9 +108,8 @@ def test_dumps_worker_preserves_nested_code_and_exception_metadata() -> None:
     assert fn(2) == 105
     assert fn.__code__ == worker.__code__
     assert list(fn.__code__.co_lines()) == list(worker.__code__.co_lines())
-    if sys.version_info >= (3, 11):
-        assert list(fn.__code__.co_positions()) == list(worker.__code__.co_positions())
-        assert fn.__code__.co_exceptiontable == worker.__code__.co_exceptiontable
+    assert list(fn.__code__.co_positions()) == list(worker.__code__.co_positions())
+    assert fn.__code__.co_exceptiontable == worker.__code__.co_exceptiontable
 
 
 def test_dumps_worker_preserves_numpy_subclass_attributes() -> None:

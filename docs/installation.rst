@@ -1,7 +1,7 @@
 Installation
 =============
 
-Frontrun requires Python 3.10 or later.
+Frontrun requires Python 3.11 or later.
 
 .. code-block:: bash
 

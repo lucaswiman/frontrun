@@ -322,7 +322,7 @@ class AwaitScheduler(InterleavedLoop):
                         quiescence_slice = min(_QUIESCENCE_SLICE, max(0.001, self.deadlock_timeout / 2.0))
                         try:
                             await frontrun_wait_for(self._condition.wait(), timeout=quiescence_slice)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             if (self._progress, self._index, len(self._tasks_done)) == snapshot:
                                 # Quiescent: the remaining tasks are parked on
                                 # something the scheduler can't see (e.g. an

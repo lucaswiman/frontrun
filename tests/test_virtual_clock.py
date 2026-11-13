@@ -295,7 +295,7 @@ class _DatetimeObserver:
         self.start = dt.datetime.min
         self.end = dt.datetime.min
         self.utc = dt.datetime.min
-        self.aware = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        self.aware = dt.datetime.min.replace(tzinfo=dt.UTC)
         self.today = dt.date.min
         self.now_is_datetime = False
         self.utc_is_datetime = False
@@ -351,7 +351,7 @@ def test_datetime_utcnow_reads_virtual_time() -> None:
         setup=_DatetimeObserver,
         workers=[worker],
         invariant=lambda s: (
-            s.utc_is_datetime and s.utc.replace(tzinfo=dt.timezone.utc).timestamp() == pytest.approx(VIRTUAL_EPOCH)
+            s.utc_is_datetime and s.utc.replace(tzinfo=dt.UTC).timestamp() == pytest.approx(VIRTUAL_EPOCH)
         ),
         clock="virtual",
         reproduce_on_failure=0,
@@ -361,12 +361,12 @@ def test_datetime_utcnow_reads_virtual_time() -> None:
 
 def test_datetime_now_timezone_reads_virtual_time() -> None:
     def worker(s: _DatetimeObserver) -> None:
-        s.aware = dt.datetime.now(dt.timezone.utc)
+        s.aware = dt.datetime.now(dt.UTC)
 
     result = frontrun.explore(
         setup=_DatetimeObserver,
         workers=[worker],
-        invariant=lambda s: s.aware.tzinfo is dt.timezone.utc and s.aware.timestamp() == pytest.approx(VIRTUAL_EPOCH),
+        invariant=lambda s: s.aware.tzinfo is dt.UTC and s.aware.timestamp() == pytest.approx(VIRTUAL_EPOCH),
         clock="virtual",
         reproduce_on_failure=0,
     )
@@ -763,7 +763,7 @@ def _explored_busy(s: _ExploredTimedWaitAndSleep) -> None:
 
 @pytest.mark.skipif(
     sys.version_info[:2] > (3, 13),
-    reason="seed-pinned interleaving verified on 3.10-3.13; the opcode stream differs on newer "
+    reason="seed-pinned interleaving verified on 3.11-3.13; the opcode stream differs on newer "
     "interpreters, where the post-timeout read may be legitimately preempted by a later advance "
     "(the scheduler-level clamp test above is the version-independent regression)",
 )

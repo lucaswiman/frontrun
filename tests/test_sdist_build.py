@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -92,15 +93,7 @@ def _build_sdist(root: Path, out_dir: Path) -> Path:
 
 
 def _read_build_system(pyproject: Path) -> tuple[str, list[str]]:
-    """Return ``(build_backend, backend_path)`` from a pyproject's build-system.
-
-    ``tomllib`` is stdlib on 3.11+; on 3.10 we fall back to the values this
-    repository declares so the smoke test needs no third-party TOML parser.
-    """
-    try:
-        import tomllib
-    except ImportError:
-        return "build_backend", ["."]
+    """Return ``(build_backend, backend_path)`` from a pyproject's build-system."""
     data = tomllib.loads(pyproject.read_text())
     build_system = data.get("build-system", {})
     backend = build_system.get("build-backend", "")

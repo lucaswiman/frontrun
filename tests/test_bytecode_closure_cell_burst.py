@@ -1,7 +1,7 @@
 """Regression: closure-cell lost update under burst schedules on the settrace path.
 
 A burst schedule lets one worker run several opcodes while another is paused
-mid-function.  On CPython 3.10-3.11 (``sys.settrace`` opcode tracing) the
+mid-function.  On CPython 3.11 (``sys.settrace`` opcode tracing) the
 runtime writes a frame's ``f_locals`` snapshot back into closure cells via
 ``PyFrame_LocalsToFast`` after the trace callback returns.  If the paused
 frame's snapshot is stale (another thread mutated the shared cell while it was
@@ -12,7 +12,7 @@ surfaces as a *false positive* on lock-protected closures.
 ``make_settrace_callback`` refreshes the snapshot.  Lockstep round-robin never
 exposed this; variable-length bursts (see ``_random_schedules``) do.
 
-These tests are meaningful on 3.10/3.11; on 3.12+ (``sys.monitoring``) the same
+These tests are meaningful on 3.11; on 3.12+ (``sys.monitoring``) the same
 code is exercised but the LocalsToFast hazard does not exist, so they simply
 pass there too.
 """

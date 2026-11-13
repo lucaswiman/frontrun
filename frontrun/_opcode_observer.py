@@ -720,7 +720,7 @@ _SHARED_ACCESS_OPCODES = frozenset(
         "LOAD_ATTR",
         "STORE_ATTR",
         "DELETE_ATTR",
-        "LOAD_METHOD",  # 3.10 only
+        "LOAD_METHOD",  # 3.11 only (folded into LOAD_ATTR in 3.12)
         "LOAD_SPECIAL",  # 3.14+ context manager __enter__/__exit__
         # Global / name access
         "LOAD_GLOBAL",
@@ -739,10 +739,7 @@ _SHARED_ACCESS_OPCODES = frozenset(
         "BINARY_OP",
         # Function / method calls (may invoke C-level methods)
         "CALL",
-        "CALL_FUNCTION",
-        "CALL_METHOD",
         "CALL_KW",
-        "CALL_FUNCTION_KW",
         "CALL_FUNCTION_EX",
         # Iterator operations on (potentially mutable) containers
         "GET_ITER",
@@ -751,7 +748,7 @@ _SHARED_ACCESS_OPCODES = frozenset(
 )
 
 
-_CALL_OPCODES = frozenset({"CALL", "CALL_FUNCTION", "CALL_METHOD", "CALL_KW", "CALL_FUNCTION_KW", "CALL_FUNCTION_EX"})
+_CALL_OPCODES = frozenset({"CALL", "CALL_KW", "CALL_FUNCTION_EX"})
 
 
 def _call_might_report_access(shadow: ShadowStack, argc: int) -> bool:
@@ -868,7 +865,7 @@ def _process_opcode(
 ) -> None:
     """Process a single opcode, updating the shadow stack and reporting accesses.
 
-    Handles opcodes across Python 3.10-3.15, including:
+    Handles opcodes across Python 3.11-3.15, including:
     - 3.13: LOAD_FAST_LOAD_FAST, STORE_FAST_STORE_FAST
     - 3.14: LOAD_FAST_BORROW, LOAD_FAST_BORROW_LOAD_FAST_BORROW,
             STORE_FAST_LOAD_FAST, STORE_FAST_MAYBE_NULL, LOAD_FAST_AND_CLEAR,
@@ -934,12 +931,12 @@ def _process_opcode(
             _fb = getattr(frame, "f_builtins", None)
             if isinstance(_fb, dict):
                 val = _fb.get(instr.argval)
-        # On 3.11+, LOAD_GLOBAL with NULL flag (bit 0 of arg) pushes an
+        # LOAD_GLOBAL with NULL flag (bit 0 of arg) pushes an
         # extra NULL slot.  The value/NULL order flipped in 3.13:
         #   3.11-3.12: [NULL, value]  (NULL below, value on TOS)
         #   3.13+:     [value, NULL]  (value below, NULL on TOS)
         # (see CPython dis argrepr: "NULL + name" pre-3.13 vs "name + NULL" 3.13+)
-        if _PY_VERSION >= (3, 11) and instr.arg is not None and instr.arg & 1:
+        if instr.arg is not None and instr.arg & 1:
             if _PY_VERSION >= (3, 13):
                 shadow.push(val)
                 shadow.push(None)
@@ -996,38 +993,6 @@ def _process_opcode(
         n = instr.arg
         if n is not None and len(shadow.stack) >= n:
             shadow.stack[-1], shadow.stack[-n] = shadow.stack[-n], shadow.stack[-1]
-
-    # --- Python 3.10 stack manipulation (replaced by COPY/SWAP in 3.11) ---
-
-    elif op == "DUP_TOP":
-        shadow.push(shadow.peek())
-
-    elif op == "DUP_TOP_TWO":
-        b = shadow.peek(0)
-        a = shadow.peek(1)
-        shadow.push(a)
-        shadow.push(b)
-
-    elif op == "ROT_TWO":
-        if len(shadow.stack) >= 2:
-            shadow.stack[-1], shadow.stack[-2] = shadow.stack[-2], shadow.stack[-1]
-
-    elif op == "ROT_THREE":
-        if len(shadow.stack) >= 3:
-            shadow.stack[-1], shadow.stack[-2], shadow.stack[-3] = (
-                shadow.stack[-2],
-                shadow.stack[-3],
-                shadow.stack[-1],
-            )
-
-    elif op == "ROT_FOUR":
-        if len(shadow.stack) >= 4:
-            shadow.stack[-1], shadow.stack[-2], shadow.stack[-3], shadow.stack[-4] = (
-                shadow.stack[-2],
-                shadow.stack[-3],
-                shadow.stack[-4],
-                shadow.stack[-1],
-            )
 
     # === Attribute access: the instructions we care about most ===
 
@@ -1115,7 +1080,7 @@ def _process_opcode(
             recorder.record(thread_id, frame, opcode=op, access_type="write", attr_name=instr.argval, obj=obj)
 
     elif op == "LOAD_METHOD":
-        # Python 3.10 only (replaced by LOAD_ATTR with method flag in 3.11+).
+        # Python 3.11 only (folded into LOAD_ATTR with method flag in 3.12+).
         # Pops owner, pushes (method, self/NULL) — net stack effect +1.
         obj = shadow.pop()
         attr = instr.argval
@@ -1169,7 +1134,7 @@ def _process_opcode(
     # === Subscript access (dict/list operations) ===
 
     elif op == "BINARY_SUBSCR":
-        # Present on 3.10-3.13. Removed in 3.14 (replaced by BINARY_OP
+        # Present on 3.11-3.13. Removed in 3.14 (replaced by BINARY_OP
         # with subscript oparg).
         key = shadow.pop()
         container = shadow.pop()
@@ -1261,14 +1226,6 @@ def _process_opcode(
             shadow.pop()
             shadow.push(None)
 
-    elif op.startswith(("INPLACE_", "BINARY_")):
-        # Python 3.10 INPLACE_ADD, INPLACE_SUBTRACT, etc. and
-        # BINARY_ADD, BINARY_MULTIPLY, etc. All pop 2, push 1.
-        # (BINARY_OP and BINARY_SUBSCR are already handled above.)
-        shadow.pop()
-        shadow.pop()
-        shadow.push(None)
-
     # === Store instructions ===
 
     elif op == "STORE_GLOBAL":
@@ -1353,12 +1310,13 @@ def _process_opcode(
             # The counter tracks which element index FOR_ITER is reading,
             # enabling per-element conflict detection with STORE_SUBSCR writes.
             shadow.push(["__iter_source__", iterable, 0])
-            # Report a container-level read now.  On Python 3.10, list
-            # comprehensions are compiled as nested functions, so FOR_ITER
-            # runs in a child frame with a fresh shadow stack that won't
-            # see the __iter_source__ marker.  The read here ensures the
-            # conflict with STORE_SUBSCR weak-writes is recorded in the
-            # current frame before the iterator crosses frame boundaries.
+            # Report a container-level read now.  Before PEP 709 (3.12),
+            # comprehensions are compiled as nested functions, and generator
+            # expressions still are, so FOR_ITER can run in a child frame
+            # with a fresh shadow stack that won't see the __iter_source__
+            # marker.  The read here ensures the conflict with STORE_SUBSCR
+            # weak-writes is recorded in the current frame before the
+            # iterator crosses frame boundaries.
             _report_access(engine, execution, thread_id, iterable, "__cmethods__", elock, sids, "first_read")
         else:
             shadow.pop()
@@ -1430,7 +1388,7 @@ def _process_opcode(
         # would corrupt the shadow stack if handled by the fallback.
         pass
 
-    elif op in ("CALL", "CALL_FUNCTION", "CALL_METHOD", "CALL_KW", "CALL_FUNCTION_KW", "CALL_FUNCTION_EX"):
+    elif op in _CALL_OPCODES:
         # Detect C-level method calls and classify as read or write.
         #
         # Three detection strategies, tried in order:
@@ -1461,7 +1419,7 @@ def _process_opcode(
             if _pt is not None:
                 _pt_kind, _pt_obj_idx, _pt_name_idx = _pt
                 # Arguments are always in the top `argc` positions on the stack
-                # regardless of Python version (3.10: [func, args], 3.11-3.13:
+                # regardless of Python version (3.11-3.13:
                 # [NULL, func, args], 3.14: [func, NULL, args]).
                 _slen = len(shadow.stack)
                 _obj_depth = argc - _pt_obj_idx
@@ -1574,7 +1532,7 @@ def _process_opcode(
 
         # CALL replaces the callable/args with the return value. Plain
         # stack_effect accounting leaves the bottom-most operand in place,
-        # which can be the callable itself on 3.10+ and pollute subsequent
+        # which can be the callable itself and pollute subsequent
         # attribute/subscript tracking.
         if shadow.stack:
             shadow.stack[-1] = None
@@ -1823,7 +1781,7 @@ def process_opcode_with_coarsening(
 # ---------------------------------------------------------------------------
 #
 # Both dpor.py (sync threads) and async_dpor.py (async tasks) need
-# essentially the same instrumentation wiring for sys.settrace (3.10-3.11)
+# essentially the same instrumentation wiring for sys.settrace (3.11)
 # and sys.monitoring (3.12+).  The differences are parameterised:
 #
 #   get_thread_id()       — how to identify the current thread/task
@@ -1851,7 +1809,7 @@ def make_settrace_callback(
     on_opcode:
         ``(code, offset, frame, thread_id) -> bool``.  Called for every
         traced opcode.  Returns ``True`` if the thread yielded (triggers
-        ``frame.f_locals`` refresh on 3.10-3.11 to work around the
+        ``frame.f_locals`` refresh on 3.11 to work around the
         CPython LocalsToFast bug).
     remove_shadow_stack:
         ``(frame_id: int) -> None``.  Called on function return to clean
@@ -1888,7 +1846,7 @@ def make_settrace_callback(
             if thread_id is not None:
                 yielded = on_opcode(frame.f_code, frame.f_lasti, frame, thread_id)
                 if yielded:
-                    # CPython 3.10-3.11 bug workaround: after the trace
+                    # CPython 3.11 bug workaround: after the trace
                     # callback returns, CPython calls
                     # PyFrame_LocalsToFast(frame, 1) which copies f_locals
                     # dict values back to cell/free variable cells.  If this
@@ -2001,7 +1959,7 @@ def make_monitoring_callbacks(
 #
 # This is the only API the rest of the codebase should use to install opcode-
 # or line-level tracers.  It owns the dispatch between ``sys.settrace``
-# (Python 3.10-3.11) and ``sys.monitoring`` (3.12+, mandatory on 3.14t free-
+# (Python 3.11) and ``sys.monitoring`` (3.12+, mandatory on 3.14t free-
 # threaded due to CPython issue #118415).
 #
 # Usage pattern for opcode tracing
@@ -2069,7 +2027,7 @@ def start_opcode_trace(
     """Start opcode-level tracing using the appropriate backend.
 
     On Python 3.12+ this immediately installs ``sys.monitoring`` callbacks
-    (which fire globally for all threads).  On Python 3.10-3.11 it only
+    (which fire globally for all threads).  On Python 3.11 it only
     constructs a ``sys.settrace`` callback; per-thread activation happens
     via :func:`install_thread_opcode_trace`.
 

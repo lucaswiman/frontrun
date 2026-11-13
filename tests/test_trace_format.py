@@ -408,43 +408,17 @@ class TestFormatting:
 
 class TestQualifiedName:
     def test_qualname_from_co_qualname(self) -> None:
-        """Uses co_qualname when available (Python 3.11+)."""
-        import sys
+        """Uses the code object's co_qualname."""
 
         class FakeCode:
             co_filename = "test.py"
             co_name = "dict"
+            co_qualname = "DB.dict"
 
         class FakeFrame:
             f_code = FakeCode()
             f_lineno = 1
             f_locals: dict[str, object] = {}
-
-        if sys.version_info >= (3, 11):
-            FakeCode.co_qualname = "DB.dict"  # type: ignore[attr-defined]
-            assert qualified_name(FakeFrame()) == "DB.dict"
-        else:
-            # Falls back to co_name
-            assert qualified_name(FakeFrame()) == "dict"
-
-    def test_qualname_from_self(self) -> None:
-        """Falls back to type(self).__name__ on 3.10."""
-        import sys
-
-        if sys.version_info >= (3, 11):
-            return  # co_qualname takes precedence; tested above
-
-        class DB:
-            pass
-
-        class FakeCode:
-            co_filename = "test.py"
-            co_name = "dict"
-
-        class FakeFrame:
-            f_code = FakeCode()
-            f_lineno = 1
-            f_locals = {"self": DB()}
 
         assert qualified_name(FakeFrame()) == "DB.dict"
 
@@ -456,10 +430,12 @@ class TestBuildCallChain:
         class FakeCode:
             co_filename = "test.py"
             co_name = "inner"
+            co_qualname = "inner"
 
         class FakeCodeOuter:
             co_filename = "test.py"
             co_name = "outer"
+            co_qualname = "outer"
 
         class OuterFrame:
             f_code = FakeCodeOuter()
@@ -482,10 +458,12 @@ class TestBuildCallChain:
         class UserCode:
             co_filename = "test.py"
             co_name = "user_func"
+            co_qualname = "user_func"
 
         class LibCode:
             co_filename = "/lib/python3.14/threading.py"
             co_name = "run"
+            co_qualname = "run"
 
         class TopFrame:
             f_code = UserCode()
@@ -514,6 +492,7 @@ class TestBuildCallChain:
         class LibCode:
             co_filename = "/lib/threading.py"
             co_name = "run"
+            co_qualname = "run"
 
         class Frame:
             f_code = LibCode()
@@ -530,6 +509,7 @@ class TestBuildCallChain:
         class Code:
             co_filename = "test.py"
             co_name = "f"
+            co_qualname = "f"
 
         class F3:
             f_code = Code()

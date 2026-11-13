@@ -15,10 +15,10 @@ line like ``self.value = temp + 1`` compiles to several opcodes:
 
 .. code-block:: text
 
-   # Python 3.10
+   # Python 3.11
    LOAD_FAST       1 (temp)
    LOAD_CONST      1 (1)
-   BINARY_ADD
+   BINARY_OP       0 (+)
    LOAD_FAST       0 (self)
    STORE_ATTR      0 (value)
 
@@ -42,7 +42,7 @@ in pure Python code.  The classic lost-update bug:
 
        def increment(self):
            temp = self.value      # LOAD_ATTR → local
-           self.value = temp + 1  # BINARY_ADD, STORE_ATTR
+           self.value = temp + 1  # BINARY_OP, STORE_ATTR
 
 Two threads calling ``increment()`` can both execute ``LOAD_ATTR``
 (reading the same value) before either executes ``STORE_ATTR``.  One
@@ -50,9 +50,9 @@ increment is lost.  This is the kind of bug Frontrun exists to find.
 
 .. note::
 
-   Bytecode is not stable across Python versions.  Python 3.10 uses
-   ``BINARY_ADD``; 3.11+ uses ``BINARY_OP``; 3.14 uses
-   ``LOAD_FAST_BORROW``.  This is why opcode-level schedules from the
+   Bytecode is not stable across Python versions.  Python 3.11 has
+   ``PRECALL`` and ``LOAD_METHOD``; 3.12 folds method loads into
+   ``LOAD_ATTR``; 3.14 uses ``LOAD_FAST_BORROW``.  This is why opcode-level schedules from the
    bytecode explorer are ephemeral debugging artifacts, not long-lived
    test fixtures.
 
@@ -115,7 +115,7 @@ installed packages.  See :doc:`trace_filtering` for details.
 
 On Python 3.12+, ``sys.monitoring`` provides a lower-overhead
 alternative to ``sys.settrace`` for opcode-level events.  Frontrun
-uses it where available, falling back to ``sys.settrace`` on 3.10--3.11.
+uses it where available, falling back to ``sys.settrace`` on 3.11.
 
 
 ``sys.setprofile``: detecting C-level calls

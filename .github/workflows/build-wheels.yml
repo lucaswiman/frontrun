@@ -75,7 +75,7 @@ jobs:
           # sysconfig currently stops at 3.14. Pass the real interpreter path.
           # https://github.com/pypa/manylinux#image-content
           args: >-
-            --release --out dist --interpreter 3.10 3.11 3.12 3.13 3.14
+            --release --out dist --interpreter 3.11 3.12 3.13 3.14
             ${{ runner.os == 'Linux' && '/opt/python/cp315-cp315/bin/python' || '' }}
           manylinux: auto
           before-script-linux: |

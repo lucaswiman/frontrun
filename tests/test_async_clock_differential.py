@@ -91,7 +91,7 @@ async def _run_op(op: Op, state: _SharedState, performed: list[str]) -> None:
     elif kind == "event_wait":
         try:
             await asyncio.wait_for(state.event.wait(), timeout=op[1])
-        except (TimeoutError, asyncio.TimeoutError):  # asyncio.TimeoutError is distinct on 3.10
+        except TimeoutError:
             pass
     else:  # pragma: no cover - guards against vocabulary drift
         raise AssertionError(f"unknown op kind {kind!r}")

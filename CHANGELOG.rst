@@ -6,6 +6,12 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 0.8.0 (Unreleased)
 ------------------
 
+* **Drop Python 3.10.** Python 3.10 has reached end of life; frontrun now
+  requires Python 3.11 or later. The opcode observer no longer models
+  3.10-only bytecode (``DUP_TOP``/``ROT_*``, ``CALL_FUNCTION``/``CALL_METHOD``,
+  ``BINARY_ADD``/``INPLACE_*``), and 3.10 is removed from the CI and wheel
+  matrices.
+
 * **Python 3.15 support.** Add standard Python 3.15 and free-threaded 3.15t to
   the local test, CI, and wheel matrices. The PyO3 upgrade removes
   support for 3.13t; supported free-threaded versions are now 3.14t and 3.15t.

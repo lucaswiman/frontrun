@@ -183,7 +183,7 @@ def wrap_auto_paused_tasks(
             try:
                 await _AutoPauseCoroutine(inner, t, scheduler)
             finally:
-                # Python 3.10 does not reliably close the inner coroutine when
+                # The inner coroutine is not guaranteed to be closed when
                 # cancellation lands while this custom awaitable is suspended
                 # in its leading scheduler pause.  Own it explicitly so a
                 # timed-out run cannot leak an unawaited worker coroutine into

@@ -13,7 +13,6 @@ rather than the engine's ``_schedule_next``).
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from typing import Any
 
@@ -238,7 +237,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                                 continue
                         try:
                             await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             self._error = SchedulerTimeoutError(
                                 f"Replay deadlock: task {task_id} sleeping until t={deadline} was never woken"
                             )
@@ -252,7 +251,7 @@ class _ReplayAsyncScheduler(_AsyncSchedulerBase):
                             continue
                         try:
                             await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             self._error = SchedulerTimeoutError(
                                 f"Replay deadlock: task {task_id} woke from sleep but was never scheduled"
                             )

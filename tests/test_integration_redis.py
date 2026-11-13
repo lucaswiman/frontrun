@@ -18,9 +18,9 @@ Requirements::
 
 Running::
 
-    make test-integration-3.10
+    make test-integration-3.11
     # or directly:
-    frontrun .venv-3.10/bin/pytest tests/test_integration_redis.py -v
+    frontrun .venv-3.11/bin/pytest tests/test_integration_redis.py -v
 """
 
 from __future__ import annotations

@@ -163,7 +163,7 @@ try:
 except ModuleNotFoundError as _err:
     raise ModuleNotFoundError(
         "frontrun.explore with async workers requires the frontrun._dpor Rust extension.\n"
-        "Build it with:  make build-dpor-3.14   (or build-dpor-3.10 / build-dpor-3.14t)\n"
+        "Build it with:  make build-dpor-3.14   (or build-dpor-3.11 / build-dpor-3.14t)\n"
         "Or install from source:  pip install -e ."
     ) from _err
 
@@ -490,7 +490,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                             return
                         try:
                             await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             self._error = SchedulerTimeoutError(
                                 f"Deadlock: task {task_id} sleeping until t={deadline} was never woken"
                             )
@@ -504,7 +504,7 @@ class AsyncDporScheduler(_AsyncSchedulerBase):
                     while not (self._finished or self._error) and self._current_task != task_id:
                         try:
                             await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             self._error = SchedulerTimeoutError(
                                 f"Deadlock: task {task_id} woke at t={deadline} but was never rescheduled"
                             )

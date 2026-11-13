@@ -40,7 +40,7 @@ class DporBytecodeRunner:
 
     Opcode tracing is delegated to the tracer-backend in
     :mod:`frontrun._opcode_observer`, which picks ``sys.monitoring`` on
-    Python 3.12+ and ``sys.settrace`` on 3.10–3.11.
+    Python 3.12+ and ``sys.settrace`` on 3.11.
     """
 
     def __init__(

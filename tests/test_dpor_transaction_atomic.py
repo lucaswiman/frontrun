@@ -15,8 +15,6 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-import pytest
-
 import frontrun
 
 # ---------------------------------------------------------------------------
@@ -293,16 +291,12 @@ class TestPropertyAccessDeadlock:
         )
 
     def test_load_method_uses_safe_getattr(self) -> None:
-        """LOAD_METHOD handler (Python 3.10) should also use _safe_getattr."""
+        """LOAD_METHOD handler (Python 3.11) should also use _safe_getattr."""
         import inspect
 
         from frontrun.dpor import _process_opcode
 
         source = inspect.getsource(_process_opcode)
-
-        # Find the LOAD_METHOD section
-        if "LOAD_METHOD" not in source:
-            pytest.skip("LOAD_METHOD not in _process_opcode (Python 3.11+)")
 
         load_method_idx = source.index('"LOAD_METHOD"')
         next_section = source.index("elif op ==", load_method_idx + 1)

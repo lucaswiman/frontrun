@@ -995,10 +995,8 @@ class _CooperativeAsyncCondition:
                 result = predicate()
             return result
 
-        # Guard the wait loop with ``asyncio.wait_for``, not
-        # ``asyncio.timeout``: wait_for exists on Python 3.10 (asyncio.timeout
-        # is 3.11+) and is patched to the virtual-deadline implementation
-        # under a virtual clock.  On timeout the inner coroutine is cancelled
+        # Guard the wait loop with ``asyncio.wait_for``: it is patched to the
+        # virtual-deadline implementation under a virtual clock.  On timeout the inner coroutine is cancelled
         # while parked in wait(), whose cancellation path re-acquires the
         # lock before propagating — same contract as the previous
         # asyncio.timeout-based guard.
