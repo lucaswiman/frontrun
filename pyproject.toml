@@ -30,7 +30,7 @@ name = "frontrun"
 dynamic = ["version"]
 description = "A library for deterministic concurrency testing that helps you reliably reproduce and test race conditions"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MPL-2.0"
 license-files = ["LICENSE"]
 authors = [
@@ -41,7 +41,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -113,7 +112,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
@@ -154,4 +153,4 @@ reportUnknownVariableType = false
 reportUnknownMemberType = false
 reportUnknownArgumentType = false
 venvPath = "."
-venv = ".venv-3.10"
+venv = ".venv-3.11"

@@ -55,7 +55,7 @@ The full statement lives in `docs/design-principles.rst` (rendered in the Sphinx
 Use the Makefile to build virtualenvs. Prefer working in the **3.14** virtualenv:
 
 - `make build-dpor-3.14` — build the 3.14 venv with Rust DPOR extension (preferred)
-- `make build-dpor-3.10` / `make build-dpor-3.14t` / `make build-dpor-3.15` / `make build-dpor-3.15t` — other versions
+- `make build-dpor-3.11` / `make build-dpor-3.14t` / `make build-dpor-3.15` / `make build-dpor-3.15t` — other versions
 - `make build-io` — build the LD_PRELOAD I/O interception library (libfrontrun_io.so)
 - Virtualenvs live at `.venv-<version>/`, including `.venv-3.15/` and `.venv-3.15t/`
 - Run tools via e.g. `.venv-3.14/bin/pytest`, `.venv-3.14/bin/python`
@@ -67,8 +67,8 @@ Use the Makefile to build virtualenvs. Prefer working in the **3.14** virtualenv
 
 Always use `make test-<version>` to run tests. This builds the DPOR extension and I/O library, then runs pytest through the `frontrun` CLI wrapper (which sets up `LD_PRELOAD` for C-level I/O interception). Do **not** run `.venv-3.14/bin/pytest` directly — tests that use `frontrun.explore()` will be skipped or misconfigured without the `frontrun` wrapper.
 
-- `make test-3.14` / `make test-3.10` / `make test-3.14t` / `make test-3.15` / `make test-3.15t` — single version
-- `make test` — all Python versions (3.10, 3.11, 3.12, 3.13, 3.14, 3.14t, 3.15, 3.15t)
+- `make test-3.14` / `make test-3.11` / `make test-3.14t` / `make test-3.15` / `make test-3.15t` — single version
+- `make test` — all Python versions (3.11, 3.12, 3.13, 3.14, 3.14t, 3.15, 3.15t)
 - Override pytest args: `make test-3.14 PYTEST_ARGS="-v --timeout=120 -k test_name"`
 - Fast inner loop: scope with `-k` (e.g. `PYTEST_ARGS="-k test_dpor"`); the full suite is slow.
 
@@ -76,7 +76,7 @@ Always use `make test-<version>` to run tests. This builds the DPOR extension an
 
 Integration tests require additional packages and services:
 
-- `make build-integration-3.14` / `make build-integration-3.10` — install redis, requests, sqlalchemy, psycopg2-binary
+- `make build-integration-3.14` / `make build-integration-3.11` — install redis, requests, sqlalchemy, psycopg2-binary
 - `make test-integration-3.14` — run integration tests only
 - Redis and Postgres are available but not running by default. Start them with:
   - `redis-server --daemonize yes`
@@ -91,7 +91,7 @@ Integration tests require additional packages and services:
 
 ## Conventions
 
-- Python >=3.10, line length 120
+- Python >=3.11, line length 120
 - ruff (E, F, W, I, N, UP, A, C4, ISC, PIE, Q, LOG, PERF), pyright strict
 - Tests: pytest + hypothesis
 - Rust extensions: maturin (PyO3) for DPOR (`crates/dpor/`), cargo for LD_PRELOAD library (`crates/io/`)

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import sys
 import threading
 import time
 
@@ -68,7 +67,6 @@ def test_async_wait_for_coroutine_awaiting_bare_future_autojumps() -> None:
     assert result.property_holds, result.explanation
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_around_bare_future_autojumps() -> None:
     async def worker(state: _BareFutureTimeoutState) -> None:
         future = asyncio.get_running_loop().create_future()
@@ -179,7 +177,6 @@ def test_async_second_timed_wait_after_completed_wait_for_autojumps() -> None:
     assert elapsed < 4.0
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_guarded_abba_lock_cycle_is_not_a_deadlock() -> None:
     # Classic timeout-based deadlock avoidance: both tasks guard their inner
     # acquire with asyncio.timeout and recover from TimeoutError. The real
@@ -224,7 +221,6 @@ def test_async_timeout_guarded_abba_lock_cycle_is_not_a_deadlock() -> None:
     assert result.property_holds, result.explanation
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_reschedule_when_is_a_noop_after_virtual_sleep() -> None:
     # reschedule(cm.when()) is a no-op per asyncio semantics.  The loop clock
     # is pinned to real time while the block consumes *virtual* time, so a
@@ -256,7 +252,6 @@ def test_async_timeout_reschedule_when_is_a_noop_after_virtual_sleep() -> None:
     assert result.property_holds, result.explanation
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout_at requires 3.11+")
 def test_async_timeout_at_from_cm_when_preserves_exact_virtual_deadline() -> None:
     # asyncio.timeout_at(cm.when()) hands the loop-time value straight to the
     # patched timeout_at.  The loop clock stays real while the block consumes
@@ -290,7 +285,6 @@ def test_async_timeout_at_from_cm_when_preserves_exact_virtual_deadline() -> Non
     assert result.property_holds, result.explanation
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_reschedule_extension_uses_virtual_deadline() -> None:
     # cm.reschedule(cm.when() + 5): extend the deadline by 5s → fires at t=15.
     class State:
@@ -321,7 +315,6 @@ def test_async_timeout_reschedule_extension_uses_virtual_deadline() -> None:
     assert result.property_holds, result.explanation
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_reschedule_from_fresh_loop_time_uses_current_virtual_time() -> None:
     # An application commonly enables a disabled timeout with
     # loop.time() + delay. After virtual time has elapsed, that expression is
@@ -402,7 +395,6 @@ def test_async_sleep_infinity_stays_cancellable_by_finite_timeout() -> None:
     assert result.property_holds, result.explanation
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_timeout_expiry_converts_cancelled_error_subclasses() -> None:
     # Real asyncio.Timeout.__aexit__ converts any CancelledError *subclass*
     # into TimeoutError once expired; the virtual context previously used an
@@ -480,7 +472,6 @@ def test_patched_async_sleep_ignores_scheduler_inherited_by_foreign_thread() -> 
     assert elapsed_box["elapsed"] >= 0.15
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.timeout requires 3.11+")
 def test_async_random_stock_primitive_under_timeout_is_not_scored_as_deadlock() -> None:
     # The random runtime patches only sleep/timeouts/time — not asyncio.Event.
     # A task suspended on a *stock* Event inside asyncio.timeout is invisible

@@ -15,9 +15,9 @@ sockets and reports them as I/O accesses to the DPOR engine.
 
 Running::
 
-    make test-integration-3.10
+    make test-integration-3.11
     # or directly:
-    frontrun .venv-3.10/bin/pytest tests/test_integration_http.py -v
+    frontrun .venv-3.11/bin/pytest tests/test_integration_http.py -v
 """
 
 from __future__ import annotations

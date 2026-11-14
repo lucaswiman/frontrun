@@ -5,8 +5,8 @@ Bug fixes accompanied by tests are welcome.
 Before submitting a pull request:
 
 1. Verify that `make check` passes (ruff + pyright).
-2. Verify that `make test` passes (runs the test suite across Python 3.10,
-   3.14, and 3.14t).
+2. Verify that `make test` passes (runs the test suite across Python 3.11
+   through 3.15, including the free-threaded 3.14t and 3.15t builds).
 3. Keep the diff clean: it should contain only changes relevant to the fix.
    Avoid unrelated reformatting, import reordering, comment rewording, or
    other stylistic changes.

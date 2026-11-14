@@ -9,7 +9,7 @@ try:
 except ModuleNotFoundError as _err:
     raise ModuleNotFoundError(
         "frontrun._dpor_core requires the frontrun._dpor Rust extension.\n"
-        "Build it with:  make build-dpor-3.14   (or build-dpor-3.10 / build-dpor-3.14t)\n"
+        "Build it with:  make build-dpor-3.14   (or build-dpor-3.11 / build-dpor-3.14t)\n"
         "Or install from source:  pip install -e ."
     ) from _err
 

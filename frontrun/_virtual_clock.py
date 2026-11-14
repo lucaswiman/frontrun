@@ -472,10 +472,10 @@ class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
     def utcnow(cls) -> _datetime.datetime:
         clock = _active_virtual_clock()
         if clock is not None:
-            return cls.fromtimestamp(clock.now(), _datetime.timezone.utc).replace(tzinfo=None)
+            return cls.fromtimestamp(clock.now(), _datetime.UTC).replace(tzinfo=None)
         if cls is _VirtualDateTime:
-            return _saved_originals["datetime"].now(_datetime.timezone.utc).replace(tzinfo=None)
-        return super().now(_datetime.timezone.utc).replace(tzinfo=None)
+            return _saved_originals["datetime"].now(_datetime.UTC).replace(tzinfo=None)
+        return super().now(_datetime.UTC).replace(tzinfo=None)
 
     @classmethod
     def fromtimestamp(cls, timestamp: float, tz: _datetime.tzinfo | None = None) -> _datetime.datetime:
@@ -489,7 +489,7 @@ class _VirtualDateTime(_real_datetime, metaclass=_VirtualDateTimeMeta):
 
     @classmethod
     def utcfromtimestamp(cls, timestamp: float) -> _datetime.datetime:
-        return cls.fromtimestamp(timestamp, _datetime.timezone.utc).replace(tzinfo=None)
+        return cls.fromtimestamp(timestamp, _datetime.UTC).replace(tzinfo=None)
 
 
 class _VirtualDate(_real_date, metaclass=_VirtualDateMeta):

@@ -319,7 +319,7 @@ def test_async_wait_for_uses_virtual_deadline() -> None:
         start = time.monotonic()
         try:
             await asyncio.wait_for(asyncio.sleep(10.0), timeout=1.0)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             s.timed_out = True
             s.elapsed = time.monotonic() - start
 
@@ -349,7 +349,7 @@ def test_async_wait_for_event_timeout_is_explored_before_delayed_setter() -> Non
         try:
             await asyncio.wait_for(s.event.wait(), timeout=1.0)
             s.completed = True
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             s.timed_out = True
 
     async def setter(s: State) -> None:
@@ -442,7 +442,7 @@ def test_async_wait_for_bare_future_uses_virtual_deadline() -> None:
         start = time.monotonic()
         try:
             await asyncio.wait_for(fut, timeout=1.0)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             s.timed_out = True
             s.elapsed = time.monotonic() - start
 
@@ -478,7 +478,7 @@ def test_async_wait_for_cancels_inner_task_once() -> None:
     async def worker(s: State) -> None:
         try:
             await asyncio.wait_for(never_finishes(s), timeout=1.0)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             s.timed_out = True
 
     result = asyncio.run(
@@ -1027,7 +1027,7 @@ async def _explored_sleep_5(s: _WaitForAndSleep) -> None:
 
 @pytest.mark.skipif(
     sys.version_info < (3, 12),
-    reason="pre-existing on 3.10/3.11, unrelated to the clamp: cancelling asyncio.Condition.wait "
+    reason="pre-existing on 3.11, unrelated to the clamp: cancelling asyncio.Condition.wait "
     "(the scheduler's quiescence-slice timeout under this small deadlock_timeout) crashes with "
     "'Lock is not acquired'; CPython hardened Condition.wait cancellation in 3.12",
 )
@@ -1243,7 +1243,7 @@ def test_timeout_cancelled_sleep_does_not_leak_deadline_into_deadlock_detection(
     async def timed_then_blocked(s: State) -> None:
         try:
             await asyncio.wait_for(asyncio.sleep(5), timeout=1)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             pass
         await s.event.wait()
 
@@ -1317,7 +1317,7 @@ def test_async_wait_for_lock_timeout_is_not_scored_as_deadlock() -> None:
         await s.holder_has_lock.wait()
         try:
             await asyncio.wait_for(s.lock.acquire(), timeout=0.05)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             s.timed_out = True
             s.release.set()
 
@@ -2091,7 +2091,7 @@ def test_async_condition_wait_timeout_does_not_release_other_task_lock() -> None
         async with s.cond:
             try:
                 await asyncio.wait_for(s.cond.wait(), timeout=0.5)
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 s.a_timed_out = True
 
     async def b(s: State) -> None:
@@ -2131,7 +2131,7 @@ def test_async_condition_wait_for_predicate_timeout_uses_virtual_deadline() -> N
         async with s.cond:
             try:
                 await s.cond.wait_for(lambda: False, timeout=1.0)
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 s.timed_out = True
                 s.elapsed = time.monotonic() - start
 
@@ -2148,31 +2148,6 @@ def test_async_condition_wait_for_predicate_timeout_uses_virtual_deadline() -> N
     wall_elapsed = time.monotonic() - wall_start
     assert result.property_holds, result.explanation
     assert wall_elapsed < 4.0, f"condition wait_for timeout burned {wall_elapsed:.1f}s wall time"
-
-
-def test_async_condition_wait_for_timeout_without_asyncio_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``Condition.wait_for(pred, timeout=...)`` must not depend on
-    ``asyncio.timeout``, which does not exist on Python 3.10 (the timeout
-    guard must go through ``asyncio.wait_for`` instead)."""
-    from frontrun._async_cooperative import _CooperativeAsyncCondition
-
-    monkeypatch.delattr(asyncio, "timeout", raising=False)
-
-    async def scenario() -> tuple[bool, object]:
-        cond = _CooperativeAsyncCondition()
-        timed_out = False
-        async with cond:
-            try:
-                await cond.wait_for(lambda: False, timeout=0.05)
-            except (TimeoutError, asyncio.TimeoutError):
-                timed_out = True
-        async with cond:
-            satisfied = await cond.wait_for(lambda: True, timeout=1.0)
-        return timed_out, satisfied
-
-    timed_out, satisfied = asyncio.run(scenario())
-    assert timed_out
-    assert satisfied is True
 
 
 def test_async_condition_wait_for_returns_last_predicate_result() -> None:
@@ -2325,7 +2300,7 @@ def test_async_random_wait_for_timeout_cancels_longer_sleep() -> None:
     async def worker(s: State) -> None:
         try:
             s.result = ("returned", await asyncio.wait_for(slow(s), timeout=1.0))
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             s.result = "timeout"
 
     def invariant(s: State) -> bool:

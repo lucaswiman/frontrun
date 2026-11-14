@@ -2,12 +2,12 @@
 .PRECIOUS: .venv-% .venv-%/activate
 
 # Python versions to test
-PYTHON_VERSIONS := 3.14t 3.15t 3.10 3.11 3.12 3.13 3.14 3.15
+PYTHON_VERSIONS := 3.14t 3.15t 3.11 3.12 3.13 3.14 3.15
 
 PYTEST_ARGS?=--tb=short -v
 
 # Virtual environment setup
-VENV_BIN := .venv-3.10/bin/
+VENV_BIN := .venv-3.11/bin/
 
 # Rust source files in dpor crate (PyO3 extension)
 DPOR_RUST_SOURCES := $(wildcard crates/dpor/src/*.rs) crates/dpor/Cargo.toml Cargo.toml
@@ -57,7 +57,7 @@ build-examples-%: build-dpor-%
 	uv pip install sqlalchemy psycopg2-binary --python=$(CURDIR)/.venv-$*/bin/python
 
 .PHONY: default-venv
-default-venv: .venv-3.10/activate
+default-venv: .venv-3.11/activate
 
 
 # Pattern rule for running the fast suite with specific Python versions.

@@ -398,7 +398,7 @@ class InterleavedLoop:
                 while True:
                     try:
                         await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         if self._rescue_stalled_pause():
                             continue
                         if self._handle_timeout(task_id, marker):
@@ -561,12 +561,12 @@ class InterleavedLoop:
                 await self._wait_watching_progress(gathered, timeout)
             else:
                 # Keep timeout cancellation under run_all's control.  On
-                # Python 3.10/3.11 wait_for cancels its target before raising,
+                # Python 3.11 wait_for cancels its target before raising,
                 # which otherwise reaches _run while
                 # cancelling_for_timeout is still false and is misreported as
                 # a worker cancelling itself.
                 await frontrun_wait_for(asyncio.shield(gathered), timeout=timeout)
-        except asyncio.TimeoutError as timeout_exc:
+        except TimeoutError as timeout_exc:
             cancelling_for_timeout = True
             for t in tasks:
                 if not t.done():
@@ -666,7 +666,7 @@ class InterleavedLoop:
                 break
         # run_all owns cancellation so it can mark the cancellation as
         # scheduler cleanup before CancelledError reaches worker wrappers.
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     @property
     def had_error(self) -> bool:
@@ -756,7 +756,7 @@ class _AsyncSchedulerBase(InterleavedLoop):
                         continue
                     try:
                         await frontrun_wait_for(self._condition.wait(), timeout=self.deadlock_timeout)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         self._error = SchedulerTimeoutError(
                             f"{self._deadlock_prefix}: task {task_id} woke from {reason} but was never scheduled"
                         )

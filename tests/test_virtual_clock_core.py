@@ -335,7 +335,7 @@ def test_virtual_datetime_instances_have_real_concrete_type() -> None:
     with clock_scope(clock):
         now = dt.datetime.now()
         utc = dt.datetime.utcnow()
-        aware = dt.datetime.now(dt.timezone.utc)
+        aware = dt.datetime.now(dt.UTC)
         today = dt.date.today()
         # Inside the scope the module attribute is the virtual class, but the
         # instances themselves must already be the real concrete type.
@@ -349,7 +349,7 @@ def test_virtual_datetime_instances_have_real_concrete_type() -> None:
     # After the scope, the stashed instances are still the real type.
     assert type(now) is dt.datetime
     assert type(today) is dt.date
-    assert aware.tzinfo is dt.timezone.utc
+    assert aware.tzinfo is dt.UTC
 
 
 def test_virtual_datetime_fromtimestamp_is_input_deterministic_and_real_type() -> None:
@@ -358,7 +358,7 @@ def test_virtual_datetime_fromtimestamp_is_input_deterministic_and_real_type() -
     timestamp = 123_456.0
 
     with clock_scope(VirtualClock()):
-        aware = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
+        aware = dt.datetime.fromtimestamp(timestamp, dt.UTC)
         naive = dt.datetime.fromtimestamp(timestamp)
         today = dt.date.fromtimestamp(timestamp)
 
@@ -375,12 +375,12 @@ def test_virtual_datetime_direct_constructors_return_real_concrete_types() -> No
     real_date = dt.date
 
     with clock_scope(VirtualClock()):
-        timestamp = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc)
+        timestamp = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         day = dt.date(2026, 1, 2)
 
     assert type(timestamp) is real_datetime
     assert type(day) is real_date
-    assert timestamp == real_datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc)
+    assert timestamp == real_datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
     assert day == real_date(2026, 1, 2)
 
 
@@ -488,16 +488,16 @@ def test_datetime_subclass_classmethods_return_subclass_and_virtual_time() -> No
         assert type(now) is MyDT
         assert now.timestamp() == pytest.approx(VIRTUAL_EPOCH)
 
-        aware = MyDT.now(dt.timezone.utc)
+        aware = MyDT.now(dt.UTC)
         assert type(aware) is MyDT
         assert aware.timestamp() == pytest.approx(VIRTUAL_EPOCH)
-        assert aware.tzinfo is dt.timezone.utc
+        assert aware.tzinfo is dt.UTC
 
         utc = MyDT.utcnow()
         assert type(utc) is MyDT
         assert utc.tzinfo is None
 
-        ts = MyDT.fromtimestamp(123_456.0, dt.timezone.utc)
+        ts = MyDT.fromtimestamp(123_456.0, dt.UTC)
         assert type(ts) is MyDT
         assert ts.timestamp() == pytest.approx(123_456.0)
         assert type(MyDT.utcfromtimestamp(123_456.0)) is MyDT

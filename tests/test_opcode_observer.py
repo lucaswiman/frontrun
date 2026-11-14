@@ -528,29 +528,7 @@ class TestProcessOpcode:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(_PY >= (3, 11), reason="DUP_TOP/ROT_TWO only exist on 3.10")
-class TestPython310StackOps:
-    def test_dup_top(self) -> None:
-        """DUP_TOP should duplicate TOS on the shadow stack."""
-        s = ShadowStack()
-        s.push("val")
-        # Simulate DUP_TOP manually.
-        s.push(s.peek())
-        assert s.peek(0) == "val"
-        assert s.peek(1) == "val"
-
-    def test_rot_two(self) -> None:
-        """ROT_TWO should swap the top two elements."""
-        s = ShadowStack()
-        s.push("a")
-        s.push("b")
-        s.stack[-1], s.stack[-2] = s.stack[-2], s.stack[-1]
-        assert s.peek(0) == "a"
-        assert s.peek(1) == "b"
-
-
-@pytest.mark.skipif(_PY < (3, 11), reason="COPY/SWAP opcodes added in 3.11")
-class TestPython311PlusCopySwap:
+class TestCopySwap:
     def test_copy_opcode_via_process(self) -> None:
         """COPY should duplicate the nth element onto TOS."""
         # We test the ShadowStack logic that _process_opcode uses for COPY.

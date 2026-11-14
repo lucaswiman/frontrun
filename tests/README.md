@@ -104,13 +104,13 @@ Validate Makefile interpreter requests with an empty managed-Python directory,
 not only existing virtualenvs or system interpreters. PR CI with uv 0.13.5
 failed before linting because `make check` requested `3.10+gil`, which has no
 matching managed download. Fresh `3.15+gil` selection fails the same way.
-Python 3.10 through 3.13 should use plain version requests. For regular 3.14
+Python 3.11 through 3.13 should use plain version requests. For regular 3.14
 and 3.15, first install the plain version's managed build, then select it with
 `+gil` to distinguish free-threading. The `3.14t` and `3.15t` requests must
 retain their `t` suffix.
 
 Check every `PYTHON_VERSIONS` target with `make --dry-run --always-make
-.venv-<version>`, then create fresh managed 3.10, 3.14, 3.15, and 3.15t
+.venv-<version>`, then create fresh managed 3.11, 3.14, 3.15, and 3.15t
 virtualenvs and verify their versions and GIL configuration without a system
 fallback.
 
