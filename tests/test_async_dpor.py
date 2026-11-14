@@ -140,8 +140,13 @@ def test_concurrent_async_exploration_is_rejected_before_global_patching() -> No
 
     async def holding_worker(state: State) -> None:
         started.set()
-        while not release.is_set():
-            await asyncio.sleep(0)
+        # Block the explored event loop in a GIL-releasing wait rather than
+        # busy-spinning on ``await asyncio.sleep(0)``.  On 3.12+ the opcode
+        # tracer is sys.monitoring, which is process-global, so a spinning
+        # traced loop thread starves the main thread of the GIL; the main
+        # thread then took long enough to reach ``release.set()`` that this
+        # run exceeded timeout_per_run and came back inconclusive.
+        assert release.wait(timeout=60.0)
         state.patches_intact = asyncio.Event is _CooperativeAsyncEvent and asyncio.Lock is _CooperativeAsyncLock
 
     def run_first() -> None:
@@ -166,8 +171,8 @@ def test_concurrent_async_exploration_is_rejected_before_global_patching() -> No
 
     first = threading.Thread(target=run_first)
     first.start()
-    assert started.wait(timeout=2.0)
     try:
+        assert started.wait(timeout=30.0)
 
         async def no_op(_state: object) -> None:
             return None
@@ -186,7 +191,7 @@ def test_concurrent_async_exploration_is_rejected_before_global_patching() -> No
             )
     finally:
         release.set()
-        first.join(timeout=3.0)
+        first.join(timeout=30.0)
 
     assert not first.is_alive()
     assert first_errors == []
