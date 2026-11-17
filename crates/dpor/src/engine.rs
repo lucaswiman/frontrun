@@ -810,6 +810,35 @@ mod tests {
     }
 
     #[test]
+    fn bounded_search_preserves_race_reversals() {
+        use AccessKind::{Read, Write};
+        let cases = [
+            (1, [[(0, Write), (0, Write)], [(1, Read), (0, Read)], [(0, Read), (0, Read)]], [0, 2, 2, 0, 1, 1]),
+            (2, [[(0, Write), (1, Read)], [(1, Write), (0, Read)], [(1, Read), (0, Read)]], [2, 1, 1, 0, 0, 2]),
+        ];
+        for (bound, ops, target) in cases {
+        let mut engine = DporEngine::new(3, Some(bound), 100, None, SearchStrategy::Dfs);
+        loop {
+            let mut execution = engine.begin_execution();
+            let mut pc = [0; 3];
+            for _ in 0..6 {
+                let tid = engine.schedule(&mut execution).expect("unfinished program");
+                let (object, kind) = ops[tid][pc[tid]];
+                engine.process_access(&mut execution, tid, object, kind);
+                pc[tid] += 1;
+                if pc[tid] == ops[tid].len() {
+                    execution.finish_thread(tid);
+                }
+            }
+            if execution.schedule_trace == target {
+                break;
+            }
+            assert!(engine.next_execution(), "missing {target:?} with bound {bound}");
+        }
+        }
+    }
+
+    #[test]
     fn test_counter_lost_update() {
         #[derive(Clone, Debug)]
         struct State {
