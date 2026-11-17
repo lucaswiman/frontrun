@@ -7,8 +7,7 @@
 //! the exploration structure, with race detection during execution (Algorithm 1
 //! style, JACM'17 p.16) as well as deferred notdep processing (Algorithm 2).
 //! Sleep sets are propagated across scheduling points using trace caching.
-//! Source set filtering is disabled (all racing threads are inserted into
-//! wakeup trees).
+//! Unbounded source-set filtering uses the completed trace to check independence.
 //!
 //! Each scheduling point (Branch) maintains:
 //!
@@ -27,6 +26,14 @@ use std::collections::HashMap;
 use crate::access::{AccessKind, AccessOrigin};
 use crate::thread::ThreadStatus;
 use crate::wakeup_tree::WakeupTree;
+
+/// What the preceding run established about one actor's cached suffix.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TraceStatus {
+    Complete,
+    Contended,
+    Incomplete,
+}
 
 /// Controls the order in which wakeup tree branches are explored.
 ///
@@ -126,6 +133,9 @@ pub struct Branch {
     /// Wakeup tree: threads/sequences to explore at this scheduling point.
     /// Paper: wut(E) in Algorithm 2 (JACM'17 p.24).
     pub wakeup: WakeupTree,
+    // Sync operations and changes in runnable actors can enable another step
+    // even when their recorded memory footprints are disjoint.
+    synchronization: bool,
     /// Sleep set: threads excluded from wakeup tree insertion because
     /// an equivalent execution starting with them has already been explored.
     /// Indexed by thread ID; `true` = sleeping.
@@ -177,6 +187,7 @@ impl Branch {
             active_thread,
             preemptions,
             wakeup: WakeupTree::empty(),
+            synchronization: false,
             sleep: vec![false; num_threads],
             active_accesses: HashMap::new(),
             explored_accesses: HashMap::new(),
@@ -222,6 +233,8 @@ pub struct Path {
     /// In our iterative implementation, it cascades through new positions
     /// via this field.
     pending_wakeup_subtree: Option<WakeupTree>,
+    previous_runnable: Vec<usize>,
+    pub(crate) previous_trace_status: Vec<TraceStatus>,
 }
 
 impl Path {
@@ -234,6 +247,8 @@ impl Path {
             selection_counter: 0,
             prev_thread_steps: HashMap::new(),
             pending_wakeup_subtree: None,
+            previous_runnable: Vec::new(),
+            previous_trace_status: Vec::new(),
         }
     }
 
@@ -317,6 +332,14 @@ impl Path {
         Some(true)
     }
 
+    pub fn mark_synchronization(&mut self, position: usize) {
+        let Some(branch) = self.branches.get_mut(position) else { return };
+        if !branch.synchronization {
+            branch.synchronization = true;
+            self.refresh_sleep_after(position);
+        }
+    }
+
     /// Record that an object was accessed at the given scheduling step.
     /// Called by the engine after each process_access/process_io_access.
     /// Populates `active_accesses` for future independence checks
@@ -326,6 +349,16 @@ impl Path {
     /// point with different AccessKinds, we use AccessKind::merge() to
     /// combine them: Read + WeakRead → Read (since Read already covers
     /// WeakRead's conflicts), while other mixed pairs → Write (conservative).
+    ///
+    /// An access may arrive after later positions were already opened: a
+    /// lock acquire is reported inside the thread's `before_sync_retry` turn,
+    /// *after* that turn scheduled the next transition, and async DPOR
+    /// attributes a whole await-segment to the step that scheduled it.  The
+    /// sleep sets of those later positions were propagated from a `path_id`
+    /// whose accesses were still incomplete, so they are recomputed here --
+    /// otherwise a sleeper whose future conflicts with the late access stays
+    /// asleep and every wakeup for it is filtered (three dining philosophers
+    /// lost their deadlock this way once acquires landed on the right step).
     pub fn record_access(&mut self, path_id: usize, object_id: u64, kind: AccessKind, origin: AccessOrigin) {
         if let Some(branch) = self.branches.get_mut(path_id) {
             branch.active_accesses
@@ -339,6 +372,17 @@ impl Path {
                     *existing_origin = existing_origin.merge(origin);
                 })
                 .or_insert((kind, origin));
+        }
+        // Positions `path_id + 1 .. pos` have been scheduled already; their
+        // propagated sleep sets must reflect the access just recorded.
+        // Positions at or beyond `pos` have not been entered yet and are
+        // propagated when they are.
+        self.refresh_sleep_after(path_id);
+    }
+
+    fn refresh_sleep_after(&mut self, position: usize) {
+        for pos in (position + 1)..self.pos.min(self.branches.len()) {
+            self.propagate_sleep(pos);
         }
     }
 
@@ -376,11 +420,22 @@ impl Path {
             return None;
         }
 
+        if self.pos != 0 && self.previous_runnable != runnable {
+            // The engine runs ahead of physical execution by at most one
+            // scheduling step. Cover both possible origins of this change.
+            for pos in self.pos.saturating_sub(2)..self.pos {
+                self.mark_synchronization(pos);
+            }
+        }
+        self.previous_runnable.clear();
+        self.previous_runnable.extend_from_slice(runnable);
+
         if self.pos < self.branches.len() {
             // Replay: propagate sleep set from previous position, then
             // clear active_accesses for fresh recording.
             self.propagate_sleep(self.pos);
             self.branches[self.pos].active_accesses.clear();
+            self.branches[self.pos].synchronization = false;
             let chosen = self.branches[self.pos].active_thread;
             self.pos += 1;
             return Some(chosen);
@@ -393,37 +448,45 @@ impl Path {
         // to follow the sequence as constructed. The search strategy only
         // affects the initial thread choice in step(), not subsequent guided
         // choices within a multi-step wakeup sequence.
-        let (chosen, next_subtree) = if let Some(ref subtree) = self.pending_wakeup_subtree {
-            if let Some(guided) = subtree.min_thread() {
-                if runnable.contains(&guided) {
-                    let sub = subtree.subtree(guided);
-                    (guided, if sub.is_empty() { None } else { Some(sub) })
-                } else {
-                    let c = if runnable.contains(&current_thread) { current_thread } else { runnable[0] };
-                    (c, None)
-                }
-            } else {
-                let c = if runnable.contains(&current_thread) { current_thread } else { runnable[0] };
-                (c, None)
+        let mut guidance = self.pending_wakeup_subtree.take();
+        let mut threads = vec![ThreadStatus::Disabled; num_threads];
+        for &tid in runnable {
+            threads[tid] = ThreadStatus::Pending;
+        }
+        if self.preemption_bound.is_none() {
+            if let Some(tree) = &mut guidance {
+                tree.retain_roots(|tid| threads[tid] == ThreadStatus::Pending);
             }
-        } else if let Some(preferred) = preferred.filter(|tid| runnable.contains(tid)) {
-            (preferred, None)
-        } else {
-            let c = if runnable.contains(&current_thread) { current_thread } else { runnable[0] };
-            (c, None)
-        };
-        self.pending_wakeup_subtree = next_subtree;
+        }
+        let guided = guidance.as_ref().and_then(WakeupTree::min_thread)
+            .filter(|&tid| threads[tid] == ThreadStatus::Pending);
+        let fallback = if runnable.contains(&current_thread) { current_thread } else { runnable[0] };
+        let preference = preferred.filter(|tid| guidance.is_none() && runnable.contains(tid));
+        let chosen = guided.or(preference).unwrap_or(fallback);
+
+        if let (Some(tree), Some(tid)) = (&mut guidance, guided) {
+            let suffix = tree.subtree(tid);
+            if !suffix.is_empty() {
+                self.pending_wakeup_subtree = Some(suffix);
+            }
+            tree.remove_branch(tid);
+        }
 
         let is_preemption = chosen != current_thread && runnable.contains(&current_thread);
         let prev_preemptions = self.branches.last().map_or(0, |b| b.preemptions);
         let preemptions = if is_preemption { prev_preemptions + 1 } else { prev_preemptions };
 
-        let mut threads = vec![ThreadStatus::Disabled; num_threads];
-        for &tid in runnable {
-            threads[tid] = if tid == chosen { ThreadStatus::Active } else { ThreadStatus::Pending };
+        threads[chosen] = ThreadStatus::Active;
+        let mut branch = Branch::new(threads, chosen, preemptions);
+        if self.preemption_bound.is_none() {
+            if let Some(siblings) = guidance {
+                branch.wakeup = siblings;
+            } else if chosen != fallback {
+                // Preferring an enabled clock actor changes exploration order.
+                // Keep the normal continuation where this worker runs first.
+                branch.wakeup.insert(&[fallback]);
+            }
         }
-
-        let branch = Branch::new(threads, chosen, preemptions);
         self.branches.push(branch);
 
         // Propagate sleep set to new branches using position-sensitive
@@ -465,6 +528,10 @@ impl Path {
         }
 
         let prev = pos - 1;
+        if self.branches[prev].propagated_sleep_accesses.is_empty() && !self.branches[prev].sleep.contains(&true) {
+            self.branches[pos].propagated_sleep_accesses.clear();
+            return;
+        }
         // Compute every actor's progress once.  Recounting the whole prefix
         // separately for each sleeping actor (and again for each cache helper)
         // made propagation O(threads * depth) at every path position.
@@ -532,6 +599,15 @@ impl Path {
         // (e.g., first execution).
         let mut propagated: HashMap<usize, HashMap<u64, (AccessKind, AccessOrigin)>> = HashMap::new();
         for (tid, tid_accesses) in sleeping_threads {
+            // A blocked probe can have no footprint in the prior trace. Moving
+            // it across a synchronization step may change whether it succeeds.
+            // An unfinished actor can also have unobserved memory accesses.
+            let sync = self.branches[prev].synchronization;
+            match self.previous_trace_status.get(tid) {
+                Some(TraceStatus::Contended) if sync => continue,
+                Some(TraceStatus::Incomplete) if sync || !prev_active_accesses.is_empty() => continue,
+                _ => {}
+            }
             let progress = completed_steps.get(&tid).copied().unwrap_or(0);
             let independent = match self.future_steps_independent_of(tid, progress, &prev_active_accesses) {
                 Some(result) => result,
@@ -563,32 +639,7 @@ impl Path {
             return;
         }
 
-        let branch = &self.branches[path_id];
-
-        // Only runnable threads can be added to the wakeup tree
-        match branch.threads.get(thread_id).copied() {
-            Some(ThreadStatus::Pending) | Some(ThreadStatus::Yield) => {}
-            _ => return,
-        }
-
-        // Sleep set check: if thread is sleeping (locally Visited or
-        // propagated from an earlier position), skip.
-        //
-        // Paper: Algorithm 2 line 5 (JACM'17 p.24) checks
-        //   sleep(E') ∩ WI[E'](v) = ∅
-        // before inserting. Our version checks both the local sleep set
-        // (threads Visited at this position) and the propagated sleep set
-        // (threads whose next action is independent of all chosen threads
-        // between their home position and this position).
-        if branch.sleep.get(thread_id).copied().unwrap_or(false) {
-            return;
-        }
-        if branch.propagated_sleep_accesses.contains_key(&thread_id) {
-            return;
-        }
-
-        // Already in wakeup tree?
-        if branch.wakeup.contains_thread(thread_id) {
+        if !self.can_insert_thread(path_id, thread_id) || self.branches[path_id].wakeup.contains_thread(thread_id) {
             return;
         }
 
@@ -607,6 +658,43 @@ impl Path {
         // We insert single-thread sequences [q] rather than full notdep
         // sequences v = notdep(e, E).e'. See Phase 3b for multi-step.
         self.branches[path_id].wakeup.insert(&[thread_id]);
+    }
+
+    /// Another initial can cover the reversal only if its prefix can commute
+    /// with the racing event without blocking or exceeding a preemption bound.
+    pub fn insert_race_wakeup(
+        &mut self,
+        e_pos: usize,
+        e_prime_pos: usize,
+        thread_id: usize,
+        race_object: Option<u64>,
+    ) {
+        if self.preemption_bound.is_none() && e_pos < self.branches.len()
+            && self.can_insert_thread(e_pos, thread_id) && !self.branches[e_pos].wakeup.contains_thread(thread_id)
+        {
+            let (v, commute) = self.compute_notdep(e_pos, e_prime_pos, thread_id);
+            if let Some(&q) = v.first() {
+                if commute && q != thread_id && self.is_backtracked_at(e_pos, q) {
+                    return;
+                }
+            }
+        }
+        self.insert_wakeup(e_pos, thread_id, race_object);
+    }
+
+    /// Is `thread_id` runnable at `path_id` and already in `backtrack(E') ∪
+    /// sleep(E')` there -- a root of the wakeup tree, locally explored
+    /// (Visited), or sleeping by propagation from an earlier position?
+    fn is_backtracked_at(&self, path_id: usize, thread_id: usize) -> bool {
+        let branch = &self.branches[path_id];
+        let runnable = matches!(
+            branch.threads.get(thread_id).copied(),
+            Some(ThreadStatus::Pending) | Some(ThreadStatus::Yield) | Some(ThreadStatus::Visited)
+        );
+        runnable
+            && (branch.wakeup.contains_thread(thread_id)
+                || branch.sleep.get(thread_id).copied().unwrap_or(false)
+                || branch.propagated_sleep_accesses.contains_key(&thread_id))
     }
 
     /// Advance to the next unexplored execution path.
@@ -804,22 +892,24 @@ impl Path {
     ///   2. Its accesses conflict with e's accesses on a shared object
     ///      (write-write, read-write, etc.)
     ///
+    /// The flag records whether prefix coverage is eligible: no intermediate
+    /// changes enabledness or synchronizes, and other actors' steps commute with e'.
     /// The resulting sequence, when inserted into the wakeup tree at e's position,
     /// guides exploration to reverse the race: first replay the independent events,
     /// then execute e' before e.
-    pub fn compute_notdep(
+    fn compute_notdep(
         &self,
         e_pos: usize,
         e_prime_pos: usize,
         e_prime_thread: usize,
-    ) -> Vec<usize> {
+    ) -> (Vec<usize>, bool) {
         let (e_accesses, e_thread) = if e_pos < self.branches.len() {
             (
                 &self.branches[e_pos].active_accesses,
                 self.branches[e_pos].active_thread,
             )
         } else {
-            return vec![e_prime_thread];
+            return (vec![e_prime_thread], false);
         };
 
         // Compute the transitive happens-after closure of e (finding 2,
@@ -839,6 +929,8 @@ impl Path {
         let mut excluded_accesses: HashMap<u64, (AccessKind, AccessOrigin)> = e_accesses.clone();
 
         let mut sequence = Vec::new();
+        let endpoint = self.branches.get(e_prime_pos);
+        let mut commute = endpoint.is_some();
         for pos in (e_pos + 1)..e_prime_pos {
             if pos < self.branches.len() {
                 let step_thread = self.branches[pos].active_thread;
@@ -861,13 +953,19 @@ impl Path {
                     }
                 } else {
                     sequence.push(step_thread);
+                    if self.branches[pos].synchronization
+                        || (step_thread != e_prime_thread
+                            && endpoint.is_some_and(|end| !accesses_are_independent(step_accesses, &end.active_accesses)))
+                    {
+                        commute = false;
+                    }
                 }
             }
         }
         // Append e' thread — the thread whose execution reverses the race
         sequence.push(e_prime_thread);
 
-        sequence
+        (sequence, commute)
     }
 
     /// Process all deferred races collected during the just-completed execution.
@@ -876,13 +974,8 @@ impl Path {
     /// (all threads finished or blocked), we process each detected race and
     /// insert notdep sequences into wakeup trees at the appropriate positions.
     ///
-    /// **Hybrid approach**: The engine also calls `insert_wakeup()` inline
-    /// during execution for each race (Algorithm 1 style). The deferred notdep
-    /// processing here only adds ADDITIONAL coverage: notdep sequences whose
-    /// first thread differs from the racing thread AND the racing thread is
-    /// already covered by the inline insertion. When notdep starts with a
-    /// different thread, it provides multi-step guidance through independent
-    /// intermediates.
+    /// Singleton backtracks have already been considered using the completed
+    /// trace. Here we add guided sequences for independent intermediates.
     ///
     /// Races are deduplicated by (prev_path_id, thread_id).
     pub fn process_deferred_races(&mut self, races: &[PendingRace]) {
@@ -930,17 +1023,13 @@ impl Path {
             return;
         }
 
-        let notdep = self.compute_notdep(path_id, race.current_path_id, race.thread_id);
-
-        if notdep.is_empty() {
-            return;
-        }
+        let (notdep, commute) = self.compute_notdep(path_id, race.current_path_id, race.thread_id);
 
         // For races where inline insertion was skipped (resource-grouped
         // objects, Defect #15), single-thread notdep must be handled here.
         // For races with inline insertion, len==1 is already covered.
-        if notdep.len() <= 1 {
-            if race.inline_skipped && notdep.len() == 1 {
+        if notdep.len() == 1 {
+            if race.inline_skipped {
                 self.insert_wakeup(path_id, notdep[0], race.race_object);
             }
             return;
@@ -966,7 +1055,8 @@ impl Path {
         //   wut(E') := insert[E'](v, wut(E'))
         // Multi-step sequences guide exploration via subtree extraction
         // (Phase 4b: Algorithm 2 line 17, WuT' = subtree(wut(E), p)).
-        self.branches[path_id].wakeup.insert(&notdep);
+        let allow_prefix_coverage = self.preemption_bound.is_none() && commute;
+        self.branches[path_id].wakeup.insert_sequence(&notdep, allow_prefix_coverage);
     }
 
     /// Check if `thread_id` can be inserted at `path_id` (runnable, not sleeping).
@@ -1202,6 +1292,29 @@ mod tests {
             Some(2),
             "the pending race-reversing sequence must remain authoritative"
         );
+    }
+
+    #[test]
+    fn preference_keeps_default_unbounded_continuation() {
+        let mut path = Path::new(None, SearchStrategy::Dfs);
+        assert_eq!(path.schedule_preferred(&[0, 1], 0, 2, Some(1)), Some(1));
+        assert!(path.step());
+        assert_eq!(path.schedule(&[0, 1], 0, 2), Some(0));
+    }
+
+    #[test]
+    fn guided_siblings_keep_their_continuations() {
+        let mut path = Path::new(None, SearchStrategy::Dfs);
+        let mut pending = WakeupTree::empty();
+        pending.insert(&[1, 0]);
+        pending.insert(&[2, 1]);
+        path.pending_wakeup_subtree = Some(pending);
+        let runnable = [0, 1, 2];
+        assert_eq!(path.schedule(&runnable, 0, 3), Some(1));
+        assert_eq!(path.schedule(&runnable, 1, 3), Some(0));
+        assert!(path.step());
+        assert_eq!(path.schedule(&runnable, 0, 3), Some(2));
+        assert_eq!(path.schedule(&runnable, 2, 3), Some(1));
     }
 
     #[test]
@@ -1515,7 +1628,7 @@ mod tests {
         path.schedule(&[2], 2, 3); // pos 2: T2
         path.record_access(2, 1, AccessKind::Write, AccessOrigin::PythonMemory);
 
-        let notdep = path.compute_notdep(0, 2, 2);
+        let notdep = path.compute_notdep(0, 2, 2).0;
         assert_eq!(notdep, vec![1, 2], "T1 is independent of T0, then T2 races");
     }
 
@@ -1537,7 +1650,7 @@ mod tests {
         path.schedule(&[2], 2, 3);
         path.record_access(2, 1, AccessKind::Write, AccessOrigin::PythonMemory);
 
-        let notdep = path.compute_notdep(0, 2, 2);
+        let notdep = path.compute_notdep(0, 2, 2).0;
         assert_eq!(notdep, vec![2], "T1 is dependent (same obj Write), excluded");
     }
 
@@ -1552,7 +1665,7 @@ mod tests {
         path.schedule(&[1], 1, 2);
         path.record_access(1, 1, AccessKind::Write, AccessOrigin::PythonMemory);
 
-        let notdep = path.compute_notdep(0, 1, 1);
+        let notdep = path.compute_notdep(0, 1, 1).0;
         assert_eq!(notdep, vec![1], "Adjacent race: just the racing thread");
     }
 
@@ -1573,7 +1686,7 @@ mod tests {
         path.schedule(&[1], 1, 2);
         path.record_access(2, 1, AccessKind::Write, AccessOrigin::PythonMemory);
 
-        let notdep = path.compute_notdep(0, 2, 1);
+        let notdep = path.compute_notdep(0, 2, 1).0;
         assert_eq!(
             notdep,
             vec![1],
@@ -1614,7 +1727,7 @@ mod tests {
         path.schedule(&[2], 2, 3); // pos 3: T2 W(X)
         path.record_access(3, 1, AccessKind::Write, AccessOrigin::PythonMemory);
 
-        let notdep = path.compute_notdep(0, 3, 2);
+        let notdep = path.compute_notdep(0, 3, 2).0;
         assert_eq!(
             notdep,
             vec![2],
@@ -1656,7 +1769,7 @@ mod tests {
         path.schedule(&[3], 3, 4);
         path.record_access(4, 1, AccessKind::Write, AccessOrigin::PythonMemory);
 
-        let notdep = path.compute_notdep(0, 4, 3);
+        let notdep = path.compute_notdep(0, 4, 3).0;
         assert_eq!(
             notdep,
             vec![3],

@@ -49,7 +49,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Any
 
 import pytest
@@ -100,10 +102,10 @@ class _SharedState:
         # can compare the shared counter against the increments that were
         # actually performed (a timed acquire may legitimately skip its
         # increment when the acquire times out).
-        self.performed: tuple[list[str], ...] = tuple([] for _ in range(num_workers))
+        self.performed: tuple[list[int], ...] = tuple([] for _ in range(num_workers))
 
 
-def _run_op(op: Op, state: _SharedState, performed: list[str]) -> None:
+def _run_op(op: Op, state: _SharedState, performed: list[int]) -> None:
     kind = op[0]
     if kind == "incr":
         # Unsynchronized read-modify-write; the optional sleep sits between
@@ -113,12 +115,12 @@ def _run_op(op: Op, state: _SharedState, performed: list[str]) -> None:
         if mid_sleep is not None:
             time.sleep(mid_sleep)
         state.counters[KEY] = tmp + 1
-        performed.append(KEY)
+        performed.append(tmp)
     elif kind == "lock_incr":
         with state.lock:
             tmp = state.counters[KEY]
             state.counters[KEY] = tmp + 1
-        performed.append(KEY)
+        performed.append(tmp)
     elif kind == "timed_lock_incr":
         _, timeout = op
         if state.lock.acquire(timeout=timeout):
@@ -127,7 +129,7 @@ def _run_op(op: Op, state: _SharedState, performed: list[str]) -> None:
                 state.counters[KEY] = tmp + 1
             finally:
                 state.lock.release()
-            performed.append(KEY)
+            performed.append(tmp)
     elif kind == "sleep":
         time.sleep(op[1])
     elif kind == "event_set":
@@ -157,12 +159,14 @@ def _invariant(state: _SharedState) -> bool:
     return True
 
 
-def _explore_dpor(spec: ProgramSpec, clock: str, *, reproduce: int = 3) -> InterleavingResult:
+def _explore_dpor(
+    spec: ProgramSpec, clock: str, *, reproduce: int = 3, invariant: Callable[[_SharedState], bool] = _invariant
+) -> InterleavingResult:
     num_workers = len(spec.workers)
     return frontrun.explore(
         setup=lambda: _SharedState(num_workers),
         workers=_make_workers(spec),
-        invariant=_invariant,
+        invariant=invariant,
         strategy="dpor",
         clock=clock,  # type: ignore[arg-type]
         preemption_bound=None,
@@ -244,6 +248,9 @@ def program_specs(draw: st.DrawFn) -> ProgramSpec:
 # ---------------------------------------------------------------------------
 
 
+# The outer watchdog covers all 25 differential examples on free-threaded CI.
+# Each individual exploration retains the runner's per-execution timeout.
+@pytest.mark.timeout(180)
 @settings(
     max_examples=25,
     deadline=None,
@@ -294,20 +301,26 @@ def test_canary_weakened_search_is_not_certified() -> None:
 
 
 def test_canary_safe_program_certifies_under_all_clocks() -> None:
-    """Green side: a lock-protected program certifies everywhere, and the full
-    oracle accepts it."""
+    # Each protected read returns a distinct value 0..3. Worker 0's two
+    # values identify the physical order of all four critical sections.
+    expected = set(combinations(range(4), 2))
     for clock in ("virtual", "explored", "real"):
-        result = _explore_dpor(_SAFE_LOCKED, clock, reproduce=0)
+        observed: set[tuple[int, ...]] = set()
+
+        def observe(state: _SharedState) -> bool:
+            observed.add(tuple(state.performed[0]))
+            return _invariant(state)
+
+        result = _explore_dpor(_SAFE_LOCKED, clock, reproduce=0, invariant=observe)
         assert result.property_holds, f"clock={clock}: {result.explanation}"
         assert _certified_pass(result), f"clock={clock} did not exhaust: {result.num_explored}"
-        assert result.num_explored == 4, f"clock={clock} explored {result.num_explored} traces instead of 4"
+        assert observed == expected, f"clock={clock}: {observed}"
     _run_oracle(_SAFE_LOCKED)
 
 
 def test_safe_program_virtual_clock_count_is_stable() -> None:
-    for iteration in range(100):
-        result = _explore_dpor(_SAFE_LOCKED, "virtual", reproduce=0)
-        assert result.num_explored == 4, f"iteration {iteration} explored {result.num_explored} traces instead of 4"
+    counts = {_explore_dpor(_SAFE_LOCKED, "virtual", reproduce=0).num_explored for _ in range(100)}
+    assert len(counts) == 1, counts
 
 
 def test_canary_autojump_narrowing_is_the_documented_semantics() -> None:

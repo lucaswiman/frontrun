@@ -2,9 +2,9 @@
 
 Two workers acquire two row locks in opposite order. Under the interleaving
 where each holds one lock and then requests the other, the wait-for graph in the
-reused DporScheduler detects the cycle and the coordinator reports a
-deterministic deadlock — the same machinery that catches in-process SELECT FOR
-UPDATE deadlocks, now spanning worker "processes".
+reused DporScheduler detects the cycle across workers. The coordinator records
+the cycle in its truncation reason because the row-lock redirect prevents
+exact replay of the committed schedule.
 
 Run in-process (ThreadLauncher) because SQLite has no SELECT FOR UPDATE; the
 same path applies to real Postgres subprocesses (integration).
@@ -31,17 +31,18 @@ def _locker(first: str, second: str):
 
 
 def test_detects_cross_worker_lock_cycle() -> None:
-    # A redirected trace is incomplete and cannot be explored further safely.
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
     result = coord.explore(
         worker_set=ThreadLauncher([_locker(ROW1, ROW2), _locker(ROW2, ROW1)]),
         setup=lambda: None,
         invariant=lambda: True,
     )
+    # The wait-for cycle is real, but a redirected turn makes its replay schedule inexact.
     assert result.ok is None
     assert result.failure_kind is None
     assert result.failing_schedule is None
     assert "exact replay schedule" in (result.truncation or "")
+    assert result.exhausted is False
 
 
 def test_same_order_locking_fails_closed_without_claiming_deadlock() -> None:

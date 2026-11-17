@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use crate::access::{Access, AccessKind, AccessOrigin};
 use crate::object::{ObjectId, ObjectState};
-use crate::path::{Path, PendingRace, SearchStrategy};
+use crate::path::{Path, PendingRace, SearchStrategy, TraceStatus};
 use crate::thread::Thread;
 use crate::vv::VersionVec;
 
@@ -65,6 +65,7 @@ impl Execution {
 
     pub fn block_thread(&mut self, thread_id: usize) {
         self.threads[thread_id].blocked = true;
+        self.threads[thread_id].was_blocked = true;
     }
 
     pub fn unblock_thread(&mut self, thread_id: usize) {
@@ -205,11 +206,8 @@ impl DporEngine {
 
     /// Report a shared memory access and detect races.
     ///
-    /// Uses a **hybrid** approach: immediate inline wakeup tree insertion
-    /// (Algorithm 1 style, JACM'17 p.16 lines 5-9) ensures all races add
-    /// the racing thread to the wakeup tree, while deferred race collection
-    /// (Algorithm 2 style, JACM'17 p.24 lines 1-6) enables notdep sequence
-    /// optimization at maximal executions.
+    /// Collect races as accesses arrive. Backtracking uses the completed trace
+    /// so late access and synchronization reports are visible.
     ///
     /// The inline insertion ensures correctness (no races are dropped due to
     /// notdep feasibility issues). The deferred notdep processing adds multi-step
@@ -244,12 +242,6 @@ impl DporEngine {
 
         for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_dpor_vv) {
-                // Inline wakeup insertion: immediate single-thread insertion
-                // ensures the racing thread is always added (Algorithm 1 style).
-                self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
-                // Also collect for deferred notdep processing (Algorithm 2 style).
-                // The notdep sequence may provide a better multi-step wakeup
-                // sequence that guides through independent intermediates.
                 self.pending_races.push(PendingRace {
                     prev_path_id: prev_access.path_id,
                     current_path_id,
@@ -307,7 +299,6 @@ impl DporEngine {
 
         for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_dpor_vv) {
-                self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
                 self.pending_races.push(PendingRace {
                     prev_path_id: prev_access.path_id,
                     current_path_id,
@@ -367,9 +358,6 @@ impl DporEngine {
                         current_path_id,
                         &self.resource_groups,
                     );
-                if !skip_inline {
-                    self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
-                }
                 self.pending_races.push(PendingRace {
                     prev_path_id: prev_access.path_id,
                     current_path_id,
@@ -424,7 +412,6 @@ impl DporEngine {
 
         for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_io_vv) {
-                self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
                 self.pending_races.push(PendingRace {
                     prev_path_id: prev_access.path_id,
                     current_path_id,
@@ -437,13 +424,9 @@ impl DporEngine {
         }
 
         let access = Access::new(current_path_id, current_io_vv, thread_id, origin);
-        if origin == AccessOrigin::LockSynthetic {
-            object_state.record_first_access(access, kind);
-        } else {
-            // Direct I/O has no lock happens-before edges in io_vv, so both
-            // endpoints are required to expose middle interleavings.
-            object_state.record_access_span(access, kind);
-        }
+        // io_vv deliberately omits lock happens-before edges. Keep both
+        // endpoints so another actor can also run before a repeated acquire.
+        object_state.record_access_span(access, kind);
 
         self.path.record_access(current_path_id, object_id, kind, origin);
     }
@@ -464,14 +447,17 @@ impl DporEngine {
     /// Process a synchronization event with an explicit `path_id` for lock events.
     ///
     /// The `path_id` parameter pins lock-related I/O accesses to a specific
-    /// scheduling step.  On free-threaded Python, the thread reporting a lock
-    /// event may no longer be the active thread — another thread may have
-    /// advanced `path.pos` via `schedule()` concurrently.  Passing the saved
-    /// `path_id` from the thread's last scheduling point ensures lock events
-    /// land at the correct position regardless of concurrent `pos` advances.
+    /// scheduling step: the one the reporting thread is *executing* when the
+    /// event happens (the scheduler snapshots it before advancing the engine
+    /// at each scheduling point).  The thread's own next scheduling point has
+    /// usually already committed the following transition by the time the
+    /// event is reported -- and on free-threaded Python another thread may
+    /// have advanced `path.pos` further still -- so the live position would
+    /// attribute the event one step late, after the lock is already held
+    /// (defect #22).
     ///
     /// When `path_id` is `None`, the current `path.current_position()` is used
-    /// (the original behavior, correct on GIL-protected Python).
+    /// (correct only when nothing has been scheduled since the event's step).
     pub fn process_sync(
         &mut self,
         execution: &mut Execution,
@@ -479,6 +465,8 @@ impl DporEngine {
         event: SyncEvent,
         path_id: Option<usize>,
     ) {
+        let pid = path_id.unwrap_or_else(|| self.path.current_position().saturating_sub(1));
+        self.path.mark_synchronization(pid);
         match event {
             SyncEvent::LockAcquire { lock_id } => {
                 if let Some(release_vv) = execution.lock_release_vv.get(&lock_id) {
@@ -486,7 +474,6 @@ impl DporEngine {
                     execution.threads[thread_id].dpor_vv.join(&release_vv);
                 }
                 let lock_obj_id = lock_id ^ Self::LOCK_OBJECT_XOR;
-                let pid = path_id.unwrap_or_else(|| self.path.current_position().saturating_sub(1));
                 self.process_io_access_at(
                     execution, thread_id, lock_obj_id, AccessKind::Write, pid, AccessOrigin::LockSynthetic,
                 );
@@ -497,7 +484,6 @@ impl DporEngine {
                 });
             }
             SyncEvent::LockAttempt { lock_id, acquired } => {
-                let pid = path_id.unwrap_or_else(|| self.path.current_position().saturating_sub(1));
                 if !acquired {
                     // A failed trylock is still an operation on the lock:
                     // give it a synthetic Write access so it races with
@@ -547,7 +533,6 @@ impl DporEngine {
                 // This is precise: single-lock tests get no release backtracks
                 // (thread doesn't acquire after releasing), while multi-lock
                 // tests get exactly the backtracks needed for bug detection.
-                let pid = path_id.unwrap_or_else(|| self.path.current_position().saturating_sub(1));
                 self.deferred_lock_releases.push(DeferredLockRelease {
                     thread_id,
                     path_id: pid,
@@ -579,6 +564,15 @@ impl DporEngine {
     ///   Lines 1-6: process races at maximal execution → compute notdep → insert wut
     ///   Lines 14-20: step the exploration tree (pick next from wakeup tree)
     pub fn next_execution(&mut self) -> bool {
+        self.advance(None)
+    }
+
+    /// Use a completed run to validate the cached footprints of sleeping actors.
+    pub fn next_execution_after(&mut self, execution: &Execution) -> bool {
+        self.advance(Some(execution))
+    }
+
+    fn advance(&mut self, execution: Option<&Execution>) -> bool {
         self.executions_completed += 1;
         if let Some(max) = self.max_executions {
             if self.executions_completed >= max {
@@ -589,6 +583,13 @@ impl DporEngine {
         // wakeup trees. This must happen before step() so that the wakeup
         // trees are populated with the correct sequences.
         let races = std::mem::take(&mut self.pending_races);
+        for race in &races {
+            if !race.inline_skipped {
+                self.path.insert_race_wakeup(
+                    race.prev_path_id, race.current_path_id, race.thread_id, race.race_object
+                );
+            }
+        }
         self.path.process_deferred_races(&races);
 
         // Lock-aware DPOR: deferred release backtracking.
@@ -606,6 +607,13 @@ impl DporEngine {
         // exact trace counts.
         self.process_deferred_lock_releases();
 
+        self.path.previous_trace_status = (0..self.num_threads).map(|tid| {
+            match execution.and_then(|run| run.threads.get(tid)) {
+                Some(thread) if thread.finished && thread.was_blocked => TraceStatus::Contended,
+                Some(thread) if thread.finished => TraceStatus::Complete,
+                _ => TraceStatus::Incomplete,
+            }
+        }).collect();
         self.path.step()
     }
 
@@ -620,14 +628,21 @@ impl DporEngine {
         let acquires = std::mem::take(&mut self.deferred_lock_acquires);
         let attempts = std::mem::take(&mut self.deferred_lock_attempts);
 
+        // Attribution: every lock event's `path_id` is the scheduling step the
+        // reporting thread was *executing* when the event physically happened
+        // (the scheduler pins it before advancing the engine; see
+        // `DporScheduler._pin_sync_events_to_current_step`).  So a release at
+        // `r` completes inside step `r`, and "right after the release" is the
+        // step `r + 1`, while "before the release" is `r` itself.
         for release in &releases {
             let has_later_acquire = acquires.iter().any(|acq| {
                 acq.thread_id == release.thread_id && acq.path_id > release.path_id
             });
             if has_later_acquire {
                 // Insert backtrack for each other runnable thread at the
-                // release position.
-                let pid = release.path_id;
+                // step following the release, i.e. between the releaser's two
+                // critical sections.
+                let pid = release.path_id + 1;
                 for tid in 0..self.num_threads {
                     if tid != release.thread_id {
                         self.path.insert_wakeup(pid, tid, None);
@@ -651,16 +666,10 @@ impl DporEngine {
                     && attempt.thread_id != release.thread_id
                 {
                     if attempt.path_id > release.path_id {
-                        // The release event is attributed to the scheduling
-                        // position created *after* the holder's last traced
-                        // opcode preceding the release; the release itself
-                        // executes within the holder's preceding quantum.  To
-                        // preempt BEFORE the release actually happens, the
-                        // attempting thread must be scheduled one position
-                        // earlier (instead of the holder's final in-lock
-                        // opcode).
-                        let pid = release.path_id.saturating_sub(1);
-                        self.path.insert_wakeup(pid, attempt.thread_id, None);
+                        // Preempt the holder at the release's own step, i.e.
+                        // BEFORE the release actually happens, so the attempt
+                        // lands while the lock is still held.
+                        self.path.insert_wakeup(release.path_id, attempt.thread_id, None);
                     } else if !attempt.acquired {
                         // Explored-clock timeouts are represented as a failed
                         // attempt by the clock actor.  When the timeout ran
@@ -724,7 +733,7 @@ mod tests {
         assert_eq!(engine.schedule(&mut first), Some(1));
         engine.process_access(&mut first, 1, 123, AccessKind::Write);
 
-        assert!(engine.next_execution());
+        assert!(engine.next_execution_after(&first));
         let mut replay = engine.begin_execution();
         engine.prefer_next_thread(2);
 
@@ -751,7 +760,7 @@ mod tests {
         engine.process_access(&mut execution, 1, 2, AccessKind::Write);
         execution.finish_thread(1);
 
-        assert!(!engine.next_execution());
+        assert!(!engine.next_execution_after(&execution));
         assert_eq!(engine.executions_completed(), 1);
     }
 
@@ -768,7 +777,7 @@ mod tests {
                 execution.finish_thread(chosen);
             }
             assert!(execution.runnable_threads().is_empty());
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 return engine.executions_completed();
             }
         }
@@ -802,6 +811,35 @@ mod tests {
         // via an independent intermediate. Preserve the existing bounded claim.
         let count = single_access_trace_count(&[(1, Write), (2, Write), (1, Write)]);
         assert!((2..=4).contains(&count), "independent intermediate: {count}");
+    }
+
+    #[test]
+    fn bounded_search_preserves_race_reversals() {
+        use AccessKind::{Read, Write};
+        let cases = [
+            (1, [[(0, Write), (0, Write)], [(1, Read), (0, Read)], [(0, Read), (0, Read)]], [0, 2, 2, 0, 1, 1]),
+            (2, [[(0, Write), (1, Read)], [(1, Write), (0, Read)], [(1, Read), (0, Read)]], [2, 1, 1, 0, 0, 2]),
+        ];
+        for (bound, ops, target) in cases {
+            let mut engine = DporEngine::new(3, Some(bound), 100, None, SearchStrategy::Dfs);
+            loop {
+                let mut execution = engine.begin_execution();
+                let mut pc = [0; 3];
+                for _ in 0..6 {
+                    let tid = engine.schedule(&mut execution).expect("unfinished program");
+                    let (object, kind) = ops[tid][pc[tid]];
+                    engine.process_access(&mut execution, tid, object, kind);
+                    pc[tid] += 1;
+                    if pc[tid] == ops[tid].len() {
+                        execution.finish_thread(tid);
+                    }
+                }
+                if execution.schedule_trace == target {
+                    break;
+                }
+                assert!(engine.next_execution_after(&execution), "missing {target:?} with bound {bound}");
+            }
+        }
     }
 
     #[test]
@@ -859,7 +897,7 @@ mod tests {
                 found_bug = true;
             }
 
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 break;
             }
         }
@@ -1040,7 +1078,7 @@ mod tests {
             }
 
             exec_count += 1;
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 break;
             }
         }
@@ -1095,7 +1133,7 @@ mod tests {
 
             traces.push(execution.schedule_trace.clone());
             exec_count += 1;
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 break;
             }
         }
@@ -1213,7 +1251,7 @@ mod tests {
             }
 
             exec_count += 1;
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 break;
             }
         }
@@ -1227,18 +1265,17 @@ mod tests {
         );
     }
 
-    /// Run a dining-philosopher model until a lock-order deadlock is found
-    /// or exploration finishes.  `thread_ops[t]` is the op sequence for thread `t`;
-    /// each op is `("lock_acquire"|"lock_release"|"write", object_id)`.
-    /// Returns `(executions_explored_including_the_deadlocked_one, deadlock_found)`.
-    fn run_philosopher_until_deadlock(
+    /// Run the physical lock model until the requested outcome is observed.
+    fn explore_lock_program(
         engine: &mut DporEngine,
         thread_ops: &[Vec<(&str, u64)>],
+        matches: impl Fn(bool, &[(usize, u64)]) -> bool,
     ) -> (u64, bool) {
         let num_threads = thread_ops.len();
         let mut exec_count: u64 = 0;
         loop {
             let mut execution = engine.begin_execution();
+            let mut acquisitions = Vec::new();
             let mut pcs = vec![0usize; num_threads];
             let mut locks_held: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
             loop {
@@ -1264,6 +1301,7 @@ mod tests {
                                 continue;
                             }
                         }
+                        acquisitions.push((chosen, obj_id));
                         locks_held.insert(obj_id, chosen);
                         engine.process_sync(&mut execution, chosen, SyncEvent::LockAcquire { lock_id: obj_id }, None);
                     }
@@ -1286,16 +1324,47 @@ mod tests {
             }
             exec_count += 1;
             let all_done = pcs.iter().enumerate().all(|(i, pc)| *pc >= thread_ops[i].len());
-            if !all_done {
+            if matches(!all_done, &acquisitions) {
                 return (exec_count, true);
             }
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 return (exec_count, false);
             }
         }
     }
 
-    /// Dining philosophers model tests.
+    #[test]
+    fn wakeup_retains_continuation_across_lock_release() {
+        let (acq, rel) = ("lock_acquire", "lock_release");
+        let ops = [
+            vec![(acq, 0), (acq, 1), (rel, 1), (rel, 0)],
+            vec![(acq, 1), (acq, 0), (rel, 0), (rel, 1)],
+            vec![(acq, 1), (rel, 1), (acq, 0), (rel, 0)],
+        ];
+        let mut engine = DporEngine::new(3, None, 100, None, SearchStrategy::Dfs);
+        let (_, found) = explore_lock_program(&mut engine, &ops, |deadlock, acquisitions| {
+            let order = |lock| acquisitions.iter().filter(|(_, id)| *id == lock)
+                .map(|(thread, _)| *thread).collect::<Vec<_>>();
+            !deadlock && order(0) == [1, 2, 0] && order(1) == [2, 1, 0]
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn a_blocked_prefix_cannot_put_a_contender_to_sleep() {
+        let (acq, rel) = ("lock_acquire", "lock_release");
+        let ops = [
+            vec![(acq, 0), (acq, 1), (rel, 1), (rel, 0)],
+            vec![(acq, 0), (rel, 0)],
+            vec![(acq, 1), (acq, 0), (rel, 0), (rel, 1)],
+        ];
+        let mut engine = DporEngine::new(3, None, 100, None, SearchStrategy::Dfs);
+        let (_, found) = explore_lock_program(&mut engine, &ops, |deadlock, acquisitions| {
+            !deadlock && acquisitions == [(2, 1), (2, 0), (1, 0), (0, 0), (0, 1)]
+        });
+        assert!(found, "a prior blocked attempt hid a legal acquisition order");
+    }
+
     #[test]
     fn test_four_philosophers_lock_only() {
         // Pure lock-ordering deadlock: acquire left, acquire right, release right, release left
@@ -1315,7 +1384,7 @@ mod tests {
             })
             .collect();
 
-        let (exec_count, deadlock_found) = run_philosopher_until_deadlock(&mut engine, &thread_ops);
+        let (exec_count, deadlock_found) = explore_lock_program(&mut engine, &thread_ops, |deadlock, _| deadlock);
 
         assert!(
             deadlock_found,
@@ -1347,7 +1416,7 @@ mod tests {
             })
             .collect();
 
-        let (exec_count, deadlock_found) = run_philosopher_until_deadlock(&mut engine, &thread_ops);
+        let (exec_count, deadlock_found) = explore_lock_program(&mut engine, &thread_ops, |deadlock, _| deadlock);
 
         assert!(
             deadlock_found,

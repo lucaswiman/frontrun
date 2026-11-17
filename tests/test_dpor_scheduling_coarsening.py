@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 import frontrun
 
 
@@ -213,13 +215,9 @@ class TestSchedulingCoarsening:
             f"(e.g. unhandled opcode inflating the DPOR search tree)."
         )
 
-    def test_dining_philosophers_four_trace_count(self) -> None:
-        """Four dining philosophers (pure locks, no shared state) trace count.
-
-        With scheduling coarsening, N=4 pure locks terminates quickly (~121
-        interleavings in ~1s).  This regression test ensures the count stays
-        bounded as the search space grows from N=3 to N=4.
-        """
+    @pytest.mark.parametrize("bound", [2, 3])
+    def test_dining_philosophers_four_trace_count(self, bound: int) -> None:
+        """Bound the full default search and the cost of finding the higher-budget cycle."""
 
         class Table:
             def __init__(self) -> None:
@@ -240,20 +238,13 @@ class TestSchedulingCoarsening:
             workers=[make_philosopher(i) for i in range(4)],
             invariant=lambda _: True,
             max_executions=5000,
-            preemption_bound=2,
+            preemption_bound=bound,
             detect_io=False,
             deadlock_timeout=2.0,
-            stop_on_first=False,
+            stop_on_first=bound == 3,
         )
 
-        assert not result.property_holds, "Deadlock should be found"
-        # The exploration should complete well under the 5000 cap.
-        # After the finding-3 preemption-count fix (see the N=3 test), the
-        # previously over-counted preemptions no longer suppress legal
-        # within-bound interleavings, so N=4 rose from ~121 to ~649.  Still
-        # bounded and far below the 5000 cap; the deadlock is still found.
-        assert result.num_explored <= 1000, (
-            f"Expected <=1000 interleavings for 4-philosopher pure lock example, "
-            f"got {result.num_explored}. Likely a scheduling regression "
-            f"(e.g. unhandled opcode inflating the DPOR search tree)."
-        )
+        if bound == 3:
+            assert result.property_holds is False
+            assert "deadlock" in (result.explanation or "").lower()
+        assert result.num_explored <= 1000

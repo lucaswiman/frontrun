@@ -19,8 +19,13 @@ def locked_increment(dsn: str) -> None:
     """Read-modify-write of the shared balance under a row lock."""
     conn = psycopg2.connect(dsn)
     try:
-        conn.autocommit = False
+        # An unlocked read races the other worker's locked UPDATE and lets
+        # DPOR schedule this transaction while the other holds the row lock.
+        conn.autocommit = True
         cur = conn.cursor()
+        cur.execute(f"SELECT balance FROM {TABLE} WHERE id = 1")
+        cur.fetchone()
+        conn.autocommit = False
         cur.execute(f"SELECT balance FROM {TABLE} WHERE id = 1 FOR UPDATE")
         row = cur.fetchone()
         assert row is not None

@@ -1572,7 +1572,7 @@ def test_noop_clock_actor_step_is_omitted_from_replay_schedule() -> None:
     assert execution.schedule_trace == [0]
 
 
-def test_timed_wait_clock_preference_is_set_under_engine_lock() -> None:
+def test_clock_preference_and_sync_cursor_use_engine_lock() -> None:
     """The Rust engine cannot be mutated outside the free-threading guard."""
     from frontrun._dpor_runtime.scheduler import DporScheduler
 
@@ -1593,6 +1593,11 @@ def test_timed_wait_clock_preference_is_set_under_engine_lock() -> None:
     preferred_threads: list[int] = []
 
     class Engine(_FakeEngine):
+        @property
+        def path_position(self) -> int:
+            assert lock.held, "read the Rust engine cursor outside _engine_lock"
+            return 1
+
         def prefer_next_thread(self, thread_id: int) -> None:
             assert lock.held, "prefer_next_thread mutated the engine outside _engine_lock"
             preferred_threads.append(thread_id)
@@ -1607,6 +1612,7 @@ def test_timed_wait_clock_preference_is_set_under_engine_lock() -> None:
         clock_actor_id=99,
     )
 
+    assert scheduler.wait_for_turn(0)
     scheduler.add_timed_wait(0, timeout=1.0, resource=object())
 
     assert preferred_threads == [99]

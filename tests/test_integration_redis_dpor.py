@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections import Counter
 
 import pytest
 
@@ -839,6 +840,7 @@ class TestDporPathCountSerialized:
         a combinatorial explosion of per-operation interleavings.
         """
         port = redis_port
+        order_counts: Counter[tuple[str, str]] = Counter()
 
         class State:
             def __init__(self) -> None:
@@ -848,12 +850,12 @@ class TestDporPathCountSerialized:
                 r.delete("locked_hash", "locked_list", "locked_set")
                 r.close()
 
-        def worker(state: State) -> None:
+        def worker(state: State, worker_id: int) -> None:
             with state.lock:
                 r = redis_lib.Redis(port=port, decode_responses=True)
                 val = int(r.get("locked_counter"))  # type: ignore[arg-type]
                 r.set("locked_counter", str(val + 1))
-                r.hset("locked_hash", f"step_{val}", "done")
+                r.hset("locked_hash", f"step_{val}", str(worker_id))
                 r.lpush("locked_list", f"item_{val}")
                 r.sadd("locked_set", f"member_{val}")
                 r.incr("locked_counter")
@@ -862,13 +864,15 @@ class TestDporPathCountSerialized:
         def invariant(state: State) -> bool:
             r = redis_lib.Redis(port=port, decode_responses=True)
             counter = int(r.get("locked_counter"))  # type: ignore[arg-type]
+            order = (str(r.hget("locked_hash", "step_0")), str(r.hget("locked_hash", "step_2")))
+            order_counts[order] += 1
             r.close()
             # Each worker does +1 (set) then +1 (incr) = +2 per worker, 2 workers = 4
             return counter == 4
 
         result = frontrun.explore(
             setup=State,
-            workers=[worker, worker],
+            workers=[lambda s: worker(s, 0), lambda s: worker(s, 1)],
             invariant=invariant,
             detect_io=True,
             max_executions=50,
@@ -876,16 +880,11 @@ class TestDporPathCountSerialized:
             reproduce_on_failure=0,
         )
         assert result.property_holds, result.explanation
-        # With synced I/O (dpor_vv respects lock HB for Redis key accesses),
-        # the theoretical minimum is 2 (one per lock ordering).  Remaining
-        # overcounting comes from:
-        # 1. Lock acquire uses io_vv (intentional: must explore both orderings)
-        # 2. Python-level internals of redis-py create scheduling points
-        #    with untracked object conflicts (connection setup, parser state)
-        # 3. LD_PRELOAD TCP events from Redis connection setup
-        # Keep the established tight ceiling: increasing it would hide
-        # extraneous traces instead of detecting a scheduling regression.
-        assert result.num_explored <= 12, f"Lock-serialized ops should need ≤ 12 DPOR paths, got {result.num_explored}"
+        # Cold redis-py clients take nested locks inside the user's lock. Bound
+        # redundant schedules per physical order and require both orders to run.
+        assert set(order_counts) == {("0", "1"), ("1", "0")}
+        assert sum(order_counts.values()) == result.num_explored
+        assert max(order_counts.values()) <= 12, order_counts
 
     def test_async_locked_many_redis_ops_minimal_paths(self, redis_port: int) -> None:
         """Async: many Redis ops under one asyncio.Lock → minimal DPOR paths."""

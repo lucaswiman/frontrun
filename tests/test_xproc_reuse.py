@@ -77,8 +77,8 @@ def test_reuse_matches_spawn_execution_count() -> None:
 
 def test_reuse_stops_safely_on_deadlock() -> None:
     # A deadlock aborts a worker mid-iteration, leaving its persistent socket at
-    # an unknown frame boundary. Reuse must report the deadlock and stop rather
-    # than send the next ITER_START into a poisoned socket (desync) or hang.
+    # an unknown frame boundary. Reuse must stop at the redirect before
+    # sending the next ITER_START into that socket.
     row1, row2 = "sql:acct:id=1", "sql:acct:id=2"
 
     def locker(first: str, second: str):
@@ -97,10 +97,9 @@ def test_reuse_stops_safely_on_deadlock() -> None:
         setup=lambda: None,
         invariant=lambda: True,
     )
-    assert not result.ok
     assert result.ok is None
-    assert result.failure_kind is None
     assert result.failing_schedule is None
+    assert "exact replay schedule" in (result.truncation or "")
 
 
 def test_reuse_restarts_killable_workers_after_unclean_iteration(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -28,6 +28,7 @@ use path::SearchStrategy;
 #[pyclass]
 struct PyDporEngine {
     inner: DporEngine,
+    execution: Option<Py<PyExecution>>,
 }
 
 /// Per-execution state, exposed to Python.
@@ -54,14 +55,15 @@ impl PyDporEngine {
         let strategy = Self::parse_search_strategy(search)?;
         Ok(Self {
             inner: DporEngine::new(num_threads, preemption_bound, max_branches, max_executions, strategy),
+            execution: None,
         })
     }
 
     /// Start a new execution. Returns fresh per-execution state.
-    fn begin_execution(&self) -> PyExecution {
-        PyExecution {
-            inner: self.inner.begin_execution(),
-        }
+    fn begin_execution(&mut self, py: Python<'_>) -> PyResult<Py<PyExecution>> {
+        let execution = Py::new(py, PyExecution { inner: self.inner.begin_execution() })?;
+        self.execution = Some(execution.clone_ref(py));
+        Ok(execution)
     }
 
     /// Pick which thread to run next. Returns thread ID or None (deadlock).
@@ -198,8 +200,9 @@ impl PyDporEngine {
     }
 
     /// Finish current execution and advance to next path. Returns True if more to explore.
-    fn next_execution(&mut self) -> bool {
-        self.inner.next_execution()
+    fn next_execution(&mut self, py: Python<'_>) -> PyResult<bool> {
+        let Some(execution) = &self.execution else { return Ok(false) };
+        Ok(self.inner.next_execution_after(&execution.try_borrow(py)?.inner))
     }
 
     #[getter]

@@ -34,22 +34,38 @@ ROW = "sql:accounts:id=1"
 class _DB:
     def __init__(self) -> None:
         self.balance = 0
+        self.flag = 0
 
     def reset(self) -> None:
         self.balance = 0
+        self.flag = 0
 
 
 def _row_locked_worker(db: _DB):
-    """xproc worker: RMW on a shared value under a modeled row lock."""
+    """xproc worker: snapshot outside the row lock, RMW under it.
+
+    Since defect #22 the acquire/acquire race on the row lock is reversed
+    *before* the first acquire, so two plain locked RMWs no longer schedule a
+    worker into contention.  The unlocked read of ``db.flag`` races the other
+    worker's write of it inside the critical section; reversing that race
+    wakes this worker mid-critical-section, so its ``acquire_row_locks`` finds
+    the lock held and takes the redirect seam.
+    """
 
     def worker(proxy: Any) -> None:
+        snapshot = db.flag
+        proxy.io_report("sql:accounts:id=9", "read")
+        proxy.report_and_wait(None, 0)
         proxy.acquire_row_locks(0, [ROW])
         proxy.report_and_wait(None, 0)
         current = db.balance
         proxy.io_report(ROW, "read")
         proxy.report_and_wait(None, 0)
         db.balance = current + 100
+        db.flag = snapshot + 1
         proxy.io_report(ROW, "write")
+        proxy.io_report("sql:accounts:id=9", "write")
+        proxy.report_and_wait(None, 0)
         proxy.release_row_locks(0)
 
     return worker
@@ -82,13 +98,18 @@ def _locked_increment(state: _DB) -> None:
     committed by ``before_sync_retry`` BEFORE ``_acquire_pending_row_locks``
     can discover contention and redirect execution to the holder — the exact
     issue #250 seam — all without needing a real database driver.
+
+    The unlocked ``state.flag`` snapshot is what still reaches the seam after
+    defect #22 (see ``_row_locked_worker``).
     """
+    snapshot = state.flag
     tx_store()._pending_row_locks = [ROW]
     _dpor_schedule_and_suppress_sync(
         False, "SELECT balance FROM accounts WHERE id = 1 FOR UPDATE", None, "qmark", lambda: None
     )
     current = state.balance
     state.balance = current + 100
+    state.flag = snapshot + 1
     _release_dpor_row_locks(None)
 
 
@@ -174,8 +195,13 @@ class _PgState:
 def _pg_locked_increment(_state: _PgState) -> None:
     conn = psycopg2.connect(_DSN)
     try:
-        conn.autocommit = False
+        # An unlocked read races the other worker's locked UPDATE and lets
+        # DPOR schedule this transaction while the other holds the row lock.
+        conn.autocommit = True
         cur = conn.cursor()
+        cur.execute(f"SELECT balance FROM {_PG_TABLE} WHERE id = 1")
+        cur.fetchone()
+        conn.autocommit = False
         cur.execute(f"SELECT balance FROM {_PG_TABLE} WHERE id = 1 FOR UPDATE")
         row = cur.fetchone()
         assert row is not None
@@ -200,6 +226,7 @@ def test_postgres_thread_mode_redirect_demotes_exhausted(pg_accounts: str) -> No
         workers=[_pg_locked_increment, _pg_locked_increment],
         invariant=lambda _s: _pg_read_balance() == 200,
         detect_io=True,
+        preemption_bound=None,
         lock_timeout=2000,
         deadlock_timeout=15.0,
         timeout_per_run=30.0,
@@ -219,9 +246,7 @@ def test_postgres_xproc_redirect_never_certifies_coverage(pg_accounts: str) -> N
     This is the audited issue #250 scenario: separate OS processes contend on
     the same Postgres row via SELECT ... FOR UPDATE; the coordinator's
     ACQUIRE_LOCKS arbitration redirects a worker whose engine step was
-    already committed. Whatever verdict the run reports (today the redirected
-    execution fails closed as ``failure_kind="nondeterministic"``), an
-    unbounded search must not claim ``exhausted=True``.
+    already committed. This physical redirect makes the schedule inexact.
     """
     target = "tests.xproc_demo_pg_lock:locked_increment"
     result = frontrun.explore_processes(
@@ -238,6 +263,6 @@ def test_postgres_xproc_redirect_never_certifies_coverage(pg_accounts: str) -> N
         "Postgres-grade row-lock contention hit the redirect seam (issue #250); "
         f"coverage must not be certified (ok={result.ok}, failure_kind={result.failure_kind})"
     )
-    # The redirect must only affect the coverage claim / redirect fail-close;
-    # it must never be reported as a bogus invariant violation.
-    assert result.failure_kind != "invariant", result.failure
+    assert result.ok is None
+    assert result.failing_schedule is None
+    assert "exact replay schedule" in (result.truncation or "")

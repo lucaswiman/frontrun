@@ -222,8 +222,9 @@ class DporScheduler:
         # clock transitions to the scheduling step that selected the clock.
         self._last_scheduled_path_id: int | None = None
         # Actor-specific snapshots used only by human-facing report events.
-        # Engine sync reports intentionally use the current transition cursor
-        # (_last_scheduled_path_id), which can already name the next actor.
+        # Engine sync reports use the step the reporting thread is executing
+        # (see _pin_sync_events_to_current_step), never the transition cursor,
+        # which can already name the next actor.
         self._last_scheduled_path_id_by_thread: dict[int, int] = {}
 
         # The clock actor starts blocked: it only becomes runnable when a
@@ -411,10 +412,7 @@ class DporScheduler:
         with self._condition:
             with self._engine_lock:
                 self.execution.unblock_thread(thread_id)
-            # A thread waits on at most one resource at a time, so scrubbing
-            # it from every waiter set is equivalent to knowing the lock id.
-            for waiters in self._lock_waiters.values():
-                waiters.discard(thread_id)
+                self._scrub_lock_waiters(thread_id)
             # An unmanaged wake (e.g. a worker-spawned service thread calling
             # event.set()) can land while the turn is vacant: every managed
             # thread had blocked, _schedule_next returned None, and the parked
@@ -604,9 +602,8 @@ class DporScheduler:
         real thread is runnable, which is exactly when the clock *must*
         advance for anything to happen.
 
-        Also snapshots ``engine.path_position`` under the engine lock so
-        that ``report_and_wait`` can attribute subsequent lock events to
-        the correct scheduling step (see ``_last_scheduled_path_id``).
+        Virtual-clock transitions and report events retain the position of
+        the selected actor.
         """
         with self._engine_lock:
             while True:
@@ -620,11 +617,7 @@ class DporScheduler:
 
                 self._exact_deadlock_candidate_at = None
                 scheduled = self.engine.schedule(self.execution)
-                # Snapshot path position under engine_lock. On free-threaded
-                # Python, another thread may call schedule() concurrently
-                # after we release the lock, advancing path.pos.  The saved
-                # position ensures _sync_reporter attributes lock events to
-                # the correct step.
+                # Save the selected position before another schedule call advances it.
                 _pp = getattr(self.engine, "path_position", None)
                 self._last_scheduled_path_id = _pp - 1 if _pp is not None else None
                 if scheduled is not None and self._last_scheduled_path_id is not None:
@@ -641,6 +634,17 @@ class DporScheduler:
                 # the engine picks a row-lock-blocked thread (defect #6), or drop a
                 # stale entry whose holder has finished.
                 return apply_lock_blocked_override(scheduled, self._row_lock_blocked, self._threads_done)
+
+    def _pin_sync_events_to_current_step(self) -> None:
+        """Attribute the calling thread's upcoming sync events to the step it is executing.
+
+        Snapshot the current step while holding the turn. The next schedule
+        decision can belong to a different actor before this one's sync
+        operation has physically completed.
+        """
+        # _schedule_next captured this cursor under _engine_lock. Reading the
+        # Rust engine again here races reporters on free-threaded Python.
+        _dpor_tls._last_path_id = self._last_scheduled_path_id
 
     def wait_for_turn(self, thread_id: int) -> bool:
         """Block until it's this thread's turn. Returns False when done."""
@@ -664,10 +668,8 @@ class DporScheduler:
                     elif self._current_thread == thread_id:
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
+                        self._pin_sync_events_to_current_step()
                         next_thread = self._schedule_next()
-                        _pp = self._last_scheduled_path_id
-                        if _pp is not None:
-                            _dpor_tls._last_path_id = _pp
                         self._active_sync_thread = thread_id
                         self._next_thread_after_sync = next_thread
                         self._current_thread = thread_id
@@ -876,12 +878,8 @@ class DporScheduler:
                         if self._switch_point_collector is not None and _switch_frame is not None:
                             self._capture_step_event(_switch_frame, thread_id)
                         # It's our turn. After executing one opcode, schedule next.
+                        self._pin_sync_events_to_current_step()
                         next_thread = self._schedule_next()
-                        # Preserve the engine transition cursor for sync events
-                        # emitted before this thread reaches its next trace hook.
-                        _pp = self._last_scheduled_path_id
-                        if _pp is not None:
-                            _dpor_tls._last_path_id = _pp
                         # Record switch point if thread changes and collector is active
                         if (
                             self._switch_point_collector is not None
@@ -950,10 +948,8 @@ class DporScheduler:
 
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
+                        self._pin_sync_events_to_current_step()
                         next_thread = self._schedule_next()
-                        _pp = self._last_scheduled_path_id
-                        if _pp is not None:
-                            _dpor_tls._last_path_id = _pp
                         self._active_io_thread = thread_id
                         self._next_thread_after_io = next_thread
                         self._current_thread = thread_id
