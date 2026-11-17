@@ -245,8 +245,9 @@ impl DporEngine {
         for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_dpor_vv) {
                 // Inline wakeup insertion: immediate single-thread insertion
-                // ensures the racing thread is always added (Algorithm 1 style).
-                self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
+                // ensures the racing thread is added unless a source-set
+                // member already covers the reversal (Algorithm 1 style).
+                self.path.insert_race_wakeup(prev_access.path_id, current_path_id, thread_id, Some(object_id));
                 // Also collect for deferred notdep processing (Algorithm 2 style).
                 // The notdep sequence may provide a better multi-step wakeup
                 // sequence that guides through independent intermediates.
@@ -307,7 +308,7 @@ impl DporEngine {
 
         for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_dpor_vv) {
-                self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
+                self.path.insert_race_wakeup(prev_access.path_id, current_path_id, thread_id, Some(object_id));
                 self.pending_races.push(PendingRace {
                     prev_path_id: prev_access.path_id,
                     current_path_id,
@@ -368,7 +369,7 @@ impl DporEngine {
                         &self.resource_groups,
                     );
                 if !skip_inline {
-                    self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
+                    self.path.insert_race_wakeup(prev_access.path_id, current_path_id, thread_id, Some(object_id));
                 }
                 self.pending_races.push(PendingRace {
                     prev_path_id: prev_access.path_id,
@@ -424,7 +425,7 @@ impl DporEngine {
 
         for prev_access in object_state.dependent_accesses(kind, thread_id) {
             if !prev_access.happens_before(&current_io_vv) {
-                self.path.insert_wakeup(prev_access.path_id, thread_id, Some(object_id));
+                self.path.insert_race_wakeup(prev_access.path_id, current_path_id, thread_id, Some(object_id));
                 self.pending_races.push(PendingRace {
                     prev_path_id: prev_access.path_id,
                     current_path_id,
@@ -464,14 +465,17 @@ impl DporEngine {
     /// Process a synchronization event with an explicit `path_id` for lock events.
     ///
     /// The `path_id` parameter pins lock-related I/O accesses to a specific
-    /// scheduling step.  On free-threaded Python, the thread reporting a lock
-    /// event may no longer be the active thread — another thread may have
-    /// advanced `path.pos` via `schedule()` concurrently.  Passing the saved
-    /// `path_id` from the thread's last scheduling point ensures lock events
-    /// land at the correct position regardless of concurrent `pos` advances.
+    /// scheduling step: the one the reporting thread is *executing* when the
+    /// event happens (the scheduler snapshots it before advancing the engine
+    /// at each scheduling point).  The thread's own next scheduling point has
+    /// usually already committed the following transition by the time the
+    /// event is reported -- and on free-threaded Python another thread may
+    /// have advanced `path.pos` further still -- so the live position would
+    /// attribute the event one step late, after the lock is already held
+    /// (defect #22).
     ///
     /// When `path_id` is `None`, the current `path.current_position()` is used
-    /// (the original behavior, correct on GIL-protected Python).
+    /// (correct only when nothing has been scheduled since the event's step).
     pub fn process_sync(
         &mut self,
         execution: &mut Execution,
@@ -620,14 +624,21 @@ impl DporEngine {
         let acquires = std::mem::take(&mut self.deferred_lock_acquires);
         let attempts = std::mem::take(&mut self.deferred_lock_attempts);
 
+        // Attribution: every lock event's `path_id` is the scheduling step the
+        // reporting thread was *executing* when the event physically happened
+        // (the scheduler pins it before advancing the engine; see
+        // `DporScheduler._pin_sync_events_to_current_step`).  So a release at
+        // `r` completes inside step `r`, and "right after the release" is the
+        // step `r + 1`, while "before the release" is `r` itself.
         for release in &releases {
             let has_later_acquire = acquires.iter().any(|acq| {
                 acq.thread_id == release.thread_id && acq.path_id > release.path_id
             });
             if has_later_acquire {
                 // Insert backtrack for each other runnable thread at the
-                // release position.
-                let pid = release.path_id;
+                // step following the release, i.e. between the releaser's two
+                // critical sections.
+                let pid = release.path_id + 1;
                 for tid in 0..self.num_threads {
                     if tid != release.thread_id {
                         self.path.insert_wakeup(pid, tid, None);
@@ -651,16 +662,10 @@ impl DporEngine {
                     && attempt.thread_id != release.thread_id
                 {
                     if attempt.path_id > release.path_id {
-                        // The release event is attributed to the scheduling
-                        // position created *after* the holder's last traced
-                        // opcode preceding the release; the release itself
-                        // executes within the holder's preceding quantum.  To
-                        // preempt BEFORE the release actually happens, the
-                        // attempting thread must be scheduled one position
-                        // earlier (instead of the holder's final in-lock
-                        // opcode).
-                        let pid = release.path_id.saturating_sub(1);
-                        self.path.insert_wakeup(pid, attempt.thread_id, None);
+                        // Preempt the holder at the release's own step, i.e.
+                        // BEFORE the release actually happens, so the attempt
+                        // lands while the lock is still held.
+                        self.path.insert_wakeup(release.path_id, attempt.thread_id, None);
                     } else if !attempt.acquired {
                         // Explored-clock timeouts are represented as a failed
                         // attempt by the clock actor.  When the timeout ran

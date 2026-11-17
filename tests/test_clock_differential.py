@@ -293,6 +293,14 @@ def test_canary_weakened_search_is_not_certified() -> None:
     assert not _certified_pass(result, cap=1)  # ...but the oracle must not treat it as a proof
 
 
+# Two workers, two critical sections each on one lock: the 4 critical sections
+# can run in C(4,2) = 6 orders respecting program order, and every pair from
+# different workers conflicts (same lock, same counter), so all 6 are distinct
+# Mazurkiewicz traces.  Before defect #22 the engine reported 4 while
+# physically running only 3 of them (the ones starting with worker 0).
+_SAFE_LOCKED_TRACES = 6
+
+
 def test_canary_safe_program_certifies_under_all_clocks() -> None:
     """Green side: a lock-protected program certifies everywhere, and the full
     oracle accepts it."""
@@ -300,14 +308,18 @@ def test_canary_safe_program_certifies_under_all_clocks() -> None:
         result = _explore_dpor(_SAFE_LOCKED, clock, reproduce=0)
         assert result.property_holds, f"clock={clock}: {result.explanation}"
         assert _certified_pass(result), f"clock={clock} did not exhaust: {result.num_explored}"
-        assert result.num_explored == 4, f"clock={clock} explored {result.num_explored} traces instead of 4"
+        assert result.num_explored == _SAFE_LOCKED_TRACES, (
+            f"clock={clock} explored {result.num_explored} traces instead of {_SAFE_LOCKED_TRACES}"
+        )
     _run_oracle(_SAFE_LOCKED)
 
 
 def test_safe_program_virtual_clock_count_is_stable() -> None:
     for iteration in range(100):
         result = _explore_dpor(_SAFE_LOCKED, "virtual", reproduce=0)
-        assert result.num_explored == 4, f"iteration {iteration} explored {result.num_explored} traces instead of 4"
+        assert result.num_explored == _SAFE_LOCKED_TRACES, (
+            f"iteration {iteration} explored {result.num_explored} traces instead of {_SAFE_LOCKED_TRACES}"
+        )
 
 
 def test_canary_autojump_narrowing_is_the_documented_semantics() -> None:

@@ -48,6 +48,28 @@ All releases: https://github.com/lucaswiman/frontrun/releases
   fail closed, and deferred documentation/packaging drift from the 0.7.0 audit
   is resolved.
 
+* **DPOR now physically reverses lock acquisition order (defect #22).** Lock
+  acquires were attributed to the scheduling step *after* the one they ran
+  in, so the wakeup that reverses an acquire/acquire race landed one step too
+  late: the woken thread found the lock already held and the original order
+  replayed while ``num_explored`` kept counting. ``with lock: x = 1`` racing
+  ``with lock: x = 2`` was certified for ``x == 2``, and a read outside a lock
+  racing a pop-and-advance under it was never caught. Sync events are now
+  pinned to the step the emitting thread is executing, the engine's deferred
+  release/trylock backtracking is re-derived for that attribution, sleep sets
+  are re-propagated when an access lands after later steps were opened, a
+  wakeup-tree leaf is no longer grown into a forced path, and inline wakeup
+  insertion applies the source-set test (Algorithm 1) so N threads on one lock
+  explore exactly N! *distinct* orders. The Mazurkiewicz oracle now checks the
+  physical traces are pairwise distinct, not just the execution count. Two
+  exact counts changed for principled reasons: two workers with two locked
+  increments each explore 6 traces (C(4,2), all 6 physical orders) instead of
+  4 (3 physical orders), and the four-philosopher deadlock needs
+  ``preemption_bound=3`` (N-1 preemptions), not the 2 the misplaced wakeups
+  accidentally allowed. Real-clock DPOR also engine-blocks ``Condition.wait()``
+  until ``notify()`` instead of spinning, since the waiter-first branch is now
+  reachable.
+
 0.7.0 (2026-07-14)
 ------------------
 

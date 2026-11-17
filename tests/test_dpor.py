@@ -102,10 +102,12 @@ def test_dpor_report_and_wait_reschedules_done_current_without_timeout() -> None
             self._step_event_collector = None
             self._last_scheduled_path_id = None
             self._last_scheduled_path_id_by_thread: dict[int, int] = {}
+            self.engine = None  # no path position to pin sync events to
             self.scheduled = 0
 
         _report_and_wait = DporScheduler._report_and_wait
         report_and_wait = DporScheduler.report_and_wait
+        _pin_sync_events_to_current_step = DporScheduler._pin_sync_events_to_current_step
         _condition_wait_timeout = DporScheduler._condition_wait_timeout
         _reschedule_done_current_unlocked = DporScheduler._reschedule_done_current_unlocked
         _flush_other_pending_io_for_current_io_unlocked = DporScheduler._flush_other_pending_io_for_current_io_unlocked

@@ -13,8 +13,9 @@
 //!
 //! **Current status**: The tree structure is fully implemented, but the insert
 //! operation uses exact prefix matching rather than the paper's equivalence
-//! checking (v ∼[E] w, Lemma 6.2 p.22). This is sound but may insert
-//! redundant branches. See `ideas/optimal_dpor.md` Phase 4c.
+//! checking (v ∼[E] w, Lemma 6.2 p.22): a sequence is treated as covered only
+//! when an existing leaf is a literal prefix of it. This is sound but may
+//! insert redundant branches. See `ideas/optimal_dpor.md` Phase 4c.
 
 /// A node in the wakeup tree. Children are ordered (exploration order matters).
 /// The ordering ≺ between siblings determines sleep set removal:
@@ -148,6 +149,19 @@ impl WakeupTree {
                     // The sequence ends here; this node already exists
                     return false;
                 }
+                if child.children.is_empty() {
+                    // An existing *leaf* u with u a prefix of the new sequence
+                    // w already covers w (Def 6.2: u ⊑[E] w): exploring E.u
+                    // runs the scheduler freely from there and the races
+                    // found on the way re-derive any needed continuation.
+                    // Growing the leaf instead would turn "explore u, then
+                    // run free" into "explore u, then force w's tail",
+                    // overriding the current-thread preference and
+                    // replaying an already-explored trace (N threads on one
+                    // lock went from N! to more executions once lock events
+                    // were attributed to the step they happen in).
+                    return false;
+                }
                 let mut subtree = WakeupTree {
                     children: std::mem::take(&mut child.children),
                 };
@@ -255,6 +269,21 @@ mod tests {
         assert_eq!(tree.root_threads(), vec![0, 1]);
         let leaves = tree.leaf_sequences();
         assert_eq!(leaves.len(), 2);
+    }
+
+    #[test]
+    fn test_insert_extension_of_leaf_is_covered() {
+        let mut tree = WakeupTree::empty();
+        assert!(tree.insert(&[2]));
+        // [2] is a leaf: the longer sequence starting with it is already
+        // covered and must not grow the leaf into a forced path.
+        assert!(!tree.insert(&[2, 2, 2, 0]));
+        assert_eq!(tree.leaf_sequences(), vec![vec![2]]);
+        assert!(tree.subtree(2).is_empty());
+        // A genuinely internal node still merges new siblings beneath it.
+        assert!(tree.insert(&[1, 0]));
+        assert!(tree.insert(&[1, 2]));
+        assert_eq!(tree.subtree(1).root_threads(), vec![0, 2]);
     }
 
     #[test]

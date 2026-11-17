@@ -1261,12 +1261,31 @@ class CooperativeCondition:
     This avoids both the lost-notification bug (notifications before any
     thread is in ``wait()``) and the broadcast-instead-of-signal bug
     (``notify(1)`` waking all waiters that share the same snapshot).
+
+    Under a real-clock DPOR scheduler, an untimed ``wait()`` reports
+    ``cond_wait`` -- blocking the thread in the engine until a ``notify()``
+    that serves its ticket reports ``cond_notify`` -- instead of
+    spin-probing.  A spinning waiter looks like useful work to the DPOR
+    engine, which prefers to keep scheduling the current thread, so the
+    branch that runs the waiter before the notifier would spin it until the
+    deadlock timeout killed the execution (defect #22 made that branch
+    reachable; before it the waiter always lost the lock race).  Under a
+    virtual clock the spin is already engine-blocked via
+    ``note_blocking_spin`` and that path is unchanged.
     """
 
     def __init__(self, lock: "CooperativeLock | CooperativeRLock | None" = None) -> None:
         if lock is None:
             lock = CooperativeLock()
         self._lock: CooperativeLock | CooperativeRLock = lock
+        # Managed waiters' tickets, thread_id -> ticket, for the engine-block
+        # path: the sync reporter asks ``_wake_pending(thread_id)`` whether a
+        # waiter's ticket has been served.  Mutated while holding self._lock.
+        self._managed_tickets: dict[int, int] = {}
+        # Waiters currently engine-blocked: thread_id -> scheduler, so a
+        # notify() from an *unmanaged* thread (no sync reporter) can still
+        # unblock them via scheduler.clear_engine_block (as CooperativeEvent).
+        self._engine_blocked: dict[int, Any] = {}
         # Ticket-based notification system.
         # _next_ticket: next ticket to assign to a waiter (incremented in wait())
         # _served: how many tickets have been served (incremented in notify())
@@ -1313,6 +1332,69 @@ class CooperativeCondition:
         tickets are never "served" (no live waiter owns them).
         """
         return ticket < self._served and ticket not in self._cancelled
+
+    def _wake_pending(self, thread_id: int) -> bool:
+        """Whether managed waiter *thread_id* has been served (engine-block path).
+
+        Called by the DPOR sync reporter under the engine lock, both when the
+        waiter is about to block (a notify that already served it must not be
+        lost) and when a notifier decides which blocked waiters to wake.
+        """
+        ticket = self._managed_tickets.get(thread_id)
+        return ticket is not None and self._ticket_served(ticket)
+
+    def _report(self, event: str) -> bool:
+        """Report to the per-thread sync reporter; True if one was called."""
+        if _in_dpor_machinery():
+            return False
+        if is_sync_suppressed():
+            return False
+        reporter = get_sync_reporter()
+        if reporter is None:
+            return False
+        prev = getattr(_scheduler_tls, "_in_dpor_machinery", False)
+        _scheduler_tls._in_dpor_machinery = True
+        try:
+            reporter(event, self._object_id, self)
+        finally:
+            _scheduler_tls._in_dpor_machinery = prev
+        return True
+
+    def _poll_served_after_finish(self, my_ticket: int, window: float) -> bool:
+        """Give notifications a bounded real-time window to land once the
+        scheduler is finished.  Real sleep, not the patched one: post-_finished
+        the patched sleep is an instant no-op for managed threads, which would
+        turn this poll into a hot spin."""
+        end = _real_monotonic() + window
+        while my_ticket >= self._served and _real_monotonic() < end:
+            _real_time_sleep(0.001)
+        return my_ticket < self._served
+
+    def _wait_engine_blocked(self, scheduler: Any, thread_id: int, my_ticket: int) -> bool:
+        """Real-clock DPOR path of :meth:`wait`: engine-block until served.
+
+        Each probe runs inside a ``before_sync_retry`` turn.  The reporter
+        re-checks ``_wake_pending`` under the engine lock before blocking, and
+        ``notify()`` advances ``_served`` before it reports ``cond_notify``
+        under the same lock, so a notification landing between our check and
+        our block is never lost.
+        """
+        before_sync_retry = scheduler.before_sync_retry
+        after_sync_retry = scheduler.after_sync_retry
+        self._engine_blocked[thread_id] = scheduler
+        try:
+            while True:
+                if scheduler._error:
+                    raise SchedulerAbort("scheduler aborted")
+                if scheduler._finished or not before_sync_retry(thread_id):
+                    return self._poll_served_after_finish(my_ticket, 1.0)
+                if self._ticket_served(my_ticket):
+                    after_sync_retry(thread_id)
+                    return True
+                self._report("cond_wait")
+                after_sync_retry(thread_id)
+        finally:
+            self._engine_blocked.pop(thread_id, None)
 
     def _cancel_ticket(self, ticket: int) -> None:
         """Mark an un-served ticket as abandoned (caller holds self._lock).
@@ -1391,6 +1473,8 @@ class CooperativeCondition:
         ctx = get_context()
         if ctx is None:
             self._real_cond_tickets.add(my_ticket)
+        else:
+            self._managed_tickets[ctx[1]] = my_ticket
         # Fully release a reentrant lock (all recursion levels) so a notifier
         # on another thread can acquire it.  Releasing only one level would
         # leave count >= 1 and guarantee a stall (finding 9c).
@@ -1415,6 +1499,17 @@ class CooperativeCondition:
                 return served
             deadline, clock = _timed_wait_deadline(timeout, scheduler, thread_id, self)
             note_spin = _spin_hook_for_wait(scheduler, timeout, clock)
+            if (
+                note_spin is None
+                and timeout is None
+                and getattr(scheduler, "before_sync_retry", None) is not None
+                and get_sync_reporter() is not None
+            ):
+                # Real-clock DPOR: engine-block instead of spinning (see the
+                # class docstring).  Virtual clocks flag the spin via
+                # note_spin and take the loop below.
+                served = self._wait_engine_blocked(scheduler, thread_id, my_ticket)
+                return served
 
             # The spin-loop reads of _served below are intentionally
             # done WITHOUT holding self._lock.  This is safe because
@@ -1435,13 +1530,7 @@ class CooperativeCondition:
                         # min(0.01, remaining); no-timeout case polled for up
                         # to 1s.  We unify with a bounded poll loop.
                         now = clock.now() if clock is not None else _real_monotonic()
-                        end = _real_monotonic() + min(1.0, max(0.0, deadline - now))
-                        # Real sleep, not the patched one: post-_finished the
-                        # patched sleep is an instant no-op for managed
-                        # threads, which would turn this poll into a hot spin.
-                        while my_ticket >= self._served and _real_monotonic() < end:
-                            _real_time_sleep(0.001)
-                        served = my_ticket < self._served
+                        served = self._poll_served_after_finish(my_ticket, min(1.0, max(0.0, deadline - now)))
                         _timed_acquire_cleanup(scheduler, thread_id, clock, gave_up=False)
                         return served
                     if _timed_acquire_expired(deadline, clock):
@@ -1465,6 +1554,8 @@ class CooperativeCondition:
             self._waiters -= 1
             if ctx is None:
                 self._real_cond_tickets.discard(my_ticket)
+            else:
+                self._managed_tickets.pop(ctx[1], None)
             # Reconcile the ticket: if we are leaving WITHOUT having observed a
             # wakeup, either the ticket is still un-served (cancel it so it does
             # not absorb a future notify), or it was served between our timeout
@@ -1534,6 +1625,7 @@ class CooperativeCondition:
         # wait queue.  _advance_served returns the number actually woken and,
         # separately, how many of those were unmanaged (real_cond) waiters.
         _, real_woken = self._advance_served(max(0, n))
+        self._wake_engine_blocked()
         _note_spin_release(self._object_id)
         # Wake the real condition ONLY for the unmanaged waiters whose tickets
         # were just served (no scheduler context — they block in
@@ -1548,9 +1640,21 @@ class CooperativeCondition:
         self._check_owned()
         # Wake every live waiter; cancelled tickets are skipped for free.
         self._advance_served(self._next_ticket - self._served)
+        self._wake_engine_blocked()
         _note_spin_release(self._object_id)
         with self._real_cond:
             self._real_cond.notify_all()
+
+    def _wake_engine_blocked(self) -> None:
+        """Unblock engine-blocked waiters whose tickets ``_advance_served`` just served."""
+        if not self._report("cond_notify"):
+            # Unmanaged notifier (no sync reporter): engine-blocked waiters
+            # must still be unblocked, or they would sit until the deadlock
+            # timeout.
+            for tid, sched in list(self._engine_blocked.items()):
+                clear = getattr(sched, "clear_engine_block", None)
+                if clear is not None and self._wake_pending(tid):
+                    clear(tid)
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,33 @@ def _row_locked_worker(db: _DB):
     return worker
 
 
+def _acquisition_order_lockers(row: str, orders: list[tuple[int, ...]]):
+    """Two workers that lock *row*, recording the physical acquisition order.
+
+    ``orders`` receives one tuple per execution (the invariant snapshots and
+    clears the running list), so a test can check that an exploration really
+    ran both lock orders rather than counting executions.
+    """
+    current: list[int] = []
+
+    def make(wid: int):
+        def worker(proxy) -> None:
+            proxy.acquire_row_locks(0, [row])
+            current.append(wid)
+            proxy.io_report(row, "write")
+            proxy.report_and_wait(None, 0)
+            proxy.release_row_locks(0)
+
+        return worker
+
+    def invariant() -> bool:
+        orders.append(tuple(current))
+        current.clear()
+        return True
+
+    return [make(0), make(1)], invariant
+
+
 def test_dpor_finds_lost_update() -> None:
     db = _DB()
     worker = _rmw_worker(db)
@@ -81,11 +108,12 @@ def test_dpor_row_lock_prevents_lost_update() -> None:
         setup=db.reset,
         invariant=lambda: db.balance == 200,
     )
-    assert not result.ok
+    # Both acquisition orders are explored without ever scheduling a worker
+    # into row-lock contention (the race is reversed before the first acquire,
+    # defect #22), so the run certifies instead of failing closed.
+    assert result.ok is True
     assert result.failure_kind is None
-    assert result.failing_schedule is None
-    assert "exact replay schedule" in (result.truncation or "")
-    assert result.exhausted is False
+    assert result.failures == []
 
 
 def test_dpor_reports_worker_error() -> None:
@@ -279,64 +307,54 @@ def test_dpor_deadlock_does_not_claim_exhausted() -> None:
         setup=lambda: None,
         invariant=lambda: True,
     )
-    assert result.failure_kind is None
+    # The hold-and-wait interleaving is reachable since defect #22 (the
+    # acquire race is reversed before the first acquire), so the cycle is
+    # found rather than the run ending inconclusive on a redirect.
+    assert result.failure_kind == "deadlock"
     assert not result.exhausted  # search aborted at a deadlock; space not fully covered
 
 
-def test_dpor_lock_first_workers_fail_closed_on_contention() -> None:
-    # Regression: acquire_row_locks is not gated on the engine's scheduling
-    # turn, so when two workers' first frames are both ACQUIRE_LOCKS the relay
-    # threads race: whichever wins reports lock_acquire (and its subsequent
-    # write) at the step the engine committed to the OTHER thread. The engine's
-    # recorded schedule then disagrees with the actual executor, corrupting
-    # backtracking: the reachable acquisition-order reversal is silently pruned
-    # and the run reports iterations=1 with exhausted=True (over-claiming
-    # coverage). The in-process path cannot race here because opcode tracing
-    # means the acquiring thread already holds the turn.
+def test_dpor_lock_first_workers_explore_both_orders_deterministically() -> None:
+    # Regression: two workers whose first frames are both ACQUIRE_LOCKS. The
+    # relay commits the waiter's engine step (before_sync_retry) and the
+    # acquire is attributed to that step (defect #22), so the engine's
+    # acquire/acquire race reversal lands before the first acquire: the second
+    # order runs physically, and no worker is ever scheduled into row-lock
+    # contention. Before the fix the reversal landed one step late, the woken
+    # worker found the lock held, and the run had to fail closed every time.
     row1 = "sql:accounts:id=1"
 
-    def writing_locker(proxy) -> None:
-        proxy.acquire_row_locks(0, [row1])
-        proxy.io_report(row1, "write")
-        proxy.report_and_wait(None, 0)
-        proxy.release_row_locks(0)
-
-    # Until ACQUIRE_LOCKS is an engine-visible blocking transition, contention
-    # cannot return a constructive schedule whose steps are guaranteed to match
-    # physical statement order. It must fail closed every time.
     for attempt in range(8):
+        orders: list[tuple[int, ...]] = []
+        workers, invariant = _acquisition_order_lockers(row1, orders)
         coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
-        result = coord.explore(
-            worker_set=ThreadLauncher([writing_locker, writing_locker]),
-            setup=lambda: None,
-            invariant=lambda: True,
-        )
-        assert not result.ok, f"attempt {attempt}: row-lock contention was incorrectly certified"
+        result = coord.explore(worker_set=ThreadLauncher(workers), setup=lambda: None, invariant=invariant)
+        assert result.ok is True, f"attempt {attempt}: {result}"
         assert result.failure_kind is None
-        assert result.exhausted is False
+        assert result.iterations == 2, f"attempt {attempt}: {result}"
+        assert sorted(orders) == [(0, 1), (1, 0)], f"attempt {attempt}: physical orders {orders}"
 
 
-def test_dpor_row_lock_redirect_fails_closed_until_trace_is_exact() -> None:
-    """A modeled-lock redirect must not return an inexact proof schedule."""
+def test_dpor_row_lock_reversal_is_exact_without_redirect() -> None:
+    """Two holders of one row explore exactly the two lock orders, exhaustively.
+
+    The redirect seam (a worker scheduled into contention after its engine step
+    was committed, issue #250) is no longer reachable from this program; the
+    program that still reaches it, and the fail-closed verdict it must produce,
+    live in ``tests/test_row_lock_redirect_coverage.py``.
+    """
     row = "sql:accounts:id=1"
-
-    def holder(proxy) -> None:
-        proxy.acquire_row_locks(0, [row])
-        proxy.io_report(row, "write")
-        proxy.report_and_wait(None, 0)
-        proxy.release_row_locks(0)
+    orders: list[tuple[int, ...]] = []
+    workers, invariant = _acquisition_order_lockers(row, orders)
 
     coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, preemption_bound=None)
-    result = coord.explore(
-        worker_set=ThreadLauncher([holder, holder]),
-        setup=lambda: None,
-        invariant=lambda: True,
-    )
+    result = coord.explore(worker_set=ThreadLauncher(workers), setup=lambda: None, invariant=invariant)
 
-    assert not result.ok
+    assert result.ok is True
     assert result.failure_kind is None
-    assert result.exhausted is False
-    assert "row-lock" in (result.truncation or "")
+    assert result.exhausted is True
+    assert result.iterations == 2
+    assert sorted(orders) == [(0, 1), (1, 0)], orders
 
 
 def test_dpor_single_statement_conflict_found_deterministically() -> None:

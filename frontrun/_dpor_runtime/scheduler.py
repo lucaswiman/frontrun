@@ -222,8 +222,9 @@ class DporScheduler:
         # clock transitions to the scheduling step that selected the clock.
         self._last_scheduled_path_id: int | None = None
         # Actor-specific snapshots used only by human-facing report events.
-        # Engine sync reports intentionally use the current transition cursor
-        # (_last_scheduled_path_id), which can already name the next actor.
+        # Engine sync reports use the step the reporting thread is executing
+        # (see _pin_sync_events_to_current_step), never the transition cursor,
+        # which can already name the next actor.
         self._last_scheduled_path_id_by_thread: dict[int, int] = {}
 
         # The clock actor starts blocked: it only becomes runnable when a
@@ -642,6 +643,30 @@ class DporScheduler:
                 # stale entry whose holder has finished.
                 return apply_lock_blocked_override(scheduled, self._row_lock_blocked, self._threads_done)
 
+    def _pin_sync_events_to_current_step(self) -> None:
+        """Attribute the calling thread's upcoming sync events to the step it is executing.
+
+        Called at every scheduling point *before* ``_schedule_next`` advances
+        the engine.  ``engine.path_position - 1`` is the transition the engine
+        committed most recently; the caller is ``_current_thread``, so that is
+        the step it is running right now.  Lock acquires and releases, trylock
+        attempts and Event wake edges this thread emits before its next trace
+        hook all happen physically inside that step (the acquire after a
+        ``before_sync_retry`` turn, the release inside the ``CALL`` opcode), so
+        ``report_sync`` must land there.  Attributing them to the transition
+        ``_schedule_next`` is about to pick -- which may belong to another
+        thread -- put the wakeup for a reversed acquire one step too late:
+        the woken thread found the lock already held and the original order
+        replayed while the engine counted a fresh execution (defect #22).
+
+        The snapshot is taken under ``_condition`` while this thread owns the
+        turn, so on free-threaded Python a concurrent ``schedule()`` by another
+        thread cannot move it.
+        """
+        _pp = getattr(self.engine, "path_position", None)
+        if _pp is not None:
+            _dpor_tls._last_path_id = max(_pp - 1, 0)
+
     def wait_for_turn(self, thread_id: int) -> bool:
         """Block until it's this thread's turn. Returns False when done."""
         return self._report_and_wait(None, thread_id)
@@ -664,10 +689,8 @@ class DporScheduler:
                     elif self._current_thread == thread_id:
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
+                        self._pin_sync_events_to_current_step()
                         next_thread = self._schedule_next()
-                        _pp = self._last_scheduled_path_id
-                        if _pp is not None:
-                            _dpor_tls._last_path_id = _pp
                         self._active_sync_thread = thread_id
                         self._next_thread_after_sync = next_thread
                         self._current_thread = thread_id
@@ -876,12 +899,8 @@ class DporScheduler:
                         if self._switch_point_collector is not None and _switch_frame is not None:
                             self._capture_step_event(_switch_frame, thread_id)
                         # It's our turn. After executing one opcode, schedule next.
+                        self._pin_sync_events_to_current_step()
                         next_thread = self._schedule_next()
-                        # Preserve the engine transition cursor for sync events
-                        # emitted before this thread reaches its next trace hook.
-                        _pp = self._last_scheduled_path_id
-                        if _pp is not None:
-                            _dpor_tls._last_path_id = _pp
                         # Record switch point if thread changes and collector is active
                         if (
                             self._switch_point_collector is not None
@@ -950,10 +969,8 @@ class DporScheduler:
 
                         self._flush_other_pending_io_for_current_io_unlocked(thread_id)
                         self._flush_pending_io_for_unlocked(thread_id)
+                        self._pin_sync_events_to_current_step()
                         next_thread = self._schedule_next()
-                        _pp = self._last_scheduled_path_id
-                        if _pp is not None:
-                            _dpor_tls._last_path_id = _pp
                         self._active_io_thread = thread_id
                         self._next_thread_after_io = next_thread
                         self._current_thread = thread_id

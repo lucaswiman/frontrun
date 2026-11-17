@@ -78,7 +78,8 @@ class TestReadOutsideLockWriteUnderLock:
     ``items[head]`` under it.  ``pop_head`` pops ``items[head]`` and advances
     ``head`` under the lock.  The two serializable outcomes are
     ``('x', ['b'])`` (assign first) and ``('a', ['x'])`` (pop first).  The
-    racy outcome ``('a', ['b', 'x'])`` -- stale key written after the pop --
+    racy outcome ``('a', ['x', 'b'])`` -- stale key 1 re-created after the
+    pop, so both slots survive --
     needs ``pop_head``'s critical section to run *between* the snapshot and
     ``assign_head``'s acquire, i.e. the reversed acquisition order.
     """
@@ -125,4 +126,4 @@ class TestReadOutsideLockWriteUnderLock:
         assert result.property_holds is False, (
             f"stale-key write never observed; explored {result.num_explored} executions with outcomes {outcomes}"
         )
-        assert ("a", ("b", "x")) in outcomes, outcomes
+        assert ("a", ("x", "b")) in outcomes, outcomes

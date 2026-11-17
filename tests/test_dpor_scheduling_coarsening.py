@@ -219,6 +219,13 @@ class TestSchedulingCoarsening:
         With scheduling coarsening, N=4 pure locks terminates quickly (~121
         interleavings in ~1s).  This regression test ensures the count stays
         bounded as the search space grows from N=3 to N=4.
+
+        The deadlock cycle needs every philosopher but the last to be
+        interrupted between its two acquires, i.e. N-1 = 3 preemptions (a
+        blocked attempt is not a modeled access, so no race can hand the turn
+        on for free).  The bound used to be 2 because acquire races were
+        attributed one step late (defect #22): the woken thread ran *after*
+        the holder's acquire and built the hold-and-wait chain by accident.
         """
 
         class Table:
@@ -240,7 +247,7 @@ class TestSchedulingCoarsening:
             workers=[make_philosopher(i) for i in range(4)],
             invariant=lambda _: True,
             max_executions=5000,
-            preemption_bound=2,
+            preemption_bound=3,
             detect_io=False,
             deadlock_timeout=2.0,
             stop_on_first=False,
@@ -250,8 +257,10 @@ class TestSchedulingCoarsening:
         # The exploration should complete well under the 5000 cap.
         # After the finding-3 preemption-count fix (see the N=3 test), the
         # previously over-counted preemptions no longer suppress legal
-        # within-bound interleavings, so N=4 rose from ~121 to ~649.  Still
-        # bounded and far below the 5000 cap; the deadlock is still found.
+        # within-bound interleavings, so N=4 rose from ~121 to ~649.  With
+        # acquires attributed to their own step and preemption_bound=3 it is
+        # ~509 (the deadlock itself is found after ~15).  Still bounded and
+        # far below the 5000 cap.
         assert result.num_explored <= 1000, (
             f"Expected <=1000 interleavings for 4-philosopher pure lock example, "
             f"got {result.num_explored}. Likely a scheduling regression "

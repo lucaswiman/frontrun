@@ -296,6 +296,31 @@ class DporBytecodeRunner:
                             _saved_path_id,
                         )
                     return
+                # Cooperative Condition (real clock): a waiter engine-blocks
+                # until a notify() serves its ticket.  No wake edges are
+                # reported here -- the waiter re-acquires the condition's
+                # lock after the notifier releases it, and that acquire
+                # carries the happens-before edge.
+                if event == "cond_wait":
+                    with engine_lock:
+                        if lock_obj._wake_pending(thread_id):  # type: ignore[attr-defined]
+                            # notify() already served us (serialized by
+                            # engine_lock): blocking now would be a lost wakeup.
+                            return
+                        scheduler._lock_waiters.setdefault(stable_lock_id, set()).add(thread_id)
+                        execution.block_thread(thread_id)
+                    return
+                if event == "cond_notify":
+                    with engine_lock:
+                        waiter_set = scheduler._lock_waiters.get(stable_lock_id)
+                        if waiter_set:
+                            for waiter in sorted(waiter_set):
+                                if lock_obj._wake_pending(waiter):  # type: ignore[attr-defined]
+                                    waiter_set.discard(waiter)
+                                    execution.unblock_thread(waiter)
+                    with scheduler._condition:
+                        scheduler._condition.notify_all()
+                    return
                 with engine_lock:
                     _saved_path_id = getattr(_dpor_tls, "_last_path_id", None)
                     engine.report_sync(execution, thread_id, event, stable_lock_id, _saved_path_id)

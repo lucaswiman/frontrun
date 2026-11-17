@@ -326,6 +326,16 @@ impl Path {
     /// point with different AccessKinds, we use AccessKind::merge() to
     /// combine them: Read + WeakRead → Read (since Read already covers
     /// WeakRead's conflicts), while other mixed pairs → Write (conservative).
+    ///
+    /// An access may arrive after later positions were already opened: a
+    /// lock acquire is reported inside the thread's `before_sync_retry` turn,
+    /// *after* that turn scheduled the next transition, and async DPOR
+    /// attributes a whole await-segment to the step that scheduled it.  The
+    /// sleep sets of those later positions were propagated from a `path_id`
+    /// whose accesses were still incomplete, so they are recomputed here --
+    /// otherwise a sleeper whose future conflicts with the late access stays
+    /// asleep and every wakeup for it is filtered (three dining philosophers
+    /// lost their deadlock this way once acquires landed on the right step).
     pub fn record_access(&mut self, path_id: usize, object_id: u64, kind: AccessKind, origin: AccessOrigin) {
         if let Some(branch) = self.branches.get_mut(path_id) {
             branch.active_accesses
@@ -339,6 +349,13 @@ impl Path {
                     *existing_origin = existing_origin.merge(origin);
                 })
                 .or_insert((kind, origin));
+        }
+        // Positions `path_id + 1 .. pos` have been scheduled already; their
+        // propagated sleep sets must reflect the access just recorded.
+        // Positions at or beyond `pos` have not been entered yet and are
+        // propagated when they are.
+        for pos in (path_id + 1)..self.pos.min(self.branches.len()) {
+            self.propagate_sleep(pos);
         }
     }
 
@@ -607,6 +624,74 @@ impl Path {
         // We insert single-thread sequences [q] rather than full notdep
         // sequences v = notdep(e, E).e'. See Phase 3b for multi-step.
         self.branches[path_id].wakeup.insert(&[thread_id]);
+    }
+
+    /// Inline (single-thread) wakeup insertion for a detected race, with the
+    /// source-set test of Algorithm 1 (JACM'17 p.16 lines 7-9):
+    ///
+    /// ```text
+    ///   let v = notdep(e, E).p
+    ///   if I[E'](v) ∩ backtrack(E') = ∅ then add some q ∈ I[E'](v) to backtrack(E')
+    /// ```
+    ///
+    /// `insert_wakeup` alone adds the racing thread `p` unconditionally
+    /// (classic DPOR).  That is complete but not source-optimal: when another
+    /// thread `q` that can be moved to the front of `v` is already scheduled
+    /// for exploration at `e_pos` -- in the wakeup tree, or explored and hence
+    /// sleeping -- the subtree `E'.q` already reaches the reversal of this
+    /// race, and adding `p` as well replays an equivalent trace.  (N threads
+    /// on one lock: thread 0's acquire races thread 1's and thread 2's; once
+    /// thread 1 is in the tree at the acquire step, thread 2 does not need to
+    /// be, because thread 1's subtree reverses the 1/2 acquire race itself.)
+    ///
+    /// Initials are under-approximated by the cheapest sound member: the first
+    /// thread of `v`, which trivially commutes with nothing before it.  A
+    /// thread is only taken as an initial if it is runnable at `e_pos`, so a
+    /// step that merely became enabled after `e` never stands in for `p`.
+    pub fn insert_race_wakeup(
+        &mut self,
+        e_pos: usize,
+        e_prime_pos: usize,
+        thread_id: usize,
+        race_object: Option<u64>,
+    ) {
+        if e_pos < self.branches.len() && self.would_insert_wakeup(e_pos, thread_id) {
+            let v = self.compute_notdep(e_pos, e_prime_pos, thread_id);
+            if let Some(&q) = v.first() {
+                if q != thread_id && self.is_backtracked_at(e_pos, q) {
+                    return;
+                }
+            }
+        }
+        self.insert_wakeup(e_pos, thread_id, race_object);
+    }
+
+    /// Would `insert_wakeup(path_id, thread_id, _)` add a new root? (Cheap
+    /// pre-check so `insert_race_wakeup` only pays for `compute_notdep` when
+    /// an insertion is actually on the table.)
+    fn would_insert_wakeup(&self, path_id: usize, thread_id: usize) -> bool {
+        let branch = &self.branches[path_id];
+        matches!(
+            branch.threads.get(thread_id).copied(),
+            Some(ThreadStatus::Pending) | Some(ThreadStatus::Yield)
+        ) && !branch.sleep.get(thread_id).copied().unwrap_or(false)
+            && !branch.propagated_sleep_accesses.contains_key(&thread_id)
+            && !branch.wakeup.contains_thread(thread_id)
+    }
+
+    /// Is `thread_id` runnable at `path_id` and already in `backtrack(E') ∪
+    /// sleep(E')` there -- a root of the wakeup tree, locally explored
+    /// (Visited), or sleeping by propagation from an earlier position?
+    fn is_backtracked_at(&self, path_id: usize, thread_id: usize) -> bool {
+        let branch = &self.branches[path_id];
+        let runnable = matches!(
+            branch.threads.get(thread_id).copied(),
+            Some(ThreadStatus::Pending) | Some(ThreadStatus::Yield) | Some(ThreadStatus::Visited)
+        );
+        runnable
+            && (branch.wakeup.contains_thread(thread_id)
+                || branch.sleep.get(thread_id).copied().unwrap_or(false)
+                || branch.propagated_sleep_accesses.contains_key(&thread_id))
     }
 
     /// Advance to the next unexplored execution path.

@@ -34,22 +34,38 @@ ROW = "sql:accounts:id=1"
 class _DB:
     def __init__(self) -> None:
         self.balance = 0
+        self.flag = 0
 
     def reset(self) -> None:
         self.balance = 0
+        self.flag = 0
 
 
 def _row_locked_worker(db: _DB):
-    """xproc worker: RMW on a shared value under a modeled row lock."""
+    """xproc worker: snapshot outside the row lock, RMW under it.
+
+    Since defect #22 the acquire/acquire race on the row lock is reversed
+    *before* the first acquire, so two plain locked RMWs no longer schedule a
+    worker into contention.  The unlocked read of ``db.flag`` races the other
+    worker's write of it inside the critical section; reversing that race
+    wakes this worker mid-critical-section, so its ``acquire_row_locks`` finds
+    the lock held and takes the redirect seam.
+    """
 
     def worker(proxy: Any) -> None:
+        snapshot = db.flag
+        proxy.io_report("sql:accounts:id=9", "read")
+        proxy.report_and_wait(None, 0)
         proxy.acquire_row_locks(0, [ROW])
         proxy.report_and_wait(None, 0)
         current = db.balance
         proxy.io_report(ROW, "read")
         proxy.report_and_wait(None, 0)
         db.balance = current + 100
+        db.flag = snapshot + 1
         proxy.io_report(ROW, "write")
+        proxy.io_report("sql:accounts:id=9", "write")
+        proxy.report_and_wait(None, 0)
         proxy.release_row_locks(0)
 
     return worker
@@ -82,13 +98,18 @@ def _locked_increment(state: _DB) -> None:
     committed by ``before_sync_retry`` BEFORE ``_acquire_pending_row_locks``
     can discover contention and redirect execution to the holder — the exact
     issue #250 seam — all without needing a real database driver.
+
+    The unlocked ``state.flag`` snapshot is what still reaches the seam after
+    defect #22 (see ``_row_locked_worker``).
     """
+    snapshot = state.flag
     tx_store()._pending_row_locks = [ROW]
     _dpor_schedule_and_suppress_sync(
         False, "SELECT balance FROM accounts WHERE id = 1 FOR UPDATE", None, "qmark", lambda: None
     )
     current = state.balance
     state.balance = current + 100
+    state.flag = snapshot + 1
     _release_dpor_row_locks(None)
 
 
