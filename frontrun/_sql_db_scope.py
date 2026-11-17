@@ -152,9 +152,7 @@ def _normalize_db_identity(kind: str, *args: Any, **kwargs: Any) -> str | None:
             if query.get("mode", "").lower() == "memory" or parsed.path == ":memory:":
                 # Named shared-memory databases are identified by their URI;
                 # they are not filesystem paths and must not be realpathed.
-                canonical_query = "&".join(f"{key}={query[key]}" for key in sorted(query))
-                suffix = f"?{canonical_query}" if canonical_query else ""
-                return f"sqlite-memory-uri:{parsed.path}{suffix}"
+                return f"sqlite-memory-uri:{unquote(parsed.path)}"
             uri_path = unquote(parsed.path)
             if parsed.netloc and parsed.netloc not in ("", "localhost"):
                 uri_path = f"//{parsed.netloc}{uri_path}"

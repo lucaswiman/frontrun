@@ -48,8 +48,8 @@ def _release_dpor_row_locks(resources: list[str] | None = None) -> None:
     store = tx_store()
     held = getattr(store, "_held_row_locks", None)
     sqlite_write_locks = getattr(store, "_sqlite_write_locks", None)
-    if resources is None and held and sqlite_write_locks:
-        resources = [resource for resource in held if resource not in sqlite_write_locks]
+    if resources is None and sqlite_write_locks:
+        resources = sorted((held or set()).difference(sqlite_write_locks))
     if held is not None:
         if resources is None:
             held.clear()

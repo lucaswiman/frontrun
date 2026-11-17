@@ -19,6 +19,7 @@ shared with the sync module via ``_report_sql_access``.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -40,10 +41,12 @@ from frontrun._sql_cursor import (
     _unregister_connection_db_scope,
     suppress_sql_write,
 )
+from frontrun._sql_db_scope import _get_connection_db_scope, _normalize_db_identity, _register_connection_db_scope
 from frontrun._sql_sqlite_write_lock import (
     is_sqlite_write_lock,
     queue_sqlite_write_lock,
     settle_sqlite_write_lock,
+    sqlite_connection,
     sqlite_write_lock_for,
 )
 from frontrun._sql_transactions import _apply_tx_op_after_success, reset_connection_state
@@ -150,6 +153,7 @@ async def _report_and_execute_sql_async(
     call_orig: Callable[[], Awaitable[Any]],
     statement_row_locks: list[str] | None = None,
     release_locks_on_error: bool | None = None,
+    ends_transaction: bool = False,
 ) -> tuple[Any, bool]:
     """Run the common report/defer/schedule/execute/finalize SQL pipeline."""
     deferred_tx_end: list[Any] = []
@@ -164,15 +168,26 @@ async def _report_and_execute_sql_async(
     )
     deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
     acquired: list[str] = [] if statement_row_locks is None else statement_row_locks
+    native = sqlite_connection(db_obj)
     sqlite_write_lock = sqlite_write_lock_for(db_obj, query)
     if sqlite_write_lock is not None:
         queue_sqlite_write_lock(sqlite_write_lock)
 
     async def execute() -> Any:
+        ended = False
         try:
-            return await _execute_and_finalize_tx_end(call_orig, deferred_tx_op, db_obj)
+            result = await _execute_and_finalize_tx_end(call_orig, deferred_tx_op, db_obj)
+            if ends_transaction and native is not None and native.in_transaction:
+                ended = await db_obj._execute(getattr, native, "autocommit", None) is False
+            return result
+        except asyncio.CancelledError:
+            if native is not None:
+                # The cancelled await left its operation in aiosqlite's FIFO.
+                # Drain it before inspecting the physical transaction state.
+                await db_obj._execute(lambda: None)
+            raise
         finally:
-            settle_sqlite_write_lock(db_obj, acquired)
+            settle_sqlite_write_lock(native, acquired, transaction_ended=ended)
 
     result = await _dpor_schedule_and_suppress_async(
         reported,
@@ -193,10 +208,9 @@ async def _intercept_connection_method_async(
     """Model async connection commit/rollback and clean up close state."""
     with external_operation_scope():
         if operation == "CLOSE":
-            try:
-                result = await original_method(self, *args, **kwargs)
-            finally:
-                settle_sqlite_write_lock(self)
+            native = sqlite_connection(self)
+            result = await original_method(self, *args, **kwargs)
+            settle_sqlite_write_lock(native, transaction_ended=True)
             if getattr(tx_store(), "_tx_connection", None) is self:
                 reset_connection_state()
             _unregister_connection_db_scope(self)
@@ -214,6 +228,7 @@ async def _intercept_connection_method_async(
             paramstyle="format",
             call_orig=_execute,
             release_locks_on_error=False,
+            ends_transaction=True,
         )
         return result
 
@@ -221,10 +236,7 @@ async def _intercept_connection_method_async(
 def _intercept_connection_close_sync(original_method: Any, self: Any, *args: Any, **kwargs: Any) -> Any:
     """Clean up modeled state around a synchronous async-driver close method."""
     with external_operation_scope():
-        try:
-            result = original_method(self, *args, **kwargs)
-        finally:
-            settle_sqlite_write_lock(self)
+        result = original_method(self, *args, **kwargs)
         if getattr(tx_store(), "_tx_connection", None) is self:
             reset_connection_state()
         _unregister_connection_db_scope(self)
@@ -252,7 +264,31 @@ async def _intercept_execute_async(
     """
     insert_match = _RE_INSERT_TABLE.match(operation) if isinstance(operation, str) else None
     update_match = _RE_UPDATE_TABLE.match(operation) if isinstance(operation, str) else None
-    _detect_autobegin(self)
+    # aiosqlite.Cursor._conn is its owning async Connection.
+    db_obj = self if sqlite_connection(self) is not None else getattr(self, "_conn", self)
+    if sqlite_connection(db_obj) is not None and _get_dpor_context() is not None:
+        if _get_connection_db_scope(db_obj) is None:
+            # Connections opened before patching (including imported connect
+            # aliases) lack connect-time metadata. Read the main filename on
+            # the driver's thread, bypassing application row factories.
+            native = db_obj._conn
+
+            def main_filename() -> str:
+                import sqlite3
+
+                cursor = sqlite3.Connection.cursor(native)
+                try:
+                    cursor.row_factory = None
+                    cursor.execute("PRAGMA database_list")
+                    return next(path for _, name, path in cursor if name == "main")
+                finally:
+                    cursor.close()
+
+            path = await db_obj._execute(main_filename)
+            identity = _normalize_db_identity("sqlite", path) if path else None
+            _register_connection_db_scope(db_obj, identity or "sqlite-memory:unknown")
+
+    _detect_autobegin(db_obj)
 
     async def _execute() -> Any:
         if parameters is not None:
@@ -263,7 +299,7 @@ async def _intercept_execute_async(
     result, reported = await _report_and_execute_sql_async(
         operation,
         parameters,
-        db_obj=self,
+        db_obj=db_obj,
         is_executemany=is_executemany,
         paramstyle=paramstyle,
         call_orig=_execute,
@@ -387,7 +423,21 @@ def _patch_aiosqlite() -> None:
     except ImportError:
         return
 
-    # Patch both Cursor and Connection — users commonly use conn.execute()
+    def scoped_connect(original: Any) -> Any:
+        def connect(database: Any, *args: Any, **kwargs: Any) -> Any:
+            conn = original(database, *args, **kwargs)
+            identity = _normalize_db_identity("sqlite", database, **kwargs)
+            _register_connection_db_scope(conn, identity or f"sqlite-memory:{id(conn)}")
+            return conn
+
+        return wrap_method_metadata(connect, original, name="connect")
+
+    patch_method(
+        aiosqlite, "connect", originals=_ASYNC_ORIGINAL_METHODS, patches=_ASYNC_PATCHES, make_wrapper=scoped_connect
+    )
+
+    from aiosqlite.context import contextmanager as cursor_context  # type: ignore[import-untyped]
+
     for target_cls in (aiosqlite.Cursor, aiosqlite.Connection):
 
         def _make_patched(orig: Any, method_name: str) -> Any:
@@ -399,9 +449,14 @@ def _patch_aiosqlite() -> None:
                     orig, self, sql, parameters, is_executemany=method_name == "executemany", paramstyle="qmark"
                 )
 
-            return wrap_method_metadata(_patched, orig, name=method_name)
+            # Connection helpers return an awaitable async context manager.
+            wrapper = cursor_context(_patched) if target_cls is aiosqlite.Connection else _patched
+            return wrap_method_metadata(wrapper, orig, name=method_name)
 
-        _patch_async_methods(target_cls, ("execute", "executemany"), _make_patched)
+        methods = ("execute", "executemany")
+        if target_cls is aiosqlite.Connection:
+            methods += ("execute_insert", "execute_fetchall")
+        _patch_async_methods(target_cls, methods, _make_patched)
     _patch_async_connection_methods(aiosqlite.Connection)
 
 

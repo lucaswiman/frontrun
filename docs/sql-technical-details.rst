@@ -240,18 +240,17 @@ statement and holds it until the transaction ends; an autocommit write holds
 it for the statement.  A second writer would wait in SQLite's busy handler,
 inside the C call, where the scheduler cannot run the holder.
 
-Frontrun therefore arbitrates the lock itself, as a row lock on one resource
-per database (``sqlite:write-lock:<db scope>``).  It is acquired before any
-statement that may write (anything not positively identified as a read-only
-query or as transaction control that takes no lock) and released when the
-connection's ``in_transaction`` becomes false: after the statement, after
-``commit()`` / ``rollback()`` (including a ``with conn:`` block), or after
-``close()``.  A statement that fails inside an open transaction keeps the
-lock, as SQLite does.  Like other row-lock waits, waiting for it marks the
-run's schedule as redirected, so ``exhausted`` is not claimed.
+The scheduler acquires a database-scoped writer lock before any modeled row
+locks. It releases the writer at transaction end, including when Python's
+``autocommit=False`` immediately opens the next deferred transaction. A
+statement error can leave the physical transaction and its lock active.
 
-Reader/writer blocking in rollback-journal mode (a writer's commit waiting
-for readers' shared locks) is not modeled; WAL mode readers never block.
+The model covers writers on the main database through ``execute`` and
+``executemany`` and aiosqlite's ``execute_insert`` and ``execute_fetchall``.
+SQLite can also block on rollback-journal readers, an
+attached database, or an unconsumed autocommit ``RETURNING`` cursor. Those
+waits can still reach the driver's busy handler. The writer model assumes a
+separate connection for each concurrent worker.
 
 
 Formal Verification with TLA+

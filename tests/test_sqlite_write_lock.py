@@ -1,22 +1,13 @@
-"""SQLite's database write lock is modeled as a scheduler-level lock.
-
-SQLite allows one writer per database file. A connection takes the write lock
-at ``BEGIN IMMEDIATE`` / ``BEGIN EXCLUSIVE`` or at its first write statement,
-and holds it until the transaction ends (for an autocommit write, until the
-statement finishes). A second writer waits in SQLite's busy handler, inside the
-C call, where the cooperative scheduler cannot run the holder. frontrun must
-therefore arbitrate the write lock itself: a worker that would block on it is
-parked by the scheduler until the holder's transaction ends.
-"""
+"""SQLite database writer arbitration and transaction boundaries."""
 
 from __future__ import annotations
 
 import asyncio
-import os
 import sqlite3
 import sys
-import tempfile
 from collections.abc import Callable
+from itertools import count
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,8 +21,8 @@ _JOURNAL_MODES = ["wal", "delete"]
 
 
 class _Db:
-    def __init__(self, journal_mode: str) -> None:
-        self.path = os.path.join(tempfile.mkdtemp(prefix="frontrun-sqlite-write-lock-"), "db.sqlite")
+    def __init__(self, path: Path, journal_mode: str) -> None:
+        self.path = path
         conn = sqlite3.connect(self.path, isolation_level=None)
         conn.execute(f"PRAGMA journal_mode={journal_mode}")
         conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)")
@@ -51,12 +42,14 @@ class _Db:
 
 
 def _explore(
+    tmp_path: Path,
     journal_mode: str,
     workers: list[Callable[[_Db], None]],
     invariant: Callable[[_Db], bool],
 ) -> Any:
+    runs = count()
     return frontrun.explore(
-        setup=lambda: _Db(journal_mode),
+        setup=lambda: _Db(tmp_path / f"{next(runs)}.sqlite", journal_mode),
         workers=workers,
         invariant=invariant,
         max_executions=40,
@@ -112,62 +105,44 @@ def _increment_in_context_manager(db: _Db) -> None:
     ],
     ids=["immediate", "deferred", "implicit", "context-manager"],
 )
-def test_write_transactions_serialize(journal_mode: str, worker: Callable[[_Db], None]) -> None:
-    result = _explore(journal_mode, [worker, worker], lambda db: db.value() == 2)
-    assert result.property_holds is True, result.explanation or getattr(result, "inconclusive_reason", None)
-
-
-def test_immediate_and_deferred_writers_share_database_lock() -> None:
-    result = _explore("wal", [_increment_in_immediate_transaction, _increment_in_deferred_transaction], lambda db: db.value() == 2)
+def test_write_transactions_serialize(tmp_path: Path, journal_mode: str, worker: Callable[[_Db], None]) -> None:
+    result = _explore(tmp_path, journal_mode, [worker, worker], lambda db: db.value() == 2)
     result.assert_holds()
 
 
-def _two_transactions(begin: str) -> Callable[[_Db], None]:
+def test_immediate_and_deferred_writers_share_database_lock(tmp_path: Path) -> None:
+    result = _explore(
+        tmp_path,
+        "wal",
+        [_increment_in_immediate_transaction, _increment_in_deferred_transaction],
+        lambda db: db.value() == 2,
+    )
+    result.assert_holds()
+
+
+def _two_transactions(mode: str) -> Callable[[_Db], None]:
     def worker(db: _Db) -> None:
-        conn = db.connect(isolation_level=None)
-        conn.execute(begin)
-        conn.execute("UPDATE t SET v = 1 WHERE id = 1")
-        conn.execute("COMMIT")
-        conn.execute(begin)
-        conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
-        conn.execute("COMMIT")
+        if mode == "pep249":
+            conn = db.connect(autocommit=False)
+        elif mode in {"implicit", "context-manager"}:
+            conn = db.connect()
+        else:
+            conn = db.connect(isolation_level=None)
+        for sql in ("UPDATE t SET v = 1 WHERE id = 1", "UPDATE t SET v = v + 1 WHERE id = 1"):
+            if mode == "context-manager":
+                with conn:
+                    conn.execute(sql)
+            else:
+                if mode.startswith("BEGIN"):
+                    conn.execute(mode)
+                conn.execute(sql)
+                if mode.startswith("BEGIN"):
+                    conn.execute("COMMIT")
+                elif mode != "autocommit":
+                    conn.commit()
         conn.close()
 
     return worker
-
-
-def _two_implicit_transactions(db: _Db) -> None:
-    conn = db.connect()
-    conn.execute("UPDATE t SET v = 1 WHERE id = 1")
-    conn.commit()
-    conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
-    conn.commit()
-    conn.close()
-
-
-def _two_pep249_transactions(db: _Db) -> None:
-    conn = db.connect(autocommit=False)
-    conn.execute("UPDATE t SET v = 1 WHERE id = 1")
-    conn.commit()
-    conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
-    conn.commit()
-    conn.close()
-
-
-def _two_context_managers(db: _Db) -> None:
-    conn = db.connect()
-    with conn:
-        conn.execute("UPDATE t SET v = 1 WHERE id = 1")
-    with conn:
-        conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
-    conn.close()
-
-
-def _two_autocommit_writes(db: _Db) -> None:
-    conn = db.connect(isolation_level=None)
-    conn.execute("UPDATE t SET v = 1 WHERE id = 1")
-    conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
-    conn.close()
 
 
 def _times_ten(db: _Db) -> None:
@@ -180,21 +155,21 @@ def _times_ten(db: _Db) -> None:
 
 @pytest.mark.parametrize("journal_mode", _JOURNAL_MODES)
 @pytest.mark.parametrize(
-    "first",
+    "mode",
     [
-        _two_transactions("BEGIN IMMEDIATE"),
-        _two_transactions("BEGIN"),
-        _two_implicit_transactions,
-        pytest.param(_two_pep249_transactions, marks=pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 249 mode")),
-        _two_context_managers,
-        _two_autocommit_writes,
+        "BEGIN IMMEDIATE",
+        "BEGIN",
+        "implicit",
+        pytest.param("pep249", marks=pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 249 mode")),
+        "context-manager",
+        "autocommit",
     ],
     ids=["immediate", "deferred", "implicit", "pep249", "context-manager", "autocommit"],
 )
-def test_write_lock_is_released_when_the_transaction_ends(journal_mode: str, first: Callable[[_Db], None]) -> None:
+def test_write_lock_is_released_when_the_transaction_ends(tmp_path: Path, journal_mode: str, mode: str) -> None:
     # Serial outcomes are 2 (times-ten first) and 20; 11 needs the second
     # worker's transaction to run between the first worker's two.
-    result = _explore(journal_mode, [first, _times_ten], lambda db: db.value() in (2, 20))
+    result = _explore(tmp_path, journal_mode, [_two_transactions(mode), _times_ten], lambda db: db.value() in (2, 20))
     assert result.property_holds is False, getattr(result, "inconclusive_reason", None)
     assert result.reproduction_successes == result.reproduction_attempts == 3
 
@@ -211,10 +186,10 @@ def _increment_after_failed_insert(db: _Db) -> None:
 
 
 @pytest.mark.parametrize("journal_mode", _JOURNAL_MODES)
-def test_failed_statement_keeps_the_transaction_write_lock(journal_mode: str) -> None:
+def test_failed_statement_keeps_the_transaction_write_lock(tmp_path: Path, journal_mode: str) -> None:
     worker = _increment_after_failed_insert
-    result = _explore(journal_mode, [worker, worker], lambda db: db.value() == 2)
-    assert result.property_holds is True, result.explanation or getattr(result, "inconclusive_reason", None)
+    result = _explore(tmp_path, journal_mode, [worker, worker], lambda db: db.value() == 2)
+    result.assert_holds()
 
 
 async def _aio_increment_in_immediate_transaction(db: _Db) -> None:
@@ -259,22 +234,13 @@ async def _aio_increment_after_failed_insert(db: _Db) -> None:
     ],
     ids=["immediate", "implicit", "failed-statement"],
 )
-def test_aiosqlite_write_transactions_serialize(journal_mode: str, worker: Callable[[_Db], Any]) -> None:
+def test_aiosqlite_write_transactions_serialize(
+    tmp_path: Path, journal_mode: str, worker: Callable[[_Db], Any]
+) -> None:
     pytest.importorskip("aiosqlite")
 
-    async def run() -> Any:
-        return await frontrun.explore(
-            setup=lambda: _Db(journal_mode),
-            workers=[worker, worker],
-            invariant=lambda db: db.value() == 2,
-            max_executions=40,
-            timeout_per_run=3.0,
-            total_timeout=120,
-            reproduce_on_failure=3,
-        )
-
-    result = asyncio.run(run())
-    assert result.property_holds is True, result.explanation or getattr(result, "inconclusive_reason", None)
+    result = asyncio.run(_explore(tmp_path, journal_mode, [worker, worker], lambda db: db.value() == 2))
+    result.assert_holds()
 
 
 @pytest.mark.parametrize(
@@ -289,6 +255,7 @@ def test_aiosqlite_write_transactions_serialize(journal_mode: str, worker: Calla
         ("COMMIT", False),
         ("END", False),
         ("END /* transaction */", False),
+        ("-- mode\nBEGIN /* writer */ IMMEDIATE", True),
         ("ROLLBACK", False),
         ("SAVEPOINT sp", False),
         ("RELEASE sp", False),
