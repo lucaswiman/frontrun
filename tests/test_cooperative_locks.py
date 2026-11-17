@@ -189,14 +189,9 @@ def test_trylock_retry_timeout_is_inconclusive_not_false_proof():
 
 
 def test_timed_out_trylock_loop_exits_before_exploration_returns() -> None:
-    held: list[CooperativeLock] = []
+    held = CooperativeLock()
+    held.acquire()
     exited = threading.Event()
-
-    def setup() -> CooperativeLock:
-        lock = CooperativeLock()
-        lock.acquire()
-        held.append(lock)
-        return lock
 
     def worker(lock: CooperativeLock) -> None:
         try:
@@ -208,12 +203,12 @@ def test_timed_out_trylock_loop_exits_before_exploration_returns() -> None:
 
     try:
         result = frontrun.explore(
-            setup=setup, workers=[worker], invariant=lambda _: True, detect_io=False, timeout_per_run=0.2
+            setup=lambda: held, workers=[worker], invariant=lambda _: True, detect_io=False, timeout_per_run=0.2
         )
         assert result.property_holds is None
         assert exited.is_set(), "trylock worker survived its timed-out run"
     finally:
-        held[0].release()
+        held.release()
         exited.wait(2)
 
 

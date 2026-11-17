@@ -49,8 +49,8 @@ All releases: https://github.com/lucaswiman/frontrun/releases
   is resolved.
 
 * DPOR covers missed repeated and nested lock orders, preserves bounded race
-  reversals, and wakes notified condition waiters. Cross-process lock redirects
-  with inexact replay schedules are inconclusive.
+  reversals, and wakes notified condition waiters. Timed-out trylock loops exit.
+  Cross-process lock redirects with inexact replay schedules are inconclusive.
 
 0.7.0 (2026-07-14)
 ------------------

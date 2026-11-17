@@ -154,6 +154,13 @@ class DporBytecodeRunner:
         def _sync_reporter(event: str, obj_id: int, lock_obj: object) -> None:
             from frontrun._cooperative import _scheduler_tls
 
+            # A timed-out run has no usable continuation. Let holders release
+            # their physical locks and stop waiters retrying a failed probe.
+            if isinstance(scheduler._error, TimeoutError):
+                if event == "lock_attempt_fail":
+                    raise SchedulerAbort("scheduler timed out")
+                return
+
             # Use stable IDs so that lock identifiers are consistent across
             # DPOR executions (each execution creates fresh state via setup(),
             # so raw id() values change).  This is the same mechanism used for
