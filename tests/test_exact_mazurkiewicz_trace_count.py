@@ -59,6 +59,26 @@ class _Slot:
         self.value = value
 
 
+def _assert_distinct_traces(observed: list[tuple[object, ...]], expected: int, label: str) -> None:
+    """Assert the physically executed traces are pairwise Mazurkiewicz-inequivalent.
+
+    ``num_explored`` counts the executions the engine *believes* are distinct.
+    That is vacuous on its own: an engine that keeps replaying the same
+    physical order while counting fresh executions still reports N!.  Each
+    test therefore records an observable that determines the trace (the
+    order in which critical sections ran, or which thread wrote last to each
+    variable) and demands that the ``expected`` executions produced
+    ``expected`` *different* observations.
+    """
+    assert len(observed) == expected, (
+        f"{label}: expected {expected} executions to run the invariant, got {len(observed)}"
+    )
+    distinct = sorted(set(observed), key=repr)
+    assert len(distinct) == expected, (
+        f"{label}: {expected} executions but only {len(distinct)} distinct physical traces: {distinct}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Case 1: N threads mutating independent state
 # ---------------------------------------------------------------------------
@@ -203,11 +223,19 @@ class TestTwoThreadsSharedState:
 
             return thread_fn
 
+        # The last writer of each slot determines the order of that slot's
+        # dependent pair, so the vector of final values identifies the trace.
+        observed: list[tuple[object, ...]] = []
+
+        def invariant(s: State) -> bool:
+            observed.append(tuple(v.value for v in s.vars))
+            return True
+
         expected = 2**n
         result = frontrun.explore(
             setup=State,
             workers=[make_thread(0), make_thread(1)],
-            invariant=lambda s: True,
+            invariant=invariant,
             max_executions=max(expected * 10, 1000),
             preemption_bound=None,
             stop_on_first=False,
@@ -220,6 +248,7 @@ class TestTwoThreadsSharedState:
             f"N={n}, search={search}: Expected exactly {expected} Mazurkiewicz traces (2^{n}), "
             f"got {result.num_explored}"
         )
+        _assert_distinct_traces(observed, expected, f"N={n}, search={search}")
 
 
 # ---------------------------------------------------------------------------
@@ -274,19 +303,29 @@ class TestNThreadsWithLock:
             def __init__(self) -> None:
                 self.lock = threading.Lock()
                 self.shared = _Slot()
+                # Physical order in which the critical sections ran.  The
+                # lock serializes them, so this list *is* the trace.
+                self.order: list[int] = []
 
         def make_thread(tid: int):  # noqa: ANN202
             def thread_fn(s: State) -> None:
                 with s.lock:
                     s.shared.value = tid
+                    s.order.append(tid)
 
             return thread_fn
+
+        observed: list[tuple[object, ...]] = []
+
+        def invariant(s: State) -> bool:
+            observed.append(tuple(s.order))
+            return True
 
         expected = math.factorial(n)
         result = frontrun.explore(
             setup=State,
             workers=[make_thread(i) for i in range(n)],
-            invariant=lambda s: True,
+            invariant=invariant,
             max_executions=max(expected * 10, 1000),
             preemption_bound=None,
             stop_on_first=False,
@@ -298,6 +337,10 @@ class TestNThreadsWithLock:
         assert result.num_explored == expected, (
             f"N={n}, search={search}: Expected exactly {expected} Mazurkiewicz traces ({n}!), got {result.num_explored}"
         )
+        # Every permutation of the critical sections must have physically run
+        # (defect #22: the engine used to count N! executions while replaying
+        # the same acquisition order every time).
+        _assert_distinct_traces(observed, expected, f"N={n}, search={search}")
 
 
 # ---------------------------------------------------------------------------
@@ -341,19 +384,27 @@ class TestTwoThreadsSharedStateWithLock:
             def __init__(self) -> None:
                 self.lock = threading.Lock()
                 self.vars = [_Slot() for _ in range(n)]
+                self.order: list[int] = []
 
         def make_thread(tid: int):  # noqa: ANN202
             def thread_fn(s: State) -> None:
                 with s.lock:
                     for v in s.vars:
                         v.value = tid
+                    s.order.append(tid)
 
             return thread_fn
+
+        observed: list[tuple[object, ...]] = []
+
+        def invariant(s: State) -> bool:
+            observed.append(tuple(s.order))
+            return True
 
         result = frontrun.explore(
             setup=State,
             workers=[make_thread(0), make_thread(1)],
-            invariant=lambda s: True,
+            invariant=invariant,
             max_executions=100,
             preemption_bound=None,
             stop_on_first=False,
@@ -366,6 +417,7 @@ class TestTwoThreadsSharedStateWithLock:
             f"N={n}, search={search}: Expected exactly 2 Mazurkiewicz traces (lock serializes), "
             f"got {result.num_explored}"
         )
+        _assert_distinct_traces(observed, 2, f"N={n}, search={search}")
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +536,7 @@ class TestFileIOTraceCount:
         class State:
             def __init__(self) -> None:
                 self.lock = threading.Lock()
+                self.order: list[int] = []
                 with open(path, "w") as f:
                     f.write("0")
 
@@ -492,17 +545,22 @@ class TestFileIOTraceCount:
                 with s.lock:
                     with open(path, "w") as f:
                         f.write(str(tid))
+                    s.order.append(tid)
 
             return thread_fn
 
-        # N! traces: synced I/O respects lock HB
-        import math
+        observed: list[tuple[object, ...]] = []
 
+        def invariant(s: State) -> bool:
+            observed.append(tuple(s.order))
+            return True
+
+        # N! traces: synced I/O respects lock HB
         expected = math.factorial(n)
         result = frontrun.explore(
             setup=State,
             workers=[make_thread(i) for i in range(n)],
-            invariant=lambda s: True,
+            invariant=invariant,
             max_executions=max(expected * 10, 1000),
             preemption_bound=None,
             stop_on_first=False,
@@ -511,6 +569,7 @@ class TestFileIOTraceCount:
         )
 
         assert result.num_explored == expected, f"N={n}: Expected {expected} traces (N!), got {result.num_explored}"
+        _assert_distinct_traces(observed, expected, f"N={n}")
 
 
 # ---------------------------------------------------------------------------
