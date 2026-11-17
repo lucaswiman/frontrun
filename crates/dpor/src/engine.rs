@@ -1334,6 +1334,21 @@ mod tests {
     }
 
     #[test]
+    fn a_blocked_prefix_cannot_put_a_contender_to_sleep() {
+        let (acq, rel) = ("lock_acquire", "lock_release");
+        let ops = [
+            vec![(acq, 0), (acq, 1), (rel, 1), (rel, 0)],
+            vec![(acq, 0), (rel, 0)],
+            vec![(acq, 1), (acq, 0), (rel, 0), (rel, 1)],
+        ];
+        let mut engine = DporEngine::new(3, None, 100, None, SearchStrategy::Dfs);
+        let (_, found) = explore_lock_program(&mut engine, &ops, |deadlock, acquisitions| {
+            !deadlock && acquisitions == [(2, 1), (2, 0), (1, 0), (0, 0), (0, 1)]
+        });
+        assert!(found, "a prior blocked attempt hid a legal acquisition order");
+    }
+
+    #[test]
     fn test_four_philosophers_lock_only() {
         // Pure lock-ordering deadlock: acquire left, acquire right, release right, release left
         let mut engine = DporEngine::new(4, Some(2), 100_000, Some(50000), SearchStrategy::Dfs);
