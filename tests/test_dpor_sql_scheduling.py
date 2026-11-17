@@ -99,6 +99,12 @@ class TestSqlSchedulerBoundaryPerOp:
             def after_sync_retry(self, thread_id: int) -> None:
                 calls.append(("after", thread_id))
 
+            def acquire_row_locks(self, thread_id: int, resource_ids: list[str]) -> list[str]:
+                return resource_ids
+
+            def release_row_locks(self, thread_id: int, resource_ids: list[str] | None) -> None:
+                pass
+
         set_dpor_scheduler(Scheduler())
         set_dpor_thread_id(0)
         set_io_reporter(lambda r, k: None)  # so reported=True
