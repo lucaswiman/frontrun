@@ -11,6 +11,7 @@ parked by the scheduler until the holder's transaction ends.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -200,6 +201,66 @@ def test_failed_statement_keeps_the_transaction_write_lock(journal_mode: str) ->
     assert result.property_holds is True, result.explanation or getattr(result, "inconclusive_reason", None)
 
 
+async def _aio_increment_in_immediate_transaction(db: _Db) -> None:
+    import aiosqlite  # type: ignore[import-untyped]
+
+    async with aiosqlite.connect(db.path, timeout=_BUSY_TIMEOUT, isolation_level=None) as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        cursor = await conn.execute("SELECT v FROM t WHERE id = 1")
+        row = await cursor.fetchone()
+        await conn.execute("UPDATE t SET v = ? WHERE id = 1", (row[0] + 1,))
+        await conn.execute("COMMIT")
+
+
+async def _aio_increment_in_implicit_transaction(db: _Db) -> None:
+    import aiosqlite  # type: ignore[import-untyped]
+
+    async with aiosqlite.connect(db.path, timeout=_BUSY_TIMEOUT) as conn:
+        await conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
+        await conn.execute("UPDATE t SET v = v + 0 WHERE id = 1")
+        await conn.commit()
+
+
+async def _aio_increment_after_failed_insert(db: _Db) -> None:
+    import aiosqlite  # type: ignore[import-untyped]
+
+    async with aiosqlite.connect(db.path, timeout=_BUSY_TIMEOUT, isolation_level=None) as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        await conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
+        with pytest.raises(sqlite3.IntegrityError):
+            await conn.execute("INSERT INTO t VALUES (1, 0)")
+        await conn.execute("UPDATE t SET v = v + 0 WHERE id = 1")
+        await conn.execute("COMMIT")
+
+
+@pytest.mark.parametrize("journal_mode", _JOURNAL_MODES)
+@pytest.mark.parametrize(
+    "worker",
+    [
+        _aio_increment_in_immediate_transaction,
+        _aio_increment_in_implicit_transaction,
+        _aio_increment_after_failed_insert,
+    ],
+    ids=["immediate", "implicit", "failed-statement"],
+)
+def test_aiosqlite_write_transactions_serialize(journal_mode: str, worker: Callable[[_Db], Any]) -> None:
+    pytest.importorskip("aiosqlite")
+
+    async def run() -> Any:
+        return await frontrun.explore(
+            setup=lambda: _Db(journal_mode),
+            workers=[worker, worker],
+            invariant=lambda db: db.value() == 2,
+            max_executions=40,
+            timeout_per_run=3.0,
+            total_timeout=120,
+            reproduce_on_failure=3,
+        )
+
+    result = asyncio.run(run())
+    assert result.property_holds is True, result.explanation or getattr(result, "inconclusive_reason", None)
+
+
 @pytest.mark.parametrize(
     ("sql", "needs_lock"),
     [
@@ -226,6 +287,6 @@ def test_failed_statement_keeps_the_transaction_write_lock(journal_mode: str) ->
     ],
 )
 def test_statement_classification(sql: str, needs_lock: bool) -> None:
-    from frontrun._sql_cursor import _sqlite_statement_needs_write_lock
+    from frontrun._sql_sqlite_write_lock import _sqlite_statement_needs_write_lock
 
     assert _sqlite_statement_needs_write_lock(sql) is needs_lock
