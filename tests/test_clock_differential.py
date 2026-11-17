@@ -248,6 +248,9 @@ def program_specs(draw: st.DrawFn) -> ProgramSpec:
 # ---------------------------------------------------------------------------
 
 
+# The outer watchdog covers all 25 differential examples on free-threaded CI.
+# Each individual exploration retains the runner's per-execution timeout.
+@pytest.mark.timeout(180)
 @settings(
     max_examples=25,
     deadline=None,
