@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import sys
 import tempfile
 from collections.abc import Callable
 from typing import Any
@@ -116,6 +117,11 @@ def test_write_transactions_serialize(journal_mode: str, worker: Callable[[_Db],
     assert result.property_holds is True, result.explanation or getattr(result, "inconclusive_reason", None)
 
 
+def test_immediate_and_deferred_writers_share_database_lock() -> None:
+    result = _explore("wal", [_increment_in_immediate_transaction, _increment_in_deferred_transaction], lambda db: db.value() == 2)
+    result.assert_holds()
+
+
 def _two_transactions(begin: str) -> Callable[[_Db], None]:
     def worker(db: _Db) -> None:
         conn = db.connect(isolation_level=None)
@@ -132,6 +138,15 @@ def _two_transactions(begin: str) -> Callable[[_Db], None]:
 
 def _two_implicit_transactions(db: _Db) -> None:
     conn = db.connect()
+    conn.execute("UPDATE t SET v = 1 WHERE id = 1")
+    conn.commit()
+    conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
+    conn.commit()
+    conn.close()
+
+
+def _two_pep249_transactions(db: _Db) -> None:
+    conn = db.connect(autocommit=False)
     conn.execute("UPDATE t SET v = 1 WHERE id = 1")
     conn.commit()
     conn.execute("UPDATE t SET v = v + 1 WHERE id = 1")
@@ -170,17 +185,18 @@ def _times_ten(db: _Db) -> None:
         _two_transactions("BEGIN IMMEDIATE"),
         _two_transactions("BEGIN"),
         _two_implicit_transactions,
+        pytest.param(_two_pep249_transactions, marks=pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 249 mode")),
         _two_context_managers,
         _two_autocommit_writes,
     ],
-    ids=["immediate", "deferred", "implicit", "context-manager", "autocommit"],
+    ids=["immediate", "deferred", "implicit", "pep249", "context-manager", "autocommit"],
 )
 def test_write_lock_is_released_when_the_transaction_ends(journal_mode: str, first: Callable[[_Db], None]) -> None:
     # Serial outcomes are 2 (times-ten first) and 20; 11 needs the second
     # worker's transaction to run between the first worker's two.
     result = _explore(journal_mode, [first, _times_ten], lambda db: db.value() in (2, 20))
     assert result.property_holds is False, getattr(result, "inconclusive_reason", None)
-    assert result.reproduction_successes == result.reproduction_attempts
+    assert result.reproduction_successes == result.reproduction_attempts == 3
 
 
 def _increment_after_failed_insert(db: _Db) -> None:
@@ -272,6 +288,7 @@ def test_aiosqlite_write_transactions_serialize(journal_mode: str, worker: Calla
         ("begin exclusive transaction", True),
         ("COMMIT", False),
         ("END", False),
+        ("END /* transaction */", False),
         ("ROLLBACK", False),
         ("SAVEPOINT sp", False),
         ("RELEASE sp", False),
