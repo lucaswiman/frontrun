@@ -262,6 +262,40 @@ async def test_aiosqlite_close_clears_transaction_and_database_scope() -> None:
     assert id(conn) not in _CONNECTION_DB_SCOPES
 
 
+@pytest.mark.asyncio
+async def test_aiosqlite_writer_scope_follows_file(tmp_path):
+    connect_before_patch = aiosqlite.connect
+    patch_sql_async()
+    scopes = []
+    for connect, filename in ((connect_before_patch, "a.db"), (aiosqlite.connect, "b.db"), (aiosqlite.connect, "a.db")):
+        with async_sql_scheduler() as (scheduler, _):
+            async with connect(tmp_path / filename) as conn:
+                cursor = await conn.cursor()
+                await cursor.execute("BEGIN IMMEDIATE")
+                await conn.commit()
+                scopes.append(next(r for r in scheduler.acquired if r.startswith("sqlite:write-lock:")))
+                assert not scheduler.held
+    assert scopes[0] == scopes[2] != scopes[1]
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_connection_shortcuts_hold_writer_until_commit(tmp_path):
+    patch_sql_async()
+    with async_sql_scheduler() as (scheduler, _):
+        async with aiosqlite.connect(tmp_path / "shortcuts.db") as conn:
+            await conn.execute("CREATE TABLE t (v)")
+            await conn.execute_insert("INSERT INTO t VALUES (1)")
+            assert any(r.startswith("sqlite:write-lock:") for r in scheduler.held)
+            await conn.commit()
+            assert not scheduler.held
+            assert await conn.execute_fetchall("UPDATE t SET v = 2 RETURNING v") == [(2,)]
+            assert any(r.startswith("sqlite:write-lock:") for r in scheduler.held)
+            async with conn.execute("SELECT v FROM t") as cursor:
+                assert await cursor.fetchone() == (2,)
+            await conn.rollback()
+            assert not scheduler.held
+
+
 def test_unpatch_restores_originals() -> None:
     orig_cursor_execute = aiosqlite.Cursor.execute
     orig_conn_execute = aiosqlite.Connection.execute
@@ -826,9 +860,13 @@ async def test_pragma_no_data_access() -> None:
 
     async with aiosqlite.connect(":memory:") as conn:
         log.clear()
+        from frontrun._sql_db_scope import _get_connection_db_scope
+
+        scope = _get_connection_db_scope(conn)
         await conn.execute("PRAGMA journal_mode")
 
-    assert log.events == [("sql:__database__", "write")]
+    assert scope is not None
+    assert log.events == [(f"sql:__database__:db={scope}", "write")]
 
 
 # ---------------------------------------------------------------------------
