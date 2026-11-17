@@ -343,6 +343,42 @@ class TestNThreadsWithLock:
         _assert_distinct_traces(observed, expected, f"N={n}, search={search}")
 
 
+def test_repeated_lock_acquisition_reaches_every_physical_order() -> None:
+    from itertools import permutations
+
+    class State:
+        def __init__(self) -> None:
+            self.lock = threading.Lock()
+            self.order: list[int] = []
+
+    def first(s: State) -> None:
+        s.lock.acquire()
+        s.order.append(0)
+        s.lock.release()
+
+    def twice(s: State) -> None:
+        s.lock.acquire()
+        s.order.append(1)
+        s.lock.release()
+        s.lock.acquire()
+        s.order.append(1)
+        s.lock.release()
+
+    def last(s: State) -> None:
+        s.lock.acquire()
+        s.order.append(2)
+        s.lock.release()
+
+    observed: set[tuple[int, ...]] = set()
+
+    def observe(s: State) -> bool:
+        observed.add(tuple(s.order))
+        return True
+
+    frontrun.explore(setup=State, workers=[first, twice, last], invariant=observe, preemption_bound=None, detect_io=False)
+    assert observed == set(permutations((0, 1, 1, 2)))
+
+
 # ---------------------------------------------------------------------------
 # Case 4: Two threads, N shared vars, with a single lock (case 2 + lock)
 # ---------------------------------------------------------------------------
