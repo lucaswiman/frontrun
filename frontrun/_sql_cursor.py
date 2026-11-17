@@ -65,6 +65,12 @@ from frontrun._sql_parsing import (
 )
 from frontrun._sql_patch_registry import CONNECT_FACTORY_TARGETS, PYTHON_CONNECTION_TARGETS, PYTHON_CURSOR_TARGETS
 from frontrun._sql_row_locks import _acquire_pending_row_locks, _release_dpor_row_locks
+from frontrun._sql_sqlite_write_lock import (
+    is_sqlite_write_lock,
+    queue_sqlite_write_lock,
+    settle_sqlite_write_lock,
+    sqlite_write_lock_for,
+)
 from frontrun._sql_transactions import (
     _apply_tx_op_after_success,
     _detect_autobegin,
@@ -271,9 +277,11 @@ def _dpor_schedule_and_suppress_sync(
         # deadlocks.  Without this, if a SQL statement raises (e.g.,
         # OperationalError from SQLite lock contention), any row locks
         # acquired by _acquire_pending_row_locks remain held until thread
-        # exit, blocking other DPOR threads indefinitely.
+        # exit, blocking other DPOR threads indefinitely.  SQLite write locks
+        # are settled by the caller: the failed statement may leave its
+        # transaction, and so SQLite's lock, in place.
         if release_row_locks_on_error:
-            _release_dpor_row_locks(acquired)
+            _release_dpor_row_locks([res for res in acquired if not is_sqlite_write_lock(res)])
         raise
     finally:
         unsuppress_sync_reporting()
@@ -635,21 +643,27 @@ def _run_connection_tx_method_scoped(method: Callable[[], Any], operation: str, 
             or bool(getattr(scheduler, "_aborted", False))
         )
         if scheduler_aborted:
+            try:
+                result = method()
+                if tx_active:
+                    _finalize_tx_end(tx_op)
+                elif owner is None:
+                    _release_dpor_row_locks()
+            finally:
+                settle_sqlite_write_lock(connection)
+            return result
+
+    def execute() -> Any:
+        try:
             result = method()
+            # Keep modeled state and locks intact if physical I/O raises. On
+            # success, finalize before handing the scheduler turn to another worker.
             if tx_active:
                 _finalize_tx_end(tx_op)
             elif owner is None:
                 _release_dpor_row_locks()
-            return result
-
-    def execute() -> Any:
-        result = method()
-        # Keep modeled state and locks intact if physical I/O raises. On
-        # success, finalize before handing the scheduler turn to another worker.
-        if tx_active:
-            _finalize_tx_end(tx_op)
-        elif owner is None:
-            _release_dpor_row_locks()
+        finally:
+            settle_sqlite_write_lock(connection)
         return result
 
     return _dpor_schedule_and_suppress_sync(
@@ -664,7 +678,10 @@ def _run_connection_tx_method_scoped(method: Callable[[], Any], operation: str, 
 
 def _run_connection_close(method: Callable[[], Any], connection: Any) -> Any:
     """Clear modeled state after the owning physical connection closes."""
-    result = method()
+    try:
+        result = method()
+    finally:
+        settle_sqlite_write_lock(connection)
     if getattr(tx_store(), "_tx_connection", None) is connection:
         reset_connection_state()
     _unregister_connection_db_scope(connection)
@@ -838,19 +855,25 @@ def _intercept_execute_scoped(
         deferred_tx_end=deferred_tx_end,
     )
     deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
+    sqlite_write_lock = sqlite_write_lock_for(self, operation)
+    statement_row_locks: list[str] = []
 
     def execute() -> Any:
-        if parameters is not None:
-            result = original_method(self, operation, parameters)
-        else:
-            result = original_method(self, operation)
-        if deferred_tx_op is not None:
-            _apply_tx_op_after_success(deferred_tx_op, _connection_for_db_object(self))
+        try:
+            if parameters is not None:
+                result = original_method(self, operation, parameters)
+            else:
+                result = original_method(self, operation)
+            if deferred_tx_op is not None:
+                _apply_tx_op_after_success(deferred_tx_op, _connection_for_db_object(self))
+        finally:
+            settle_sqlite_write_lock(self, statement_row_locks)
         return result
 
-    statement_row_locks: list[str] = []
-    result = _execute_with_retry(
-        lambda: _dpor_schedule_and_suppress_sync(
+    def attempt() -> Any:
+        if sqlite_write_lock is not None:
+            queue_sqlite_write_lock(sqlite_write_lock)
+        return _dpor_schedule_and_suppress_sync(
             reported,
             operation,
             parameters,
@@ -859,7 +882,8 @@ def _intercept_execute_scoped(
             statement_row_locks,
             release_row_locks_on_error=deferred_tx_op is None,
         )
-    )
+
+    result = _execute_with_retry(attempt)
 
     # Defect #6 fix: release this statement's speculative row locks for
     # PostgreSQL 0-row UPDATEs.
@@ -1080,6 +1104,17 @@ def _make_traced_sqlite3_connection_class(base_cls: type = sqlite3.Connection) -
 
         def close(self) -> None:  # type: ignore[override]
             _run_connection_close(super().close, self)
+
+        def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> Any:
+            # The C-level context manager commits or rolls back without
+            # calling commit()/rollback(); drive the same state machine.
+            exit_ = super().__exit__
+
+            def end_transaction() -> Any:
+                return exit_(exc_type, exc_value, traceback)
+
+            operation = "COMMIT" if exc_type is None else "ROLLBACK"
+            return _run_connection_tx_method(end_transaction, operation, self)
 
     TracedConnection.__name__ = f"Traced{base_cls.__name__}"
     TracedConnection.__qualname__ = f"Traced{base_cls.__qualname__}"

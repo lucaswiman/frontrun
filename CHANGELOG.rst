@@ -6,6 +6,13 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 0.8.0 (Unreleased)
 ------------------
 
+* **SQLite write lock.** SQLite's database write lock is arbitrated by the
+  scheduler, from ``BEGIN IMMEDIATE`` / ``BEGIN EXCLUSIVE`` or the first write
+  until the connection's transaction ends (including legacy implicit
+  transactions, ``with conn:`` blocks and failed statements inside a
+  transaction). Workers no longer block in SQLite's busy handler, which timed
+  out exploration whenever a worker was preempted inside a write transaction.
+
 * **Drop Python 3.10.** Python 3.10 has reached end of life; frontrun now
   requires Python 3.11 or later. The opcode observer no longer models
   3.10-only bytecode (``DUP_TOP``/``ROT_*``, ``CALL_FUNCTION``/``CALL_METHOD``,

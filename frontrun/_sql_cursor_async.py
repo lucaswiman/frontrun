@@ -40,6 +40,12 @@ from frontrun._sql_cursor import (
     _unregister_connection_db_scope,
     suppress_sql_write,
 )
+from frontrun._sql_sqlite_write_lock import (
+    is_sqlite_write_lock,
+    queue_sqlite_write_lock,
+    settle_sqlite_write_lock,
+    sqlite_write_lock_for,
+)
 from frontrun._sql_transactions import _apply_tx_op_after_success, reset_connection_state
 
 # ---------------------------------------------------------------------------
@@ -117,8 +123,10 @@ async def _dpor_schedule_and_suppress_async(
                 return await execute()
         return await execute()
     except Exception:
+        # SQLite write locks are settled by the caller: the failed statement
+        # may leave its transaction, and so SQLite's lock, in place.
         if release_locks_on_error:
-            _release_dpor_row_locks(acquired)
+            _release_dpor_row_locks([res for res in acquired if not is_sqlite_write_lock(res)])
         raise
 
 
@@ -155,10 +163,21 @@ async def _report_and_execute_sql_async(
         deferred_tx_end=deferred_tx_end,
     )
     deferred_tx_op = deferred_tx_end[0] if deferred_tx_end else None
+    acquired: list[str] = [] if statement_row_locks is None else statement_row_locks
+    sqlite_write_lock = sqlite_write_lock_for(db_obj, query)
+    if sqlite_write_lock is not None:
+        queue_sqlite_write_lock(sqlite_write_lock)
+
+    async def execute() -> Any:
+        try:
+            return await _execute_and_finalize_tx_end(call_orig, deferred_tx_op, db_obj)
+        finally:
+            settle_sqlite_write_lock(db_obj, acquired)
+
     result = await _dpor_schedule_and_suppress_async(
         reported,
-        lambda: _execute_and_finalize_tx_end(call_orig, deferred_tx_op, db_obj),
-        statement_row_locks,
+        execute,
+        acquired,
         release_locks_on_error=deferred_tx_op is None if release_locks_on_error is None else release_locks_on_error,
     )
     return result, reported
@@ -174,7 +193,10 @@ async def _intercept_connection_method_async(
     """Model async connection commit/rollback and clean up close state."""
     with external_operation_scope():
         if operation == "CLOSE":
-            result = await original_method(self, *args, **kwargs)
+            try:
+                result = await original_method(self, *args, **kwargs)
+            finally:
+                settle_sqlite_write_lock(self)
             if getattr(tx_store(), "_tx_connection", None) is self:
                 reset_connection_state()
             _unregister_connection_db_scope(self)
@@ -199,7 +221,10 @@ async def _intercept_connection_method_async(
 def _intercept_connection_close_sync(original_method: Any, self: Any, *args: Any, **kwargs: Any) -> Any:
     """Clean up modeled state around a synchronous async-driver close method."""
     with external_operation_scope():
-        result = original_method(self, *args, **kwargs)
+        try:
+            result = original_method(self, *args, **kwargs)
+        finally:
+            settle_sqlite_write_lock(self)
         if getattr(tx_store(), "_tx_connection", None) is self:
             reset_connection_state()
         _unregister_connection_db_scope(self)

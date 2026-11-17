@@ -231,6 +231,29 @@ To test behavior at a different isolation level, change the database
 configuration and re-run.
 
 
+SQLite Write Lock
+-----------------
+
+SQLite allows one writer per database file.  A connection takes the write
+lock at ``BEGIN IMMEDIATE`` / ``BEGIN EXCLUSIVE`` or at its first write
+statement and holds it until the transaction ends; an autocommit write holds
+it for the statement.  A second writer would wait in SQLite's busy handler,
+inside the C call, where the scheduler cannot run the holder.
+
+Frontrun therefore arbitrates the lock itself, as a row lock on one resource
+per database (``sqlite:write-lock:<db scope>``).  It is acquired before any
+statement that may write (anything not positively identified as a read-only
+query or as transaction control that takes no lock) and released when the
+connection's ``in_transaction`` becomes false: after the statement, after
+``commit()`` / ``rollback()`` (including a ``with conn:`` block), or after
+``close()``.  A statement that fails inside an open transaction keeps the
+lock, as SQLite does.  Like other row-lock waits, waiting for it marks the
+run's schedule as redirected, so ``exhausted`` is not claimed.
+
+Reader/writer blocking in rollback-journal mode (a writer's commit waiting
+for readers' shared locks) is not modeled; WAL mode readers never block.
+
+
 Formal Verification with TLA+
 ------------------------------
 

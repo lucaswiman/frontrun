@@ -39,7 +39,7 @@ The full statement lives in `docs/design-principles.rst` (rendered in the Sphinx
   - Large modules worth knowing about before editing:
     - `_opcode_observer.py` — sole owner of `sys.settrace` / `sys.monitoring`. Exposes `start_opcode_trace`, `stop_opcode_trace`, `install_thread_opcode_trace`, `install_thread_line_trace`. **No other module should touch `sys.settrace` / `sys.monitoring` / `f_trace_opcodes` directly** — go through this API.
     - `_cooperative.py` — lock/queue/event patching (sync only)
-    - SQL access tracking is split: `_sql_cursor.py` (driver patching surface), `_sql_parsing.py`, `_sql_transactions.py` (TX state machinery), `_sql_row_locks.py` (DPOR row-lock glue), `_sql_endpoint_suppression.py` (LD_PRELOAD bridge), `_sql_cursor_async.py` (delegates into `_sql_cursor`)
+    - SQL access tracking is split: `_sql_cursor.py` (driver patching surface), `_sql_parsing.py`, `_sql_transactions.py` (TX state machinery), `_sql_row_locks.py` (DPOR row-lock glue), `_sql_sqlite_write_lock.py` (SQLite database write lock as a row lock), `_sql_endpoint_suppression.py` (LD_PRELOAD bridge), `_sql_cursor_async.py` (delegates into `_sql_cursor`)
     - `_redis_client.py` / `_redis_client_async.py` — Redis access tracking; async delegates the parse-and-report path into sync
     - `async_dpor.py` — monolithic async DPOR (no subpackage yet, unlike sync; uses `_dpor_core/` for shared pure helpers)
 - `crates/dpor/` — Rust PyO3 DPOR extension (built by maturin → `frontrun/_dpor.so`)
