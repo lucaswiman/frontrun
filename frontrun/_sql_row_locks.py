@@ -39,9 +39,17 @@ def _acquire_pending_row_locks() -> list[str]:
 
 
 def _release_dpor_row_locks(resources: list[str] | None = None) -> None:
-    """Release selected DPOR row locks, or every lock when *resources* is ``None``."""
+    """Release selected DPOR row locks, or every lock when *resources* is ``None``.
+
+    Releasing every lock keeps SQLite database write locks: those follow the
+    owning connection's transaction (``_sql_sqlite_write_lock``), which may
+    outlive the transaction being finalized here.
+    """
     store = tx_store()
     held = getattr(store, "_held_row_locks", None)
+    sqlite_write_locks = getattr(store, "_sqlite_write_locks", None)
+    if resources is None and sqlite_write_locks:
+        resources = sorted((held or set()).difference(sqlite_write_locks))
     if held is not None:
         if resources is None:
             held.clear()

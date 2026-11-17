@@ -6,6 +6,9 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 0.8.0 (Unreleased)
 ------------------
 
+* SQLite writers acquire the database lock before row locks and release it at
+  transaction boundaries, including commits in Python's PEP 249 mode.
+
 * **Drop Python 3.10.** Python 3.10 has reached end of life; frontrun now
   requires Python 3.11 or later. The opcode observer no longer models
   3.10-only bytecode (``DUP_TOP``/``ROT_*``, ``CALL_FUNCTION``/``CALL_METHOD``,
