@@ -351,33 +351,30 @@ def test_repeated_lock_acquisition_reaches_every_physical_order() -> None:
             self.lock = threading.Lock()
             self.order: list[int] = []
 
-    def first(s: State) -> None:
-        s.lock.acquire()
-        s.order.append(0)
-        s.lock.release()
+    def worker(tid: int, acquisitions: int):
+        def run(s: State) -> None:
+            for _ in range(acquisitions):
+                with s.lock:
+                    s.order.append(tid)
 
-    def twice(s: State) -> None:
-        s.lock.acquire()
-        s.order.append(1)
-        s.lock.release()
-        s.lock.acquire()
-        s.order.append(1)
-        s.lock.release()
-
-    def last(s: State) -> None:
-        s.lock.acquire()
-        s.order.append(2)
-        s.lock.release()
+        return run
 
     observed: set[tuple[int, ...]] = set()
 
-    def observe(s: State) -> bool:
+    def invariant(s: State) -> bool:
         observed.add(tuple(s.order))
-        return True
+        return tuple(s.order) != (1, 0, 2, 1)
 
-    frontrun.explore(
-        setup=State, workers=[first, twice, last], invariant=observe, preemption_bound=None, detect_io=False
+    result = frontrun.explore(
+        setup=State,
+        workers=[worker(0, 1), worker(1, 2), worker(2, 1)],
+        invariant=invariant,
+        preemption_bound=None,
+        detect_io=False,
+        stop_on_first=False,
+        reproduce_on_failure=0,
     )
+    assert result.property_holds is False
     assert observed == set(permutations((0, 1, 1, 2)))
 
 

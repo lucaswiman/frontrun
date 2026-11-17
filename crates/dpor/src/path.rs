@@ -7,8 +7,7 @@
 //! the exploration structure, with race detection during execution (Algorithm 1
 //! style, JACM'17 p.16) as well as deferred notdep processing (Algorithm 2).
 //! Sleep sets are propagated across scheduling points using trace caching.
-//! Source set filtering is disabled (all racing threads are inserted into
-//! wakeup trees).
+//! Unbounded source-set filtering uses the completed trace to check independence.
 //!
 //! Each scheduling point (Branch) maintains:
 //!
@@ -27,6 +26,14 @@ use std::collections::HashMap;
 use crate::access::{AccessKind, AccessOrigin};
 use crate::thread::ThreadStatus;
 use crate::wakeup_tree::WakeupTree;
+
+/// What the preceding run established about one actor's cached suffix.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TraceStatus {
+    Complete,
+    Contended,
+    Incomplete,
+}
 
 /// Controls the order in which wakeup tree branches are explored.
 ///
@@ -227,6 +234,7 @@ pub struct Path {
     /// via this field.
     pending_wakeup_subtree: Option<WakeupTree>,
     previous_runnable: Vec<usize>,
+    pub(crate) previous_trace_status: Vec<TraceStatus>,
 }
 
 impl Path {
@@ -240,6 +248,7 @@ impl Path {
             prev_thread_steps: HashMap::new(),
             pending_wakeup_subtree: None,
             previous_runnable: Vec::new(),
+            previous_trace_status: Vec::new(),
         }
     }
 
@@ -324,8 +333,10 @@ impl Path {
     }
 
     pub fn mark_synchronization(&mut self, position: usize) {
-        if let Some(branch) = self.branches.get_mut(position) {
+        let Some(branch) = self.branches.get_mut(position) else { return };
+        if !branch.synchronization {
             branch.synchronization = true;
+            self.refresh_sleep_after(position);
         }
     }
 
@@ -366,7 +377,11 @@ impl Path {
         // propagated sleep sets must reflect the access just recorded.
         // Positions at or beyond `pos` have not been entered yet and are
         // propagated when they are.
-        for pos in (path_id + 1)..self.pos.min(self.branches.len()) {
+        self.refresh_sleep_after(path_id);
+    }
+
+    fn refresh_sleep_after(&mut self, position: usize) {
+        for pos in (position + 1)..self.pos.min(self.branches.len()) {
             self.propagate_sleep(pos);
         }
     }
@@ -584,6 +599,15 @@ impl Path {
         // (e.g., first execution).
         let mut propagated: HashMap<usize, HashMap<u64, (AccessKind, AccessOrigin)>> = HashMap::new();
         for (tid, tid_accesses) in sleeping_threads {
+            // A blocked probe can have no footprint in the prior trace. Moving
+            // it across a synchronization step may change whether it succeeds.
+            // An unfinished actor can also have unobserved memory accesses.
+            let sync = self.branches[prev].synchronization;
+            match self.previous_trace_status.get(tid) {
+                Some(TraceStatus::Contended) if sync => continue,
+                Some(TraceStatus::Incomplete) if sync || !prev_active_accesses.is_empty() => continue,
+                _ => {}
+            }
             let progress = completed_steps.get(&tid).copied().unwrap_or(0);
             let independent = match self.future_steps_independent_of(tid, progress, &prev_active_accesses) {
                 Some(result) => result,

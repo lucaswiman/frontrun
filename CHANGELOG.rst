@@ -48,10 +48,9 @@ All releases: https://github.com/lucaswiman/frontrun/releases
   fail closed, and deferred documentation/packaging drift from the 0.7.0 audit
   is resolved.
 
-* DPOR explores reversed lock orders, preserves bounded race reversals and
-  wakes notified condition waiters.
-  Redirected cross-process deadlocks return an inconclusive result when
-  their schedule cannot be replayed exactly.
+* DPOR covers missed repeated and nested lock orders, preserves bounded race
+  reversals, and wakes notified condition waiters. Cross-process lock redirects
+  with inexact replay schedules are inconclusive.
 
 0.7.0 (2026-07-14)
 ------------------

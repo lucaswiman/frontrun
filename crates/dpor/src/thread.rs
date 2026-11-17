@@ -46,6 +46,7 @@ pub struct Thread {
     pub io_vv: VersionVec,
     pub finished: bool,
     pub blocked: bool,
+    pub(crate) was_blocked: bool,
 }
 
 impl Thread {
@@ -56,6 +57,7 @@ impl Thread {
             io_vv: VersionVec::new(num_threads),
             finished: false,
             blocked: false,
+            was_blocked: false,
         }
     }
 

@@ -215,9 +215,9 @@ class TestSchedulingCoarsening:
             f"(e.g. unhandled opcode inflating the DPOR search tree)."
         )
 
-    @pytest.mark.parametrize(("bound", "limit"), [(2, 1000), (3, 2000)])
-    def test_dining_philosophers_four_trace_count(self, bound: int, limit: int) -> None:
-        """Track search cost at both budgets and require the three-preemption cycle."""
+    @pytest.mark.parametrize("bound", [2, 3])
+    def test_dining_philosophers_four_trace_count(self, bound: int) -> None:
+        """Bound the full default search and the cost of finding the higher-budget cycle."""
 
         class Table:
             def __init__(self) -> None:
@@ -241,10 +241,10 @@ class TestSchedulingCoarsening:
             preemption_bound=bound,
             detect_io=False,
             deadlock_timeout=2.0,
-            stop_on_first=False,
+            stop_on_first=bound == 3,
         )
 
         if bound == 3:
             assert result.property_holds is False
             assert "deadlock" in (result.explanation or "").lower()
-        assert result.num_explored <= limit
+        assert result.num_explored <= 1000

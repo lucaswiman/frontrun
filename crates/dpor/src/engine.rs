@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use crate::access::{Access, AccessKind, AccessOrigin};
 use crate::object::{ObjectId, ObjectState};
-use crate::path::{Path, PendingRace, SearchStrategy};
+use crate::path::{Path, PendingRace, SearchStrategy, TraceStatus};
 use crate::thread::Thread;
 use crate::vv::VersionVec;
 
@@ -65,6 +65,7 @@ impl Execution {
 
     pub fn block_thread(&mut self, thread_id: usize) {
         self.threads[thread_id].blocked = true;
+        self.threads[thread_id].was_blocked = true;
     }
 
     pub fn unblock_thread(&mut self, thread_id: usize) {
@@ -563,6 +564,15 @@ impl DporEngine {
     ///   Lines 1-6: process races at maximal execution → compute notdep → insert wut
     ///   Lines 14-20: step the exploration tree (pick next from wakeup tree)
     pub fn next_execution(&mut self) -> bool {
+        self.advance(None)
+    }
+
+    /// Use a completed run to validate the cached footprints of sleeping actors.
+    pub fn next_execution_after(&mut self, execution: &Execution) -> bool {
+        self.advance(Some(execution))
+    }
+
+    fn advance(&mut self, execution: Option<&Execution>) -> bool {
         self.executions_completed += 1;
         if let Some(max) = self.max_executions {
             if self.executions_completed >= max {
@@ -597,6 +607,13 @@ impl DporEngine {
         // exact trace counts.
         self.process_deferred_lock_releases();
 
+        self.path.previous_trace_status = (0..self.num_threads).map(|tid| {
+            match execution.and_then(|run| run.threads.get(tid)) {
+                Some(thread) if thread.finished && thread.was_blocked => TraceStatus::Contended,
+                Some(thread) if thread.finished => TraceStatus::Complete,
+                _ => TraceStatus::Incomplete,
+            }
+        }).collect();
         self.path.step()
     }
 
@@ -716,7 +733,7 @@ mod tests {
         assert_eq!(engine.schedule(&mut first), Some(1));
         engine.process_access(&mut first, 1, 123, AccessKind::Write);
 
-        assert!(engine.next_execution());
+        assert!(engine.next_execution_after(&first));
         let mut replay = engine.begin_execution();
         engine.prefer_next_thread(2);
 
@@ -743,7 +760,7 @@ mod tests {
         engine.process_access(&mut execution, 1, 2, AccessKind::Write);
         execution.finish_thread(1);
 
-        assert!(!engine.next_execution());
+        assert!(!engine.next_execution_after(&execution));
         assert_eq!(engine.executions_completed(), 1);
     }
 
@@ -760,7 +777,7 @@ mod tests {
                 execution.finish_thread(chosen);
             }
             assert!(execution.runnable_threads().is_empty());
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 return engine.executions_completed();
             }
         }
@@ -820,7 +837,7 @@ mod tests {
                 if execution.schedule_trace == target {
                     break;
                 }
-                assert!(engine.next_execution(), "missing {target:?} with bound {bound}");
+                assert!(engine.next_execution_after(&execution), "missing {target:?} with bound {bound}");
             }
         }
     }
@@ -880,7 +897,7 @@ mod tests {
                 found_bug = true;
             }
 
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 break;
             }
         }
@@ -1061,7 +1078,7 @@ mod tests {
             }
 
             exec_count += 1;
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 break;
             }
         }
@@ -1116,7 +1133,7 @@ mod tests {
 
             traces.push(execution.schedule_trace.clone());
             exec_count += 1;
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 break;
             }
         }
@@ -1234,7 +1251,7 @@ mod tests {
             }
 
             exec_count += 1;
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 break;
             }
         }
@@ -1310,7 +1327,7 @@ mod tests {
             if matches(!all_done, &acquisitions) {
                 return (exec_count, true);
             }
-            if !engine.next_execution() {
+            if !engine.next_execution_after(&execution) {
                 return (exec_count, false);
             }
         }
