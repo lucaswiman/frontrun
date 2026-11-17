@@ -356,7 +356,7 @@ def test_search_strategy_benchmark(capsys: pytest.CaptureFixture[str]) -> None:
             }
             if is_deadlock:
                 kwargs["deadlock_timeout"] = 2.0
-                kwargs["preemption_bound"] = 2
+                kwargs["preemption_bound"] = len(threads) - 1
 
             result = frontrun.explore(**kwargs)  # type: ignore[arg-type]
 

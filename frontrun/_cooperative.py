@@ -147,10 +147,13 @@ def _set_owner_and_report(primitive: "CooperativeLock | CooperativeRLock", event
     primitive._report(event)
 
 
-def _report_sync_event(primitive: "CooperativeLock | CooperativeRLock | CooperativeSemaphore", event: str) -> None:
-    """Report a lock-like primitive event with the DPOR reentrancy guard."""
+def _report_sync_event(
+    primitive: "CooperativeLock | CooperativeRLock | CooperativeSemaphore | CooperativeEvent | CooperativeCondition",
+    event: str,
+) -> bool:
+    """Report a primitive event with the DPOR reentrancy guard."""
     if is_sync_suppressed():
-        return
+        return False
     reporter = get_sync_reporter()
     if reporter is not None:
         prev = getattr(_scheduler_tls, "_in_dpor_machinery", False)
@@ -159,6 +162,8 @@ def _report_sync_event(primitive: "CooperativeLock | CooperativeRLock | Cooperat
             reporter(event, primitive._object_id, primitive)
         finally:
             _scheduler_tls._in_dpor_machinery = prev
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1110,21 +1115,7 @@ class CooperativeEvent:
         self._engine_blocked: dict[int, Any] = {}
 
     def _report(self, event: str) -> bool:
-        """Report to the per-thread sync reporter; True if one was called."""
-        if _in_dpor_machinery():
-            return False
-        if is_sync_suppressed():
-            return False
-        reporter = get_sync_reporter()
-        if reporter is None:
-            return False
-        prev = getattr(_scheduler_tls, "_in_dpor_machinery", False)
-        _scheduler_tls._in_dpor_machinery = True
-        try:
-            reporter(event, self._object_id, self)
-        finally:
-            _scheduler_tls._in_dpor_machinery = prev
-        return True
+        return not _in_dpor_machinery() and _report_sync_event(self, event)
 
     @staticmethod
     def _yield_after_state_access() -> None:
@@ -1344,21 +1335,7 @@ class CooperativeCondition:
         return ticket is not None and self._ticket_served(ticket)
 
     def _report(self, event: str) -> bool:
-        """Report to the per-thread sync reporter; True if one was called."""
-        if _in_dpor_machinery():
-            return False
-        if is_sync_suppressed():
-            return False
-        reporter = get_sync_reporter()
-        if reporter is None:
-            return False
-        prev = getattr(_scheduler_tls, "_in_dpor_machinery", False)
-        _scheduler_tls._in_dpor_machinery = True
-        try:
-            reporter(event, self._object_id, self)
-        finally:
-            _scheduler_tls._in_dpor_machinery = prev
-        return True
+        return not _in_dpor_machinery() and _report_sync_event(self, event)
 
     def _poll_served_after_finish(self, my_ticket: int, window: float) -> bool:
         """Give notifications a bounded real-time window to land once the
@@ -1388,11 +1365,12 @@ class CooperativeCondition:
                     raise SchedulerAbort("scheduler aborted")
                 if scheduler._finished or not before_sync_retry(thread_id):
                     return self._poll_served_after_finish(my_ticket, 1.0)
-                if self._ticket_served(my_ticket):
+                try:
+                    if self._ticket_served(my_ticket):
+                        return True
+                    self._report("cond_wait")
+                finally:
                     after_sync_retry(thread_id)
-                    return True
-                self._report("cond_wait")
-                after_sync_retry(thread_id)
         finally:
             self._engine_blocked.pop(thread_id, None)
 
@@ -1406,15 +1384,12 @@ class CooperativeCondition:
         if ticket >= self._served:
             self._cancelled.add(ticket)
 
-    def _advance_served(self, n: int) -> tuple[int, int]:
+    def _advance_served(self, n: int) -> int:
         """Advance ``_served`` to wake up to *n* live (non-cancelled) tickets.
 
-        Cancelled tickets in the path are skipped for free (they do not
-        consume the notify budget).  Returns ``(woken, real_woken)`` where
-        ``woken`` is the number of live tickets woken and ``real_woken`` is
-        how many of those belong to unmanaged waiters blocked in
-        ``real_cond.wait()`` (so the caller can wake exactly that many via
-        ``real_cond``).  Caller must hold self._lock.
+        Skip cancelled tickets without consuming the notify budget. Return the
+        number of unmanaged waiters to notify on the real condition. The caller
+        holds the underlying lock.
         """
         woken = 0
         real_woken = 0
@@ -1427,7 +1402,7 @@ class CooperativeCondition:
             woken += 1
             if ticket in self._real_cond_tickets:
                 real_woken += 1
-        return woken, real_woken
+        return real_woken
 
     def _release_save(self) -> int:
         """Fully release the underlying lock, returning saved recursion depth.
@@ -1567,10 +1542,7 @@ class CooperativeCondition:
                 else:
                     # Already served but we are abandoning the wakeup; hand it
                     # to the next live waiter so no notification is lost.
-                    _, real_woken = self._advance_served(1)
-                    if real_woken:
-                        with self._real_cond:
-                            self._real_cond.notify(real_woken)
+                    self.notify()
 
     def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> bool:
         result = predicate()
@@ -1612,19 +1584,8 @@ class CooperativeCondition:
                 raise RuntimeError("cannot notify on un-acquired lock")
 
     def notify(self, n: int = 1) -> None:
-        # Enforce the Condition invariant: caller must hold self._lock.
         self._check_owned()
-        # The caller holds self._lock, so this increment is serialised
-        # with other notify/notify_all calls and with the _waiters/ticket
-        # bookkeeping in wait().
-        #
-        # Advance _served to wake up to n LIVE (non-cancelled) waiters.
-        # Cancelled tickets (abandoned by timed-out/aborted waiters) are
-        # skipped for free so they do not absorb a notification — matching a
-        # real threading.Condition which removes timed-out waiters from the
-        # wait queue.  _advance_served returns the number actually woken and,
-        # separately, how many of those were unmanaged (real_cond) waiters.
-        _, real_woken = self._advance_served(max(0, n))
+        real_woken = self._advance_served(n)
         self._wake_engine_blocked()
         _note_spin_release(self._object_id)
         # Wake the real condition ONLY for the unmanaged waiters whose tickets
@@ -1636,14 +1597,7 @@ class CooperativeCondition:
                 self._real_cond.notify(real_woken)
 
     def notify_all(self) -> None:
-        # Enforce the Condition invariant: caller must hold self._lock.
-        self._check_owned()
-        # Wake every live waiter; cancelled tickets are skipped for free.
-        self._advance_served(self._next_ticket - self._served)
-        self._wake_engine_blocked()
-        _note_spin_release(self._object_id)
-        with self._real_cond:
-            self._real_cond.notify_all()
+        self.notify(self._next_ticket - self._served)
 
     def _wake_engine_blocked(self) -> None:
         """Unblock engine-blocked waiters whose tickets ``_advance_served`` just served."""

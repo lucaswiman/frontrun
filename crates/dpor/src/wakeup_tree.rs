@@ -11,11 +11,8 @@
 //!   Property 2: for siblings u.p ≺ u.w where u.w is a leaf, p ∉ WI[E.u](w)
 //!               (p will be removed from sleep set by exploring u.w)
 //!
-//! **Current status**: The tree structure is fully implemented, but the insert
-//! operation uses exact prefix matching rather than the paper's equivalence
-//! checking (v ∼[E] w, Lemma 6.2 p.22): a sequence is treated as covered only
-//! when an existing leaf is a literal prefix of it. This is sound but may
-//! insert redundant branches. See `ideas/optimal_dpor.md` Phase 4c.
+//! Insertion merges literal prefixes. A forced continuation is retained
+//! unless the caller establishes that an existing leaf covers it.
 
 /// A node in the wakeup tree. Children are ordered (exploration order matters).
 /// The ordering ≺ between siblings determines sleep set removal:
@@ -126,73 +123,29 @@ impl WakeupTree {
     ///
     /// Returns true if a new leaf was added.
     pub fn insert(&mut self, sequence: &[usize]) -> bool {
-        if sequence.is_empty() {
-            return false;
-        }
-        self.insert_at(sequence)
+        self.insert_sequence(sequence, false)
     }
 
-    /// Internal recursive insertion.
-    fn insert_at(&mut self, sequence: &[usize]) -> bool {
-        if sequence.is_empty() {
-            return false;
-        }
-
-        let thread_id = sequence[0];
-        let rest = &sequence[1..];
-
-        // Check if this thread already exists as a child
-        for child in &mut self.children {
-            if child.thread_id == thread_id {
-                // Merge: descend into the existing child
-                if rest.is_empty() {
-                    // The sequence ends here; this node already exists
-                    return false;
+    pub fn insert_sequence(&mut self, sequence: &[usize], prefix_covers: bool) -> bool {
+        let mut children = &mut self.children;
+        let mut added = false;
+        for &thread_id in sequence {
+            let index = match children.iter().position(|child| child.thread_id == thread_id) {
+                Some(i) if prefix_covers && children[i].children.is_empty() => return false,
+                Some(i) => i,
+                None => {
+                    children.push(WakeupNode { thread_id, children: Vec::new() });
+                    added = true;
+                    children.len() - 1
                 }
-                if child.children.is_empty() {
-                    // An existing *leaf* u with u a prefix of the new sequence
-                    // w already covers w (Def 6.2: u ⊑[E] w): exploring E.u
-                    // runs the scheduler freely from there and the races
-                    // found on the way re-derive any needed continuation.
-                    // Growing the leaf instead would turn "explore u, then
-                    // run free" into "explore u, then force w's tail",
-                    // overriding the current-thread preference and
-                    // replaying an already-explored trace (N threads on one
-                    // lock went from N! to more executions once lock events
-                    // were attributed to the step they happen in).
-                    return false;
-                }
-                let mut subtree = WakeupTree {
-                    children: std::mem::take(&mut child.children),
-                };
-                let added = subtree.insert_at(rest);
-                child.children = subtree.children;
-                return added;
-            }
+            };
+            children = &mut children[index].children;
         }
+        added
+    }
 
-        // Thread not found among children: add new branch.
-        // The paper (Def 6.2, JACM'17 p.22) would check if any existing branch
-        // "covers" this sequence via v ∼[E] w (Lemma 6.2). We skip that check
-        // and always add — sound but not optimal. The sleep set check at the
-        // call site (insert_wakeup()) already filters some redundant inserts.
-        let mut node = WakeupNode {
-            thread_id,
-            children: Vec::new(),
-        };
-
-        // Build the rest of the chain
-        let mut current = &mut node;
-        for &tid in rest {
-            current.children.push(WakeupNode {
-                thread_id: tid,
-                children: Vec::new(),
-            });
-            current = current.children.last_mut().unwrap();
-        }
-
-        self.children.push(node);
-        true
+    pub fn retain_roots(&mut self, mut keep: impl FnMut(usize) -> bool) {
+        self.children.retain(|node| keep(node.thread_id));
     }
 
     /// Check if the tree contains any branch starting with the given thread.
@@ -272,18 +225,11 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_extension_of_leaf_is_covered() {
-        let mut tree = WakeupTree::empty();
-        assert!(tree.insert(&[2]));
-        // [2] is a leaf: the longer sequence starting with it is already
-        // covered and must not grow the leaf into a forced path.
-        assert!(!tree.insert(&[2, 2, 2, 0]));
-        assert_eq!(tree.leaf_sequences(), vec![vec![2]]);
-        assert!(tree.subtree(2).is_empty());
-        // A genuinely internal node still merges new siblings beneath it.
-        assert!(tree.insert(&[1, 0]));
-        assert!(tree.insert(&[1, 2]));
-        assert_eq!(tree.subtree(1).root_threads(), vec![0, 2]);
+    fn test_extension_retains_required_continuation() {
+        let mut tree = WakeupTree::singleton(2);
+        assert!(!tree.insert_sequence(&[2, 2, 2, 0], true));
+        assert!(tree.insert(&[2, 2, 2, 0]));
+        assert_eq!(tree.leaf_sequences(), vec![vec![2, 2, 2, 0]]);
     }
 
     #[test]

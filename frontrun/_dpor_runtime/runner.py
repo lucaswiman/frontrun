@@ -337,7 +337,7 @@ class DporBytecodeRunner:
         _dpor_tls.thread_id = thread_id
         _dpor_tls.engine = engine
         _dpor_tls.execution = execution
-        _dpor_tls._last_path_id = None  # set by report_and_wait after schedule()
+        _dpor_tls._last_path_id = None  # pinned before scheduling the next actor
 
         # IO detection: defer I/O reports while this thread is inside locks.
         # If another thread later reaches a real I/O boundary, it will flush

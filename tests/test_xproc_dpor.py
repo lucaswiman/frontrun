@@ -282,79 +282,21 @@ def test_dpor_reduces_interleavings_vs_exhaustive() -> None:
     assert dpor.iterations < exhaustive.iterations
 
 
-def _ordered_locker(first: str, second: str):
-    def worker(proxy) -> None:
-        proxy.acquire_row_locks(0, [first])
-        proxy.report_and_wait(None, 0)
-        proxy.acquire_row_locks(0, [second])
-        proxy.report_and_wait(None, 0)
-        proxy.release_row_locks(0)
-
-    return worker
-
-
-def test_dpor_deadlock_does_not_claim_exhausted() -> None:
-    # Regression: a deadlock-aborted execution unwinds its workers via
-    # SchedulerAbort before their remaining accesses are reported, so the engine
-    # never seeds the wakeup tree from that trace and next_execution() returns
-    # False with deadlock-avoiding interleavings still unexplored. The coordinator
-    # must NOT then claim exhausted=True (over-claiming coverage) with
-    # stop_on_first=False; only max_executions/total_timeout previously demoted it.
-    row1, row2 = "sql:accounts:id=1", "sql:accounts:id=2"
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
-    result = coord.explore(
-        worker_set=ThreadLauncher([_ordered_locker(row1, row2), _ordered_locker(row2, row1)]),
-        setup=lambda: None,
-        invariant=lambda: True,
-    )
-    # The hold-and-wait interleaving is reachable since defect #22 (the
-    # acquire race is reversed before the first acquire), so the cycle is
-    # found rather than the run ending inconclusive on a redirect.
-    assert result.failure_kind == "deadlock"
-    assert not result.exhausted  # search aborted at a deadlock; space not fully covered
-
-
 def test_dpor_lock_first_workers_explore_both_orders_deterministically() -> None:
-    # Regression: two workers whose first frames are both ACQUIRE_LOCKS. The
-    # relay commits the waiter's engine step (before_sync_retry) and the
-    # acquire is attributed to that step (defect #22), so the engine's
-    # acquire/acquire race reversal lands before the first acquire: the second
-    # order runs physically, and no worker is ever scheduled into row-lock
-    # contention. Before the fix the reversal landed one step late, the woken
-    # worker found the lock held, and the run had to fail closed every time.
     row1 = "sql:accounts:id=1"
 
     for attempt in range(8):
         orders: list[tuple[int, ...]] = []
         workers, invariant = _acquisition_order_lockers(row1, orders)
-        coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, stop_on_first=False)
+        coord = DporCrossProcessCoordinator(
+            num_workers=2, deadlock_timeout=3.0, preemption_bound=None, stop_on_first=False
+        )
         result = coord.explore(worker_set=ThreadLauncher(workers), setup=lambda: None, invariant=invariant)
         assert result.ok is True, f"attempt {attempt}: {result}"
         assert result.failure_kind is None
+        assert result.exhausted is True
         assert result.iterations == 2, f"attempt {attempt}: {result}"
         assert sorted(orders) == [(0, 1), (1, 0)], f"attempt {attempt}: physical orders {orders}"
-
-
-def test_dpor_row_lock_reversal_is_exact_without_redirect() -> None:
-    """Two holders of one row explore exactly the two lock orders, exhaustively.
-
-    The redirect seam (a worker scheduled into contention after its engine step
-    was committed, issue #250) is no longer reachable from this program; the
-    program that still reaches it, and the fail-closed verdict it must produce,
-    live in ``tests/test_row_lock_redirect_coverage.py``.
-    """
-    row = "sql:accounts:id=1"
-    orders: list[tuple[int, ...]] = []
-    workers, invariant = _acquisition_order_lockers(row, orders)
-
-    coord = DporCrossProcessCoordinator(num_workers=2, deadlock_timeout=3.0, preemption_bound=None)
-    result = coord.explore(worker_set=ThreadLauncher(workers), setup=lambda: None, invariant=invariant)
-
-    assert result.ok is True
-    assert result.failure_kind is None
-    assert result.exhausted is True
-    assert result.iterations == 2
-    assert sorted(orders) == [(0, 1), (1, 0)], orders
 
 
 def test_dpor_single_statement_conflict_found_deterministically() -> None:

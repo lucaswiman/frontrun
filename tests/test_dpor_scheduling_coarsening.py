@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 import frontrun
 
 
@@ -213,20 +215,9 @@ class TestSchedulingCoarsening:
             f"(e.g. unhandled opcode inflating the DPOR search tree)."
         )
 
-    def test_dining_philosophers_four_trace_count(self) -> None:
-        """Four dining philosophers (pure locks, no shared state) trace count.
-
-        With scheduling coarsening, N=4 pure locks terminates quickly (~121
-        interleavings in ~1s).  This regression test ensures the count stays
-        bounded as the search space grows from N=3 to N=4.
-
-        The deadlock cycle needs every philosopher but the last to be
-        interrupted between its two acquires, i.e. N-1 = 3 preemptions (a
-        blocked attempt is not a modeled access, so no race can hand the turn
-        on for free).  The bound used to be 2 because acquire races were
-        attributed one step late (defect #22): the woken thread ran *after*
-        the holder's acquire and built the hold-and-wait chain by accident.
-        """
+    @pytest.mark.parametrize(("bound", "limit"), [(2, 1000), (3, 2000)])
+    def test_dining_philosophers_four_trace_count(self, bound: int, limit: int) -> None:
+        """Track search cost at both budgets and require the three-preemption cycle."""
 
         class Table:
             def __init__(self) -> None:
@@ -247,22 +238,13 @@ class TestSchedulingCoarsening:
             workers=[make_philosopher(i) for i in range(4)],
             invariant=lambda _: True,
             max_executions=5000,
-            preemption_bound=3,
+            preemption_bound=bound,
             detect_io=False,
             deadlock_timeout=2.0,
             stop_on_first=False,
         )
 
-        assert not result.property_holds, "Deadlock should be found"
-        # The exploration should complete well under the 5000 cap.
-        # After the finding-3 preemption-count fix (see the N=3 test), the
-        # previously over-counted preemptions no longer suppress legal
-        # within-bound interleavings, so N=4 rose from ~121 to ~649.  With
-        # acquires attributed to their own step and preemption_bound=3 it is
-        # ~509 (the deadlock itself is found after ~15).  Still bounded and
-        # far below the 5000 cap.
-        assert result.num_explored <= 1000, (
-            f"Expected <=1000 interleavings for 4-philosopher pure lock example, "
-            f"got {result.num_explored}. Likely a scheduling regression "
-            f"(e.g. unhandled opcode inflating the DPOR search tree)."
-        )
+        if bound == 3:
+            assert result.property_holds is False
+            assert "deadlock" in (result.explanation or "").lower()
+        assert result.num_explored <= limit

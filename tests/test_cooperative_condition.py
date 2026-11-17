@@ -238,8 +238,9 @@ def test_wait_for_retries_after_spurious_wakeup(monkeypatch):
         assert cond.wait_for(lambda: len(waits) == 2, timeout=5.0)
     assert len(waits) == 2
 
+
 def test_expired_notification_wakes_next_engine_waiter(monkeypatch):
-    from unittest.mock import Mock
+    from unittest.mock import MagicMock, Mock
 
     cond = CooperativeCondition()
     scheduler = Mock()
@@ -253,8 +254,6 @@ def test_expired_notification_wakes_next_engine_waiter(monkeypatch):
             cond._engine_blocked[1] = scheduler
             cond.notify()
         return False
-
-    from unittest.mock import MagicMock
 
     real_cond = MagicMock()
     real_cond.wait.side_effect = expire_after_notify

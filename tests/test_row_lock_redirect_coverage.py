@@ -195,8 +195,13 @@ class _PgState:
 def _pg_locked_increment(_state: _PgState) -> None:
     conn = psycopg2.connect(_DSN)
     try:
-        conn.autocommit = False
+        # An unlocked read races the other worker's locked UPDATE and lets
+        # DPOR schedule this transaction while the other holds the row lock.
+        conn.autocommit = True
         cur = conn.cursor()
+        cur.execute(f"SELECT balance FROM {_PG_TABLE} WHERE id = 1")
+        cur.fetchone()
+        conn.autocommit = False
         cur.execute(f"SELECT balance FROM {_PG_TABLE} WHERE id = 1 FOR UPDATE")
         row = cur.fetchone()
         assert row is not None
@@ -221,6 +226,7 @@ def test_postgres_thread_mode_redirect_demotes_exhausted(pg_accounts: str) -> No
         workers=[_pg_locked_increment, _pg_locked_increment],
         invariant=lambda _s: _pg_read_balance() == 200,
         detect_io=True,
+        preemption_bound=None,
         lock_timeout=2000,
         deadlock_timeout=15.0,
         timeout_per_run=30.0,
@@ -240,9 +246,7 @@ def test_postgres_xproc_redirect_never_certifies_coverage(pg_accounts: str) -> N
     This is the audited issue #250 scenario: separate OS processes contend on
     the same Postgres row via SELECT ... FOR UPDATE; the coordinator's
     ACQUIRE_LOCKS arbitration redirects a worker whose engine step was
-    already committed. Whatever verdict the run reports (today the redirected
-    execution fails closed as ``failure_kind="nondeterministic"``), an
-    unbounded search must not claim ``exhausted=True``.
+    already committed. This physical redirect makes the schedule inexact.
     """
     target = "tests.xproc_demo_pg_lock:locked_increment"
     result = frontrun.explore_processes(
@@ -259,6 +263,6 @@ def test_postgres_xproc_redirect_never_certifies_coverage(pg_accounts: str) -> N
         "Postgres-grade row-lock contention hit the redirect seam (issue #250); "
         f"coverage must not be certified (ok={result.ok}, failure_kind={result.failure_kind})"
     )
-    # The redirect must only affect the coverage claim / redirect fail-close;
-    # it must never be reported as a bogus invariant violation.
-    assert result.failure_kind != "invariant", result.failure
+    assert result.ok is None
+    assert result.failing_schedule is None
+    assert "exact replay schedule" in (result.truncation or "")

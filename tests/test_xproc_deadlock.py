@@ -2,9 +2,9 @@
 
 Two workers acquire two row locks in opposite order. Under the interleaving
 where each holds one lock and then requests the other, the wait-for graph in the
-reused DporScheduler detects the cycle and the coordinator reports a
-deterministic deadlock — the same machinery that catches in-process SELECT FOR
-UPDATE deadlocks, now spanning worker "processes".
+reused DporScheduler detects the cycle across workers. The coordinator records
+the cycle in its truncation reason because the row-lock redirect prevents
+exact replay of the committed schedule.
 
 Run in-process (ThreadLauncher) because SQLite has no SELECT FOR UPDATE; the
 same path applies to real Postgres subprocesses (integration).

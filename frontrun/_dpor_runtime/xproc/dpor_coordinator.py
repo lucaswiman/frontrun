@@ -924,11 +924,6 @@ class DporCrossProcessCoordinator:
                 accesses=accesses,
             )
 
-        # Deadlock first: a row-lock cycle aborts the holder, whose worker then
-        # often raises too, so checking worker_errors first would mask the
-        # deadlock behind that induced crash (mirrors the in-process priority).
-        if isinstance(err, DeadlockError):
-            return _fail(getattr(err, "cycle_description", None) or str(err), "deadlock")
         # Branch-cap truncation next: the engine refused to schedule past
         # max_branches (execution.aborted), so the still-waiting workers were
         # denied/timed out as a *consequence* — the induced TimeoutError and
@@ -945,12 +940,18 @@ class DporCrossProcessCoordinator:
                 "check for a nonterminating worker.",
             )
         if scheduler._row_lock_redirected:
+            cycle = f". Observed wait-for cycle: {err.cycle_description}" if isinstance(err, DeadlockError) else ""
             return incomplete_result(
                 num_explored,
                 "cross-process row-lock contention redirected physical execution after the DPOR engine had already "
                 "committed the waiter step; this run cannot provide an exact replay schedule, so frontrun is failing "
-                "closed instead of certifying the result",
+                f"closed instead of certifying the result{cycle}",
             )
+        # A row-lock cycle aborts the holder, whose worker then
+        # often raises too, so checking worker_errors first would mask the
+        # deadlock behind that induced crash (mirrors the in-process priority).
+        if isinstance(err, DeadlockError):
+            return _fail(getattr(err, "cycle_description", None) or str(err), "deadlock")
         # A scheduler fallback TimeoutError means the run free-ran unscheduled
         # (unmodeled DB-level blocking, or a statement slower than
         # deadlock_timeout). Its final state describes no DPOR schedule, so the

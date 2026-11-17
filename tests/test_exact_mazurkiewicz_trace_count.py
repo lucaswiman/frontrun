@@ -375,7 +375,9 @@ def test_repeated_lock_acquisition_reaches_every_physical_order() -> None:
         observed.add(tuple(s.order))
         return True
 
-    frontrun.explore(setup=State, workers=[first, twice, last], invariant=observe, preemption_bound=None, detect_io=False)
+    frontrun.explore(
+        setup=State, workers=[first, twice, last], invariant=observe, preemption_bound=None, detect_io=False
+    )
     assert observed == set(permutations((0, 1, 1, 2)))
 
 
