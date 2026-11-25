@@ -3,27 +3,36 @@ Changelog
 
 All releases: https://github.com/lucaswiman/frontrun/releases
 
-0.8.0 (Unreleased)
+0.8.0 (2026-11-25)
 ------------------
 
-* SQLite writers acquire the database lock before row locks and release it at
-  transaction boundaries, including commits in Python's PEP 249 mode.
+* **Python 3.15 support.** Standard Python 3.15 and free-threaded 3.15t join
+  the test, CI, and wheel matrices. Generator-expression races are no longer
+  missed, shared-access tracking follows 3.15's updated constant, iterator,
+  and await bytecode, and cross-process worker serialization preserves nested
+  code and exception metadata so replay stays deterministic.
 
-* **Drop Python 3.10.** Python 3.10 has reached end of life; frontrun now
-  requires Python 3.11 or later. The opcode observer no longer models
-  3.10-only bytecode (``DUP_TOP``/``ROT_*``, ``CALL_FUNCTION``/``CALL_METHOD``,
-  ``BINARY_ADD``/``INPLACE_*``), and 3.10 is removed from the CI and wheel
-  matrices.
+* **Breaking: drop Python 3.10 and 3.13t.** Python 3.10 has reached end of
+  life; frontrun now requires Python 3.11 or later, and the opcode observer no
+  longer models 3.10-only bytecode. The PyO3 upgrade needed for 3.15 also
+  removes free-threaded 3.13t; supported free-threaded builds are 3.14t and
+  3.15t. Ordinary (GIL) Python 3.13 remains supported.
 
-* **Python 3.15 support.** Add standard Python 3.15 and free-threaded 3.15t to
-  the local test, CI, and wheel matrices. The PyO3 upgrade removes
-  support for 3.13t; supported free-threaded versions are now 3.14t and 3.15t.
-  Ordinary Python 3.13 remains supported.
+* **DPOR lock-order false pass fixed.** Sync events (lock acquires, releases,
+  trylock attempts, event wakes) were attributed to the step *after* the one
+  they physically ran in, so DPOR counted the reversed acquisition order of two
+  critical sections on the same lock as explored while replaying the original
+  order. ``with lock: x = 1`` racing ``with lock: x = 2`` could be certified
+  as ``x == 2``. Lock events now land on their own step, the reversed order is
+  physically executed, and the Mazurkiewicz trace-count oracle now asserts that
+  explored executions are distinct, not just correctly counted. Missed
+  repeated and nested lock orders, bounded race reversals, and notified
+  condition waiters are fixed alongside.
 
-* **Python 3.15 exploration and workers.** Fix missed races in generator
-  expressions and preserve shared access tracking through updated constant,
-  iterator, and await bytecode. Worker function serialization preserves nested
-  code and exception metadata on Python 3.15, retaining deterministic replay.
+* **SQLite database write lock.** SQLite's database-level write lock is
+  modelled as a scheduler row lock: writers acquire it before row locks and
+  release it at transaction boundaries, including commits in Python's PEP 249
+  mode.
 
 * **Virtual-clock exactness.** Explored clocks now cover the timeout-first and
   release-first outcomes when a timed lock waiter races a runnable holder or
@@ -31,11 +40,12 @@ All releases: https://github.com/lucaswiman/frontrun/releases
   omit physically empty clock-actor steps from replay schedules, and keep
   cooperative lock release/probe ordering deterministic on free-threaded
   Python. Async patch ownership, foreign-loop isolation, and free-threaded
-  engine serialization are also hardened.
+  engine serialization are also hardened. Timed-out trylock loops exit.
 
 * **Cross-process honesty and liveness.** Startup searches with no completed
   execution now return an inconclusive ``CrossProcessResult.ok = None``;
-  total-timeout truncation is explicit. HELLO/frame budgets, relay watchdog
+  total-timeout truncation is explicit, and lock redirects with inexact replay
+  schedules are inconclusive. HELLO/frame budgets, relay watchdog
   classification, row-lock release ordering, and DPOR bound validation are
   corrected without relaxing exploration-count assertions.
 
@@ -48,12 +58,9 @@ All releases: https://github.com/lucaswiman/frontrun/releases
 
 * **Replay, marker, and packaging cleanup.** Replay anchors no longer depend on
   address-bearing dict-key representations, high-level zero-step marker runs
-  fail closed, and deferred documentation/packaging drift from the 0.7.0 audit
+  fail closed, the native I/O interception library is built when installing
+  from sdist, and deferred documentation/packaging drift from the 0.7.0 audit
   is resolved.
-
-* DPOR covers missed repeated and nested lock orders, preserves bounded race
-  reversals, and wakes notified condition waiters. Timed-out trylock loops exit.
-  Cross-process lock redirects with inexact replay schedules are inconclusive.
 
 0.7.0 (2026-07-14)
 ------------------
