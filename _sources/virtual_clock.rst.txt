@@ -168,11 +168,12 @@ Semantics and limitations
   Async ``wait_for`` / ``timeout`` / ``timeout_at`` deadlines are virtual, and
   async DPOR makes ``Event``, ``Queue`` and ``Condition`` waiters engine-visible
   with wake happens-before edges.
-* An async ``Event.set()`` issued from outside the explored tasks (a
-  loop callback or a foreign thread) is invisible to exact deadlock
-  detection; if all tasks are otherwise blocked it may be reported as a
-  deadlock.  Setters inside explored tasks — the normal case — are fully
-  tracked.
+* An async ``Event.set()`` issued from outside the explored tasks (a loop
+  callback or a foreign thread) is not an engine-visible wake. Exact-deadlock
+  detection therefore declines while a user loop timer is pending or an
+  external thread is alive, and the run falls back to the wall-clock watchdog
+  if the wake never arrives. Setters inside explored tasks — the normal case —
+  are fully tracked and remain eligible for exact deadlock detection.
 * **Captured references bypass the patch.** ``from time import monotonic``,
   ``from time import sleep``, ``from datetime import datetime``, or captured
   ``asyncio.sleep`` / ``wait_for`` / ``timeout`` objects taken before
@@ -235,15 +236,13 @@ Semantics and limitations
   edges.  The sync limitation costs extra branches and possible false race
   reports, not missed bugs; a fix is tracked in
   ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
-* **Under ``clock="explored"``, a timeout-kind deadline (timed
-  ``lock.acquire(timeout=...)``, ``asyncio.wait_for``) does not fire against a
-  *runnable* holder.** Sleep wakes carry the release/acquire edge described
-  above, so DPOR can reorder "timer fires" around worker steps; a timeout
-  firing carries no engine-visible event, so it commutes with every worker
-  step and the "timeout beats the zero-virtual-time holder's release" branch
-  is never seeded.  Holders that sleep or block across virtual time are
-  explored correctly (the common TTL/retry shape).  A fix is tracked in
-  ``ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md``.
+* **Under ``clock="explored"``, a timeout may beat a runnable lock holder.**
+  A timed ``lock.acquire(timeout=...)`` is a real schedulable race even when
+  the holder would release in zero virtual time. frontrun explores both the
+  release-first and timeout-first outcomes; code that appears "obviously
+  fast enough" on a wall clock can therefore produce an honest timeout
+  counterexample. This is deliberate explored-clock semantics, not a claim
+  about likely production latency.
 * **Under ``clock="explored"``, a woken timed wait may read a later clock
   value than its own deadline.** Every deadline *fires* at its own clock
   value, but "timer fires" and "waiter reads the clock" are separate steps
@@ -321,12 +320,11 @@ contain them, vector clocks order them (via the wake edges), and the
 replay schedulers perform the same advances at the same positions — the
 counterexample stays a deterministic, replayable proof.
 
-One known corner case can weaken the *reproduction* (never the proof
-itself): exploration may commit a clock-actor step to the trace when no
-deadline is actually due (the advance is a no-op and the actor
-re-blocks).  Replay cannot tell such a no-op entry apart from a real or
-positionally-drifted advance, so it may fire an owed advance at the next
-deadline registration and diverge from the explored run.  This is a
-replay-accounting limitation, not a false counterexample. A reproduction count
+Stale wakeup-tree choices can still select the clock actor after every deadline
+was canceled. Such a choice performs no physical transition and is omitted
+from the constructive schedule, so every recorded clock-actor entry denotes a
+real advance. If positional drift makes replay reach that entry before its
+deadline registration, replay owes exactly that real advance and performs it
+when registration arrives. A reproduction count
 below 100% is the visible symptom; inspect the original counterexample schedule
 when it occurs.

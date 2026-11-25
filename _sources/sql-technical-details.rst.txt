@@ -231,6 +231,28 @@ To test behavior at a different isolation level, change the database
 configuration and re-run.
 
 
+SQLite Write Lock
+-----------------
+
+SQLite allows one writer per database file.  A connection takes the write
+lock at ``BEGIN IMMEDIATE`` / ``BEGIN EXCLUSIVE`` or at its first write
+statement and holds it until the transaction ends; an autocommit write holds
+it for the statement.  A second writer would wait in SQLite's busy handler,
+inside the C call, where the scheduler cannot run the holder.
+
+The scheduler acquires a database-scoped writer lock before any modeled row
+locks. It releases the writer at transaction end, including when Python's
+``autocommit=False`` immediately opens the next deferred transaction. A
+statement error can leave the physical transaction and its lock active.
+
+The model covers writers on the main database through ``execute`` and
+``executemany`` and aiosqlite's ``execute_insert`` and ``execute_fetchall``.
+SQLite can also block on rollback-journal readers, an
+attached database, or an unconsumed autocommit ``RETURNING`` cursor. Those
+waits can still reach the driver's busy handler. The writer model assumes a
+separate connection for each concurrent worker.
+
+
 Formal Verification with TLA+
 ------------------------------
 
@@ -364,6 +386,22 @@ INSERTs to the same table.
 ``NondeterministicSQLError`` by default.  Suppress this with
 ``warn_nondeterministic_sql=False`` if you understand the implications,
 or add a ``RETURNING`` clause to your INSERTs.
+
+
+Conservative Identity and Parsing Fallbacks
+--------------------------------------------
+
+Frontrun deliberately prefers extra dependencies to missed dependencies:
+
+- SQL operations that are bytes, another opaque object, or not completely
+  parseable are reported as a database-wide write.  This can add paths, but an
+  unrecognized operation can never disappear from the dependency graph.
+- Generic PostgreSQL/MySQL server identity uses the normalized driver, port,
+  and database name but omits the configured host.  Host aliases and Unix/TCP
+  endpoints for one server therefore unify safely.  Two genuinely distinct
+  servers with the same driver, port, and database name also unify and may add
+  paths; this over-merge is intentional until frontrun exposes a positively
+  identified server-instance override.
 
 
 References

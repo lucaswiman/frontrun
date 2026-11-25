@@ -3,9 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../../../genindex.html"><link rel="search" title="Search" href="../../../../search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/_modules/frontrun/_dpor_runtime/xproc/coordinator.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun._dpor_runtime.xproc.coordinator - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>frontrun._dpor_runtime.xproc.coordinator - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="../../../../index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -243,7 +244,7 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for frontrun._dpor_runtime.xproc.coordinator</h1><div class="highlight"><pre>
-<span></span><span class="sd">&quot;&quot;&quot;Coordinator for cross-process DPOR exploration (Phase 1: no Rust engine).</span>
+<span></span><span class="sd">"""Exhaustive coordinator for cross-process exploration.</span>
 
 <span class="sd">The coordinator owns the exploration: it accepts worker connections over an</span>
 <span class="sd">``AF_UNIX`` socket, and drives one interleaving per iteration by granting a</span>
@@ -252,14 +253,13 @@
 <span class="sd">of external accesses — so the coordinator enumerates interleavings at that</span>
 <span class="sd">(coarse) granularity.</span>
 
-<span class="sd">Phase 1 enumerates the interleaving space *exhaustively* by depth-first search</span>
-<span class="sd">with spawn-per-iteration replay: each iteration re-runs ``setup`` then all</span>
-<span class="sd">workers, replaying a chosen decision prefix and then diverging to an unexplored</span>
-<span class="sd">branch. Row-lock (``SELECT FOR UPDATE``) arbitration reuses the shared</span>
-<span class="sd">:class:`RowLockRegistry`. Feeding accesses into the Rust DPOR engine (to prune</span>
-<span class="sd">equivalent interleavings) is a later slice; the protocol and worker side are</span>
-<span class="sd">already engine-agnostic.</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">This coordinator enumerates the interleaving space *exhaustively* by</span>
+<span class="sd">depth-first search with spawn-per-iteration replay: each iteration re-runs</span>
+<span class="sd">``setup`` then all workers, replaying a chosen decision prefix and then</span>
+<span class="sd">diverging to an unexplored branch. Row-lock (``SELECT FOR UPDATE``)</span>
+<span class="sd">arbitration reuses the shared :class:`RowLockRegistry`. The DPOR variant lives</span>
+<span class="sd">in :mod:`dpor_coordinator` and shares the worker protocol and launch layer.</span>
+<span class="sd">"""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
@@ -278,39 +278,39 @@
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">worker_targets</span><span class="p">(</span><span class="n">socket_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">worker_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">WorkerTarget</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build backend-neutral targets carrying the coordinator socket path.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Build backend-neutral targets carrying the coordinator socket path."""</span>
     <span class="k">return</span> <span class="p">[</span><span class="n">WorkerTarget</span><span class="p">(</span><span class="n">worker_id</span><span class="o">=</span><span class="n">wid</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="p">(</span><span class="n">socket_path</span><span class="p">,))</span> <span class="k">for</span> <span class="n">wid</span> <span class="ow">in</span> <span class="n">worker_ids</span><span class="p">]</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">_WorkerLaunchError</span><span class="p">(</span><span class="ne">OSError</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;A worker failed to connect; its message already carries child diagnostics.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""A worker failed to connect; its message already carries child diagnostics."""</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_launch_error</span><span class="p">(</span><span class="n">worker_set</span><span class="p">:</span> <span class="n">WorkerSet</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">exc</span><span class="p">:</span> <span class="ne">Exception</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="ne">Exception</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Enrich a connect failure with the WorkerSet&#39;s diagnosis of dead children.</span>
+<span class="w">    </span><span class="sd">"""Enrich a connect failure with the WorkerSet's diagnosis of dead children.</span>
 
 <span class="sd">    Turns a bare ``TimeoutError`` (worker never sent HELLO) into a message naming</span>
 <span class="sd">    the real cause — e.g. a child that exited with ``ModuleNotFoundError`` for a</span>
 <span class="sd">    bad ``module:callable`` target — when the WorkerSet can recover it.  Shared</span>
-<span class="sd">    by both coordinators: the launchers capture each child&#39;s stderr precisely so</span>
+<span class="sd">    by both coordinators: the launchers capture each child's stderr precisely so</span>
 <span class="sd">    ``diagnose()`` can surface it, and which strategy the user picked must not</span>
 <span class="sd">    decide whether they see it.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">detail</span> <span class="o">=</span> <span class="n">worker_set</span><span class="o">.</span><span class="n">diagnose</span><span class="p">(</span><span class="n">handles</span><span class="p">)</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">worker_set</span><span class="p">,</span> <span class="n">LivenessProbe</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">detail</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">exc</span>
-    <span class="k">return</span> <span class="n">_WorkerLaunchError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">; </span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_WorkerLaunchError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">; </span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_connection_failure</span><span class="p">(</span><span class="n">exc</span><span class="p">:</span> <span class="ne">Exception</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CrossProcessResult</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;A worker never connected (or its socket broke): report a clean result.&quot;&quot;&quot;</span>
-    <span class="n">detail</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">_WorkerLaunchError</span><span class="p">)</span> <span class="k">else</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">&quot;</span>
+<span class="w">    </span><span class="sd">"""A worker never connected (or its socket broke): report a clean result."""</span>
+    <span class="n">detail</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">_WorkerLaunchError</span><span class="p">)</span> <span class="k">else</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">"</span>
     <span class="k">return</span> <span class="n">CrossProcessResult</span><span class="p">(</span>
         <span class="n">ok</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
         <span class="n">iterations</span><span class="o">=</span><span class="n">iterations</span><span class="p">,</span>
         <span class="n">exhausted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-        <span class="n">failure</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;worker connection failed: </span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-        <span class="n">failure_kind</span><span class="o">=</span><span class="s2">&quot;worker_error&quot;</span><span class="p">,</span>
+        <span class="n">failure</span><span class="o">=</span><span class="sa">f</span><span class="s2">"worker connection failed: </span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
+        <span class="n">failure_kind</span><span class="o">=</span><span class="s2">"worker_error"</span><span class="p">,</span>
     <span class="p">)</span>
 
 
@@ -320,15 +320,15 @@
     <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="n">on_error</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Create, bind, and listen the AF_UNIX coordination socket.</span>
+<span class="w">    </span><span class="sd">"""Create, bind, and listen the AF_UNIX coordination socket.</span>
 
 <span class="sd">    Shared by the exhaustive and DPOR coordinators.  Binding happens before</span>
 <span class="sd">    the coordinators enter their cleanup try/finally, so a bind failure —</span>
 <span class="sd">    realistically ``socket_path`` exceeding the AF_UNIX ~108-byte limit under</span>
-<span class="sd">    a deep ``$TMPDIR`` — must run *on_error* (the coordinator&#39;s socket/tempdir</span>
-<span class="sd">    cleanup) here rather than leak the mkdtemp&#39;d working directory on every</span>
+<span class="sd">    a deep ``$TMPDIR`` — must run *on_error* (the coordinator's socket/tempdir</span>
+<span class="sd">    cleanup) here rather than leak the mkdtemp'd working directory on every</span>
 <span class="sd">    call, and must say which path failed and what to do about it.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">listener</span> <span class="o">=</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">(</span><span class="n">socket</span><span class="o">.</span><span class="n">AF_UNIX</span><span class="p">,</span> <span class="n">socket</span><span class="o">.</span><span class="n">SOCK_STREAM</span><span class="p">)</span>
     <span class="k">try</span><span class="p">:</span>
         <span class="n">listener</span><span class="o">.</span><span class="n">bind</span><span class="p">(</span><span class="n">socket_path</span><span class="p">)</span>
@@ -338,25 +338,25 @@
         <span class="n">listener</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
         <span class="n">on_error</span><span class="p">()</span>
         <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;cannot bind cross-process coordination socket </span><span class="si">{</span><span class="n">socket_path</span><span class="si">!r}</span><span class="s2">: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2"> &quot;</span>
-            <span class="s2">&quot;(AF_UNIX socket paths are limited to ~108 bytes on Linux; set a shorter &quot;</span>
-            <span class="s2">&quot;$TMPDIR or pass an explicit short socket_path=)&quot;</span>
+            <span class="sa">f</span><span class="s2">"cannot bind cross-process coordination socket </span><span class="si">{</span><span class="n">socket_path</span><span class="si">!r}</span><span class="s2">: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2"> "</span>
+            <span class="s2">"(AF_UNIX socket paths are limited to ~108 bytes on Linux; set a shorter "</span>
+            <span class="s2">"$TMPDIR or pass an explicit short socket_path=)"</span>
         <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
     <span class="k">return</span> <span class="n">listener</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">accept_hello</span><span class="p">(</span><span class="n">listener</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Accept one worker connection and read its HELLO frame, returning (sock, worker_id).</span>
+<span class="w">    </span><span class="sd">"""Accept one worker connection and read its HELLO frame, returning (sock, worker_id).</span>
 
 <span class="sd">    Shared by the exhaustive and DPOR coordinators so accept order is decoupled</span>
 <span class="sd">    from worker ids.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="n">timeout</span>
     <span class="n">sock</span><span class="p">,</span> <span class="n">_addr</span> <span class="o">=</span> <span class="n">listener</span><span class="o">.</span><span class="n">accept</span><span class="p">()</span>
     <span class="n">remaining</span> <span class="o">=</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">remaining</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">sock</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
-        <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">&quot;worker connected after the HELLO deadline&quot;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">"worker connected after the HELLO deadline"</span><span class="p">)</span>
     <span class="n">sock</span><span class="o">.</span><span class="n">settimeout</span><span class="p">(</span><span class="n">remaining</span><span class="p">)</span>
     <span class="c1"># A worker can connect and then die (crash/OOM/os._exit) or send garbage</span>
     <span class="c1"># before its HELLO.  Treat that as a *connection* failure (OSError, which</span>
@@ -369,36 +369,41 @@
     <span class="k">except</span> <span class="ne">BaseException</span><span class="p">:</span>
         <span class="n">sock</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
         <span class="k">raise</span>
-    <span class="k">if</span> <span class="n">hello</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">hello</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;t&quot;</span><span class="p">)</span> <span class="o">!=</span> <span class="n">proto</span><span class="o">.</span><span class="n">HELLO</span> <span class="ow">or</span> <span class="s2">&quot;w&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">hello</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">hello</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">hello</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"t"</span><span class="p">)</span> <span class="o">!=</span> <span class="n">proto</span><span class="o">.</span><span class="n">HELLO</span> <span class="ow">or</span> <span class="s2">"w"</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">hello</span><span class="p">:</span>
         <span class="n">sock</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
-        <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;expected HELLO frame, got </span><span class="si">{</span><span class="n">hello</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"expected HELLO frame, got </span><span class="si">{</span><span class="n">hello</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="n">worker_id</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">hello</span><span class="p">[</span><span class="s2">&quot;w&quot;</span><span class="p">])</span>
+        <span class="n">worker_id</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">hello</span><span class="p">[</span><span class="s2">"w"</span><span class="p">])</span>
     <span class="k">except</span> <span class="p">(</span><span class="ne">TypeError</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">):</span>
         <span class="c1"># A non-integer id must be a connection failure (OSError, which the</span>
         <span class="c1"># coordinators catch and structure), not a bare ValueError escaping</span>
         <span class="c1"># explore() with the accepted socket leaked.</span>
         <span class="n">sock</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
-        <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;HELLO frame carries a non-integer worker id: </span><span class="si">{</span><span class="n">hello</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
+        <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"HELLO frame carries a non-integer worker id: </span><span class="si">{</span><span class="n">hello</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
+    <span class="c1"># ``remaining`` is only the shared accept + HELLO handshake budget.  Once</span>
+    <span class="c1"># the handshake succeeds, later protocol frames get the caller's full</span>
+    <span class="c1"># per-frame silence budget; otherwise a slow connect permanently shortens</span>
+    <span class="c1"># every statement's effective deadlock timeout on the exhaustive path.</span>
+    <span class="n">sock</span><span class="o">.</span><span class="n">settimeout</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">sock</span><span class="p">,</span> <span class="n">worker_id</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">check_worker_id</span><span class="p">(</span><span class="n">worker_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">num_workers</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">taken</span><span class="p">:</span> <span class="n">Collection</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="n">sock</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Validate a HELLO-announced worker id against the expected dense range.</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">validate_worker_id</span><span class="p">(</span><span class="n">worker_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">num_workers</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">taken</span><span class="p">:</span> <span class="n">Collection</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="n">sock</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Validate a HELLO-announced worker id against the expected dense range.</span>
 
-<span class="sd">    A duplicate id would silently overwrite the previous worker&#39;s connection</span>
+<span class="sd">    A duplicate id would silently overwrite the previous worker's connection</span>
 <span class="sd">    (that worker is then never driven — a false ``ok=True`` over half the</span>
 <span class="sd">    workload); an out-of-range id would flow into scheduling bookkeeping (and,</span>
 <span class="sd">    on the DPOR path, into the Rust engine) under a nonsense thread id.  Both</span>
-<span class="sd">    close the accepted socket and raise OSError so the coordinators&#39; existing</span>
+<span class="sd">    close the accepted socket and raise OSError so the coordinators' existing</span>
 <span class="sd">    connection-failure handling reports the real cause.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">if</span> <span class="n">worker_id</span> <span class="ow">in</span> <span class="n">taken</span><span class="p">:</span>
         <span class="n">sock</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
-        <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;duplicate worker id </span><span class="si">{</span><span class="n">worker_id</span><span class="si">}</span><span class="s2"> announced by a second HELLO&quot;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"duplicate worker id </span><span class="si">{</span><span class="n">worker_id</span><span class="si">}</span><span class="s2"> announced by a second HELLO"</span><span class="p">)</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">worker_id</span> <span class="o">&lt;</span> <span class="n">num_workers</span><span class="p">:</span>
         <span class="n">sock</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
-        <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;worker id </span><span class="si">{</span><span class="n">worker_id</span><span class="si">}</span><span class="s2"> out of range for num_workers=</span><span class="si">{</span><span class="n">num_workers</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">OSError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"worker id </span><span class="si">{</span><span class="n">worker_id</span><span class="si">}</span><span class="s2"> out of range for num_workers=</span><span class="si">{</span><span class="n">num_workers</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">accept_hello_live</span><span class="p">(</span>
@@ -407,24 +412,34 @@
     <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
     <span class="n">connect_budget</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Accept one HELLO, failing fast if a launched child dies before connecting.</span>
+<span class="w">    </span><span class="sd">"""Accept one HELLO, failing fast if a launched child dies before connecting.</span>
 
 <span class="sd">    A worker that crashes at startup (bad ``module:callable`` target, import</span>
 <span class="sd">    error) never connects, so a plain ``accept`` would block the full connect</span>
 <span class="sd">    budget before timing out. Poll ``worker_set.diagnose(handles)`` between short</span>
 <span class="sd">    accept attempts and raise as soon as a child has exited, so the coordinator</span>
 <span class="sd">    surfaces the real cause in ~a poll interval instead of tens of seconds.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="n">connect_budget</span>
     <span class="n">prev</span> <span class="o">=</span> <span class="n">listener</span><span class="o">.</span><span class="n">gettimeout</span><span class="p">()</span>
     <span class="k">try</span><span class="p">:</span>
         <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
             <span class="n">remaining</span> <span class="o">=</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
             <span class="k">if</span> <span class="n">remaining</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
-                <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">&quot;workers did not connect within the deadlock timeout&quot;</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">"workers did not connect within the deadlock timeout"</span><span class="p">)</span>
             <span class="n">listener</span><span class="o">.</span><span class="n">settimeout</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">remaining</span><span class="p">))</span>
             <span class="k">try</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">accept_hello</span><span class="p">(</span><span class="n">listener</span><span class="p">,</span> <span class="n">remaining</span><span class="p">)</span>
+                <span class="n">sock</span><span class="p">,</span> <span class="n">worker_id</span> <span class="o">=</span> <span class="n">accept_hello</span><span class="p">(</span><span class="n">listener</span><span class="p">,</span> <span class="n">remaining</span><span class="p">)</span>
+                <span class="c1"># ``remaining`` shrinks after each accept retry.  It is only</span>
+                <span class="c1"># the startup budget for this attempt, not the silence budget</span>
+                <span class="c1"># inherited by later protocol frames.  Restore the caller's</span>
+                <span class="c1"># full budget after a successful HELLO.</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">sock</span><span class="o">.</span><span class="n">settimeout</span><span class="p">(</span><span class="n">connect_budget</span><span class="p">)</span>
+                <span class="k">except</span> <span class="ne">BaseException</span><span class="p">:</span>
+                    <span class="n">sock</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+                    <span class="k">raise</span>
+                <span class="k">return</span> <span class="n">sock</span><span class="p">,</span> <span class="n">worker_id</span>
             <span class="k">except</span> <span class="p">(</span><span class="ne">TimeoutError</span><span class="p">,</span> <span class="ne">OSError</span><span class="p">):</span>
                 <span class="c1"># accept() or the remaining shared HELLO budget timed out.</span>
                 <span class="c1"># any_exited / all_exited are non-destructive; the stderr-reading</span>
@@ -432,15 +447,15 @@
                 <span class="c1"># here.</span>
                 <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">worker_set</span><span class="p">,</span> <span class="n">LivenessProbe</span><span class="p">):</span>
                     <span class="k">if</span> <span class="n">worker_set</span><span class="o">.</span><span class="n">any_exited</span><span class="p">(</span><span class="n">handles</span><span class="p">):</span>
-                        <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">&quot;worker exited before connecting&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
+                        <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">"worker exited before connecting"</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
                     <span class="c1"># A child can also exit *cleanly* (code 0) before ever sending</span>
                     <span class="c1"># HELLO — e.g. a target that calls sys.exit(0) at import. That</span>
                     <span class="c1"># is invisible to any_exited (nonzero-only), so without this</span>
                     <span class="c1"># the accept loop would block the whole connect budget.</span>
                     <span class="k">if</span> <span class="n">worker_set</span><span class="o">.</span><span class="n">all_exited</span><span class="p">(</span><span class="n">handles</span><span class="p">):</span>
-                        <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">&quot;all workers exited before connecting&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
+                        <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">"all workers exited before connecting"</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
                 <span class="k">if</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="n">deadline</span><span class="p">:</span>
-                    <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">&quot;workers did not connect within the deadlock timeout&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
+                    <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="s2">"workers did not connect within the deadlock timeout"</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
     <span class="k">finally</span><span class="p">:</span>
         <span class="n">listener</span><span class="o">.</span><span class="n">settimeout</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
 
@@ -449,9 +464,14 @@
 <a class="viewcode-back" href="../../../../api_reference.html#frontrun.CrossProcessResult">[docs]</a>
 <span class="nd">@dataclass</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">CrossProcessResult</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Outcome of a cross-process exploration.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Outcome of a cross-process exploration."""</span>
 
-    <span class="n">ok</span><span class="p">:</span> <span class="nb">bool</span>
+    <span class="c1"># True: completed executions found no failure. False: concrete failure.</span>
+    <span class="c1"># None: inconclusive because an execution was incomplete (possibly after</span>
+    <span class="c1"># earlier executions completed), or because no execution began. Keeping</span>
+    <span class="c1"># incomplete evidence distinct prevents callers from treating a truncated</span>
+    <span class="c1"># run as either a pass or a counterexample.</span>
+    <span class="n">ok</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span>
     <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span>
     <span class="c1"># True only when the search space was genuinely fully covered: any</span>
     <span class="c1"># truncating bound (max_iterations / max_executions / total_timeout, or a</span>
@@ -459,9 +479,9 @@
     <span class="n">exhausted</span><span class="p">:</span> <span class="nb">bool</span>
     <span class="n">failing_schedule</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">failure</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
-    <span class="c1"># One of: &quot;invariant&quot;, &quot;worker_error&quot;, &quot;deadlock&quot;, &quot;timeout&quot;,</span>
-    <span class="c1"># &quot;nondeterministic&quot;, &quot;step_limit&quot; (exhaustive: max_steps_per_run hit),</span>
-    <span class="c1"># &quot;branch_limit&quot; (DPOR: max_branches hit), None.</span>
+    <span class="c1"># One of: "invariant", "worker_error", "deadlock", None. Incomplete</span>
+    <span class="c1"># executions (timeouts, nondeterminism, and scheduling bounds) use</span>
+    <span class="c1"># ok=None plus truncation; they are not verified counterexamples.</span>
     <span class="n">failure_kind</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">accesses</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="c1"># Mapping-input labels keyed by the dense numeric ids used in schedules and</span>
@@ -480,14 +500,19 @@
     <span class="c1"># cross_process._to_interleaving_result.</span>
     <span class="n">workers_executed</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
     <span class="c1"># Why the search stopped before its natural end (e.g. total_timeout expiry</span>
-    <span class="c1"># during startup), when known. Feeds the inconclusive reason for ok=True</span>
-    <span class="c1"># results with zero iterations.</span>
+    <span class="c1"># or an in-flight execution bound), when known. Feeds the reason on</span>
+    <span class="c1"># inconclusive results.</span>
     <span class="n">truncation</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></div>
 
 
 
+<span class="k">def</span><span class="w"> </span><span class="nf">incomplete_result</span><span class="p">(</span><span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">reason</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CrossProcessResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Return an incomplete exploration without fabricating a counterexample."""</span>
+    <span class="k">return</span> <span class="n">CrossProcessResult</span><span class="p">(</span><span class="n">ok</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="n">iterations</span><span class="p">,</span> <span class="n">exhausted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">truncation</span><span class="o">=</span><span class="n">reason</span><span class="p">)</span>
+
+
 <span class="k">class</span><span class="w"> </span><span class="nc">_Conn</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Coordinator-side view of one connected worker.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Coordinator-side view of one connected worker."""</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">worker_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">sock</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">worker_id</span> <span class="o">=</span> <span class="n">worker_id</span>
@@ -510,10 +535,10 @@
     <span class="n">accesses</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span>
     <span class="c1"># Why _drive stopped short of finishing every worker, if it did:</span>
     <span class="c1">#   None             — all workers finished cleanly</span>
-    <span class="c1">#   &quot;deadlock&quot;       — a genuine cross-worker deadlock (no runnable worker)</span>
-    <span class="c1">#   &quot;nondeterministic&quot; — the recorded prefix choice is no longer grantable</span>
+    <span class="c1">#   "deadlock"       — a genuine cross-worker deadlock (no runnable worker)</span>
+    <span class="c1">#   "nondeterministic" — the recorded prefix choice is no longer grantable</span>
     <span class="c1">#                        during replay (a nondeterministic workload)</span>
-    <span class="c1">#   &quot;step_limit&quot;     — the run exceeded max_steps_per_run scheduling points</span>
+    <span class="c1">#   "step_limit"     — the run exceeded max_steps_per_run scheduling points</span>
     <span class="c1">#                      without finishing (nonterminating worker)</span>
     <span class="n">stop</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>
     <span class="n">errors</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span>
@@ -539,13 +564,13 @@
         <span class="c1"># (``while True`` around scheduled statements) keeps frames arriving,</span>
         <span class="c1"># so the per-recv deadlock_timeout never fires and max_iterations only</span>
         <span class="c1"># bounds *completed* iterations — without this cap explore() would hang</span>
-        <span class="c1"># forever. Generous by default (matching the DPOR path&#39;s max_branches</span>
+        <span class="c1"># forever. Generous by default (matching the DPOR path's max_branches</span>
         <span class="c1"># spirit); raise it if a workload genuinely has more scheduling points.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">max_steps_per_run</span> <span class="o">=</span> <span class="n">max_steps_per_run</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_own_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="k">if</span> <span class="n">socket_path</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_own_dir</span> <span class="o">=</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">mkdtemp</span><span class="p">(</span><span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;frontrun-xproc-&quot;</span><span class="p">)</span>
-            <span class="n">socket_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_own_dir</span><span class="p">,</span> <span class="s2">&quot;s&quot;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_own_dir</span> <span class="o">=</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">mkdtemp</span><span class="p">(</span><span class="n">prefix</span><span class="o">=</span><span class="s2">"frontrun-xproc-"</span><span class="p">)</span>
+            <span class="n">socket_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_own_dir</span><span class="p">,</span> <span class="s2">"s"</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">socket_path</span> <span class="o">=</span> <span class="n">socket_path</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">explore</span><span class="p">(</span>
@@ -586,7 +611,7 @@
         <span class="k">while</span> <span class="n">stack</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">iterations</span> <span class="o">&gt;=</span> <span class="n">max_iterations</span><span class="p">:</span>
                 <span class="n">exhausted</span> <span class="o">=</span> <span class="kc">False</span>
-                <span class="n">truncation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;max_iterations=</span><span class="si">{</span><span class="n">max_iterations</span><span class="si">}</span><span class="s2"> reached before the search space was covered&quot;</span>
+                <span class="n">truncation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"max_iterations=</span><span class="si">{</span><span class="n">max_iterations</span><span class="si">}</span><span class="s2"> reached before the search space was covered"</span>
                 <span class="k">break</span>
             <span class="n">prefix</span> <span class="o">=</span> <span class="n">stack</span><span class="o">.</span><span class="n">pop</span><span class="p">()</span>
             <span class="n">key</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">prefix</span><span class="p">)</span>
@@ -610,71 +635,53 @@
                     <span class="n">iterations</span><span class="o">=</span><span class="n">iterations</span><span class="p">,</span>
                     <span class="n">exhausted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
                     <span class="n">failing_schedule</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">,</span>
-                    <span class="n">failure</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;worker </span><span class="si">{</span><span class="n">wid</span><span class="si">}</span><span class="s2"> failed: </span><span class="si">{</span><span class="n">msg</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">&quot;worker_error&quot;</span><span class="p">,</span>
+                    <span class="n">failure</span><span class="o">=</span><span class="sa">f</span><span class="s2">"worker </span><span class="si">{</span><span class="n">wid</span><span class="si">}</span><span class="s2"> failed: </span><span class="si">{</span><span class="n">msg</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
+                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">"worker_error"</span><span class="p">,</span>
                     <span class="n">accesses</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">accesses</span><span class="p">,</span>
                     <span class="n">failures</span><span class="o">=</span><span class="p">[(</span><span class="n">iterations</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">))],</span>
                 <span class="p">)</span>
             <span class="k">if</span> <span class="n">outcome</span><span class="o">.</span><span class="n">timeouts</span><span class="p">:</span>
                 <span class="n">_wid</span><span class="p">,</span> <span class="n">msg</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">outcome</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">items</span><span class="p">())))</span>
-                <span class="k">return</span> <span class="n">CrossProcessResult</span><span class="p">(</span>
-                    <span class="n">ok</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-                    <span class="n">iterations</span><span class="o">=</span><span class="n">iterations</span><span class="p">,</span>
-                    <span class="n">exhausted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-                    <span class="n">failing_schedule</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">,</span>
-                    <span class="n">failure</span><span class="o">=</span><span class="n">msg</span><span class="p">,</span>
-                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">&quot;timeout&quot;</span><span class="p">,</span>
-                    <span class="n">accesses</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">accesses</span><span class="p">,</span>
-                    <span class="n">failures</span><span class="o">=</span><span class="p">[(</span><span class="n">iterations</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">))],</span>
-                <span class="p">)</span>
-            <span class="k">if</span> <span class="n">outcome</span><span class="o">.</span><span class="n">stop</span> <span class="o">==</span> <span class="s2">&quot;step_limit&quot;</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">CrossProcessResult</span><span class="p">(</span>
-                    <span class="n">ok</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-                    <span class="n">iterations</span><span class="o">=</span><span class="n">iterations</span><span class="p">,</span>
-                    <span class="n">exhausted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-                    <span class="n">failure</span><span class="o">=</span><span class="p">(</span>
-                        <span class="sa">f</span><span class="s2">&quot;run exceeded max_steps_per_run=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">max_steps_per_run</span><span class="si">}</span><span class="s2"> scheduling points without &quot;</span>
-                        <span class="s2">&quot;completing; a worker may be nonterminating (e.g. an unbounded loop around scheduled &quot;</span>
-                        <span class="s2">&quot;statements). Raise max_steps_per_run if the workload genuinely runs this long.&quot;</span>
+                <span class="k">return</span> <span class="n">incomplete_result</span><span class="p">(</span><span class="n">iterations</span><span class="p">,</span> <span class="n">msg</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">outcome</span><span class="o">.</span><span class="n">stop</span> <span class="o">==</span> <span class="s2">"step_limit"</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">incomplete_result</span><span class="p">(</span>
+                    <span class="n">iterations</span><span class="p">,</span>
+                    <span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">"run exceeded max_steps_per_run=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">max_steps_per_run</span><span class="si">}</span><span class="s2"> scheduling points without "</span>
+                        <span class="s2">"completing; a worker may be nonterminating (e.g. an unbounded loop around scheduled "</span>
+                        <span class="s2">"statements). Raise max_steps_per_run if the workload genuinely runs this long."</span>
                     <span class="p">),</span>
-                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">&quot;step_limit&quot;</span><span class="p">,</span>
                 <span class="p">)</span>
-            <span class="k">if</span> <span class="n">outcome</span><span class="o">.</span><span class="n">stop</span> <span class="o">==</span> <span class="s2">&quot;deadlock&quot;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">outcome</span><span class="o">.</span><span class="n">stop</span> <span class="o">==</span> <span class="s2">"deadlock"</span><span class="p">:</span>
                 <span class="k">return</span> <span class="n">CrossProcessResult</span><span class="p">(</span>
                     <span class="n">ok</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
                     <span class="n">iterations</span><span class="o">=</span><span class="n">iterations</span><span class="p">,</span>
                     <span class="n">exhausted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
                     <span class="n">failing_schedule</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">,</span>
-                    <span class="n">failure</span><span class="o">=</span><span class="s2">&quot;cross-worker deadlock (no runnable worker)&quot;</span><span class="p">,</span>
-                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">&quot;deadlock&quot;</span><span class="p">,</span>
+                    <span class="n">failure</span><span class="o">=</span><span class="s2">"cross-worker deadlock (no runnable worker)"</span><span class="p">,</span>
+                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">"deadlock"</span><span class="p">,</span>
                     <span class="n">accesses</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">accesses</span><span class="p">,</span>
                     <span class="n">failures</span><span class="o">=</span><span class="p">[(</span><span class="n">iterations</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">))],</span>
                 <span class="p">)</span>
-            <span class="k">if</span> <span class="n">outcome</span><span class="o">.</span><span class="n">stop</span> <span class="o">==</span> <span class="s2">&quot;nondeterministic&quot;</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">CrossProcessResult</span><span class="p">(</span>
-                    <span class="n">ok</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-                    <span class="n">iterations</span><span class="o">=</span><span class="n">iterations</span><span class="p">,</span>
-                    <span class="n">exhausted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-                    <span class="n">failing_schedule</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">,</span>
-                    <span class="n">failure</span><span class="o">=</span><span class="s2">&quot;recorded schedule no longer reproducible (nondeterministic workload?)&quot;</span><span class="p">,</span>
-                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">&quot;nondeterministic&quot;</span><span class="p">,</span>
-                    <span class="n">accesses</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">accesses</span><span class="p">,</span>
-                    <span class="n">failures</span><span class="o">=</span><span class="p">[(</span><span class="n">iterations</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">))],</span>
+            <span class="k">if</span> <span class="n">outcome</span><span class="o">.</span><span class="n">stop</span> <span class="o">==</span> <span class="s2">"nondeterministic"</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">incomplete_result</span><span class="p">(</span>
+                    <span class="n">iterations</span><span class="p">,</span> <span class="s2">"recorded schedule no longer reproducible (nondeterministic workload?)"</span>
                 <span class="p">)</span>
             <span class="k">if</span> <span class="ow">not</span> <span class="n">invariant</span><span class="p">():</span>
+                <span class="n">detail</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="s2">"last_failure_message"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
                 <span class="k">return</span> <span class="n">CrossProcessResult</span><span class="p">(</span>
                     <span class="n">ok</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
                     <span class="n">iterations</span><span class="o">=</span><span class="n">iterations</span><span class="p">,</span>
                     <span class="n">exhausted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
                     <span class="n">failing_schedule</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">,</span>
-                    <span class="n">failure</span><span class="o">=</span><span class="s2">&quot;invariant violated&quot;</span><span class="p">,</span>
-                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">&quot;invariant&quot;</span><span class="p">,</span>
+                    <span class="n">failure</span><span class="o">=</span><span class="sa">f</span><span class="s2">"invariant violated: </span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">"</span> <span class="k">if</span> <span class="n">detail</span> <span class="k">else</span> <span class="s2">"invariant violated"</span><span class="p">,</span>
+                    <span class="n">failure_kind</span><span class="o">=</span><span class="s2">"invariant"</span><span class="p">,</span>
                     <span class="n">accesses</span><span class="o">=</span><span class="n">outcome</span><span class="o">.</span><span class="n">accesses</span><span class="p">,</span>
                     <span class="n">failures</span><span class="o">=</span><span class="p">[(</span><span class="n">iterations</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">))],</span>
                 <span class="p">)</span>
 
             <span class="c1"># Push a fresh prefix for every unexplored alternative at each</span>
-            <span class="c1"># decision point at or beyond this run&#39;s divergence depth. Each</span>
+            <span class="c1"># decision point at or beyond this run's divergence depth. Each</span>
             <span class="c1"># pushed prefix diverges from the greedy continuation at its last</span>
             <span class="c1"># element, so every interleaving is reached exactly once.</span>
             <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">prefix</span><span class="p">),</span> <span class="nb">len</span><span class="p">(</span><span class="n">outcome</span><span class="o">.</span><span class="n">schedule</span><span class="p">)):</span>
@@ -700,14 +707,14 @@
             <span class="k">try</span><span class="p">:</span>
                 <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">num_workers</span><span class="p">):</span>
                     <span class="n">sock</span><span class="p">,</span> <span class="n">wid</span> <span class="o">=</span> <span class="n">accept_hello_live</span><span class="p">(</span><span class="n">listener</span><span class="p">,</span> <span class="n">worker_set</span><span class="p">,</span> <span class="n">handles</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="p">)</span>
-                    <span class="n">check_worker_id</span><span class="p">(</span><span class="n">wid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_workers</span><span class="p">,</span> <span class="n">conns</span><span class="p">,</span> <span class="n">sock</span><span class="p">)</span>
+                    <span class="n">validate_worker_id</span><span class="p">(</span><span class="n">wid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_workers</span><span class="p">,</span> <span class="n">conns</span><span class="p">,</span> <span class="n">sock</span><span class="p">)</span>
                     <span class="n">conn</span> <span class="o">=</span> <span class="n">_Conn</span><span class="p">(</span><span class="n">wid</span><span class="p">,</span> <span class="n">sock</span><span class="p">)</span>
                     <span class="n">conns</span><span class="p">[</span><span class="n">wid</span><span class="p">]</span> <span class="o">=</span> <span class="n">conn</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_advance</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">accesses</span><span class="p">,</span> <span class="n">registry</span><span class="p">)</span>
             <span class="k">except</span> <span class="p">(</span><span class="ne">TimeoutError</span><span class="p">,</span> <span class="ne">OSError</span><span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
                 <span class="c1"># Reap dead children so the WorkerSet can read their exit/stderr,</span>
                 <span class="c1"># then surface the real cause instead of a bare connect timeout</span>
-                <span class="c1"># (mirrors the DPOR coordinator&#39;s _run_spawned).</span>
+                <span class="c1"># (mirrors the DPOR coordinator's _run_spawned).</span>
                 <span class="n">worker_set</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">handles</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="p">)</span>
                 <span class="k">raise</span> <span class="n">_launch_error</span><span class="p">(</span><span class="n">worker_set</span><span class="p">,</span> <span class="n">handles</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
             <span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="n">stop</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_drive</span><span class="p">(</span><span class="n">conns</span><span class="p">,</span> <span class="n">prefix</span><span class="p">,</span> <span class="n">accesses</span><span class="p">,</span> <span class="n">registry</span><span class="p">)</span>
@@ -718,7 +725,7 @@
                     <span class="k">continue</span>
                 <span class="c1"># A recv timeout means the socket stayed open but silent — the</span>
                 <span class="c1"># worker is (almost certainly) alive. Confirm with the</span>
-                <span class="c1"># WorkerSet&#39;s liveness probe when it has one: a child that</span>
+                <span class="c1"># WorkerSet's liveness probe when it has one: a child that</span>
                 <span class="c1"># crashed without closing the socket is a worker_error, not a</span>
                 <span class="c1"># too-small deadlock_timeout.</span>
                 <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">worker_set</span><span class="p">,</span> <span class="n">LivenessProbe</span><span class="p">)</span> <span class="ow">and</span> <span class="n">worker_set</span><span class="o">.</span><span class="n">any_exited</span><span class="p">(</span><span class="n">handles</span><span class="p">):</span>
@@ -729,14 +736,14 @@
                     <span class="n">detail</span> <span class="o">=</span> <span class="n">worker_set</span><span class="o">.</span><span class="n">diagnose</span><span class="p">(</span><span class="n">handles</span><span class="p">)</span>
                     <span class="n">errors</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span>
                         <span class="n">wid</span><span class="p">,</span>
-                        <span class="sa">f</span><span class="s2">&quot;sent no frame within deadlock_timeout=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="si">}</span><span class="s2">s during a run in &quot;</span>
-                        <span class="sa">f</span><span class="s2">&quot;which a worker process exited (</span><span class="si">{</span><span class="n">detail</span><span class="w"> </span><span class="ow">or</span><span class="w"> </span><span class="s1">&#39;nonzero exit&#39;</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">,</span>
+                        <span class="sa">f</span><span class="s2">"sent no frame within deadlock_timeout=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="si">}</span><span class="s2">s during a run in "</span>
+                        <span class="sa">f</span><span class="s2">"which a worker process exited (</span><span class="si">{</span><span class="n">detail</span><span class="w"> </span><span class="ow">or</span><span class="w"> </span><span class="s1">'nonzero exit'</span><span class="si">}</span><span class="s2">)"</span><span class="p">,</span>
                     <span class="p">)</span>
                     <span class="k">continue</span>
                 <span class="n">timeouts</span><span class="p">[</span><span class="n">wid</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
-                    <span class="sa">f</span><span class="s2">&quot;worker </span><span class="si">{</span><span class="n">wid</span><span class="si">}</span><span class="s2"> sent no frame within deadlock_timeout=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="si">}</span><span class="s2">s but is still &quot;</span>
-                    <span class="s2">&quot;running: it blocked outside frontrun&#39;s model (e.g. database-level locking) or a statement &quot;</span>
-                    <span class="s2">&quot;ran longer than deadlock_timeout; raise deadlock_timeout if the workload is just slow&quot;</span>
+                    <span class="sa">f</span><span class="s2">"worker </span><span class="si">{</span><span class="n">wid</span><span class="si">}</span><span class="s2"> sent no frame within deadlock_timeout=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="si">}</span><span class="s2">s but is still "</span>
+                    <span class="s2">"running: it blocked outside frontrun's model (e.g. database-level locking) or a statement "</span>
+                    <span class="s2">"ran longer than deadlock_timeout; raise deadlock_timeout if the workload is just slow"</span>
                 <span class="p">)</span>
             <span class="n">completed</span> <span class="o">=</span> <span class="p">{</span><span class="n">wid</span> <span class="k">for</span> <span class="n">wid</span><span class="p">,</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">conns</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">c</span><span class="o">.</span><span class="n">completed</span><span class="p">}</span>
             <span class="k">return</span> <span class="n">_Outcome</span><span class="p">(</span><span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="n">accesses</span><span class="p">,</span> <span class="n">stop</span><span class="p">,</span> <span class="n">errors</span><span class="p">,</span> <span class="n">timeouts</span><span class="p">,</span> <span class="n">completed</span><span class="p">)</span>
@@ -763,9 +770,9 @@
             <span class="k">if</span> <span class="ow">not</span> <span class="n">grantable</span><span class="p">:</span>
                 <span class="k">if</span> <span class="nb">all</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">done</span> <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">conns</span><span class="o">.</span><span class="n">values</span><span class="p">()):</span>
                     <span class="k">return</span> <span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="kc">None</span>
-                <span class="k">return</span> <span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="s2">&quot;deadlock&quot;</span>  <span class="c1"># some worker stuck: deadlock</span>
+                <span class="k">return</span> <span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="s2">"deadlock"</span>  <span class="c1"># some worker stuck: deadlock</span>
             <span class="k">if</span> <span class="n">step</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_steps_per_run</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="s2">&quot;step_limit&quot;</span>
+                <span class="k">return</span> <span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="s2">"step_limit"</span>
             <span class="n">branch_points</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">grantable</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">step</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">prefix</span><span class="p">):</span>
                 <span class="n">choice</span> <span class="o">=</span> <span class="n">prefix</span><span class="p">[</span><span class="n">step</span><span class="p">]</span>
@@ -775,7 +782,7 @@
                     <span class="c1"># This is a divergent (nondeterministic) workload, NOT a</span>
                     <span class="c1"># cross-worker deadlock — surface it as its own stop reason</span>
                     <span class="c1"># rather than silently exploring a different tree.</span>
-                    <span class="k">return</span> <span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="s2">&quot;nondeterministic&quot;</span>
+                    <span class="k">return</span> <span class="n">schedule</span><span class="p">,</span> <span class="n">branch_points</span><span class="p">,</span> <span class="s2">"nondeterministic"</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="n">choice</span> <span class="o">=</span> <span class="n">grantable</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
             <span class="n">schedule</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">choice</span><span class="p">)</span>
@@ -788,22 +795,22 @@
             <span class="n">conn</span> <span class="o">=</span> <span class="n">conns</span><span class="p">[</span><span class="n">wid</span><span class="p">]</span>
             <span class="k">if</span> <span class="n">conn</span><span class="o">.</span><span class="n">done</span> <span class="ow">or</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="k">continue</span>
-            <span class="n">kind</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span><span class="p">[</span><span class="s2">&quot;t&quot;</span><span class="p">]</span>
+            <span class="n">kind</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span><span class="p">[</span><span class="s2">"t"</span><span class="p">]</span>
             <span class="k">if</span> <span class="n">kind</span> <span class="o">==</span> <span class="n">proto</span><span class="o">.</span><span class="n">REPORT_AND_WAIT</span><span class="p">:</span>
                 <span class="n">out</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">wid</span><span class="p">)</span>
             <span class="k">elif</span> <span class="n">kind</span> <span class="o">==</span> <span class="n">proto</span><span class="o">.</span><span class="n">ACQUIRE_LOCKS</span><span class="p">:</span>
-                <span class="n">resources</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span><span class="p">[</span><span class="s2">&quot;res&quot;</span><span class="p">]</span>
+                <span class="n">resources</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span><span class="p">[</span><span class="s2">"res"</span><span class="p">]</span>
                 <span class="k">if</span> <span class="nb">all</span><span class="p">(</span><span class="n">registry</span><span class="o">.</span><span class="n">active_lock_owner</span><span class="p">(</span><span class="n">r</span><span class="p">)</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="n">wid</span><span class="p">)</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">resources</span><span class="p">):</span>
                     <span class="n">out</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">wid</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">out</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_grant</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">:</span> <span class="n">_Conn</span><span class="p">,</span> <span class="n">accesses</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]],</span> <span class="n">registry</span><span class="p">:</span> <span class="n">RowLockRegistry</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">assert</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-        <span class="k">if</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span><span class="p">[</span><span class="s2">&quot;t&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="n">proto</span><span class="o">.</span><span class="n">ACQUIRE_LOCKS</span><span class="p">:</span>
-            <span class="k">for</span> <span class="n">res</span> <span class="ow">in</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span><span class="p">[</span><span class="s2">&quot;res&quot;</span><span class="p">]:</span>
+        <span class="k">if</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span><span class="p">[</span><span class="s2">"t"</span><span class="p">]</span> <span class="o">==</span> <span class="n">proto</span><span class="o">.</span><span class="n">ACQUIRE_LOCKS</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">res</span> <span class="ow">in</span> <span class="n">conn</span><span class="o">.</span><span class="n">pending</span><span class="p">[</span><span class="s2">"res"</span><span class="p">]:</span>
                 <span class="n">registry</span><span class="o">.</span><span class="n">record_acquire</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">worker_id</span><span class="p">,</span> <span class="n">res</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
         <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="n">proto</span><span class="o">.</span><span class="n">send_msg</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">sock</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;t&quot;</span><span class="p">:</span> <span class="n">proto</span><span class="o">.</span><span class="n">GRANT</span><span class="p">})</span>
+        <span class="n">proto</span><span class="o">.</span><span class="n">send_msg</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">sock</span><span class="p">,</span> <span class="p">{</span><span class="s2">"t"</span><span class="p">:</span> <span class="n">proto</span><span class="o">.</span><span class="n">GRANT</span><span class="p">})</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_advance</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">accesses</span><span class="p">,</span> <span class="n">registry</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_advance</span><span class="p">(</span>
@@ -812,7 +819,7 @@
         <span class="n">accesses</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]],</span>
         <span class="n">registry</span><span class="p">:</span> <span class="n">RowLockRegistry</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Read frames from *conn* until it blocks on a request or finishes.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Read frames from *conn* until it blocks on a request or finishes."""</span>
         <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
             <span class="k">try</span><span class="p">:</span>
                 <span class="n">msg</span> <span class="o">=</span> <span class="n">proto</span><span class="o">.</span><span class="n">recv_msg</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">sock</span><span class="p">)</span>
@@ -820,8 +827,8 @@
                 <span class="c1"># The socket is still open but silent past deadlock_timeout:</span>
                 <span class="c1"># the worker is alive but slow/blocked, NOT disconnected.</span>
                 <span class="c1"># Record that distinctly so _run_once can diagnose</span>
-                <span class="c1"># failure_kind=&quot;timeout&quot; (with raise-deadlock_timeout advice)</span>
-                <span class="c1"># instead of a misleading &quot;worker disconnected&quot; worker_error.</span>
+                <span class="c1"># failure_kind="timeout" (with raise-deadlock_timeout advice)</span>
+                <span class="c1"># instead of a misleading "worker disconnected" worker_error.</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">done</span> <span class="o">=</span> <span class="kc">True</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="o">=</span> <span class="kc">None</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">timed_out</span> <span class="o">=</span> <span class="kc">True</span>
@@ -833,21 +840,21 @@
                 <span class="n">conn</span><span class="o">.</span><span class="n">done</span> <span class="o">=</span> <span class="kc">True</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="o">=</span> <span class="kc">None</span>
                 <span class="k">if</span> <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                    <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="s2">&quot;worker disconnected&quot;</span>
+                    <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="s2">"worker disconnected"</span>
                 <span class="n">registry</span><span class="o">.</span><span class="n">pop_all</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">worker_id</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
                 <span class="k">return</span>
-            <span class="n">kind</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;t&quot;</span><span class="p">)</span>
+            <span class="n">kind</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"t"</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">kind</span> <span class="o">==</span> <span class="n">proto</span><span class="o">.</span><span class="n">ACCESS</span><span class="p">:</span>
-                <span class="n">rid</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;rid&quot;</span><span class="p">)</span>
-                <span class="n">access_kind</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;kind&quot;</span><span class="p">)</span>
+                <span class="n">rid</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"rid"</span><span class="p">)</span>
+                <span class="n">access_kind</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"kind"</span><span class="p">)</span>
                 <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">rid</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="ow">or</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">access_kind</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_fail_malformed</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">msg</span><span class="p">,</span> <span class="n">registry</span><span class="p">)</span>
                     <span class="k">return</span>
                 <span class="n">accesses</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">conn</span><span class="o">.</span><span class="n">worker_id</span><span class="p">,</span> <span class="n">rid</span><span class="p">,</span> <span class="n">access_kind</span><span class="p">))</span>
             <span class="k">elif</span> <span class="n">kind</span> <span class="o">==</span> <span class="n">proto</span><span class="o">.</span><span class="n">RELEASE_LOCKS</span><span class="p">:</span>
-                <span class="n">registry</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">worker_id</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;res&quot;</span><span class="p">))</span>
+                <span class="n">registry</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">worker_id</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"res"</span><span class="p">))</span>
             <span class="k">elif</span> <span class="n">kind</span> <span class="o">==</span> <span class="n">proto</span><span class="o">.</span><span class="n">ACQUIRE_LOCKS</span><span class="p">:</span>
-                <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;res&quot;</span><span class="p">),</span> <span class="nb">list</span><span class="p">):</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"res"</span><span class="p">),</span> <span class="nb">list</span><span class="p">):</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_fail_malformed</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">msg</span><span class="p">,</span> <span class="n">registry</span><span class="p">)</span>
                     <span class="k">return</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="o">=</span> <span class="n">msg</span>
@@ -871,11 +878,11 @@
             <span class="k">elif</span> <span class="n">kind</span> <span class="o">==</span> <span class="n">proto</span><span class="o">.</span><span class="n">ERROR</span><span class="p">:</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">done</span> <span class="o">=</span> <span class="kc">True</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="o">=</span> <span class="kc">None</span>
-                <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;msg&quot;</span><span class="p">,</span> <span class="s2">&quot;worker error&quot;</span><span class="p">)</span>
+                <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"msg"</span><span class="p">,</span> <span class="s2">"worker error"</span><span class="p">)</span>
                 <span class="n">registry</span><span class="o">.</span><span class="n">pop_all</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">worker_id</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
                 <span class="k">return</span>
             <span class="k">elif</span> <span class="n">kind</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="c1"># A frame with no &quot;t&quot; at all — a buggy or desynchronised</span>
+                <span class="c1"># A frame with no "t" at all — a buggy or desynchronised</span>
                 <span class="c1"># worker. Structure it like any other worker failure instead</span>
                 <span class="c1"># of dying on a KeyError that escapes explore().</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">_fail_malformed</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">msg</span><span class="p">,</span> <span class="n">registry</span><span class="p">)</span>
@@ -887,16 +894,16 @@
                 <span class="c1"># the frame and leaving the worker blocked awaiting a grant.</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">done</span> <span class="o">=</span> <span class="kc">True</span>
                 <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="o">=</span> <span class="kc">None</span>
-                <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;unsupported frame </span><span class="si">{</span><span class="n">kind</span><span class="si">!r}</span><span class="s2"> (use strategy=&#39;dpor&#39; for Redis workers)&quot;</span>
+                <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"unsupported frame </span><span class="si">{</span><span class="n">kind</span><span class="si">!r}</span><span class="s2"> (use strategy='dpor' for Redis workers)"</span>
                 <span class="n">registry</span><span class="o">.</span><span class="n">pop_all</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">worker_id</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
                 <span class="k">return</span>
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_fail_malformed</span><span class="p">(</span><span class="n">conn</span><span class="p">:</span> <span class="n">_Conn</span><span class="p">,</span> <span class="n">msg</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span> <span class="n">registry</span><span class="p">:</span> <span class="n">RowLockRegistry</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Mark *conn* failed on a structurally invalid frame (missing/typed-wrong keys).&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Mark *conn* failed on a structurally invalid frame (missing/typed-wrong keys)."""</span>
         <span class="n">conn</span><span class="o">.</span><span class="n">done</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="n">conn</span><span class="o">.</span><span class="n">pending</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;malformed frame </span><span class="si">{</span><span class="n">msg</span><span class="si">!r}</span><span class="s2">&quot;</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"malformed frame </span><span class="si">{</span><span class="n">msg</span><span class="si">!r}</span><span class="s2">"</span>
         <span class="n">registry</span><span class="o">.</span><span class="n">pop_all</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">worker_id</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup_socket</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -938,7 +945,7 @@
       
     </aside>
   </div>
-</div><script src="../../../../_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="../../../../_static/documentation_options.js?v=486e5634"></script>
     <script src="../../../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../../../_static/scripts/furo.js?v=46bd48cc"></script>

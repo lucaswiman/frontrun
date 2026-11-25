@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Virtual clock: timeout, retry, and TTL races" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/virtual_clock.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Races involving timeouts, retries with backoff, TTL caches, debouncing, and rate limiters are invisible to a scheduler that runs on wall-clock time: “the retry fired exactly between the read and th..." />
+<meta name="description" content="Races involving timeouts, retries with backoff, TTL caches, debouncing, and rate limiters are invisible to a scheduler that runs on wall-clock time: “the retry fired exactly between the read and th..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Trace Filtering" href="trace_filtering.html"><link rel="prev" title="Cross-Process Exploration" href="cross_process.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/virtual_clock.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Virtual clock: timeout, retry, and TTL races - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Virtual clock: timeout, retry, and TTL races - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -273,14 +281,14 @@ deterministic, and replayable like any other interleaving.</p>
         <span class="k">return</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">expires_at</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">worker</span><span class="p">(</span><span class="n">cache</span><span class="p">):</span>
-    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">120.0</span><span class="p">)</span>              <span class="c1"># zero wall time under clock=&quot;virtual&quot;</span>
+    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">120.0</span><span class="p">)</span>              <span class="c1"># zero wall time under clock="virtual"</span>
     <span class="k">assert</span> <span class="n">cache</span><span class="o">.</span><span class="n">expired</span><span class="p">()</span>         <span class="c1"># TTL expiry is actually reachable</span>
 
 <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="n">Cache</span><span class="p">,</span>
     <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">worker</span><span class="p">],</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">expired</span><span class="p">(),</span>
-    <span class="n">clock</span><span class="o">=</span><span class="s2">&quot;virtual&quot;</span><span class="p">,</span>               <span class="c1"># default &quot;real&quot;</span>
+    <span class="n">clock</span><span class="o">=</span><span class="s2">"virtual"</span><span class="p">,</span>               <span class="c1"># default "real"</span>
 <span class="p">)</span>
 <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span>
 </pre></div>
@@ -365,7 +373,7 @@ to move timer firings around:</p>
     <span class="n">setup</span><span class="o">=</span><span class="n">State</span><span class="p">,</span>
     <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">rmw_worker</span><span class="p">,</span> <span class="n">delayed_writer</span><span class="p">],</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="n">s</span><span class="o">.</span><span class="n">x</span> <span class="o">==</span> <span class="mi">100</span><span class="p">,</span>
-    <span class="n">clock</span><span class="o">=</span><span class="s2">&quot;explored&quot;</span><span class="p">,</span>
+    <span class="n">clock</span><span class="o">=</span><span class="s2">"explored"</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="k">assert</span> <span class="ow">not</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span>   <span class="c1"># found: timer fired inside the RMW window</span>
 </pre></div>
@@ -411,11 +419,12 @@ deadlines: <code class="docutils literal notranslate"><span class="pre">Lock</sp
 Async <code class="docutils literal notranslate"><span class="pre">wait_for</span></code> / <code class="docutils literal notranslate"><span class="pre">timeout</span></code> / <code class="docutils literal notranslate"><span class="pre">timeout_at</span></code> deadlines are virtual, and
 async DPOR makes <code class="docutils literal notranslate"><span class="pre">Event</span></code>, <code class="docutils literal notranslate"><span class="pre">Queue</span></code> and <code class="docutils literal notranslate"><span class="pre">Condition</span></code> waiters engine-visible
 with wake happens-before edges.</p></li>
-<li><p>An async <code class="docutils literal notranslate"><span class="pre">Event.set()</span></code> issued from outside the explored tasks (a
-loop callback or a foreign thread) is invisible to exact deadlock
-detection; if all tasks are otherwise blocked it may be reported as a
-deadlock.  Setters inside explored tasks — the normal case — are fully
-tracked.</p></li>
+<li><p>An async <code class="docutils literal notranslate"><span class="pre">Event.set()</span></code> issued from outside the explored tasks (a loop
+callback or a foreign thread) is not an engine-visible wake. Exact-deadlock
+detection therefore declines while a user loop timer is pending or an
+external thread is alive, and the run falls back to the wall-clock watchdog
+if the wake never arrives. Setters inside explored tasks — the normal case —
+are fully tracked and remain eligible for exact deadlock detection.</p></li>
 <li><p><strong>Captured references bypass the patch.</strong> <code class="docutils literal notranslate"><span class="pre">from</span> <span class="pre">time</span> <span class="pre">import</span> <span class="pre">monotonic</span></code>,
 <code class="docutils literal notranslate"><span class="pre">from</span> <span class="pre">time</span> <span class="pre">import</span> <span class="pre">sleep</span></code>, <code class="docutils literal notranslate"><span class="pre">from</span> <span class="pre">datetime</span> <span class="pre">import</span> <span class="pre">datetime</span></code>, or captured
 <code class="docutils literal notranslate"><span class="pre">asyncio.sleep</span></code> / <code class="docutils literal notranslate"><span class="pre">wait_for</span></code> / <code class="docutils literal notranslate"><span class="pre">timeout</span></code> objects taken before
@@ -479,15 +488,13 @@ that are actually ordered.  Async DPOR Queue/Condition wakeups do report wake
 edges.  The sync limitation costs extra branches and possible false race
 reports, not missed bugs; a fix is tracked in
 <code class="docutils literal notranslate"><span class="pre">ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md</span></code>.</p></li>
-<li><p><strong>Under ``clock=”explored”``, a timeout-kind deadline (timed
-``lock.acquire(timeout=…)``, ``asyncio.wait_for``) does not fire against a
-*runnable* holder.</strong> Sleep wakes carry the release/acquire edge described
-above, so DPOR can reorder “timer fires” around worker steps; a timeout
-firing carries no engine-visible event, so it commutes with every worker
-step and the “timeout beats the zero-virtual-time holder’s release” branch
-is never seeded.  Holders that sleep or block across virtual time are
-explored correctly (the common TTL/retry shape).  A fix is tracked in
-<code class="docutils literal notranslate"><span class="pre">ideas/possible-future-roadmap/virtual-clock-hardening-deferred.md</span></code>.</p></li>
+<li><p><strong>Under ``clock=”explored”``, a timeout may beat a runnable lock holder.</strong>
+A timed <code class="docutils literal notranslate"><span class="pre">lock.acquire(timeout=...)</span></code> is a real schedulable race even when
+the holder would release in zero virtual time. frontrun explores both the
+release-first and timeout-first outcomes; code that appears “obviously
+fast enough” on a wall clock can therefore produce an honest timeout
+counterexample. This is deliberate explored-clock semantics, not a claim
+about likely production latency.</p></li>
 <li><p><strong>Under ``clock=”explored”``, a woken timed wait may read a later clock
 value than its own deadline.</strong> Every deadline <em>fires</em> at its own clock
 value, but “timer fires” and “waiter reads the clock” are separate steps
@@ -558,13 +565,12 @@ so the engine explores its position in the schedule.</p></li>
 contain them, vector clocks order them (via the wake edges), and the
 replay schedulers perform the same advances at the same positions — the
 counterexample stays a deterministic, replayable proof.</p>
-<p>One known corner case can weaken the <em>reproduction</em> (never the proof
-itself): exploration may commit a clock-actor step to the trace when no
-deadline is actually due (the advance is a no-op and the actor
-re-blocks).  Replay cannot tell such a no-op entry apart from a real or
-positionally-drifted advance, so it may fire an owed advance at the next
-deadline registration and diverge from the explored run.  This is a
-replay-accounting limitation, not a false counterexample. A reproduction count
+<p>Stale wakeup-tree choices can still select the clock actor after every deadline
+was canceled. Such a choice performs no physical transition and is omitted
+from the constructive schedule, so every recorded clock-actor entry denotes a
+real advance. If positional drift makes replay reach that entry before its
+deadline registration, replay owes exactly that real advance and performs it
+when registration arrives. A reproduction count
 below 100% is the visible symptom; inspect the original counterexample schedule
 when it occurs.</p>
 </section>
@@ -642,7 +648,7 @@ when it occurs.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

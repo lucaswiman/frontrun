@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta content="Frontrun is a deterministic concurrency testing library for Python. It reproduces race conditions with DPOR, bytecode exploration and trace markers, including on free-threaded (no-GIL) Python." name="description" />
+<meta property="og:title" content="Frontrun Documentation" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/index.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Frontrun is a deterministic concurrency testing library for Python. It reproduces race conditions with DPOR, bytecode exploration and trace markers, including on free-threaded (no-GIL) Python." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Installation" href="installation.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/index.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="#"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="#"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="#">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -260,7 +268,7 @@
 passes 95% of the time is worse than a test that always fails, because it
 breeds false confidence. Frontrun replaces timing-dependent thread interleaving
 with deterministic scheduling, so race conditions either always happen or
-never happen. Free-threaded Python (3.13t, 3.14t) raises the stakes: races the
+never happen. Free-threaded Python (3.14t, 3.15t) raises the stakes: races the
 GIL kept narrow become real, and frontrun — which supports free-threaded
 builds — exists to enumerate those interleavings and prove which one is buggy.</p>
 <p>Four approaches, in order of decreasing interpretability:</p>
@@ -394,10 +402,12 @@ choice — see <a class="reference internal" href="virtual_clock.html"><span cla
 <li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#concrete-example-select-then-update-lost-update">Concrete Example: SELECT-then-UPDATE Lost Update</a></li>
 <li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#anomaly-classification">Anomaly Classification</a></li>
 <li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#postgresql-isolation-levels">PostgreSQL Isolation Levels</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#sqlite-write-lock">SQLite Write Lock</a></li>
 <li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#formal-verification-with-tla">Formal Verification with TLA+</a></li>
 <li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#why-not-z3-smt-for-row-level-conflicts">Why Not z3/SMT for Row-Level Conflicts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#wire-protocol-parsing-c-level-drivers">Wire Protocol Parsing (C-Level Drivers)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#indexical-insert-resource-ids">Indexical INSERT Resource IDs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#conservative-identity-and-parsing-fallbacks">Conservative Identity and Parsing Fallbacks</a></li>
 <li class="toctree-l2"><a class="reference internal" href="sql-technical-details.html#references">References</a></li>
 </ul>
 </li>
@@ -562,7 +572,7 @@ finding. For races frontrun has found in real, unmodified PyPI packages, see
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

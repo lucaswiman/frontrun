@@ -327,10 +327,10 @@ Running the example yourself
 .. code-block:: bash
 
    # Build the virtualenv with SQLAlchemy + psycopg2, and the I/O library
-   make build-examples-3.10 build-io
+   make build-examples-3.11 build-io
 
    # Create the test database (if it doesn't exist)
    createdb frontrun_test
 
    # Run via the frontrun CLI for C-level I/O interception
-   frontrun .venv-3.10/bin/python examples/orm_race.py
+   frontrun .venv-3.11/bin/python examples/orm_race.py

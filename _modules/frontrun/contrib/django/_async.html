@@ -3,9 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../../../genindex.html"><link rel="search" title="Search" href="../../../../search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/_modules/frontrun/contrib/django/_async.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.contrib.django._async - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>frontrun.contrib.django._async - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="../../../../index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -243,7 +244,7 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for frontrun.contrib.django._async</h1><div class="highlight"><pre>
-<span></span><span class="sd">&quot;&quot;&quot;Async Django helper for async DPOR integration testing.</span>
+<span></span><span class="sd">"""Async Django helper for async DPOR integration testing.</span>
 
 <span class="sd">Handles per-task Django async database connection management and optional</span>
 <span class="sd">lock_timeout injection automatically.</span>
@@ -259,7 +260,7 @@
 <span class="sd">        lock_timeout=500,</span>
 <span class="sd">    )</span>
 <span class="sd">    assert result.property_holds, result.explanation</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
@@ -269,7 +270,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">InterleavingResult</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.contrib.django._shared</span><span class="w"> </span><span class="kn">import</span> <span class="n">prepare_django_dpor</span><span class="p">,</span> <span class="n">wrap_async_task</span>
 
-<span class="n">T</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;T&quot;</span><span class="p">)</span>
+<span class="n">T</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">"T"</span><span class="p">)</span>
 
 
 <div class="viewcode-block" id="async_django_dpor">
@@ -279,13 +280,13 @@
     <span class="n">tasks</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="kc">None</span><span class="p">]]],</span>
     <span class="n">invariant</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="nb">bool</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">db_alias</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;default&quot;</span><span class="p">,</span>
+    <span class="n">db_alias</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"default"</span><span class="p">,</span>
     <span class="n">lock_timeout</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">detect_sql</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">trace_packages</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">InterleavingResult</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Run async DPOR exploration with per-task Django async connection management.</span>
+<span class="w">    </span><span class="sd">"""Run async DPOR exploration with per-task Django async connection management.</span>
 
 <span class="sd">    Each task closes the shared Django connection and opens a fresh one.</span>
 
@@ -297,15 +298,15 @@
 <span class="sd">        setup: Called once per execution to create fresh shared state.</span>
 <span class="sd">        tasks: List of async callables, each receiving the shared state.</span>
 <span class="sd">        invariant: Predicate over shared state after all tasks complete.</span>
-<span class="sd">        db_alias: Django database alias to use (default ``&quot;default&quot;``).</span>
+<span class="sd">        db_alias: Django database alias to use (default ``"default"``).</span>
 <span class="sd">        lock_timeout: If set, execute ``SET lock_timeout = &lt;N&gt;ms`` on each</span>
-<span class="sd">            task&#39;s connection.</span>
+<span class="sd">            task's connection.</span>
 <span class="sd">        detect_sql: Passed through to the async DPOR engine (default True).</span>
 <span class="sd">        trace_packages: Package name patterns (fnmatch syntax) to trace.</span>
 <span class="sd">            Defaults to :data:`~frontrun.contrib.django._sync.DJANGO_TRACE_PACKAGES`.</span>
 <span class="sd">            Pass ``[]`` to disable extra tracing beyond user code.</span>
 <span class="sd">        **kwargs: Forwarded verbatim to :func:`frontrun.explore`.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_dpor</span><span class="w"> </span><span class="kn">import</span> <span class="n">_explore_async_dpor</span>
 
     <span class="n">wrapped_setup</span><span class="p">,</span> <span class="n">wrapped_tasks</span><span class="p">,</span> <span class="n">resolved_packages</span> <span class="o">=</span> <span class="n">prepare_django_dpor</span><span class="p">(</span>
@@ -354,7 +355,7 @@
       
     </aside>
   </div>
-</div><script src="../../../../_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="../../../../_static/documentation_options.js?v=486e5634"></script>
     <script src="../../../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../../../_static/scripts/furo.js?v=46bd48cc"></script>

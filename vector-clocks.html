@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Vector Clocks and Happens-Before" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/vector-clocks.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="This page gives a self-contained explanation of the vector clock mechanism that underpins Frontrun’s DPOR race detection. It covers the theory (the happens-before partial order), the data structure..." />
+<meta name="description" content="This page gives a self-contained explanation of the vector clock mechanism that underpins Frontrun’s DPOR race detection. It covers the theory (the happens-before partial order), the data structure..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Search Strategies" href="search.html"><link rel="prev" title="DPOR: Dynamic Partial Order Reduction" href="dpor.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/vector-clocks.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Vector Clocks and Happens-Before - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Vector Clocks and Happens-Before - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -421,13 +429,13 @@ Python lock:</p>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">thread_0</span><span class="p">():</span>
     <span class="k">with</span> <span class="n">lock</span><span class="p">:</span>
-        <span class="n">f</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;/tmp/data&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span>
-        <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;hello&quot;</span><span class="p">)</span>
+        <span class="n">f</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"/tmp/data"</span><span class="p">,</span> <span class="s2">"w"</span><span class="p">)</span>
+        <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">"hello"</span><span class="p">)</span>
         <span class="n">f</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">thread_1</span><span class="p">():</span>
     <span class="k">with</span> <span class="n">lock</span><span class="p">:</span>
-        <span class="n">f</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;/tmp/data&quot;</span><span class="p">,</span> <span class="s2">&quot;r&quot;</span><span class="p">)</span>
+        <span class="n">f</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"/tmp/data"</span><span class="p">,</span> <span class="s2">"r"</span><span class="p">)</span>
         <span class="n">data</span> <span class="o">=</span> <span class="n">f</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
         <span class="n">f</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
 </pre></div>
@@ -570,11 +578,11 @@ happen-before T1’s write.  No alternative ordering is explored.</p>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">thread_0</span><span class="p">():</span>
     <span class="k">with</span> <span class="n">lock</span><span class="p">:</span>
-        <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;/tmp/data&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;hello&quot;</span><span class="p">)</span>  <span class="c1"># I/O write</span>
+        <span class="nb">open</span><span class="p">(</span><span class="s2">"/tmp/data"</span><span class="p">,</span> <span class="s2">"w"</span><span class="p">)</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">"hello"</span><span class="p">)</span>  <span class="c1"># I/O write</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">thread_1</span><span class="p">():</span>
     <span class="k">with</span> <span class="n">lock</span><span class="p">:</span>
-        <span class="n">data</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;/tmp/data&quot;</span><span class="p">,</span> <span class="s2">&quot;r&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>    <span class="c1"># I/O read</span>
+        <span class="n">data</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"/tmp/data"</span><span class="p">,</span> <span class="s2">"r"</span><span class="p">)</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>    <span class="c1"># I/O read</span>
 </pre></div>
 </div>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Step 0: schedule T0         → T0.io_vv = [1, 0]
@@ -800,7 +808,7 @@ Python tracing.</p></li>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="How It Works Under the Hood" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/internals.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="This page walks through the mechanisms Frontrun uses to control thread interleaving, from Python bytecode up through C-level I/O interception. The goal is to make the magic legible — each layer is ..." />
+<meta name="description" content="This page walks through the mechanisms Frontrun uses to control thread interleaving, from Python bytecode up through C-level I/O interception. The goal is to make the magic legible — each layer is ..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="API Reference" href="api_reference.html"><link rel="prev" title="Trace Filtering" href="trace_filtering.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/internals.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>How It Works Under the Hood - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>How It Works Under the Hood - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -263,10 +271,10 @@ specific and the trade-offs follow from how that layer works.</p>
 <h2>Python bytecode and the interleaving problem<a class="headerlink" href="#python-bytecode-and-the-interleaving-problem" title="Link to this heading">¶</a></h2>
 <p>CPython compiles Python source to bytecode instructions (opcodes).  A
 line like <code class="docutils literal notranslate"><span class="pre">self.value</span> <span class="pre">=</span> <span class="pre">temp</span> <span class="pre">+</span> <span class="pre">1</span></code> compiles to several opcodes:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span># Python 3.10
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span># Python 3.11
 LOAD_FAST       1 (temp)
 LOAD_CONST      1 (1)
-BINARY_ADD
+BINARY_OP       0 (+)
 LOAD_FAST       0 (self)
 STORE_ATTR      0 (value)
 </pre></div>
@@ -287,7 +295,7 @@ in pure Python code.  The classic lost-update bug:</p>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">increment</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="n">temp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>      <span class="c1"># LOAD_ATTR → local</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>  <span class="c1"># BINARY_ADD, STORE_ATTR</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">temp</span> <span class="o">+</span> <span class="mi">1</span>  <span class="c1"># BINARY_OP, STORE_ATTR</span>
 </pre></div>
 </div>
 <p>Two threads calling <code class="docutils literal notranslate"><span class="pre">increment()</span></code> can both execute <code class="docutils literal notranslate"><span class="pre">LOAD_ATTR</span></code>
@@ -295,9 +303,9 @@ in pure Python code.  The classic lost-update bug:</p>
 increment is lost.  This is the kind of bug Frontrun exists to find.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Bytecode is not stable across Python versions.  Python 3.10 uses
-<code class="docutils literal notranslate"><span class="pre">BINARY_ADD</span></code>; 3.11+ uses <code class="docutils literal notranslate"><span class="pre">BINARY_OP</span></code>; 3.14 uses
-<code class="docutils literal notranslate"><span class="pre">LOAD_FAST_BORROW</span></code>.  This is why opcode-level schedules from the
+<p>Bytecode is not stable across Python versions.  Python 3.11 has
+<code class="docutils literal notranslate"><span class="pre">PRECALL</span></code> and <code class="docutils literal notranslate"><span class="pre">LOAD_METHOD</span></code>; 3.12 folds method loads into
+<code class="docutils literal notranslate"><span class="pre">LOAD_ATTR</span></code>; 3.14 uses <code class="docutils literal notranslate"><span class="pre">LOAD_FAST_BORROW</span></code>.  This is why opcode-level schedules from the
 bytecode explorer are ephemeral debugging artifacts, not long-lived
 test fixtures.</p>
 </div>
@@ -308,8 +316,8 @@ test fixtures.</p>
 execution events.  Frontrun uses two modes:</p>
 <p><strong>Line-level tracing</strong> (used by trace markers):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">trace_callback</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">event</span><span class="p">,</span> <span class="n">arg</span><span class="p">):</span>
-    <span class="c1"># event is one of: &#39;call&#39;, &#39;line&#39;, &#39;return&#39;, &#39;exception&#39;</span>
-    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s1">&#39;line&#39;</span><span class="p">:</span>
+    <span class="c1"># event is one of: 'call', 'line', 'return', 'exception'</span>
+    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s1">'line'</span><span class="p">:</span>
         <span class="c1"># frame.f_lineno tells us which source line is about to execute</span>
         <span class="o">...</span>
     <span class="k">return</span> <span class="n">trace_callback</span>
@@ -328,9 +336,9 @@ the marker-location cache means the per-event overhead is a dict lookup.
 The cost is that you need to manually annotate the synchronization points.</p>
 <p><strong>Opcode-level tracing</strong> (used by bytecode exploration and DPOR):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">trace_callback</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">event</span><span class="p">,</span> <span class="n">arg</span><span class="p">):</span>
-    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s1">&#39;call&#39;</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s1">'call'</span><span class="p">:</span>
         <span class="n">frame</span><span class="o">.</span><span class="n">f_trace_opcodes</span> <span class="o">=</span> <span class="kc">True</span>   <span class="c1"># enable opcode events for this frame</span>
-    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s1">&#39;opcode&#39;</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s1">'opcode'</span><span class="p">:</span>
         <span class="c1"># fires before EACH bytecode instruction</span>
         <span class="n">scheduler</span><span class="o">.</span><span class="n">wait_for_turn</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">trace_callback</span>
@@ -350,7 +358,7 @@ exploration entry points allows widening the filter to include specific
 installed packages.  See <a class="reference internal" href="trace_filtering.html"><span class="doc">Trace Filtering</span></a> for details.</p>
 <p>On Python 3.12+, <code class="docutils literal notranslate"><span class="pre">sys.monitoring</span></code> provides a lower-overhead
 alternative to <code class="docutils literal notranslate"><span class="pre">sys.settrace</span></code> for opcode-level events.  Frontrun
-uses it where available, falling back to <code class="docutils literal notranslate"><span class="pre">sys.settrace</span></code> on 3.10–3.11.</p>
+uses it where available, falling back to <code class="docutils literal notranslate"><span class="pre">sys.settrace</span></code> on 3.11.</p>
 </section>
 <section id="sys-setprofile-detecting-c-level-calls">
 <h2><code class="docutils literal notranslate"><span class="pre">sys.setprofile</span></code>: detecting C-level calls<a class="headerlink" href="#sys-setprofile-detecting-c-level-calls" title="Link to this heading">¶</a></h2>
@@ -361,10 +369,10 @@ any trace events — it’s opaque.</p>
 <p><code class="docutils literal notranslate"><span class="pre">sys.setprofile</span></code> fills this gap.  It fires <code class="docutils literal notranslate"><span class="pre">'c_call'</span></code>, <code class="docutils literal notranslate"><span class="pre">'c_return'</span></code>,
 and <code class="docutils literal notranslate"><span class="pre">'c_exception'</span></code> events for calls into C code:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">profile_func</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">event</span><span class="p">,</span> <span class="n">arg</span><span class="p">):</span>
-    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s1">&#39;c_call&#39;</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="s1">'c_call'</span><span class="p">:</span>
         <span class="c1"># arg is the C function object (e.g. socket.socket.send)</span>
-        <span class="n">qualname</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="s1">&#39;__qualname__&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">qualname</span> <span class="o">==</span> <span class="s1">&#39;socket.send&#39;</span><span class="p">:</span>
+        <span class="n">qualname</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="s1">'__qualname__'</span><span class="p">,</span> <span class="s1">''</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">qualname</span> <span class="o">==</span> <span class="s1">'socket.send'</span><span class="p">:</span>
             <span class="c1"># This thread is about to call socket.send() in C</span>
             <span class="o">...</span>
 
@@ -423,8 +431,8 @@ accesses to the scheduler:</p>
     <span class="c1"># Report the I/O event to the scheduler</span>
     <span class="n">reporter</span> <span class="o">=</span> <span class="n">get_io_reporter</span><span class="p">()</span>  <span class="c1"># per-thread callback from TLS</span>
     <span class="k">if</span> <span class="n">reporter</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">resource_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;socket:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">getpeername</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">getpeername</span><span class="p">()[</span><span class="mi">1</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span>
-        <span class="n">reporter</span><span class="p">(</span><span class="n">resource_id</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">)</span>
+        <span class="n">resource_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"socket:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">getpeername</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">getpeername</span><span class="p">()[</span><span class="mi">1</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span>
+        <span class="n">reporter</span><span class="p">(</span><span class="n">resource_id</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_real_socket_send</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 
 <span class="c1"># Replace the method on the class</span>
@@ -457,11 +465,11 @@ the dynamic linker finds Frontrun’s <code class="docutils literal notranslate"
 
 <span class="kt">ssize_t</span><span class="w"> </span><span class="nf">send</span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">fd</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="o">*</span><span class="n">buf</span><span class="p">,</span><span class="w"> </span><span class="kt">size_t</span><span class="w"> </span><span class="n">len</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">flags</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">real_send</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="n">real_send</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">dlsym</span><span class="p">(</span><span class="n">RTLD_NEXT</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;send&quot;</span><span class="p">);</span><span class="w">  </span><span class="c1">// find the NEXT &quot;send&quot; symbol</span>
+<span class="w">        </span><span class="n">real_send</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">dlsym</span><span class="p">(</span><span class="n">RTLD_NEXT</span><span class="p">,</span><span class="w"> </span><span class="s">"send"</span><span class="p">);</span><span class="w">  </span><span class="c1">// find the NEXT "send" symbol</span>
 <span class="w">    </span><span class="p">}</span>
 
-<span class="w">    </span><span class="c1">// Report the event: &quot;write to socket on fd&quot;</span>
-<span class="w">    </span><span class="n">report_io_event</span><span class="p">(</span><span class="n">fd</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;write&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="c1">// Report the event: "write to socket on fd"</span>
+<span class="w">    </span><span class="n">report_io_event</span><span class="p">(</span><span class="n">fd</span><span class="p">,</span><span class="w"> </span><span class="s">"write"</span><span class="p">);</span>
 
 <span class="w">    </span><span class="c1">// Call the real libc send()</span>
 <span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">real_send</span><span class="p">(</span><span class="n">fd</span><span class="p">,</span><span class="w"> </span><span class="n">buf</span><span class="p">,</span><span class="w"> </span><span class="n">len</span><span class="p">,</span><span class="w"> </span><span class="n">flags</span><span class="p">);</span>
@@ -472,9 +480,9 @@ the dynamic linker finds Frontrun’s <code class="docutils literal notranslate"
 uses <code class="docutils literal notranslate"><span class="pre">#[no_mangle]</span></code> with <code class="docutils literal notranslate"><span class="pre">extern</span> <span class="pre">&quot;C&quot;</span></code> to produce C-compatible
 symbol names.  The library maintains a process-global map from file
 descriptors to resource IDs:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>connect(fd=7, {127.0.0.1:5432})  →  register fd 7 as &quot;socket:127.0.0.1:5432&quot;
-send(fd=7, ...)                   →  report write to &quot;socket:127.0.0.1:5432&quot;
-recv(fd=7, ...)                   →  report read from &quot;socket:127.0.0.1:5432&quot;
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>connect(fd=7, {127.0.0.1:5432})  →  register fd 7 as "socket:127.0.0.1:5432"
+send(fd=7, ...)                   →  report write to "socket:127.0.0.1:5432"
+recv(fd=7, ...)                   →  report read from "socket:127.0.0.1:5432"
 close(fd=7)                       →  unregister fd 7
 </pre></div>
 </div>
@@ -798,7 +806,7 @@ a deadlock is always reported as <code class="docutils literal notranslate"><spa
 <p>When <code class="docutils literal notranslate"><span class="pre">CooperativeLock</span></code> or <code class="docutils literal notranslate"><span class="pre">CooperativeRLock</span></code> would block (the lock is
 held by another thread), the slow path registers a waiting edge in the
 global <code class="docutils literal notranslate"><span class="pre">WaitForGraph</span></code> before entering the spin loop:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>add_waiting(thread_id, lock_id)  →  DFS from (&quot;thread&quot;, thread_id)
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>add_waiting(thread_id, lock_id)  →  DFS from ("thread", thread_id)
 </pre></div>
 </div>
 <p>If the DFS finds a path back to the starting node, a cycle exists.
@@ -813,13 +821,13 @@ indefinitely inside libpq’s C code — invisible to Python tracing.</p>
 <p>Frontrun prevents this by maintaining a client-side row-lock registry
 (<code class="docutils literal notranslate"><span class="pre">DporScheduler._active_row_locks</span></code>) and intercepting the lock
 acquisition <em>before</em> the C call:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>SQL cursor detects &quot;SELECT ... FOR UPDATE&quot;
-    → identifies row-level resource ID  (e.g. &quot;sql:users:((&#39;id&#39;,1))&quot;)
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>SQL cursor detects "SELECT ... FOR UPDATE"
+    → identifies row-level resource ID  (e.g. "sql:users:(('id',1))")
     → calls acquire_row_locks(thread_id, [resource_id])
 
 acquire_row_locks:
     if another thread holds the lock:
-        add_waiting(thread_id, row_lock_id, kind=&quot;row_lock&quot;)
+        add_waiting(thread_id, row_lock_id, kind="row_lock")
         if WaitForGraph detects a cycle:
             remove_waiting(...)
             scheduler._error = DeadlockError(cycle_description)
@@ -842,7 +850,7 @@ Other threads see scheduler._error and exit their spin loops
 runner.run() returns normally (no TimeoutError)
 explore checks isinstance(scheduler._error, DeadlockError)
     → result.property_holds = False
-    → result.explanation = &quot;Deadlock detected ... &lt;cycle&gt;&quot;
+    → result.explanation = "Deadlock detected ... &lt;cycle&gt;"
     → result.counterexample = schedule trace
 </pre></div>
 </div>
@@ -887,9 +895,9 @@ while True:
             break                                   # deadlock or all done
         # ... run thread until next scheduling point ...
         # opcode tracing reports accesses:
-        engine.report_access(execution, tid, obj_id, &quot;read&quot;|&quot;write&quot;|...)
-        engine.report_io_access(execution, tid, obj_id, &quot;write&quot;)
-        engine.report_sync(execution, tid, &quot;lock_acquire&quot;, lock_id)
+        engine.report_access(execution, tid, obj_id, "read"|"write"|...)
+        engine.report_io_access(execution, tid, obj_id, "write")
+        engine.report_sync(execution, tid, "lock_acquire", lock_id)
         # ... etc. ...
     # check invariant, record result
     if not engine.next_execution():
@@ -974,19 +982,19 @@ tracking would miss.</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">report_first_access</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code></p></td>
-<td><p>first-write-wins</p></td>
+<td><p>first-and-last span</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">PythonMemory</span></code></p></td>
 <td><p>container-level keys (earliest position for wakeup insertion)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">report_synced_io_access</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dpor_vv</span></code></p></td>
-<td><p>first-write-wins</p></td>
+<td><p>first-and-last span</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IoDirect</span></code></p></td>
 <td><p>Python-level I/O (Redis, SQL) ordered by Python locks</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">report_io_access</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">io_vv</span></code></p></td>
-<td><p>first-write-wins</p></td>
+<td><p>first-and-last span</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IoDirect</span></code></p></td>
 <td><p>file/socket I/O (<code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code>, C-call detection)</p></td>
 </tr>
@@ -994,11 +1002,10 @@ tracking would miss.</p>
 </table>
 </div>
 <p>The “last-write-wins” recording mode (<code class="docutils literal notranslate"><span class="pre">record_access</span></code>) overwrites the
-per-thread access entry with the latest access, so the race check always
-considers the most recent access to each object.  The “first-write-wins”
-mode (<code class="docutils literal notranslate"><span class="pre">record_io_access</span></code>) keeps the earliest access per thread, enabling
-wakeup tree insertion at the earliest point — for example, between a
-<code class="docutils literal notranslate"><span class="pre">SELECT</span></code> and <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> in a database transaction.</p>
+per-thread access entry with the latest access.  Span recording keeps both
+the earliest and latest access: the first enables an early wakeup insertion,
+while the last preserves the dependency needed to schedule another thread
+between two accesses to the same object.</p>
 </section>
 <section id="conflict-detection-and-race-checking">
 <h3>Conflict detection and race checking<a class="headerlink" href="#conflict-detection-and-race-checking" title="Link to this heading">¶</a></h3>
@@ -1280,7 +1287,7 @@ insertion as before.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

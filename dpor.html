@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="DPOR: Dynamic Partial Order Reduction" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/dpor.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Frontrun includes a built-in DPOR engine for systematic concurrency testing. Where the bytecode explorer samples random interleavings hoping to hit a bug, DPOR guarantees that every meaningfully di..." />
+<meta name="description" content="Frontrun includes a built-in DPOR engine for systematic concurrency testing. Where the bytecode explorer samples random interleavings hoping to hit a bug, DPOR guarantees that every meaningfully di..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Vector Clocks and Happens-Before" href="vector-clocks.html"><link rel="prev" title="DPOR in Practice" href="dpor_guide.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/dpor.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>DPOR: Dynamic Partial Order Reduction - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>DPOR: Dynamic Partial Order Reduction - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -514,7 +522,7 @@ The exploration tree looks like:</p>
                          ^
                          │
                     CONFLICT DETECTED between
-                    T0&#39;s write here and T1&#39;s
+                    T0's write here and T1's
                     later write: insert [T1]
                     into wakeup tree at Branch 1
 </pre></div>
@@ -923,12 +931,12 @@ module. The two Python-visible classes are <code class="docutils literal notrans
 
         <span class="c1"># ... run thread_id until it performs a shared access ...</span>
 
-        <span class="n">engine</span><span class="o">.</span><span class="n">report_access</span><span class="p">(</span><span class="n">execution</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">,</span> <span class="n">object_id</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">)</span>
-        <span class="c1"># or: engine.report_sync(execution, thread_id, &quot;lock_acquire&quot;, lock_id)</span>
+        <span class="n">engine</span><span class="o">.</span><span class="n">report_access</span><span class="p">(</span><span class="n">execution</span><span class="p">,</span> <span class="n">thread_id</span><span class="p">,</span> <span class="n">object_id</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">)</span>
+        <span class="c1"># or: engine.report_sync(execution, thread_id, "lock_acquire", lock_id)</span>
 
         <span class="n">execution</span><span class="o">.</span><span class="n">finish_thread</span><span class="p">(</span><span class="n">thread_id</span><span class="p">)</span>
 
-    <span class="c1"># check invariants on this execution&#39;s final state ...</span>
+    <span class="c1"># check invariants on this execution's final state ...</span>
 
     <span class="k">if</span> <span class="ow">not</span> <span class="n">engine</span><span class="o">.</span><span class="n">next_execution</span><span class="p">():</span>
         <span class="k">break</span>  <span class="c1"># all interleavings explored</span>
@@ -1093,7 +1101,7 @@ library that inspired this implementation.</p></li>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

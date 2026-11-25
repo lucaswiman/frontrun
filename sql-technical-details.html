@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="SQL Conflict Detection – Technical Details" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/sql-technical-details.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Frontrun’s SQL conflict detection intercepts cursor.execute() calls, parses the SQL, and reports per-table (or per-row) resource IDs to the DPOR engine. This replaces the coarse endpoint-level dete..." />
+<meta name="description" content="Frontrun’s SQL conflict detection intercepts cursor.execute() calls, parses the SQL, and reports per-table (or per-row) resource IDs to the DPOR engine. This replaces the coarse endpoint-level dete..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Redis Conflict Detection – Technical Details" href="redis.html"><link rel="prev" title="SQLAlchemy Lost-Update Race Condition" href="orm_race.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/sql-technical-details.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>SQL Conflict Detection – Technical Details - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>SQL Conflict Detection – Technical Details - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -298,10 +306,10 @@ used for predicate extraction – it is never executed.</p>
 <code class="docutils literal notranslate"><span class="pre">extract_equality_predicates()</span></code> parses the WHERE clause and extracts
 equality and IN-list predicates on primary key columns:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Input (after parameter resolution):</span>
-<span class="s2">&quot;SELECT * FROM accounts WHERE id = 42 AND region = &#39;us-east&#39;&quot;</span>
+<span class="s2">"SELECT * FROM accounts WHERE id = 42 AND region = 'us-east'"</span>
 
 <span class="c1"># Output:</span>
-<span class="p">[</span><span class="n">EqualityPredicate</span><span class="p">(</span><span class="s2">&quot;id&quot;</span><span class="p">,</span> <span class="s2">&quot;42&quot;</span><span class="p">),</span> <span class="n">EqualityPredicate</span><span class="p">(</span><span class="s2">&quot;region&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east&quot;</span><span class="p">)]</span>
+<span class="p">[</span><span class="n">EqualityPredicate</span><span class="p">(</span><span class="s2">"id"</span><span class="p">,</span> <span class="s2">"42"</span><span class="p">),</span> <span class="n">EqualityPredicate</span><span class="p">(</span><span class="s2">"region"</span><span class="p">,</span> <span class="s2">"us-east"</span><span class="p">)]</span>
 </pre></div>
 </div>
 <p>When both operations have complete PK predicates, disjointness is
@@ -446,6 +454,24 @@ a different level.</p>
 <p>To test behavior at a different isolation level, change the database
 configuration and re-run.</p>
 </section>
+<section id="sqlite-write-lock">
+<h2>SQLite Write Lock<a class="headerlink" href="#sqlite-write-lock" title="Link to this heading">¶</a></h2>
+<p>SQLite allows one writer per database file.  A connection takes the write
+lock at <code class="docutils literal notranslate"><span class="pre">BEGIN</span> <span class="pre">IMMEDIATE</span></code> / <code class="docutils literal notranslate"><span class="pre">BEGIN</span> <span class="pre">EXCLUSIVE</span></code> or at its first write
+statement and holds it until the transaction ends; an autocommit write holds
+it for the statement.  A second writer would wait in SQLite’s busy handler,
+inside the C call, where the scheduler cannot run the holder.</p>
+<p>The scheduler acquires a database-scoped writer lock before any modeled row
+locks. It releases the writer at transaction end, including when Python’s
+<code class="docutils literal notranslate"><span class="pre">autocommit=False</span></code> immediately opens the next deferred transaction. A
+statement error can leave the physical transaction and its lock active.</p>
+<p>The model covers writers on the main database through <code class="docutils literal notranslate"><span class="pre">execute</span></code> and
+<code class="docutils literal notranslate"><span class="pre">executemany</span></code> and aiosqlite’s <code class="docutils literal notranslate"><span class="pre">execute_insert</span></code> and <code class="docutils literal notranslate"><span class="pre">execute_fetchall</span></code>.
+SQLite can also block on rollback-journal readers, an
+attached database, or an unconsumed autocommit <code class="docutils literal notranslate"><span class="pre">RETURNING</span></code> cursor. Those
+waits can still reach the driver’s busy handler. The writer model assumes a
+separate connection for each concurrent worker.</p>
+</section>
 <section id="formal-verification-with-tla">
 <h2>Formal Verification with TLA+<a class="headerlink" href="#formal-verification-with-tla" title="Link to this heading">¶</a></h2>
 <p>Three TLA+ specifications in <code class="docutils literal notranslate"><span class="pre">specs/</span></code> verify correctness.  All pass
@@ -560,6 +586,21 @@ INSERTs to the same table.</p>
 <code class="docutils literal notranslate"><span class="pre">warn_nondeterministic_sql=False</span></code> if you understand the implications,
 or add a <code class="docutils literal notranslate"><span class="pre">RETURNING</span></code> clause to your INSERTs.</p>
 </section>
+<section id="conservative-identity-and-parsing-fallbacks">
+<h2>Conservative Identity and Parsing Fallbacks<a class="headerlink" href="#conservative-identity-and-parsing-fallbacks" title="Link to this heading">¶</a></h2>
+<p>Frontrun deliberately prefers extra dependencies to missed dependencies:</p>
+<ul class="simple">
+<li><p>SQL operations that are bytes, another opaque object, or not completely
+parseable are reported as a database-wide write.  This can add paths, but an
+unrecognized operation can never disappear from the dependency graph.</p></li>
+<li><p>Generic PostgreSQL/MySQL server identity uses the normalized driver, port,
+and database name but omits the configured host.  Host aliases and Unix/TCP
+endpoints for one server therefore unify safely.  Two genuinely distinct
+servers with the same driver, port, and database name also unify and may add
+paths; this over-merge is intentional until frontrun exposes a positively
+identified server-instance override.</p></li>
+</ul>
+</section>
 <section id="references">
 <h2>References<a class="headerlink" href="#references" title="Link to this heading">¶</a></h2>
 <ul class="simple">
@@ -646,6 +687,7 @@ OSDI 2023.</p></li>
 <li><a class="reference internal" href="#concrete-example-select-then-update-lost-update">Concrete Example: SELECT-then-UPDATE Lost Update</a></li>
 <li><a class="reference internal" href="#anomaly-classification">Anomaly Classification</a></li>
 <li><a class="reference internal" href="#postgresql-isolation-levels">PostgreSQL Isolation Levels</a></li>
+<li><a class="reference internal" href="#sqlite-write-lock">SQLite Write Lock</a></li>
 <li><a class="reference internal" href="#formal-verification-with-tla">Formal Verification with TLA+</a><ul>
 <li><a class="reference internal" href="#spec-1-sqlconflictrefinement-3-200-states-13-invariants">Spec 1: SqlConflictRefinement (3,200 states, 13 invariants)</a></li>
 <li><a class="reference internal" href="#spec-2-dporsqlscheduling-2-048-states-7-invariants">Spec 2: DporSqlScheduling (2,048 states, 7 invariants)</a></li>
@@ -656,6 +698,7 @@ OSDI 2023.</p></li>
 <li><a class="reference internal" href="#why-not-z3-smt-for-row-level-conflicts">Why Not z3/SMT for Row-Level Conflicts</a></li>
 <li><a class="reference internal" href="#wire-protocol-parsing-c-level-drivers">Wire Protocol Parsing (C-Level Drivers)</a></li>
 <li><a class="reference internal" href="#indexical-insert-resource-ids">Indexical INSERT Resource IDs</a></li>
+<li><a class="reference internal" href="#conservative-identity-and-parsing-fallbacks">Conservative Identity and Parsing Fallbacks</a></li>
 <li><a class="reference internal" href="#references">References</a></li>
 </ul>
 </li>
@@ -668,7 +711,7 @@ OSDI 2023.</p></li>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

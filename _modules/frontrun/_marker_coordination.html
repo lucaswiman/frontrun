@@ -3,9 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/_modules/frontrun/_marker_coordination.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun._marker_coordination - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>frontrun._marker_coordination - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -243,14 +244,14 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for frontrun._marker_coordination</h1><div class="highlight"><pre>
-<span></span><span class="sd">&quot;&quot;&quot;Shared marker coordination primitives for sync and async trace-marker execution.</span>
+<span></span><span class="sd">"""Shared marker coordination primitives for sync and async trace-marker execution.</span>
 
 <span class="sd">This module contains the low-level synchronization classes used by both</span>
 <span class="sd">:mod:`frontrun.trace_markers` (threads) and :mod:`frontrun.async_trace_markers`</span>
 <span class="sd">(async tasks running in threads).  Both modules re-export these names so the</span>
 <span class="sd">historical public API (``from frontrun.trace_markers import MarkerRegistry,</span>
 <span class="sd">ThreadCoordinator``) continues to work.</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
@@ -269,18 +270,18 @@
 <span class="c1"># Docs promise ``# frontrun: &lt;name&gt;``: the name is the whole whitespace-free</span>
 <span class="c1"># token, not just its leading ``\w+`` run. Truncating (`read-balance` -&gt; `read`)</span>
 <span class="c1"># made hyphenated schedules stall and let a prefix-colliding sibling marker</span>
-<span class="c1"># silently consume another step&#39;s turn.</span>
-<span class="n">MARKER_PATTERN</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;#\s*frontrun:\s*(\S+)&quot;</span><span class="p">)</span>
+<span class="c1"># silently consume another step's turn.</span>
+<span class="n">MARKER_PATTERN</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">"#\s*frontrun:\s*(\S+)"</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_validate_schedule_marker_names</span><span class="p">(</span><span class="n">schedule</span><span class="p">:</span> <span class="n">Schedule</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Reject schedule steps whose marker name no comment can ever produce.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Reject schedule steps whose marker name no comment can ever produce."""</span>
     <span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">:</span>
         <span class="n">name</span> <span class="o">=</span> <span class="n">step</span><span class="o">.</span><span class="n">marker_name</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">name</span> <span class="ow">or</span> <span class="nb">any</span><span class="p">(</span><span class="n">ch</span><span class="o">.</span><span class="n">isspace</span><span class="p">()</span> <span class="k">for</span> <span class="n">ch</span> <span class="ow">in</span> <span class="n">name</span><span class="p">):</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;Step(</span><span class="si">{</span><span class="n">step</span><span class="o">.</span><span class="n">execution_name</span><span class="si">!r}</span><span class="s2">, </span><span class="si">{</span><span class="n">name</span><span class="si">!r}</span><span class="s2">): marker names are single whitespace-free tokens &quot;</span>
-                <span class="s2">&quot;(the &lt;name&gt; in &#39;# frontrun: &lt;name&gt;&#39;), so this step could never match a marker&quot;</span>
+                <span class="sa">f</span><span class="s2">"Step(</span><span class="si">{</span><span class="n">step</span><span class="o">.</span><span class="n">execution_name</span><span class="si">!r}</span><span class="s2">, </span><span class="si">{</span><span class="n">name</span><span class="si">!r}</span><span class="s2">): marker names are single whitespace-free tokens "</span>
+                <span class="s2">"(the &lt;name&gt; in '# frontrun: &lt;name&gt;'), so this step could never match a marker"</span>
             <span class="p">)</span>
 
 
@@ -292,7 +293,7 @@
     <span class="n">coordinator</span><span class="p">:</span> <span class="n">ThreadCoordinator</span><span class="p">,</span>
     <span class="n">timeout_message</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">list</span><span class="p">[</span><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">]],</span> <span class="nb">str</span><span class="p">],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Join worker threads and validate post-conditions for a marker-based run.</span>
+<span class="w">    </span><span class="sd">"""Join worker threads and validate post-conditions for a marker-based run.</span>
 
 <span class="sd">    Shared between the sync :class:`~frontrun.trace_markers.TraceExecutor`</span>
 <span class="sd">    and the async :class:`~frontrun.async_trace_markers.AsyncTraceExecutor`</span>
@@ -302,8 +303,8 @@
 <span class="sd">        TimeoutError: If any worker is still alive after ``timeout``,</span>
 <span class="sd">            using ``timeout_message`` to format the message; or if the</span>
 <span class="sd">            schedule was partially consumed but not completed.</span>
-<span class="sd">        Exception: The first exception found in ``task_errors``.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">        BaseException: The first failure found in ``task_errors``.</span>
+<span class="sd">    """</span>
     <span class="n">alive</span> <span class="o">=</span> <span class="n">join_threads_with_deadline</span><span class="p">(</span><span class="n">threads</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">alive</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="n">timeout_message</span><span class="p">(</span><span class="n">alive</span><span class="p">))</span>
@@ -319,30 +320,29 @@
     <span class="k">if</span> <span class="n">coordinator</span><span class="o">.</span><span class="n">error</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">raise</span> <span class="n">coordinator</span><span class="o">.</span><span class="n">error</span>
 
-    <span class="c1"># If at least one step was processed (so the schedule was in use) but</span>
-    <span class="c1"># the full schedule wasn&#39;t completed, it means the schedule references</span>
-    <span class="c1"># markers that no worker reached. If zero steps were consumed, the</span>
-    <span class="c1"># markers were simply never hit -- which could be a different issue</span>
-    <span class="c1"># (wrong file, exec&#39;d code, etc.) and is not necessarily an error for the</span>
-    <span class="c1"># low-level executor. The exhaustive exploration API validates step zero.</span>
+    <span class="c1"># If at least one step was processed (so the schedule was in use) but the</span>
+    <span class="c1"># full schedule wasn't completed, the remaining steps are an error.  The</span>
+    <span class="c1"># low-level executor keeps its historical zero-step behavior for dynamic</span>
+    <span class="c1"># ``exec`` source that linecache cannot inspect; the exhaustive exploration</span>
+    <span class="c1"># API validates step zero separately.</span>
     <span class="k">if</span> <span class="p">(</span>
         <span class="n">coordinator</span><span class="o">.</span><span class="n">current_step</span> <span class="o">&gt;</span> <span class="mi">0</span>
         <span class="ow">and</span> <span class="n">coordinator</span><span class="o">.</span><span class="n">current_step</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">coordinator</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">)</span>
         <span class="ow">and</span> <span class="ow">not</span> <span class="n">coordinator</span><span class="o">.</span><span class="n">completed</span>
     <span class="p">):</span>
         <span class="n">remaining</span> <span class="o">=</span> <span class="n">coordinator</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">[</span><span class="n">coordinator</span><span class="o">.</span><span class="n">current_step</span> <span class="p">:]</span>
-        <span class="n">step_strs</span> <span class="o">=</span> <span class="p">[</span><span class="sa">f</span><span class="s2">&quot;Step(</span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">execution_name</span><span class="si">!r}</span><span class="s2">, </span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">marker_name</span><span class="si">!r}</span><span class="s2">)&quot;</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">remaining</span><span class="p">]</span>
-        <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Schedule incomplete: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">remaining</span><span class="p">)</span><span class="si">}</span><span class="s2"> step(s) were never reached: </span><span class="si">{</span><span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">step_strs</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">step_strs</span> <span class="o">=</span> <span class="p">[</span><span class="sa">f</span><span class="s2">"Step(</span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">execution_name</span><span class="si">!r}</span><span class="s2">, </span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">marker_name</span><span class="si">!r}</span><span class="s2">)"</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">remaining</span><span class="p">]</span>
+        <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Schedule incomplete: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">remaining</span><span class="p">)</span><span class="si">}</span><span class="s2"> step(s) were never reached: </span><span class="si">{</span><span class="s1">', '</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">step_strs</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
 
 <div class="viewcode-block" id="MarkerRegistry">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.trace_markers.MarkerRegistry">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">MarkerRegistry</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Tracks marker locations in source code for efficient lookup.</span>
+<span class="w">    </span><span class="sd">"""Tracks marker locations in source code for efficient lookup.</span>
 
 <span class="sd">    This class scans source files to find lines with frontrun markers and</span>
 <span class="sd">    maintains a mapping from (filename, line_number) to marker names.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_markers</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># (filename, lineno) -&gt; marker_name</span>
@@ -352,11 +352,11 @@
 <div class="viewcode-block" id="MarkerRegistry.scan_frame">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.trace_markers.MarkerRegistry.scan_frame">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">scan_frame</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">frame</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>  <span class="c1"># type: ignore[name-defined]</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Scan the source file for the given frame to find all markers.</span>
+<span class="w">        </span><span class="sd">"""Scan the source file for the given frame to find all markers.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            frame: A Python frame object from the trace function</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="n">filename</span> <span class="o">=</span> <span class="n">frame</span><span class="o">.</span><span class="n">f_code</span><span class="o">.</span><span class="n">co_filename</span>
 
         <span class="c1"># Fast path: Skip if already scanned (no lock needed)</span>
@@ -386,7 +386,7 @@
                     <span class="n">lines</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
                     <span class="n">line_num</span> <span class="o">+=</span> <span class="mi">1</span>
 
-                <span class="n">readline</span> <span class="o">=</span> <span class="n">io</span><span class="o">.</span><span class="n">StringIO</span><span class="p">(</span><span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">lines</span><span class="p">))</span><span class="o">.</span><span class="n">readline</span>
+                <span class="n">readline</span> <span class="o">=</span> <span class="n">io</span><span class="o">.</span><span class="n">StringIO</span><span class="p">(</span><span class="s2">""</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">lines</span><span class="p">))</span><span class="o">.</span><span class="n">readline</span>
                 <span class="k">try</span><span class="p">:</span>
                     <span class="k">for</span> <span class="n">tok</span> <span class="ow">in</span> <span class="n">tokenize</span><span class="o">.</span><span class="n">generate_tokens</span><span class="p">(</span><span class="n">readline</span><span class="p">):</span>
                         <span class="k">if</span> <span class="n">tok</span><span class="o">.</span><span class="n">type</span> <span class="o">!=</span> <span class="n">tokenize</span><span class="o">.</span><span class="n">COMMENT</span><span class="p">:</span>
@@ -400,25 +400,17 @@
                     <span class="c1"># tokenized before the error.</span>
                     <span class="k">pass</span>
             <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
-                <span class="c1"># If we can&#39;t read the file, just skip it</span>
+                <span class="c1"># If we can't read the file, just skip it</span>
                 <span class="k">pass</span>
 
-            <span class="c1"># Mark as scanned AFTER we&#39;ve populated all markers</span>
+            <span class="c1"># Mark as scanned AFTER we've populated all markers</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_scanned_files</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">filename</span><span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="MarkerRegistry.get_marker">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.trace_markers.MarkerRegistry.get_marker">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">get_marker</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filename</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">lineno</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Get the marker name for a specific file location.</span>
-
-<span class="sd">        Args:</span>
-<span class="sd">            filename: The source file path</span>
-<span class="sd">            lineno: The line number</span>
-
-<span class="sd">        Returns:</span>
-<span class="sd">            The marker name if found, None otherwise</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Return the marker name for a source location, or None."""</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_markers</span><span class="o">.</span><span class="n">get</span><span class="p">((</span><span class="n">filename</span><span class="p">,</span> <span class="n">lineno</span><span class="p">))</span></div>
 </div>
 
@@ -427,11 +419,11 @@
 <div class="viewcode-block" id="ThreadCoordinator">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.trace_markers.ThreadCoordinator">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">ThreadCoordinator</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Coordinates thread execution according to a schedule.</span>
+<span class="w">    </span><span class="sd">"""Coordinates thread execution according to a schedule.</span>
 
 <span class="sd">    This class manages the synchronization between threads, ensuring that</span>
 <span class="sd">    each thread executes markers in the order specified by the schedule.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">schedule</span><span class="p">:</span> <span class="n">Schedule</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">deadlock_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">):</span>
         <span class="n">_validate_schedule_marker_names</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
@@ -450,7 +442,7 @@
 <div class="viewcode-block" id="ThreadCoordinator.wait_for_turn">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.trace_markers.ThreadCoordinator.wait_for_turn">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">wait_for_turn</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">execution_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">marker_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">_reacquire_execution_lock</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Block until it&#39;s this execution unit&#39;s turn to execute this marker.</span>
+<span class="w">        </span><span class="sd">"""Block until it's this execution unit's turn to execute this marker.</span>
 
 <span class="sd">        When *_reacquire_execution_lock* is ``True`` (used by the trace</span>
 <span class="sd">        executors), ``_execution_lock`` is acquired while the condition lock</span>
@@ -462,16 +454,16 @@
 <span class="sd">        Args:</span>
 <span class="sd">            execution_name: The name of the calling execution unit</span>
 <span class="sd">            marker_name: The marker that was hit</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">condition</span><span class="p">:</span>
             <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
-                <span class="c1"># Check if we&#39;re done or had an error</span>
+                <span class="c1"># Check if we're done or had an error</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">completed</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">error</span><span class="p">:</span>
                     <span class="k">if</span> <span class="n">_reacquire_execution_lock</span><span class="p">:</span>
                         <span class="bp">self</span><span class="o">.</span><span class="n">_execution_lock</span><span class="o">.</span><span class="n">acquire</span><span class="p">()</span>
                     <span class="k">return</span>
 
-                <span class="c1"># Check if we&#39;ve exceeded the schedule</span>
+                <span class="c1"># Check if we've exceeded the schedule</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_step</span> <span class="o">&gt;=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">):</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">completed</span> <span class="o">=</span> <span class="kc">True</span>
                     <span class="k">if</span> <span class="n">_reacquire_execution_lock</span><span class="p">:</span>
@@ -484,7 +476,7 @@
 
                 <span class="c1"># Is it our turn?</span>
                 <span class="k">if</span> <span class="n">expected_step</span><span class="o">.</span><span class="n">execution_name</span> <span class="o">==</span> <span class="n">execution_name</span> <span class="ow">and</span> <span class="n">expected_step</span><span class="o">.</span><span class="n">marker_name</span> <span class="o">==</span> <span class="n">marker_name</span><span class="p">:</span>
-                    <span class="c1"># It&#39;s our turn! Advance, optionally acquire execution lock, notify.</span>
+                    <span class="c1"># It's our turn! Advance, optionally acquire execution lock, notify.</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">current_step</span> <span class="o">+=</span> <span class="mi">1</span>
                     <span class="k">if</span> <span class="n">_reacquire_execution_lock</span><span class="p">:</span>
                         <span class="bp">self</span><span class="o">.</span><span class="n">_execution_lock</span><span class="o">.</span><span class="n">acquire</span><span class="p">()</span>
@@ -504,9 +496,9 @@
                         <span class="k">continue</span>
                     <span class="n">expected</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">current_step</span><span class="p">]</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="ne">TimeoutError</span><span class="p">(</span>
-                        <span class="sa">f</span><span class="s2">&quot;Schedule stall: waiting for Step(</span><span class="si">{</span><span class="n">expected</span><span class="o">.</span><span class="n">execution_name</span><span class="si">!r}</span><span class="s2">, &quot;</span>
-                        <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">expected</span><span class="o">.</span><span class="n">marker_name</span><span class="si">!r}</span><span class="s2">) at step </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">current_step</span><span class="si">}</span><span class="s2">/&quot;</span>
-                        <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">)</span><span class="si">}</span><span class="s2">, but no thread has reached it&quot;</span>
+                        <span class="sa">f</span><span class="s2">"Schedule stall: waiting for Step(</span><span class="si">{</span><span class="n">expected</span><span class="o">.</span><span class="n">execution_name</span><span class="si">!r}</span><span class="s2">, "</span>
+                        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">expected</span><span class="o">.</span><span class="n">marker_name</span><span class="si">!r}</span><span class="s2">) at step </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">current_step</span><span class="si">}</span><span class="s2">/"</span>
+                        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="o">.</span><span class="n">steps</span><span class="p">)</span><span class="si">}</span><span class="s2">, but no thread has reached it"</span>
                     <span class="p">)</span>
                     <span class="k">if</span> <span class="n">_reacquire_execution_lock</span><span class="p">:</span>
                         <span class="bp">self</span><span class="o">.</span><span class="n">_execution_lock</span><span class="o">.</span><span class="n">acquire</span><span class="p">()</span>
@@ -517,22 +509,14 @@
 <div class="viewcode-block" id="ThreadCoordinator.report_error">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.trace_markers.ThreadCoordinator.report_error">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">report_error</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">error</span><span class="p">:</span> <span class="ne">Exception</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Report an error and wake up all waiting threads.</span>
+<span class="w">        </span><span class="sd">"""Report an error and wake up all waiting threads.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            error: The exception that occurred</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">condition</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">error</span> <span class="o">=</span> <span class="n">error</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span></div>
-
-
-<div class="viewcode-block" id="ThreadCoordinator.is_finished">
-<a class="viewcode-back" href="../../api_reference.html#frontrun.trace_markers.ThreadCoordinator.is_finished">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">is_finished</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if the schedule has completed or encountered an error.&quot;&quot;&quot;</span>
-        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">condition</span><span class="p">:</span>
-            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">completed</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">error</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span></div>
 </div>
 
 </pre></div>
@@ -567,7 +551,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="../../_static/documentation_options.js?v=486e5634"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

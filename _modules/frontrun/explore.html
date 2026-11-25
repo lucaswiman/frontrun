@@ -3,9 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/_modules/frontrun/explore.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.explore - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>frontrun.explore - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -243,7 +244,7 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for frontrun.explore</h1><div class="highlight"><pre>
-<span></span><span class="sd">&quot;&quot;&quot;Unified entry point for frontrun interleaving exploration.</span>
+<span></span><span class="sd">"""Unified entry point for frontrun interleaving exploration.</span>
 
 <span class="sd">This module provides :func:`explore`, a single function that dispatches to the</span>
 <span class="sd">appropriate underlying implementation based on worker type and strategy.</span>
@@ -266,9 +267,9 @@
 <span class="sd">    result = await frontrun.explore(setup=make_state, workers=worker, count=2, invariant=...)</span>
 
 <span class="sd">    # Strategy selection</span>
-<span class="sd">    result = frontrun.explore(..., strategy=&quot;dpor&quot;)    # default</span>
-<span class="sd">    result = frontrun.explore(..., strategy=&quot;random&quot;)  # random schedule sampling</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    result = frontrun.explore(..., strategy="dpor")    # default</span>
+<span class="sd">    result = frontrun.explore(..., strategy="random")  # random schedule sampling</span>
+<span class="sd">"""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
@@ -281,13 +282,13 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._virtual_clock</span><span class="w"> </span><span class="kn">import</span> <span class="n">ClockMode</span><span class="p">,</span> <span class="n">validate_clock_options</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">_is_async_callable</span><span class="p">,</span> <span class="n">any_async</span>
 
-<span class="n">Strategy</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;dpor&quot;</span><span class="p">,</span> <span class="s2">&quot;random&quot;</span><span class="p">]</span>
-<span class="n">Execution</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;thread&quot;</span><span class="p">,</span> <span class="s2">&quot;process&quot;</span><span class="p">]</span>
+<span class="n">Strategy</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"dpor"</span><span class="p">,</span> <span class="s2">"random"</span><span class="p">]</span>
+<span class="n">Execution</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"thread"</span><span class="p">,</span> <span class="s2">"process"</span><span class="p">]</span>
 <span class="c1">#: Alias of :data:`frontrun._virtual_clock.ClockMode` (single source of truth).</span>
 <span class="n">Clock</span> <span class="o">=</span> <span class="n">ClockMode</span>
 
 <span class="c1">#: Options that change *which* bugs are found but are not honored under</span>
-<span class="c1">#: ``execution=&quot;process&quot;`` (state is external; there is no in-process opcode</span>
+<span class="c1">#: ``execution="process"`` (state is external; there is no in-process opcode</span>
 <span class="c1">#: trace, replay, or virtual clock).  An explicitly-passed value here is rejected</span>
 <span class="c1">#: rather than silently ignored — a silent no-op is a correctness footgun when</span>
 <span class="c1">#: porting a thread test.  Membership is matched against ``explicit_options``</span>
@@ -295,35 +296,35 @@
 <span class="n">_PROCESS_UNSUPPORTED_OPTIONS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">(</span>
     <span class="p">{</span>
         <span class="c1"># In-process trace / analysis knobs with no process-mode analog</span>
-        <span class="c1"># (timeout_per_run&#39;s analog is deadlock_timeout).</span>
-        <span class="s2">&quot;serializable_invariant&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;error_on_any_race&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;lock_timeout&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;trace_packages&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;track_dunder_dict_accesses&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;detect_sql&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;detect_io&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;patch_sleep&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;timeout_per_run&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;reproduce_on_failure&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;warn_nondeterministic_sql&quot;</span><span class="p">,</span>
-        <span class="c1"># Random-strategy-only knobs: process mode forces strategy=&#39;dpor&#39;.</span>
-        <span class="s2">&quot;max_attempts&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;max_ops&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;seed&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;debug&quot;</span><span class="p">,</span>
+        <span class="c1"># (timeout_per_run's analog is deadlock_timeout).</span>
+        <span class="s2">"serializable_invariant"</span><span class="p">,</span>
+        <span class="s2">"error_on_any_race"</span><span class="p">,</span>
+        <span class="s2">"lock_timeout"</span><span class="p">,</span>
+        <span class="s2">"trace_packages"</span><span class="p">,</span>
+        <span class="s2">"track_dunder_dict_accesses"</span><span class="p">,</span>
+        <span class="s2">"detect_sql"</span><span class="p">,</span>
+        <span class="s2">"detect_io"</span><span class="p">,</span>
+        <span class="s2">"patch_sleep"</span><span class="p">,</span>
+        <span class="s2">"timeout_per_run"</span><span class="p">,</span>
+        <span class="s2">"reproduce_on_failure"</span><span class="p">,</span>
+        <span class="s2">"warn_nondeterministic_sql"</span><span class="p">,</span>
+        <span class="c1"># Random-strategy-only knobs: process mode forces strategy='dpor'.</span>
+        <span class="s2">"max_attempts"</span><span class="p">,</span>
+        <span class="s2">"max_ops"</span><span class="p">,</span>
+        <span class="s2">"seed"</span><span class="p">,</span>
+        <span class="s2">"debug"</span><span class="p">,</span>
         <span class="c1"># The virtual clock lives in the in-process scheduler; worker processes</span>
         <span class="c1"># read real time, so a non-default value is a correctness footgun.</span>
-        <span class="s2">&quot;clock&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;clock_diagnostics&quot;</span><span class="p">,</span>
+        <span class="s2">"clock"</span><span class="p">,</span>
+        <span class="s2">"clock_diagnostics"</span><span class="p">,</span>
     <span class="p">}</span>
 <span class="p">)</span>
 
 <span class="c1">#: The inverse of :data:`_PROCESS_UNSUPPORTED_OPTIONS`: options that only make</span>
-<span class="c1">#: sense under ``execution=&quot;process&quot;``.  Thread execution rejects an</span>
+<span class="c1">#: sense under ``execution="process"``.  Thread execution rejects an</span>
 <span class="c1">#: explicitly-passed value here rather than silently ignoring it, by the same</span>
 <span class="c1">#: no-silent-no-op principle.</span>
-<span class="n">_PROCESS_ONLY_OPTIONS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">&quot;reuse_workers&quot;</span><span class="p">})</span>
+<span class="n">_PROCESS_ONLY_OPTIONS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">"reuse_workers"</span><span class="p">})</span>
 
 
 <div class="viewcode-block" id="explore">
@@ -334,10 +335,10 @@
     <span class="n">invariant</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="nb">bool</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="n">strategy</span><span class="p">:</span> <span class="n">Strategy</span> <span class="o">=</span> <span class="s2">&quot;dpor&quot;</span><span class="p">,</span>
-    <span class="n">execution</span><span class="p">:</span> <span class="n">Execution</span> <span class="o">=</span> <span class="s2">&quot;thread&quot;</span><span class="p">,</span>
+    <span class="n">strategy</span><span class="p">:</span> <span class="n">Strategy</span> <span class="o">=</span> <span class="s2">"dpor"</span><span class="p">,</span>
+    <span class="n">execution</span><span class="p">:</span> <span class="n">Execution</span> <span class="o">=</span> <span class="s2">"thread"</span><span class="p">,</span>
     <span class="c1"># Time control (both strategies, sync + async)</span>
-    <span class="n">clock</span><span class="p">:</span> <span class="n">Clock</span> <span class="o">=</span> <span class="s2">&quot;real&quot;</span><span class="p">,</span>
+    <span class="n">clock</span><span class="p">:</span> <span class="n">Clock</span> <span class="o">=</span> <span class="s2">"real"</span><span class="p">,</span>
     <span class="n">clock_diagnostics</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="c1"># DPOR-specific kwargs</span>
     <span class="n">max_executions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -366,7 +367,7 @@
     <span class="c1"># Async-specific kwargs (kept for passthrough)</span>
     <span class="n">detect_sql</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Explore thread/task interleavings for concurrency bugs.</span>
+<span class="w">    </span><span class="sd">"""Explore thread/task interleavings for concurrency bugs.</span>
 
 <span class="sd">    A unified entry point that dispatches to the appropriate underlying</span>
 <span class="sd">    implementation based on worker type (sync vs async) and strategy.</span>
@@ -381,16 +382,16 @@
 <span class="sd">        count: When ``workers`` is a single callable, replicate it this many</span>
 <span class="sd">            times. Must be positive. Cannot be used when ``workers`` is a</span>
 <span class="sd">            list/tuple.</span>
-<span class="sd">        strategy: ``&quot;dpor&quot;`` (default) for systematic DPOR exploration, or</span>
-<span class="sd">            ``&quot;random&quot;`` for random schedule sampling.</span>
-<span class="sd">        execution: ``&quot;thread&quot;`` (default) runs workers as threads/async tasks in</span>
-<span class="sd">            this process; ``&quot;process&quot;`` runs each worker in its own spawned</span>
+<span class="sd">        strategy: ``"dpor"`` (default) for systematic DPOR exploration, or</span>
+<span class="sd">            ``"random"`` for random schedule sampling.</span>
+<span class="sd">        execution: ``"thread"`` (default) runs workers as threads/async tasks in</span>
+<span class="sd">            this process; ``"process"`` runs each worker in its own spawned</span>
 <span class="sd">            Python process, coordinating over a socket. Process mode has the same</span>
 <span class="sd">            ``setup`` / ``workers`` / ``invariant`` / ``count`` shape; workers and</span>
 <span class="sd">            the ``setup()`` return value are serialised with dill (so closures and</span>
 <span class="sd">            lambdas work, not just module-level functions), and ``setup()`` should</span>
 <span class="sd">            return a handle to external SQL/Redis state (a DB path/URL, not a live</span>
-<span class="sd">            connection). Supports ``strategy=&quot;dpor&quot;`` with sync workers only and</span>
+<span class="sd">            connection). Supports ``strategy="dpor"`` with sync workers only and</span>
 <span class="sd">            needs the ``process`` extra (``pip install frontrun[process]``). See</span>
 <span class="sd">            :doc:`/cross_process`.</span>
 <span class="sd">        reuse_workers: Process execution only. Spawn each worker process once and</span>
@@ -409,7 +410,7 @@
 <span class="sd">            socket/file/Redis detection is not available on that path. Note</span>
 <span class="sd">            the difference from the standalone</span>
 <span class="sd">            :func:`frontrun.explore_async_random`, whose ``detect_sql``</span>
-<span class="sd">            defaults to ``False`` — going through ``explore(strategy=&quot;random&quot;)``</span>
+<span class="sd">            defaults to ``False`` — going through ``explore(strategy="random")``</span>
 <span class="sd">            with async workers patches SQL drivers by default because</span>
 <span class="sd">            ``detect_io`` defaults to ``True`` here.</span>
 <span class="sd">        deadlock_timeout: Seconds to wait before declaring a deadlock. Defaults</span>
@@ -427,29 +428,29 @@
 <span class="sd">            DPOR only).</span>
 <span class="sd">        search: Wakeup-tree traversal strategy (sync DPOR and process</span>
 <span class="sd">            execution only).</span>
-<span class="sd">        patch_sleep: For ``clock=&quot;real&quot;``, make ``time.sleep`` /</span>
+<span class="sd">        patch_sleep: For ``clock="real"``, make ``time.sleep`` /</span>
 <span class="sd">            ``asyncio.sleep`` cooperative zero-wall-time yields. For</span>
-<span class="sd">            ``clock=&quot;virtual&quot;`` or ``&quot;explored&quot;``, required: positive sleeps</span>
+<span class="sd">            ``clock="virtual"`` or ``"explored"``, required: positive sleeps</span>
 <span class="sd">            become scheduler-owned virtual deadlines and ``sleep(0)`` remains a</span>
 <span class="sd">            yield.</span>
 <span class="sd">        serializable_invariant: Check serializability against sequential runs.</span>
 <span class="sd">        error_on_any_race: Treat unsynchronized races as failures (DPOR</span>
 <span class="sd">            only; the random strategies reject ``True`` with their own</span>
 <span class="sd">            ValueError rather than silently ignoring it).</span>
-<span class="sd">        clock: ``&quot;real&quot;`` (default) leaves time untouched. ``&quot;virtual&quot;`` gives</span>
+<span class="sd">        clock: ``"real"`` (default) leaves time untouched. ``"virtual"`` gives</span>
 <span class="sd">            each execution a scheduler-owned virtual clock: explored code reads</span>
 <span class="sd">            virtual time from ``time.time()`` / ``time.monotonic()`` /</span>
 <span class="sd">            ``time.perf_counter()``, sleeps become zero-wall-time virtual</span>
 <span class="sd">            deadlines, timed lock acquires time out deterministically, and the</span>
 <span class="sd">            clock autojumps to the earliest pending deadline when nothing is</span>
-<span class="sd">            runnable. ``&quot;explored&quot;`` additionally makes the clock advance a</span>
+<span class="sd">            runnable. ``"explored"`` additionally makes the clock advance a</span>
 <span class="sd">            schedulable choice, so timer firings are explored against other</span>
-<span class="sd">            operations (&quot;the retry fired between the read and the write&quot;).</span>
-<span class="sd">            Rule of thumb: use ``&quot;virtual&quot;`` to make timeout/TTL logic</span>
-<span class="sd">            reachable deterministically at zero wall cost; add ``&quot;explored&quot;``</span>
+<span class="sd">            operations ("the retry fired between the read and the write").</span>
+<span class="sd">            Rule of thumb: use ``"virtual"`` to make timeout/TTL logic</span>
+<span class="sd">            reachable deterministically at zero wall cost; add ``"explored"``</span>
 <span class="sd">            when the *timing* of a timer firing is itself the race you are</span>
 <span class="sd">            hunting. Works with both strategies, sync and async. Requires</span>
-<span class="sd">            ``patch_sleep=True``; not supported with ``execution=&quot;process&quot;``</span>
+<span class="sd">            ``patch_sleep=True``; not supported with ``execution="process"``</span>
 <span class="sd">            (worker processes read real time) or ``serializable_invariant``</span>
 <span class="sd">            (the sequential baseline runs outside the scheduler). See</span>
 <span class="sd">            :doc:`/virtual_clock`.</span>
@@ -476,14 +477,14 @@
 <span class="sd">            ``strategy``, ``execution`` or ``clock`` is</span>
 <span class="sd">            unrecognised, or a non-real ``clock`` is combined with</span>
 <span class="sd">            ``patch_sleep=False``, ``serializable_invariant``, or</span>
-<span class="sd">            ``execution=&quot;process&quot;``. Also raised for any explicitly-passed</span>
+<span class="sd">            ``execution="process"``. Also raised for any explicitly-passed</span>
 <span class="sd">            option the selected strategy/mode does not support, rather than</span>
-<span class="sd">            silently ignoring it: e.g. ``seed=`` with ``strategy=&quot;dpor&quot;``,</span>
-<span class="sd">            ``preemption_bound=`` with ``strategy=&quot;random&quot;``,</span>
-<span class="sd">            ``reproduce_on_failure=`` with async ``strategy=&quot;random&quot;``,</span>
+<span class="sd">            silently ignoring it: e.g. ``seed=`` with ``strategy="dpor"``,</span>
+<span class="sd">            ``preemption_bound=`` with ``strategy="random"``,</span>
+<span class="sd">            ``reproduce_on_failure=`` with async ``strategy="random"``,</span>
 <span class="sd">            ``detect_sql=`` with sync workers, or ``reuse_workers=`` with</span>
-<span class="sd">            ``execution=&quot;thread&quot;``. ``execution=&quot;process&quot;``</span>
-<span class="sd">            additionally rejects async workers, ``strategy=&quot;random&quot;``, and</span>
+<span class="sd">            ``execution="thread"``. ``execution="process"``</span>
+<span class="sd">            additionally rejects async workers, ``strategy="random"``, and</span>
 <span class="sd">            every option that requires the in-process scheduler</span>
 <span class="sd">            (``serializable_invariant``, ``error_on_any_race``,</span>
 <span class="sd">            ``lock_timeout``, ``trace_packages``,</span>
@@ -494,7 +495,7 @@
 <span class="sd">            ``seed``, ``debug``). Explicit-option detection is value-based:</span>
 <span class="sd">            passing an option at its default value is indistinguishable from</span>
 <span class="sd">            omitting it, and is accepted (a no-op either way).</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">worker_list</span> <span class="o">=</span> <span class="n">_resolve_workers</span><span class="p">(</span><span class="n">workers</span><span class="p">,</span> <span class="n">count</span><span class="p">)</span>
 
     <span class="n">validate_clock_options</span><span class="p">(</span>
@@ -508,31 +509,31 @@
     <span class="c1"># chosen adapter filters this dict against its own ``allowed_keys`` set;</span>
     <span class="c1"># anything *explicitly* passed outside that set is rejected below.</span>
     <span class="n">all_kwargs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
-        <span class="s2">&quot;max_executions&quot;</span><span class="p">:</span> <span class="n">max_executions</span><span class="p">,</span>
-        <span class="s2">&quot;preemption_bound&quot;</span><span class="p">:</span> <span class="n">preemption_bound</span><span class="p">,</span>
-        <span class="s2">&quot;max_branches&quot;</span><span class="p">:</span> <span class="n">max_branches</span><span class="p">,</span>
-        <span class="s2">&quot;timeout_per_run&quot;</span><span class="p">:</span> <span class="n">timeout_per_run</span><span class="p">,</span>
-        <span class="s2">&quot;stop_on_first&quot;</span><span class="p">:</span> <span class="n">stop_on_first</span><span class="p">,</span>
-        <span class="s2">&quot;detect_io&quot;</span><span class="p">:</span> <span class="n">detect_io</span><span class="p">,</span>
-        <span class="s2">&quot;deadlock_timeout&quot;</span><span class="p">:</span> <span class="n">deadlock_timeout</span><span class="p">,</span>
-        <span class="s2">&quot;reproduce_on_failure&quot;</span><span class="p">:</span> <span class="n">reproduce_on_failure</span><span class="p">,</span>
-        <span class="s2">&quot;total_timeout&quot;</span><span class="p">:</span> <span class="n">total_timeout</span><span class="p">,</span>
-        <span class="s2">&quot;warn_nondeterministic_sql&quot;</span><span class="p">:</span> <span class="n">warn_nondeterministic_sql</span><span class="p">,</span>
-        <span class="s2">&quot;lock_timeout&quot;</span><span class="p">:</span> <span class="n">lock_timeout</span><span class="p">,</span>
-        <span class="s2">&quot;trace_packages&quot;</span><span class="p">:</span> <span class="n">trace_packages</span><span class="p">,</span>
-        <span class="s2">&quot;track_dunder_dict_accesses&quot;</span><span class="p">:</span> <span class="n">track_dunder_dict_accesses</span><span class="p">,</span>
-        <span class="s2">&quot;search&quot;</span><span class="p">:</span> <span class="n">search</span><span class="p">,</span>
-        <span class="s2">&quot;patch_sleep&quot;</span><span class="p">:</span> <span class="n">patch_sleep</span><span class="p">,</span>
-        <span class="s2">&quot;serializable_invariant&quot;</span><span class="p">:</span> <span class="n">serializable_invariant</span><span class="p">,</span>
-        <span class="s2">&quot;error_on_any_race&quot;</span><span class="p">:</span> <span class="n">error_on_any_race</span><span class="p">,</span>
-        <span class="s2">&quot;clock&quot;</span><span class="p">:</span> <span class="n">clock</span><span class="p">,</span>
-        <span class="s2">&quot;clock_diagnostics&quot;</span><span class="p">:</span> <span class="n">clock_diagnostics</span><span class="p">,</span>
-        <span class="s2">&quot;max_attempts&quot;</span><span class="p">:</span> <span class="n">max_attempts</span><span class="p">,</span>
-        <span class="s2">&quot;max_ops&quot;</span><span class="p">:</span> <span class="n">max_ops</span><span class="p">,</span>
-        <span class="s2">&quot;seed&quot;</span><span class="p">:</span> <span class="n">seed</span><span class="p">,</span>
-        <span class="s2">&quot;debug&quot;</span><span class="p">:</span> <span class="n">debug</span><span class="p">,</span>
-        <span class="s2">&quot;detect_sql&quot;</span><span class="p">:</span> <span class="n">detect_sql</span><span class="p">,</span>
-        <span class="s2">&quot;reuse_workers&quot;</span><span class="p">:</span> <span class="n">reuse_workers</span><span class="p">,</span>
+        <span class="s2">"max_executions"</span><span class="p">:</span> <span class="n">max_executions</span><span class="p">,</span>
+        <span class="s2">"preemption_bound"</span><span class="p">:</span> <span class="n">preemption_bound</span><span class="p">,</span>
+        <span class="s2">"max_branches"</span><span class="p">:</span> <span class="n">max_branches</span><span class="p">,</span>
+        <span class="s2">"timeout_per_run"</span><span class="p">:</span> <span class="n">timeout_per_run</span><span class="p">,</span>
+        <span class="s2">"stop_on_first"</span><span class="p">:</span> <span class="n">stop_on_first</span><span class="p">,</span>
+        <span class="s2">"detect_io"</span><span class="p">:</span> <span class="n">detect_io</span><span class="p">,</span>
+        <span class="s2">"deadlock_timeout"</span><span class="p">:</span> <span class="n">deadlock_timeout</span><span class="p">,</span>
+        <span class="s2">"reproduce_on_failure"</span><span class="p">:</span> <span class="n">reproduce_on_failure</span><span class="p">,</span>
+        <span class="s2">"total_timeout"</span><span class="p">:</span> <span class="n">total_timeout</span><span class="p">,</span>
+        <span class="s2">"warn_nondeterministic_sql"</span><span class="p">:</span> <span class="n">warn_nondeterministic_sql</span><span class="p">,</span>
+        <span class="s2">"lock_timeout"</span><span class="p">:</span> <span class="n">lock_timeout</span><span class="p">,</span>
+        <span class="s2">"trace_packages"</span><span class="p">:</span> <span class="n">trace_packages</span><span class="p">,</span>
+        <span class="s2">"track_dunder_dict_accesses"</span><span class="p">:</span> <span class="n">track_dunder_dict_accesses</span><span class="p">,</span>
+        <span class="s2">"search"</span><span class="p">:</span> <span class="n">search</span><span class="p">,</span>
+        <span class="s2">"patch_sleep"</span><span class="p">:</span> <span class="n">patch_sleep</span><span class="p">,</span>
+        <span class="s2">"serializable_invariant"</span><span class="p">:</span> <span class="n">serializable_invariant</span><span class="p">,</span>
+        <span class="s2">"error_on_any_race"</span><span class="p">:</span> <span class="n">error_on_any_race</span><span class="p">,</span>
+        <span class="s2">"clock"</span><span class="p">:</span> <span class="n">clock</span><span class="p">,</span>
+        <span class="s2">"clock_diagnostics"</span><span class="p">:</span> <span class="n">clock_diagnostics</span><span class="p">,</span>
+        <span class="s2">"max_attempts"</span><span class="p">:</span> <span class="n">max_attempts</span><span class="p">,</span>
+        <span class="s2">"max_ops"</span><span class="p">:</span> <span class="n">max_ops</span><span class="p">,</span>
+        <span class="s2">"seed"</span><span class="p">:</span> <span class="n">seed</span><span class="p">,</span>
+        <span class="s2">"debug"</span><span class="p">:</span> <span class="n">debug</span><span class="p">,</span>
+        <span class="s2">"detect_sql"</span><span class="p">:</span> <span class="n">detect_sql</span><span class="p">,</span>
+        <span class="s2">"reuse_workers"</span><span class="p">:</span> <span class="n">reuse_workers</span><span class="p">,</span>
     <span class="p">}</span>
     <span class="c1"># Snapshot which options were explicitly passed (differ from the signature</span>
     <span class="c1"># default) *before* any local resolution mutates them.  An option passed at</span>
@@ -546,31 +547,31 @@
     <span class="c1"># A deadlock_timeout left unset resolves per execution mode: process spawn is</span>
     <span class="c1"># slow, so it gets a longer default than in-process threads.</span>
     <span class="k">if</span> <span class="n">deadlock_timeout</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">deadlock_timeout</span> <span class="o">=</span> <span class="mf">15.0</span> <span class="k">if</span> <span class="n">execution</span> <span class="o">==</span> <span class="s2">&quot;process&quot;</span> <span class="k">else</span> <span class="mf">5.0</span>
-    <span class="n">all_kwargs</span><span class="p">[</span><span class="s2">&quot;deadlock_timeout&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">deadlock_timeout</span>
+        <span class="n">deadlock_timeout</span> <span class="o">=</span> <span class="mf">15.0</span> <span class="k">if</span> <span class="n">execution</span> <span class="o">==</span> <span class="s2">"process"</span> <span class="k">else</span> <span class="mf">5.0</span>
+    <span class="n">all_kwargs</span><span class="p">[</span><span class="s2">"deadlock_timeout"</span><span class="p">]</span> <span class="o">=</span> <span class="n">deadlock_timeout</span>
 
     <span class="c1"># Cross-process execution: each worker runs in its own Python process,</span>
     <span class="c1"># coordinating over a socket. Same call shape as threads/async; workers and</span>
     <span class="c1"># the setup() state must be picklable, and state is external (SQL/Redis).</span>
-    <span class="k">if</span> <span class="n">execution</span> <span class="o">==</span> <span class="s2">&quot;process&quot;</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">execution</span> <span class="o">==</span> <span class="s2">"process"</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">any_async</span><span class="p">(</span><span class="n">worker_list</span><span class="p">):</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="s2">&quot;explore(): async workers are not supported with execution=&#39;process&#39; &quot;</span>
-                <span class="s2">&quot;(worker processes run sync code only; use sync workers or execution=&#39;thread&#39;)&quot;</span>
+                <span class="s2">"explore(): async workers are not supported with execution='process' "</span>
+                <span class="s2">"(worker processes run sync code only; use sync workers or execution='thread')"</span>
             <span class="p">)</span>
-        <span class="k">if</span> <span class="n">strategy</span> <span class="o">!=</span> <span class="s2">&quot;dpor&quot;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">strategy</span> <span class="o">!=</span> <span class="s2">"dpor"</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;explore(): strategy=</span><span class="si">{</span><span class="n">strategy</span><span class="si">!r}</span><span class="s2"> is not supported with execution=&#39;process&#39; &quot;</span>
-                <span class="s2">&quot;(process mode always drives the DPOR engine; drop strategy= or use execution=&#39;thread&#39;)&quot;</span>
+                <span class="sa">f</span><span class="s2">"explore(): strategy=</span><span class="si">{</span><span class="n">strategy</span><span class="si">!r}</span><span class="s2"> is not supported with execution='process' "</span>
+                <span class="s2">"(process mode always drives the DPOR engine; drop strategy= or use execution='thread')"</span>
             <span class="p">)</span>
         <span class="n">unsupported</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">explicit_options</span> <span class="o">&amp;</span> <span class="n">_PROCESS_UNSUPPORTED_OPTIONS</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">unsupported</span><span class="p">:</span>
-            <span class="n">names</span> <span class="o">=</span> <span class="s2">&quot;, &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">=&quot;</span> <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">unsupported</span><span class="p">)</span>
-            <span class="n">verb</span> <span class="o">=</span> <span class="s2">&quot;is&quot;</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">unsupported</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="s2">&quot;are&quot;</span>
+            <span class="n">names</span> <span class="o">=</span> <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">="</span> <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">unsupported</span><span class="p">)</span>
+            <span class="n">verb</span> <span class="o">=</span> <span class="s2">"is"</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">unsupported</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="s2">"are"</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;explore(): </span><span class="si">{</span><span class="n">names</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">verb</span><span class="si">}</span><span class="s2"> not supported with execution=&#39;process&#39; &quot;</span>
-                <span class="s2">&quot;(a silently ignored option is a correctness footgun; these require the in-process scheduler, &quot;</span>
-                <span class="s2">&quot;so drop them or use execution=&#39;thread&#39;)&quot;</span>
+                <span class="sa">f</span><span class="s2">"explore(): </span><span class="si">{</span><span class="n">names</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">verb</span><span class="si">}</span><span class="s2"> not supported with execution='process' "</span>
+                <span class="s2">"(a silently ignored option is a correctness footgun; these require the in-process scheduler, "</span>
+                <span class="s2">"so drop them or use execution='thread')"</span>
             <span class="p">)</span>
         <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.cross_process</span><span class="w"> </span><span class="kn">import</span> <span class="n">_explore_process</span>
 
@@ -587,38 +588,38 @@
             <span class="n">search</span><span class="o">=</span><span class="n">search</span><span class="p">,</span>
             <span class="n">reuse_workers</span><span class="o">=</span><span class="n">reuse_workers</span><span class="p">,</span>
         <span class="p">)</span>
-    <span class="k">if</span> <span class="n">execution</span> <span class="o">!=</span> <span class="s2">&quot;thread&quot;</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;explore(): unknown execution=</span><span class="si">{</span><span class="n">execution</span><span class="si">!r}</span><span class="s2">; must be &#39;thread&#39; or &#39;process&#39;&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">execution</span> <span class="o">!=</span> <span class="s2">"thread"</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"explore(): unknown execution=</span><span class="si">{</span><span class="n">execution</span><span class="si">!r}</span><span class="s2">; must be 'thread' or 'process'"</span><span class="p">)</span>
 
     <span class="c1"># Mirror of the process branch: an explicitly-passed process-only option</span>
     <span class="c1"># would be a silent no-op under thread execution, so reject it.</span>
     <span class="n">process_only</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">explicit_options</span> <span class="o">&amp;</span> <span class="n">_PROCESS_ONLY_OPTIONS</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">process_only</span><span class="p">:</span>
-        <span class="n">names</span> <span class="o">=</span> <span class="s2">&quot;, &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">=&quot;</span> <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">process_only</span><span class="p">)</span>
-        <span class="n">verb</span> <span class="o">=</span> <span class="s2">&quot;is&quot;</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">process_only</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="s2">&quot;are&quot;</span>
+        <span class="n">names</span> <span class="o">=</span> <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">="</span> <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">process_only</span><span class="p">)</span>
+        <span class="n">verb</span> <span class="o">=</span> <span class="s2">"is"</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">process_only</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="s2">"are"</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;explore(): </span><span class="si">{</span><span class="n">names</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">verb</span><span class="si">}</span><span class="s2"> not supported with execution=&#39;thread&#39; &quot;</span>
-            <span class="s2">&quot;(a silently ignored option is a correctness footgun; these only apply to spawned worker processes, &quot;</span>
-            <span class="s2">&quot;so drop them or use execution=&#39;process&#39;)&quot;</span>
+            <span class="sa">f</span><span class="s2">"explore(): </span><span class="si">{</span><span class="n">names</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">verb</span><span class="si">}</span><span class="s2"> not supported with execution='thread' "</span>
+            <span class="s2">"(a silently ignored option is a correctness footgun; these only apply to spawned worker processes, "</span>
+            <span class="s2">"so drop them or use execution='process')"</span>
         <span class="p">)</span>
 
     <span class="n">is_async</span> <span class="o">=</span> <span class="n">any_async</span><span class="p">(</span><span class="n">worker_list</span><span class="p">)</span>
     <span class="n">registry</span> <span class="o">=</span> <span class="n">ASYNC_STRATEGIES</span> <span class="k">if</span> <span class="n">is_async</span> <span class="k">else</span> <span class="n">STRATEGIES</span>
     <span class="k">if</span> <span class="n">strategy</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">registry</span><span class="p">:</span>
-        <span class="n">valid</span> <span class="o">=</span> <span class="s2">&quot;, &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">repr</span><span class="p">(</span><span class="n">k</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">registry</span><span class="p">))</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;explore(): unknown strategy=</span><span class="si">{</span><span class="n">strategy</span><span class="si">!r}</span><span class="s2">; must be one of </span><span class="si">{</span><span class="n">valid</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">valid</span> <span class="o">=</span> <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">repr</span><span class="p">(</span><span class="n">k</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">registry</span><span class="p">))</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"explore(): unknown strategy=</span><span class="si">{</span><span class="n">strategy</span><span class="si">!r}</span><span class="s2">; must be one of </span><span class="si">{</span><span class="n">valid</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    <span class="c1"># Mirror the process branch&#39;s principle for thread execution: an option the</span>
+    <span class="c1"># Mirror the process branch's principle for thread execution: an option the</span>
     <span class="c1"># selected strategy would silently drop is a correctness footgun, so reject</span>
-    <span class="c1"># any explicitly-passed option outside the adapter&#39;s ``allowed_keys``.</span>
-    <span class="n">allowed_keys</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">registry</span><span class="p">[</span><span class="n">strategy</span><span class="p">],</span> <span class="s2">&quot;allowed_keys&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="c1"># any explicitly-passed option outside the adapter's ``allowed_keys``.</span>
+    <span class="n">allowed_keys</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">registry</span><span class="p">[</span><span class="n">strategy</span><span class="p">],</span> <span class="s2">"allowed_keys"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">allowed_keys</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">_reject_unsupported_strategy_options</span><span class="p">(</span><span class="n">strategy</span><span class="p">,</span> <span class="n">explicit_options</span> <span class="o">-</span> <span class="n">allowed_keys</span><span class="p">,</span> <span class="n">is_async</span><span class="o">=</span><span class="n">is_async</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">is_async</span><span class="p">:</span>
         <span class="n">async_adapter</span> <span class="o">=</span> <span class="n">ASYNC_STRATEGIES</span><span class="p">[</span><span class="n">strategy</span><span class="p">]</span>
         <span class="c1"># The async engines accept any callable returning an awaitable, not</span>
-        <span class="c1"># just ``async def`` (see async_dpor&#39;s task contract) — so a genuinely</span>
+        <span class="c1"># just ``async def`` (see async_dpor's task contract) — so a genuinely</span>
         <span class="c1"># sync worker in a mixed list is statically indistinguishable from a</span>
         <span class="c1"># coroutine-returning plain callable and is diagnosed at call time.</span>
         <span class="n">workers_async</span> <span class="o">=</span> <span class="p">[</span><span class="n">w</span> <span class="k">if</span> <span class="n">_is_async_callable</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="k">else</span> <span class="n">_require_awaitable_worker</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">worker_list</span><span class="p">]</span>
@@ -629,25 +630,25 @@
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_require_awaitable_worker</span><span class="p">(</span><span class="n">fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Adapt a non-``async def`` worker for the async engines.</span>
+<span class="w">    </span><span class="sd">"""Adapt a non-``async def`` worker for the async engines.</span>
 
 <span class="sd">    A plain callable returning an awaitable is a valid async worker, and a</span>
 <span class="sd">    genuinely sync callable in a mixed worker list looks identical until it is</span>
 <span class="sd">    called — so the mix is diagnosed at call time, with the worker named and</span>
-<span class="sd">    the fix stated, instead of surfacing as an opaque ``can&#39;t be used in</span>
-<span class="sd">    &#39;await&#39; expression``.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    the fix stated, instead of surfacing as an opaque ``can't be used in</span>
+<span class="sd">    'await' expression``.</span>
+<span class="sd">    """</span>
 
     <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_adapter</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
         <span class="n">result</span> <span class="o">=</span> <span class="n">fn</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isawaitable</span><span class="p">(</span><span class="n">result</span><span class="p">):</span>
-            <span class="n">name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">fn</span><span class="p">,</span> <span class="s2">&quot;__qualname__&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">or</span> <span class="nb">repr</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
+            <span class="n">name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">fn</span><span class="p">,</span> <span class="s2">"__qualname__"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">or</span> <span class="nb">repr</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
             <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;explore(): worker </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> returned </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">result</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">, not an awaitable; the worker list &quot;</span>
-                <span class="s2">&quot;mixes async and sync callables, and frontrun explores one execution model at a time. Make every &quot;</span>
-                <span class="s2">&quot;worker `async def` (or a callable returning an awaitable), or every worker a plain `def` &quot;</span>
-                <span class="s2">&quot;(run as threads).&quot;</span>
+                <span class="sa">f</span><span class="s2">"explore(): worker </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> returned </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">result</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">, not an awaitable; the worker list "</span>
+                <span class="s2">"mixes async and sync callables, and frontrun explores one execution model at a time. Make every "</span>
+                <span class="s2">"worker `async def` (or a callable returning an awaitable), or every worker a plain `def` "</span>
+                <span class="s2">"(run as threads)."</span>
             <span class="p">)</span>
         <span class="k">return</span> <span class="k">await</span> <span class="n">result</span>
 
@@ -655,14 +656,14 @@
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_reject_unsupported_strategy_options</span><span class="p">(</span><span class="n">strategy</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">unsupported</span><span class="p">:</span> <span class="nb">frozenset</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">is_async</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Raise ValueError for explicitly-passed options the strategy ignores.</span>
+<span class="w">    </span><span class="sd">"""Raise ValueError for explicitly-passed options the strategy ignores.</span>
 
 <span class="sd">    ``unsupported`` holds the explicitly-passed option names outside the</span>
-<span class="sd">    selected adapter&#39;s ``allowed_keys``.  Each is annotated with what *does*</span>
+<span class="sd">    selected adapter's ``allowed_keys``.  Each is annotated with what *does*</span>
 <span class="sd">    support it — another strategy in the same (sync/async) registry, or the</span>
-<span class="sd">    other worker kind — derived from the adapters&#39; ``allowed_keys`` so the</span>
+<span class="sd">    other worker kind — derived from the adapters' ``allowed_keys`` so the</span>
 <span class="sd">    error stays in sync with the actual plumbing.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">unsupported</span><span class="p">:</span>
         <span class="k">return</span>
     <span class="n">same_registry</span> <span class="o">=</span> <span class="n">ASYNC_STRATEGIES</span> <span class="k">if</span> <span class="n">is_async</span> <span class="k">else</span> <span class="n">STRATEGIES</span>
@@ -670,19 +671,19 @@
     <span class="n">parts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">unsupported</span><span class="p">):</span>
         <span class="n">supporters</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span>
-            <span class="n">key</span> <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">adapter</span> <span class="ow">in</span> <span class="n">same_registry</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">adapter</span><span class="p">,</span> <span class="s2">&quot;allowed_keys&quot;</span><span class="p">,</span> <span class="nb">frozenset</span><span class="p">())</span>
+            <span class="n">key</span> <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">adapter</span> <span class="ow">in</span> <span class="n">same_registry</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">adapter</span><span class="p">,</span> <span class="s2">"allowed_keys"</span><span class="p">,</span> <span class="nb">frozenset</span><span class="p">())</span>
         <span class="p">)</span>
         <span class="k">if</span> <span class="n">supporters</span><span class="p">:</span>
-            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">= (</span><span class="si">{</span><span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">supporters</span><span class="p">)</span><span class="si">}</span><span class="s2"> only)&quot;</span><span class="p">)</span>
-        <span class="k">elif</span> <span class="nb">any</span><span class="p">(</span><span class="n">name</span> <span class="ow">in</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">adapter</span><span class="p">,</span> <span class="s2">&quot;allowed_keys&quot;</span><span class="p">,</span> <span class="nb">frozenset</span><span class="p">())</span> <span class="k">for</span> <span class="n">adapter</span> <span class="ow">in</span> <span class="n">other_registry</span><span class="o">.</span><span class="n">values</span><span class="p">()):</span>
-            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">= (</span><span class="si">{</span><span class="s1">&#39;sync&#39;</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">is_async</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="s1">&#39;async&#39;</span><span class="si">}</span><span class="s2"> workers only)&quot;</span><span class="p">)</span>
+            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">= (</span><span class="si">{</span><span class="s1">', '</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">supporters</span><span class="p">)</span><span class="si">}</span><span class="s2"> only)"</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="nb">any</span><span class="p">(</span><span class="n">name</span> <span class="ow">in</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">adapter</span><span class="p">,</span> <span class="s2">"allowed_keys"</span><span class="p">,</span> <span class="nb">frozenset</span><span class="p">())</span> <span class="k">for</span> <span class="n">adapter</span> <span class="ow">in</span> <span class="n">other_registry</span><span class="o">.</span><span class="n">values</span><span class="p">()):</span>
+            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">= (</span><span class="si">{</span><span class="s1">'sync'</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">is_async</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="s1">'async'</span><span class="si">}</span><span class="s2"> workers only)"</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">=&quot;</span><span class="p">)</span>
-    <span class="n">kind</span> <span class="o">=</span> <span class="s2">&quot;async&quot;</span> <span class="k">if</span> <span class="n">is_async</span> <span class="k">else</span> <span class="s2">&quot;sync&quot;</span>
-    <span class="n">verb</span> <span class="o">=</span> <span class="s2">&quot;is&quot;</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="s2">&quot;are&quot;</span>
+            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">="</span><span class="p">)</span>
+    <span class="n">kind</span> <span class="o">=</span> <span class="s2">"async"</span> <span class="k">if</span> <span class="n">is_async</span> <span class="k">else</span> <span class="s2">"sync"</span>
+    <span class="n">verb</span> <span class="o">=</span> <span class="s2">"is"</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="s2">"are"</span>
     <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-        <span class="sa">f</span><span class="s2">&quot;explore(): </span><span class="si">{</span><span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">verb</span><span class="si">}</span><span class="s2"> not supported with strategy=</span><span class="si">{</span><span class="n">strategy</span><span class="si">!r}</span><span class="s2"> and </span><span class="si">{</span><span class="n">kind</span><span class="si">}</span><span class="s2"> workers &quot;</span>
-        <span class="s2">&quot;(a silently ignored option is a correctness footgun; drop it or switch strategy)&quot;</span>
+        <span class="sa">f</span><span class="s2">"explore(): </span><span class="si">{</span><span class="s1">', '</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">verb</span><span class="si">}</span><span class="s2"> not supported with strategy=</span><span class="si">{</span><span class="n">strategy</span><span class="si">!r}</span><span class="s2"> and </span><span class="si">{</span><span class="n">kind</span><span class="si">}</span><span class="s2"> workers "</span>
+        <span class="s2">"(a silently ignored option is a correctness footgun; drop it or switch strategy)"</span>
     <span class="p">)</span>
 
 
@@ -690,24 +691,24 @@
     <span class="n">workers</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">],</span> <span class="o">...</span><span class="p">],</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Expand workers + count into a concrete list.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Expand workers + count into a concrete list."""</span>
     <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">workers</span><span class="p">,</span> <span class="p">(</span><span class="nb">list</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">)):</span>
         <span class="k">if</span> <span class="n">count</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="s2">&quot;explore(): &#39;count&#39; cannot be used when &#39;workers&#39; is already a list or tuple. &quot;</span>
-                <span class="s2">&quot;Either pass a single callable with count=N, or pass a list without count.&quot;</span>
+                <span class="s2">"explore(): 'count' cannot be used when 'workers' is already a list or tuple. "</span>
+                <span class="s2">"Either pass a single callable with count=N, or pass a list without count."</span>
             <span class="p">)</span>
         <span class="n">worker_list</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">workers</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">count</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">count</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
-                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;explore(): count must be a positive integer, got </span><span class="si">{</span><span class="n">count</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"explore(): count must be a positive integer, got </span><span class="si">{</span><span class="n">count</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
             <span class="n">worker_list</span> <span class="o">=</span> <span class="p">[</span><span class="n">workers</span><span class="p">]</span> <span class="o">*</span> <span class="n">count</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">worker_list</span> <span class="o">=</span> <span class="p">[</span><span class="n">workers</span><span class="p">]</span>
 
     <span class="k">if</span> <span class="ow">not</span> <span class="n">worker_list</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;explore(): workers list is empty&quot;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"explore(): workers list is empty"</span><span class="p">)</span>
 
     <span class="k">return</span> <span class="n">worker_list</span>
 </pre></div>
@@ -742,7 +743,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="../../_static/documentation_options.js?v=486e5634"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="How Frontrun Works" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/approaches.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Frontrun provides four approaches for controlling thread interleaving. They operate at different levels of granularity and make different trade-offs between interpretability, coverage, and the kind..." />
+<meta name="description" content="Frontrun provides four approaches for controlling thread interleaving. They operate at different levels of granularity and make different trade-offs between interpretability, coverage, and the kind..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Case Studies: Races in Real, Unmodified Libraries" href="case_studies.html"><link rel="prev" title="Design Principles" href="design-principles.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/approaches.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>How Frontrun Works - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>How Frontrun Works - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -361,7 +369,7 @@ returning any counterexample schedule.</p>
         <span class="n">workers</span><span class="o">=</span><span class="n">Counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
         <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
-        <span class="n">strategy</span><span class="o">=</span><span class="s2">&quot;random&quot;</span><span class="p">,</span>
+        <span class="n">strategy</span><span class="o">=</span><span class="s2">"random"</span><span class="p">,</span>
         <span class="n">max_attempts</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span>
         <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">,</span>
     <span class="p">)</span>
@@ -514,8 +522,8 @@ invariant is proven correct for all marker-level interleavings.</p>
 <span class="n">result</span> <span class="o">=</span> <span class="n">explore_marker_interleavings</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="n">Counter</span><span class="p">,</span>
     <span class="n">threads</span><span class="o">=</span><span class="p">{</span>
-        <span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="p">(</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="p">[</span><span class="s2">&quot;read_value&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">]),</span>
-        <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="p">(</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="p">[</span><span class="s2">&quot;read_value&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">]),</span>
+        <span class="s2">"t1"</span><span class="p">:</span> <span class="p">(</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="p">[</span><span class="s2">"read_value"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">]),</span>
+        <span class="s2">"t2"</span><span class="p">:</span> <span class="p">(</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">increment</span><span class="p">(),</span> <span class="p">[</span><span class="s2">"read_value"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">]),</span>
     <span class="p">},</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">c</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
 <span class="p">)</span>
@@ -534,15 +542,15 @@ produce minimal counterexamples:</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">marker_schedule_strategy</span><span class="p">,</span> <span class="n">TraceExecutor</span>
 
 <span class="nd">@given</span><span class="p">(</span><span class="n">schedule</span><span class="o">=</span><span class="n">marker_schedule_strategy</span><span class="p">(</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read_value&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">],</span>
-             <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read_value&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">]},</span>
+    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">"t1"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read_value"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">],</span>
+             <span class="s2">"t2"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read_value"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">]},</span>
 <span class="p">))</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">test_counter_is_atomic</span><span class="p">(</span><span class="n">schedule</span><span class="p">):</span>
     <span class="n">counter</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">()</span>
     <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
     <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-        <span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
-        <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="s2">"t1"</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="s2">"t2"</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
     <span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
     <span class="k">assert</span> <span class="n">counter</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span>
 </pre></div>
@@ -555,7 +563,7 @@ the number of markers for thread <em>i</em>.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">all_marker_schedules</span>
 
 <span class="n">schedules</span> <span class="o">=</span> <span class="n">all_marker_schedules</span><span class="p">(</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">],</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">,</span> <span class="s2">&quot;y&quot;</span><span class="p">]},</span>
+    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">"t1"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"a"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">],</span> <span class="s2">"t2"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"x"</span><span class="p">,</span> <span class="s2">"y"</span><span class="p">]},</span>
 <span class="p">)</span>
 <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">schedules</span><span class="p">)</span> <span class="o">==</span> <span class="mi">6</span>  <span class="c1"># C(4,2) = 4! / (2! · 2!)</span>
 </pre></div>
@@ -591,7 +599,7 @@ passed to each <code class="docutils literal notranslate"><span class="pre">work
     <span class="n">workers</span><span class="o">=</span><span class="n">increment</span><span class="p">,</span>         <span class="c1"># module-level callable(state)</span>
     <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">state</span><span class="p">:</span> <span class="n">read</span><span class="p">(</span><span class="n">state</span><span class="p">)</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
-    <span class="n">execution</span><span class="o">=</span><span class="s2">&quot;process&quot;</span><span class="p">,</span>
+    <span class="n">execution</span><span class="o">=</span><span class="s2">"process"</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>
 </pre></div>
@@ -649,9 +657,9 @@ Redis clients, HTTP libraries, and anything else that calls libc’s
 <code class="docutils literal notranslate"><span class="pre">write</span></code>, <code class="docutils literal notranslate"><span class="pre">writev</span></code>, <code class="docutils literal notranslate"><span class="pre">recv</span></code>, <code class="docutils literal notranslate"><span class="pre">recvfrom</span></code>, <code class="docutils literal notranslate"><span class="pre">recvmsg</span></code>, <code class="docutils literal notranslate"><span class="pre">read</span></code>,
 <code class="docutils literal notranslate"><span class="pre">readv</span></code>, <code class="docutils literal notranslate"><span class="pre">close</span></code></p>
 <p>The library maintains a process-global file-descriptor → resource map:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>connect(fd, sockaddr{127.0.0.1:5432}, ...)  →  fd=7 → &quot;socket:127.0.0.1:5432&quot;
-send(fd=7, ...)                              →  report write to &quot;socket:127.0.0.1:5432&quot;
-recv(fd=7, ...)                              →  report read from &quot;socket:127.0.0.1:5432&quot;
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>connect(fd, sockaddr{127.0.0.1:5432}, ...)  →  fd=7 → "socket:127.0.0.1:5432"
+send(fd=7, ...)                              →  report write to "socket:127.0.0.1:5432"
+recv(fd=7, ...)                              →  report read from "socket:127.0.0.1:5432"
 close(fd=7)                                  →  remove fd=7 from map
 </pre></div>
 </div>
@@ -775,7 +783,7 @@ to supply the message argument.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

@@ -228,6 +228,9 @@ Known limitations
   to match a Unix-socket client with TCP clients for the same Redis server. If
   the server denies both queries, exploration fails closed instead of treating
   the Unix path as an independent server and potentially missing conflicts.
+  This raw-socket probe is synchronous, cached by real socket path, and can
+  block an async event loop for up to one second the first time a path is seen.
+  Account for that one-time latency in async exploration budgets.
 - **Pipelined ``SELECT`` failures**: because Redis can execute an initial
   ``SELECT`` before a later pipeline command fails, frontrun conservatively
   keeps both the previous and selected databases as possible pool state. This

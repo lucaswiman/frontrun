@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Quick Start" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/quickstart.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Finding a race automatically: The front door is frontrun.explore(): hand it a way to build shared state, some workers, and an invariant, and DPOR systematically explores every meaningfully differen..." />
+<meta name="description" content="Finding a race automatically: The front door is frontrun.explore(): hand it a way to build shared state, some workers, and an invariant, and DPOR systematically explores every meaningfully differen..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Design Principles" href="design-principles.html"><link rel="prev" title="Installation" href="installation.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/quickstart.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Quick Start - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Quick Start - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -318,16 +326,16 @@ or TTL expiry, see <a class="reference internal" href="virtual_clock.html"><span
 
     <span class="c1"># Both threads read before either writes, causing a lost update</span>
     <span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread1&quot;</span><span class="p">,</span> <span class="s2">&quot;read_value&quot;</span><span class="p">),</span>    <span class="c1"># T1 reads 0</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread2&quot;</span><span class="p">,</span> <span class="s2">&quot;read_value&quot;</span><span class="p">),</span>    <span class="c1"># T2 reads 0 (both see same value!)</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread1&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">),</span>   <span class="c1"># T1 writes 1</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread2&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">),</span>   <span class="c1"># T2 writes 1 (overwrites T1&#39;s update!)</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"thread1"</span><span class="p">,</span> <span class="s2">"read_value"</span><span class="p">),</span>    <span class="c1"># T1 reads 0</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"thread2"</span><span class="p">,</span> <span class="s2">"read_value"</span><span class="p">),</span>    <span class="c1"># T2 reads 0 (both see same value!)</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"thread1"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">),</span>   <span class="c1"># T1 writes 1</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"thread2"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">),</span>   <span class="c1"># T2 writes 1 (overwrites T1's update!)</span>
     <span class="p">])</span>
 
     <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
     <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-        <span class="s2">&quot;thread1&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
-        <span class="s2">&quot;thread2&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="s2">"thread1"</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="s2">"thread2"</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
     <span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
 
     <span class="k">assert</span> <span class="n">counter</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">1</span>  <span class="c1"># One increment lost</span>
@@ -379,10 +387,10 @@ gates the write.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.common</span><span class="w"> </span><span class="kn">import</span> <span class="n">Schedule</span><span class="p">,</span> <span class="n">Step</span>
 
 <span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread1&quot;</span><span class="p">,</span> <span class="s2">&quot;marker_name_1&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread1&quot;</span><span class="p">,</span> <span class="s2">&quot;marker_name_2&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread2&quot;</span><span class="p">,</span> <span class="s2">&quot;marker_name_1&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;thread2&quot;</span><span class="p">,</span> <span class="s2">&quot;marker_name_2&quot;</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"thread1"</span><span class="p">,</span> <span class="s2">"marker_name_1"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"thread1"</span><span class="p">,</span> <span class="s2">"marker_name_2"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"thread2"</span><span class="p">,</span> <span class="s2">"marker_name_1"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"thread2"</span><span class="p">,</span> <span class="s2">"marker_name_2"</span><span class="p">),</span>
 <span class="p">])</span>
 </pre></div>
 </div>
@@ -397,8 +405,8 @@ them in a single call:</p>
 
 <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
 <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-    <span class="s2">&quot;thread1&quot;</span><span class="p">:</span> <span class="n">task_function_1</span><span class="p">,</span>
-    <span class="s2">&quot;thread2&quot;</span><span class="p">:</span> <span class="n">task_function_2</span><span class="p">,</span>
+    <span class="s2">"thread1"</span><span class="p">:</span> <span class="n">task_function_1</span><span class="p">,</span>
+    <span class="s2">"thread2"</span><span class="p">:</span> <span class="n">task_function_2</span><span class="p">,</span>
 <span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -437,16 +445,16 @@ scheduled tasks.</p>
 
     <span class="c1"># Both tasks read before either writes --- triggers the lost update</span>
     <span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task1&quot;</span><span class="p">,</span> <span class="s2">&quot;read_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task2&quot;</span><span class="p">,</span> <span class="s2">&quot;read_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task1&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task2&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"task1"</span><span class="p">,</span> <span class="s2">"read_value"</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"task2"</span><span class="p">,</span> <span class="s2">"read_value"</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"task1"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"task2"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">),</span>
     <span class="p">])</span>
 
     <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
     <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-        <span class="s2">&quot;task1&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
-        <span class="s2">&quot;task2&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="s2">"task1"</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="s2">"task2"</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
     <span class="p">})</span>
 
     <span class="c1"># Both tasks read 0, then both write 1 --- one increment is lost</span>
@@ -457,16 +465,16 @@ scheduled tasks.</p>
 
     <span class="c1"># Serialized: task1 completes before task2 starts</span>
     <span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task1&quot;</span><span class="p">,</span> <span class="s2">&quot;read_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task1&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task2&quot;</span><span class="p">,</span> <span class="s2">&quot;read_value&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task2&quot;</span><span class="p">,</span> <span class="s2">&quot;write_value&quot;</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"task1"</span><span class="p">,</span> <span class="s2">"read_value"</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"task1"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"task2"</span><span class="p">,</span> <span class="s2">"read_value"</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"task2"</span><span class="p">,</span> <span class="s2">"write_value"</span><span class="p">),</span>
     <span class="p">])</span>
 
     <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
     <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-        <span class="s2">&quot;task1&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
-        <span class="s2">&quot;task2&quot;</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="s2">"task1"</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
+        <span class="s2">"task2"</span><span class="p">:</span> <span class="n">counter</span><span class="o">.</span><span class="n">increment</span><span class="p">,</span>
     <span class="p">})</span>
 
     <span class="k">assert</span> <span class="n">counter</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="mi">2</span>  <span class="c1"># No lost update</span>
@@ -483,7 +491,7 @@ every exploration call, use the convenience helper <code class="xref py py-meth 
 </div>
 <p>An optional <code class="docutils literal notranslate"><span class="pre">msg_prefix</span></code> is prepended to the explanation, which is handy
 when multiple assertions appear in one test:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">(</span><span class="n">msg_prefix</span><span class="o">=</span><span class="s2">&quot;counter race: &quot;</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">(</span><span class="n">msg_prefix</span><span class="o">=</span><span class="s2">"counter race: "</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -563,7 +571,7 @@ when multiple assertions appear in one test:</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

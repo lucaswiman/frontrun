@@ -3,9 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/_modules/frontrun/_tracing.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun._tracing - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>frontrun._tracing - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -243,7 +244,7 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for frontrun._tracing</h1><div class="highlight"><pre>
-<span></span><span class="sd">&quot;&quot;&quot;Shared file-filtering logic for bytecode tracing.</span>
+<span></span><span class="sd">"""Shared file-filtering logic for bytecode tracing.</span>
 
 <span class="sd">Both ``bytecode.py`` (random exploration) and ``dpor.py`` (systematic DPOR)</span>
 <span class="sd">need to distinguish user code from library/stdlib code.  This module</span>
@@ -252,9 +253,9 @@
 <span class="sd">The default behaviour skips stdlib, site-packages, and frontrun internals.</span>
 <span class="sd">Users can widen the filter to include specific installed packages by</span>
 <span class="sd">passing ``trace_packages`` patterns to the exploration APIs.  Patterns</span>
-<span class="sd">use :func:`fnmatch.fnmatch` syntax (e.g. ``&quot;django_*&quot;``) and are matched</span>
+<span class="sd">use :func:`fnmatch.fnmatch` syntax (e.g. ``"django_*"``) and are matched</span>
 <span class="sd">against the **module name** derived from the file path.</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
@@ -263,10 +264,11 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Sequence</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Generator</span><span class="p">,</span> <span class="n">Sequence</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">contextmanager</span>
 
 <span class="c1"># Directories to never trace into (stdlib, site-packages)</span>
-<span class="n">_SKIP_DIRS</span><span class="p">:</span> <span class="nb">frozenset</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">(</span><span class="n">p</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">sys</span><span class="o">.</span><span class="n">path</span> <span class="k">if</span> <span class="s2">&quot;lib/python&quot;</span> <span class="ow">in</span> <span class="n">p</span> <span class="ow">or</span> <span class="s2">&quot;site-packages&quot;</span> <span class="ow">in</span> <span class="n">p</span><span class="p">)</span>
+<span class="n">_SKIP_DIRS</span><span class="p">:</span> <span class="nb">frozenset</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">(</span><span class="n">p</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">sys</span><span class="o">.</span><span class="n">path</span> <span class="k">if</span> <span class="s2">"lib/python"</span> <span class="ow">in</span> <span class="n">p</span> <span class="ow">or</span> <span class="s2">"site-packages"</span> <span class="ow">in</span> <span class="n">p</span><span class="p">)</span>
 
 <span class="n">_THREADING_FILE</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="vm">__file__</span>
 
@@ -274,17 +276,17 @@
 <span class="n">_FRONTRUN_DIR</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span><span class="p">(</span><span class="vm">__file__</span><span class="p">))</span> <span class="o">+</span> <span class="n">os</span><span class="o">.</span><span class="n">sep</span>
 
 <span class="c1"># Regex matching CPython ABI tag suffixes on C extension filenames,</span>
-<span class="c1"># e.g. &quot;.cpython-314-x86_64-linux-gnu&quot; before the final &quot;.so&quot;/&quot;.pyd&quot;.</span>
-<span class="n">_CPYTHON_ABI_RE</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;\.cpython-\d+[^.]*&quot;</span><span class="p">)</span>
+<span class="c1"># e.g. ".cpython-314-x86_64-linux-gnu" before the final ".so"/".pyd".</span>
+<span class="n">_CPYTHON_ABI_RE</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">"\.cpython-\d+[^.]*"</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_filename_to_module</span><span class="p">(</span><span class="n">filename</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Convert a filename to a dotted module name, or None if not determinable.</span>
+<span class="w">    </span><span class="sd">"""Convert a filename to a dotted module name, or None if not determinable.</span>
 
 <span class="sd">    Strips the site-packages prefix and ``.py`` suffix, then converts</span>
 <span class="sd">    path separators to dots.  Returns ``None`` for non-``.py`` files or</span>
 <span class="sd">    files outside site-packages.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="c1"># Longest prefix wins: on stock layouts a stdlib dir and its site-packages</span>
     <span class="c1"># child are both in _SKIP_DIRS, so a file can match two prefixes.  Sorting</span>
     <span class="c1"># by length (descending) makes the mapping deterministic and picks the most</span>
@@ -295,48 +297,48 @@
             <span class="n">rel</span> <span class="o">=</span> <span class="n">filename</span><span class="p">[</span><span class="nb">len</span><span class="p">(</span><span class="n">skip_dir</span><span class="p">)</span> <span class="p">:]</span>
             <span class="k">if</span> <span class="n">rel</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">sep</span><span class="p">):</span>
                 <span class="n">rel</span> <span class="o">=</span> <span class="n">rel</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
-            <span class="k">if</span> <span class="n">rel</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">sep</span> <span class="o">+</span> <span class="s2">&quot;__init__.py&quot;</span><span class="p">):</span>
-                <span class="n">rel</span> <span class="o">=</span> <span class="n">rel</span><span class="p">[:</span> <span class="o">-</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">sep</span><span class="p">)</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">&quot;__init__.py&quot;</span><span class="p">))]</span>
-            <span class="k">elif</span> <span class="n">rel</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.py&quot;</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">rel</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">sep</span> <span class="o">+</span> <span class="s2">"__init__.py"</span><span class="p">):</span>
+                <span class="n">rel</span> <span class="o">=</span> <span class="n">rel</span><span class="p">[:</span> <span class="o">-</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">sep</span><span class="p">)</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">"__init__.py"</span><span class="p">))]</span>
+            <span class="k">elif</span> <span class="n">rel</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".py"</span><span class="p">):</span>
                 <span class="n">rel</span> <span class="o">=</span> <span class="n">rel</span><span class="p">[:</span><span class="o">-</span><span class="mi">3</span><span class="p">]</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="c1"># C extension: strip ABI tag + final extension</span>
-                <span class="c1"># e.g. &quot;_sqlite3.cpython-314-x86_64-linux-gnu.so&quot; -&gt; &quot;_sqlite3&quot;</span>
-                <span class="n">rel</span> <span class="o">=</span> <span class="n">_CPYTHON_ABI_RE</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">rel</span><span class="p">)</span>
-                <span class="n">dot</span> <span class="o">=</span> <span class="n">rel</span><span class="o">.</span><span class="n">rfind</span><span class="p">(</span><span class="s2">&quot;.&quot;</span><span class="p">)</span>
+                <span class="c1"># e.g. "_sqlite3.cpython-314-x86_64-linux-gnu.so" -&gt; "_sqlite3"</span>
+                <span class="n">rel</span> <span class="o">=</span> <span class="n">_CPYTHON_ABI_RE</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="s2">""</span><span class="p">,</span> <span class="n">rel</span><span class="p">)</span>
+                <span class="n">dot</span> <span class="o">=</span> <span class="n">rel</span><span class="o">.</span><span class="n">rfind</span><span class="p">(</span><span class="s2">"."</span><span class="p">)</span>
                 <span class="k">if</span> <span class="n">dot</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="p">:</span>
                     <span class="n">rel</span> <span class="o">=</span> <span class="n">rel</span><span class="p">[:</span><span class="n">dot</span><span class="p">]</span>
-            <span class="k">return</span> <span class="n">rel</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">sep</span><span class="p">,</span> <span class="s2">&quot;.&quot;</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">rel</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">sep</span><span class="p">,</span> <span class="s2">"."</span><span class="p">)</span>
     <span class="k">return</span> <span class="kc">None</span>
 
 
 <div class="viewcode-block" id="TraceFilter">
 <a class="viewcode-back" href="../../trace_filtering.html#frontrun._tracing.TraceFilter">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">TraceFilter</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Configurable filter deciding which files should be traced.</span>
+<span class="w">    </span><span class="sd">"""Configurable filter deciding which files should be traced.</span>
 
 <span class="sd">    The default filter (``trace_packages=None``) traces only user code:</span>
 <span class="sd">    files outside stdlib, site-packages, and frontrun internals.</span>
 
 <span class="sd">    When ``trace_packages`` is provided, files in site-packages whose</span>
 <span class="sd">    module names match any of the given patterns are **also** traced.</span>
-<span class="sd">    Patterns use :func:`fnmatch.fnmatch` syntax (e.g. ``&quot;django_*&quot;``,</span>
-<span class="sd">    ``&quot;mylib.*&quot;``).  Note that ``*`` in fnmatch matches any characters</span>
-<span class="sd">    including dots, so ``&quot;django_*&quot;`` matches both ``django_filters``</span>
+<span class="sd">    Patterns use :func:`fnmatch.fnmatch` syntax (e.g. ``"django_*"``,</span>
+<span class="sd">    ``"mylib.*"``).  Note that ``*`` in fnmatch matches any characters</span>
+<span class="sd">    including dots, so ``"django_*"`` matches both ``django_filters``</span>
 <span class="sd">    and ``django_filters.views``.</span>
 
 <span class="sd">    Example::</span>
 
 <span class="sd">        # Trace user code + any django_* package + myapp.utils</span>
-<span class="sd">        filt = TraceFilter(trace_packages=[&quot;django_*&quot;, &quot;myapp.*&quot;])</span>
-<span class="sd">        filt.should_trace_file(&quot;/path/to/site-packages/django_filters/views.py&quot;)</span>
+<span class="sd">        filt = TraceFilter(trace_packages=["django_*", "myapp.*"])</span>
+<span class="sd">        filt.should_trace_file("/path/to/site-packages/django_filters/views.py")</span>
 <span class="sd">        # -&gt; True</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">trace_packages</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">trace_packages</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">trace_packages</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
             <span class="c1"># Compile fnmatch patterns to regexes for speed</span>
-            <span class="n">combined</span> <span class="o">=</span> <span class="s2">&quot;|&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">fnmatch</span><span class="o">.</span><span class="n">translate</span><span class="p">(</span><span class="n">p</span><span class="p">)</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">trace_packages</span><span class="p">)</span>
+            <span class="n">combined</span> <span class="o">=</span> <span class="s2">"|"</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">fnmatch</span><span class="o">.</span><span class="n">translate</span><span class="p">(</span><span class="n">p</span><span class="p">)</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">trace_packages</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_pattern</span><span class="p">:</span> <span class="n">re</span><span class="o">.</span><span class="n">Pattern</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="n">combined</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_pattern</span> <span class="o">=</span> <span class="kc">None</span>
@@ -344,10 +346,10 @@
 <div class="viewcode-block" id="TraceFilter.should_trace_file">
 <a class="viewcode-back" href="../../trace_filtering.html#frontrun._tracing.TraceFilter.should_trace_file">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">should_trace_file</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filename</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check whether *filename* should be traced.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Check whether *filename* should be traced."""</span>
         <span class="k">if</span> <span class="n">filename</span> <span class="o">==</span> <span class="n">_THREADING_FILE</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span>
-        <span class="k">if</span> <span class="n">filename</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;&lt;frozen&quot;</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">filename</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"&lt;frozen"</span><span class="p">):</span>
             <span class="k">return</span> <span class="kc">False</span>
         <span class="k">if</span> <span class="n">filename</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">_FRONTRUN_DIR</span><span class="p">):</span>
             <span class="k">return</span> <span class="kc">False</span>
@@ -389,70 +391,82 @@
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">set_active_trace_filter</span><span class="p">(</span><span class="n">filt</span><span class="p">:</span> <span class="n">TraceFilter</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Set the active trace filter for the entire process.</span>
+<span class="w">    </span><span class="sd">"""Set the active trace filter for the entire process.</span>
 
 <span class="sd">    Pass ``None`` to reset to the default filter.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">global</span> <span class="n">_active_filter</span>  <span class="c1"># noqa: PLW0603</span>
     <span class="k">with</span> <span class="n">_active_filter_lock</span><span class="p">:</span>
         <span class="n">_active_filter</span> <span class="o">=</span> <span class="n">filt</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">get_active_trace_filter</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">TraceFilter</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return the currently active trace filter.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Return the currently active trace filter."""</span>
     <span class="k">return</span> <span class="n">_active_filter</span> <span class="ow">or</span> <span class="n">_DEFAULT_FILTER</span>
 
 
+<span class="nd">@contextmanager</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">trace_filter_scope</span><span class="p">(</span><span class="n">trace_packages</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Temporarily override the process-wide filter, preserving its caller's filter."""</span>
+    <span class="n">previous</span> <span class="o">=</span> <span class="n">get_active_trace_filter</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">trace_packages</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">set_active_trace_filter</span><span class="p">(</span><span class="n">TraceFilter</span><span class="p">(</span><span class="n">trace_packages</span><span class="p">))</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">yield</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">set_active_trace_filter</span><span class="p">(</span><span class="n">previous</span><span class="p">)</span>
+
+
 <span class="k">def</span><span class="w"> </span><span class="nf">should_trace_file</span><span class="p">(</span><span class="n">filename</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Check whether a file is user code that should be traced.</span>
+<span class="w">    </span><span class="sd">"""Check whether a file is user code that should be traced.</span>
 
 <span class="sd">    Delegates to the currently active :class:`TraceFilter`.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">return</span> <span class="n">get_active_trace_filter</span><span class="p">()</span><span class="o">.</span><span class="n">should_trace_file</span><span class="p">(</span><span class="n">filename</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">is_dynamic_code</span><span class="p">(</span><span class="n">filename</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Check whether a filename indicates dynamically generated code.</span>
+<span class="w">    </span><span class="sd">"""Check whether a filename indicates dynamically generated code.</span>
 
 <span class="sd">    Returns True for filenames like ``&lt;string&gt;``, ``&lt;generated&gt;``, ``&lt;stdin&gt;``</span>
 <span class="sd">    that are produced by ``exec()``, ``compile()``, or interactive mode.</span>
 <span class="sd">    Does NOT match ``&lt;frozen ...&gt;`` (already excluded by ``should_trace_file``).</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">return</span> <span class="n">filename</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;&lt;&quot;</span><span class="p">)</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="n">filename</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"&lt;"</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_is_cmdline_mode</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True if the program came from ``python -c`` or stdin.</span>
+<span class="w">    </span><span class="sd">"""Return True if the program came from ``python -c`` or stdin.</span>
 
 <span class="sd">    ``python -c`` leaves ``__main__`` without ``__file__``; a program piped</span>
 <span class="sd">    via stdin (``python -`` / ``python &lt; script.py``) sets ``__file__`` to</span>
-<span class="sd">    the pseudo-filename ``&quot;&lt;stdin&gt;&quot;``.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="n">main</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;__main__&quot;</span><span class="p">)</span>
+<span class="sd">    the pseudo-filename ``"&lt;stdin&gt;"``.</span>
+<span class="sd">    """</span>
+    <span class="n">main</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"__main__"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">main</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">False</span>
-    <span class="k">return</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">&quot;__file__&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">&quot;__file__&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;&lt;stdin&gt;&quot;</span>
+    <span class="k">return</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">"__file__"</span><span class="p">)</span> <span class="ow">or</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">"__file__"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="o">==</span> <span class="s2">"&lt;stdin&gt;"</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">is_cmdline_user_code</span><span class="p">(</span><span class="n">filename</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">f_globals</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Check whether *filename* is user code from ``python -c`` or stdin.</span>
+<span class="w">    </span><span class="sd">"""Check whether *filename* is user code from ``python -c`` or stdin.</span>
 
 <span class="sd">    When Python is started with ``-c`` (or the program is piped via stdin /</span>
 <span class="sd">    typed at the REPL), user-defined functions have ``co_filename ==</span>
-<span class="sd">    &quot;&lt;string&gt;&quot;`` (``&quot;&lt;stdin&gt;&quot;`` for stdin) and their ``f_globals`` (or</span>
+<span class="sd">    "&lt;string&gt;"`` (``"&lt;stdin&gt;"`` for stdin) and their ``f_globals`` (or</span>
 <span class="sd">    ``__globals__``) is ``__main__.__dict__``.  This function returns</span>
 <span class="sd">    ``True`` for exactly that combination, allowing the trace callbacks</span>
-<span class="sd">    to treat such code as user code rather than library-exec&#39;d code.</span>
+<span class="sd">    to treat such code as user code rather than library-exec'd code.</span>
 
 <span class="sd">    Returns ``False`` for other filenames, for ``&lt;string&gt;``/``&lt;stdin&gt;``</span>
-<span class="sd">    code whose globals don&#39;t belong to ``__main__``, or when the process</span>
+<span class="sd">    code whose globals don't belong to ``__main__``, or when the process</span>
 <span class="sd">    was started as a normal script (``__main__`` has a ``__file__``).</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">if</span> <span class="n">filename</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;&lt;string&gt;&quot;</span><span class="p">,</span> <span class="s2">&quot;&lt;stdin&gt;&quot;</span><span class="p">):</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="n">filename</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"&lt;string&gt;"</span><span class="p">,</span> <span class="s2">"&lt;stdin&gt;"</span><span class="p">):</span>
         <span class="k">return</span> <span class="kc">False</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_cmdline_mode</span><span class="p">():</span>
         <span class="k">return</span> <span class="kc">False</span>
-    <span class="n">main</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;__main__&quot;</span><span class="p">)</span>
+    <span class="n">main</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"__main__"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">main</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">False</span>
     <span class="k">return</span> <span class="n">f_globals</span> <span class="ow">is</span> <span class="n">main</span><span class="o">.</span><span class="vm">__dict__</span>
@@ -488,7 +502,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="../../_static/documentation_options.js?v=486e5634"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

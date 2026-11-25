@@ -3,9 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../../../genindex.html"><link rel="search" title="Search" href="../../../../search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/_modules/frontrun/_dpor_runtime/xproc/launch.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun._dpor_runtime.xproc.launch - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>frontrun._dpor_runtime.xproc.launch - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="../../../../index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -243,20 +244,21 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for frontrun._dpor_runtime.xproc.launch</h1><div class="highlight"><pre>
-<span></span><span class="sd">&quot;&quot;&quot;Real-subprocess launcher for cross-process exploration.</span>
+<span></span><span class="sd">"""Real-subprocess launcher for cross-process exploration.</span>
 
 <span class="sd">``SubprocessLauncher`` spawns one OS process per worker, each running</span>
 <span class="sd">``python -m frontrun._dpor_runtime.xproc.worker_main`` with the coordinator</span>
 <span class="sd">socket path, worker id, and ``module:callable`` target passed through the</span>
 <span class="sd">environment. It implements the shared ``WorkerSet`` launch/join port, so the</span>
-<span class="sd">coordinator&#39;s scheduling logic is identical across thread-backed functional</span>
+<span class="sd">coordinator's scheduling logic is identical across thread-backed functional</span>
 <span class="sd">tests and real subprocess runs.</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">base64</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">marshal</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">multiprocessing</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
@@ -265,100 +267,132 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChainMap</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Sequence</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">io</span><span class="w"> </span><span class="kn">import</span> <span class="n">BytesIO</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">types</span><span class="w"> </span><span class="kn">import</span> <span class="n">CodeType</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._dpor_core.worker</span><span class="w"> </span><span class="kn">import</span> <span class="n">WorkerTarget</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">protocol</span> <span class="k">as</span> <span class="n">proto</span>
 
-<span class="n">_WORKER_MODULE</span> <span class="o">=</span> <span class="s2">&quot;frontrun._dpor_runtime.xproc.worker_main&quot;</span>
+<span class="n">_WORKER_MODULE</span> <span class="o">=</span> <span class="s2">"frontrun._dpor_runtime.xproc.worker_main"</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">WorkerSerializationError</span><span class="p">(</span><span class="ne">RuntimeError</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;``(worker_fn, state)`` could not be serialised for a subprocess worker.</span>
+<span class="w">    </span><span class="sd">"""``(worker_fn, state)`` could not be serialised for a subprocess worker.</span>
 
 <span class="sd">    Raised only by :func:`_dumps_worker` (dill missing, or a payload even dill</span>
 <span class="sd">    cannot serialise), so coordinators can convert exactly this failure into a</span>
 <span class="sd">    structured ``worker_error`` result without also swallowing unrelated</span>
 <span class="sd">    ``TypeError`` / ``ImportError`` bugs from the launch machinery.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">WorkerTerminationError</span><span class="p">(</span><span class="ne">RuntimeError</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Poisoned worker processes survived forced termination.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Poisoned worker processes survived forced termination."""</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_terminate_procs</span><span class="p">(</span><span class="n">procs</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Terminate/kill and reap already-started multiprocessing children.</span>
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">_ProcessOps</span><span class="p">:</span>
+    <span class="n">wait</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span> <span class="kc">None</span><span class="p">]</span>
+    <span class="n">alive</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="nb">bool</span><span class="p">]</span>
+    <span class="n">exit_code</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span>
 
-<span class="sd">    Used to clean up after a partial launch so a spawn failure mid-loop never</span>
-<span class="sd">    orphans the children that did start. Every child is checked after SIGTERM</span>
-<span class="sd">    and SIGKILL: replacement workers must never overlap a surviving old child.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">procs</span><span class="p">:</span>
-        <span class="k">try</span><span class="p">:</span>
-            <span class="n">proc</span><span class="o">.</span><span class="n">terminate</span><span class="p">()</span>
-        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - best-effort teardown</span>
-            <span class="k">pass</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_popen_wait</span><span class="p">(</span><span class="n">proc</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">proc</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">TimeoutExpired</span><span class="p">:</span>
+        <span class="k">pass</span>
+
+
+<span class="n">_MP_OPS</span> <span class="o">=</span> <span class="n">_ProcessOps</span><span class="p">(</span>
+    <span class="n">wait</span><span class="o">=</span><span class="k">lambda</span> <span class="n">proc</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">proc</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">timeout</span><span class="p">),</span>
+    <span class="n">alive</span><span class="o">=</span><span class="k">lambda</span> <span class="n">proc</span><span class="p">:</span> <span class="nb">bool</span><span class="p">(</span><span class="n">proc</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()),</span>
+    <span class="n">exit_code</span><span class="o">=</span><span class="k">lambda</span> <span class="n">proc</span><span class="p">:</span> <span class="n">proc</span><span class="o">.</span><span class="n">exitcode</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">_POPEN_OPS</span> <span class="o">=</span> <span class="n">_ProcessOps</span><span class="p">(</span>
+    <span class="n">wait</span><span class="o">=</span><span class="n">_popen_wait</span><span class="p">,</span>
+    <span class="n">alive</span><span class="o">=</span><span class="k">lambda</span> <span class="n">proc</span><span class="p">:</span> <span class="n">proc</span><span class="o">.</span><span class="n">poll</span><span class="p">()</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">exit_code</span><span class="o">=</span><span class="k">lambda</span> <span class="n">proc</span><span class="p">:</span> <span class="n">proc</span><span class="o">.</span><span class="n">poll</span><span class="p">(),</span>
+<span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_wait_alive</span><span class="p">(</span><span class="n">procs</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">ops</span><span class="p">:</span> <span class="n">_ProcessOps</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">best_effort</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Wait against one shared deadline and return survivors at that deadline."""</span>
     <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span>
     <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">procs</span><span class="p">:</span>
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">proc</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()))</span>
-        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - best-effort teardown</span>
-            <span class="k">pass</span>
-    <span class="n">survivors</span> <span class="o">=</span> <span class="p">[</span><span class="n">proc</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">procs</span> <span class="k">if</span> <span class="n">proc</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()]</span>
-    <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">survivors</span><span class="p">:</span>
+            <span class="n">ops</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">proc</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()))</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">best_effort</span><span class="p">:</span>
+                <span class="k">raise</span>
+    <span class="k">return</span> <span class="p">[</span><span class="n">proc</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">procs</span> <span class="k">if</span> <span class="n">ops</span><span class="o">.</span><span class="n">alive</span><span class="p">(</span><span class="n">proc</span><span class="p">)]</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_retire_procs</span><span class="p">(</span><span class="n">procs</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">ops</span><span class="p">:</span> <span class="n">_ProcessOps</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">terminate_first</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Signal, reap against shared deadlines, and reject surviving workers."""</span>
+    <span class="n">procs</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">procs</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">procs</span><span class="p">:</span>
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">proc</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
-        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - final liveness check is authoritative</span>
+            <span class="p">(</span><span class="n">proc</span><span class="o">.</span><span class="n">terminate</span> <span class="k">if</span> <span class="n">terminate_first</span> <span class="k">else</span> <span class="n">proc</span><span class="o">.</span><span class="n">kill</span><span class="p">)()</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
             <span class="k">pass</span>
-    <span class="n">kill_deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span>
-    <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">survivors</span><span class="p">:</span>
-        <span class="k">try</span><span class="p">:</span>
-            <span class="n">proc</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">kill_deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()))</span>
-        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - final liveness check is authoritative</span>
-            <span class="k">pass</span>
-    <span class="n">survivors</span> <span class="o">=</span> <span class="p">[</span><span class="n">proc</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">survivors</span> <span class="k">if</span> <span class="n">proc</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()]</span>
+    <span class="n">survivors</span> <span class="o">=</span> <span class="n">_wait_alive</span><span class="p">(</span><span class="n">procs</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">ops</span><span class="p">,</span> <span class="n">best_effort</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">terminate_first</span> <span class="ow">and</span> <span class="n">survivors</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">survivors</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">proc</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="k">pass</span>
+        <span class="n">survivors</span> <span class="o">=</span> <span class="n">_wait_alive</span><span class="p">(</span><span class="n">survivors</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">ops</span><span class="p">,</span> <span class="n">best_effort</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">survivors</span><span class="p">:</span>
+        <span class="n">action</span> <span class="o">=</span> <span class="s2">"terminate/kill"</span> <span class="k">if</span> <span class="n">terminate_first</span> <span class="k">else</span> <span class="s2">"kill"</span>
         <span class="k">raise</span> <span class="n">WorkerTerminationError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">survivors</span><span class="p">)</span><span class="si">}</span><span class="s2"> worker process(es) still alive after terminate/kill; refusing to relaunch&quot;</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">survivors</span><span class="p">)</span><span class="si">}</span><span class="s2"> worker process(es) still alive after </span><span class="si">{</span><span class="n">action</span><span class="si">}</span><span class="s2">; refusing to relaunch"</span>
         <span class="p">)</span>
 
 
+<span class="k">def</span><span class="w"> </span><span class="nf">_terminate_procs</span><span class="p">(</span><span class="n">procs</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Terminate/kill multiprocessing children and reject survivors."""</span>
+    <span class="n">_retire_procs</span><span class="p">(</span><span class="n">procs</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">_MP_OPS</span><span class="p">,</span> <span class="n">terminate_first</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+
 <span class="k">def</span><span class="w"> </span><span class="nf">_make_stderr_file</span><span class="p">(</span><span class="n">worker_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Create an empty temp file to capture one child&#39;s stderr; return its path.</span>
+<span class="w">    </span><span class="sd">"""Create an empty temp file to capture one child's stderr; return its path.</span>
 
 <span class="sd">    A file, not a pipe: nobody drains the capture while the child runs, so a</span>
 <span class="sd">    PIPE would block a worker that writes more than the pipe buffer (~64 KiB on</span>
 <span class="sd">    Linux) — it would never finish, and join() would kill it and misreport a</span>
 <span class="sd">    hang. Files absorb unbounded stderr without back-pressure.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="n">fd</span><span class="p">,</span> <span class="n">path</span> <span class="o">=</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">mkstemp</span><span class="p">(</span><span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;frontrun-xproc-stderr-&quot;</span><span class="p">,</span> <span class="n">suffix</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;.w</span><span class="si">{</span><span class="n">worker_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="sd">    """</span>
+    <span class="n">fd</span><span class="p">,</span> <span class="n">path</span> <span class="o">=</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">mkstemp</span><span class="p">(</span><span class="n">prefix</span><span class="o">=</span><span class="s2">"frontrun-xproc-stderr-"</span><span class="p">,</span> <span class="n">suffix</span><span class="o">=</span><span class="sa">f</span><span class="s2">".w</span><span class="si">{</span><span class="n">worker_id</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="n">os</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="n">fd</span><span class="p">)</span>  <span class="c1"># children reopen by path (os.dup2) or inherit a fresh handle</span>
     <span class="k">return</span> <span class="n">path</span>
 
 
-<span class="c1"># Serialises MpLauncher.launch&#39;s temporary os.environ scrub (see launch()).</span>
+<span class="c1"># Serialises MpLauncher.launch's temporary os.environ scrub (see launch()).</span>
 <span class="n">_env_scrub_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
 
-<span class="c1"># Matches a traceback&#39;s final &quot;SomeError: message&quot; line (possibly dotted, e.g.</span>
-<span class="c1"># &quot;pkg.mod.SomeError: ...&quot;), so trailing post-crash output does not hide it.</span>
-<span class="n">_TRACEBACK_ERROR_RE</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;^[\w.]*\w(Error|Exception)\b&quot;</span><span class="p">)</span>
+<span class="c1"># Matches a traceback's final "SomeError: message" line (possibly dotted, e.g.</span>
+<span class="c1"># "pkg.mod.SomeError: ..."), so trailing post-crash output does not hide it.</span>
+<span class="n">_TRACEBACK_ERROR_RE</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">"^[\w.]*\w(Error|Exception)\b"</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_stderr_last_line</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return the most diagnostic captured stderr line, or ``None`` if unreadable/empty.</span>
+<span class="w">    </span><span class="sd">"""Return the most diagnostic captured stderr line, or ``None`` if unreadable/empty.</span>
 
-<span class="sd">    Prefers the last line that looks like a traceback&#39;s error line — a crashing</span>
+<span class="sd">    Prefers the last line that looks like a traceback's error line — a crashing</span>
 <span class="sd">    child can print more after its traceback (atexit handlers, multiprocessing</span>
 <span class="sd">    teardown chatter) — falling back to the last non-blank line.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">path</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">None</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">errors</span><span class="o">=</span><span class="s2">&quot;replace&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fh</span><span class="p">:</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">errors</span><span class="o">=</span><span class="s2">"replace"</span><span class="p">)</span> <span class="k">as</span> <span class="n">fh</span><span class="p">:</span>
             <span class="n">text</span> <span class="o">=</span> <span class="n">fh</span><span class="o">.</span><span class="n">read</span><span class="p">()</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
     <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">None</span>
@@ -372,7 +406,7 @@
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_unlink_all</span><span class="p">(</span><span class="n">paths</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Best-effort removal of stderr capture files.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Best-effort removal of stderr capture files."""</span>
     <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">paths</span><span class="p">:</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="n">os</span><span class="o">.</span><span class="n">unlink</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
@@ -380,41 +414,95 @@
             <span class="k">pass</span>
 
 
+<span class="k">def</span><span class="w"> </span><span class="nf">_diagnose_processes</span><span class="p">(</span><span class="n">handles</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span> <span class="n">stderr_files</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="n">ops</span><span class="p">:</span> <span class="n">_ProcessOps</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Describe nonzero worker exits, preferring captured traceback details."""</span>
+    <span class="n">parts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">proc</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">handles</span><span class="p">):</span>
+        <span class="n">code</span> <span class="o">=</span> <span class="n">ops</span><span class="o">.</span><span class="n">exit_code</span><span class="p">(</span><span class="n">proc</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">code</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="mi">0</span><span class="p">):</span>
+            <span class="k">continue</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="n">stderr_files</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="k">if</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">stderr_files</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span>
+        <span class="n">detail</span> <span class="o">=</span> <span class="n">_stderr_last_line</span><span class="p">(</span><span class="n">path</span><span class="p">)</span> <span class="ow">or</span> <span class="sa">f</span><span class="s2">"process exited with code </span><span class="si">{</span><span class="n">code</span><span class="si">}</span><span class="s2">"</span>
+        <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">"worker </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">return</span> <span class="s2">"; "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span> <span class="ow">or</span> <span class="kc">None</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">_ProcessLifecycle</span><span class="p">:</span>
+    <span class="n">_ops</span><span class="p">:</span> <span class="n">_ProcessOps</span>
+    <span class="n">_stderr_files</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">any_exited</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Whether any worker crashed; clean exits do not count."""</span>
+        <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_ops</span><span class="o">.</span><span class="n">exit_code</span><span class="p">(</span><span class="n">proc</span><span class="p">)</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">all_exited</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Whether every worker exited, including clean exits."""</span>
+        <span class="k">return</span> <span class="nb">all</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_ops</span><span class="o">.</span><span class="n">exit_code</span><span class="p">(</span><span class="n">proc</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">diagnose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_diagnose_processes</span><span class="p">(</span><span class="n">handles</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ops</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup_stderr_files</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">_unlink_all</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_cleanup_stderr_files</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - interpreter-shutdown best effort</span>
+            <span class="k">pass</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_save_worker_code</span><span class="p">(</span><span class="n">pickler</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">code</span><span class="p">:</span> <span class="n">CodeType</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">pickler</span><span class="o">.</span><span class="n">save_reduce</span><span class="p">(</span><span class="n">marshal</span><span class="o">.</span><span class="n">loads</span><span class="p">,</span> <span class="p">(</span><span class="n">marshal</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">code</span><span class="p">),),</span> <span class="n">obj</span><span class="o">=</span><span class="n">code</span><span class="p">)</span>
+
+
 <span class="k">def</span><span class="w"> </span><span class="nf">_dumps_worker</span><span class="p">(</span><span class="n">worker_fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">],</span> <span class="n">state</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bytes</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Serialise ``(worker_fn, state)`` with dill, raising a clear error on failure.</span>
+<span class="w">    </span><span class="sd">"""Serialise ``(worker_fn, state)`` with dill, raising a clear error on failure.</span>
 
 <span class="sd">    dill (unlike stdlib pickle, which ``multiprocessing`` uses) can serialise</span>
-<span class="sd">    closures and lambdas, so ``execution=&quot;process&quot;`` workers need not be</span>
+<span class="sd">    closures and lambdas, so ``execution="process"`` workers need not be</span>
 <span class="sd">    module-level — matching what thread execution already accepts.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">try</span><span class="p">:</span>
         <span class="kn">import</span><span class="w"> </span><span class="nn">dill</span>
     <span class="k">except</span> <span class="ne">ImportError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
         <span class="k">raise</span> <span class="n">WorkerSerializationError</span><span class="p">(</span>
-            <span class="s2">&quot;explore(execution=&#39;process&#39;) needs the &#39;dill&#39; package to serialise worker &quot;</span>
-            <span class="s2">&quot;callables; install it with `pip install frontrun[process]`.&quot;</span>
+            <span class="s2">"explore(execution='process') needs the 'dill' package to serialise worker "</span>
+            <span class="s2">"callables; install it with `pip install frontrun[process]`."</span>
         <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
     <span class="k">try</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">sys</span><span class="o">.</span><span class="n">version_info</span> <span class="o">&gt;=</span> <span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">15</span><span class="p">):</span>
+            <span class="c1"># dill 0.4.1 reads co_lnotab, removed in Python 3.15. Remove this</span>
+            <span class="c1"># reducer once the minimum dill version includes the upstream fix.</span>
+            <span class="c1"># MpLauncher spawns with sys.executable, so marshal code always</span>
+            <span class="c1"># round-trips in the same interpreter version, including line tables.</span>
+            <span class="k">with</span> <span class="n">BytesIO</span><span class="p">()</span> <span class="k">as</span> <span class="n">buffer</span><span class="p">:</span>
+                <span class="n">pickler</span> <span class="o">=</span> <span class="n">dill</span><span class="o">.</span><span class="n">Pickler</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">protocol</span><span class="o">=</span><span class="n">dill</span><span class="o">.</span><span class="n">settings</span><span class="p">[</span><span class="s2">"protocol"</span><span class="p">])</span>
+                <span class="c1"># A live overlay preserves reducers dill registers lazily, e.g. NumPy.</span>
+                <span class="n">pickler</span><span class="o">.</span><span class="n">dispatch</span> <span class="o">=</span> <span class="n">ChainMap</span><span class="p">({</span><span class="n">CodeType</span><span class="p">:</span> <span class="n">_save_worker_code</span><span class="p">},</span> <span class="n">pickler</span><span class="o">.</span><span class="n">dispatch</span><span class="p">)</span>
+                <span class="n">pickler</span><span class="o">.</span><span class="n">dump</span><span class="p">((</span><span class="n">worker_fn</span><span class="p">,</span> <span class="n">state</span><span class="p">))</span>
+                <span class="k">return</span> <span class="n">buffer</span><span class="o">.</span><span class="n">getvalue</span><span class="p">()</span>
         <span class="k">return</span> <span class="n">dill</span><span class="o">.</span><span class="n">dumps</span><span class="p">((</span><span class="n">worker_fn</span><span class="p">,</span> <span class="n">state</span><span class="p">))</span>
     <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - surface any serialisation failure clearly</span>
         <span class="k">raise</span> <span class="n">WorkerSerializationError</span><span class="p">(</span>
-            <span class="s2">&quot;explore(execution=&#39;process&#39;) could not serialise a worker or the setup() state &quot;</span>
-            <span class="sa">f</span><span class="s2">&quot;(even with dill): </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">. Avoid capturing unpicklable objects such as open &quot;</span>
-            <span class="s2">&quot;connections, sockets, or locks in the worker or the setup() return value.&quot;</span>
+            <span class="s2">"explore(execution='process') could not serialise a worker or the setup() state "</span>
+            <span class="sa">f</span><span class="s2">"(even with dill): </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">. Avoid capturing unpicklable objects such as open "</span>
+            <span class="s2">"connections, sockets, or locks in the worker or the setup() return value."</span>
         <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_require_file_backed_main</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Fail clearly when multiprocessing spawn cannot re-import ``__main__``.&quot;&quot;&quot;</span>
-    <span class="n">main</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;__main__&quot;</span><span class="p">)</span>
-    <span class="n">main_file</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">&quot;__file__&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">main_file</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="ow">and</span> <span class="n">main_file</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">main_file</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;&lt;&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">main_file</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Fail clearly when multiprocessing spawn cannot re-import ``__main__``."""</span>
+    <span class="n">main</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"__main__"</span><span class="p">)</span>
+    <span class="n">main_file</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">main</span><span class="p">,</span> <span class="s2">"__file__"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">main_file</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="ow">and</span> <span class="n">main_file</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">main_file</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"&lt;"</span><span class="p">)</span> <span class="ow">and</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">main_file</span><span class="p">):</span>
         <span class="k">return</span>
     <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-        <span class="s2">&quot;explore(execution=&#39;process&#39;) uses multiprocessing &#39;spawn&#39;, which requires the parent &quot;</span>
-        <span class="s2">&quot;program to run from a file-backed Python module. It cannot be launched from stdin, &quot;</span>
-        <span class="s2">&quot;`python -c`, or a REPL/notebook cell; put the test in a .py file or use &quot;</span>
-        <span class="s2">&quot;frontrun.explore_processes() with importable module:callable targets.&quot;</span>
+        <span class="s2">"explore(execution='process') uses multiprocessing 'spawn', which requires the parent "</span>
+        <span class="s2">"program to run from a file-backed Python module. It cannot be launched from stdin, "</span>
+        <span class="s2">"`python -c`, or a REPL/notebook cell; put the test in a .py file or use "</span>
+        <span class="s2">"frontrun.explore_processes() with importable module:callable targets."</span>
     <span class="p">)</span>
 
 
@@ -425,7 +513,7 @@
     <span class="n">reuse</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">stderr_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;multiprocessing entry: connect, install interception, run ``worker_fn(state)``.</span>
+<span class="w">    </span><span class="sd">"""multiprocessing entry: connect, install interception, run ``worker_fn(state)``.</span>
 
 <span class="sd">    Runs in the spawned child. ``payload`` is the dill-serialised ``(worker_fn,</span>
 <span class="sd">    state)`` pair (dill, not stdlib pickle, so closures/lambdas survive). With</span>
@@ -433,11 +521,11 @@
 
 <span class="sd">    When ``stderr_path`` is given, fd 2 is redirected to that file *before* any</span>
 <span class="sd">    work (including ``dill.loads``) so that a pre-HELLO crash — which</span>
-<span class="sd">    multiprocessing children would otherwise print to the parent&#39;s inherited</span>
+<span class="sd">    multiprocessing children would otherwise print to the parent's inherited</span>
 <span class="sd">    stderr — is captured where ``MpLauncher.diagnose`` can recover its real</span>
-<span class="sd">    cause. The redirect is at the fd level (``os.dup2``) so the interpreter&#39;s</span>
+<span class="sd">    cause. The redirect is at the fd level (``os.dup2``) so the interpreter's</span>
 <span class="sd">    own fatal-traceback writer is captured, not just Python-level ``sys.stderr``.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">if</span> <span class="n">stderr_path</span><span class="p">:</span>
         <span class="n">fd</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">stderr_path</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">O_WRONLY</span> <span class="o">|</span> <span class="n">os</span><span class="o">.</span><span class="n">O_CREAT</span> <span class="o">|</span> <span class="n">os</span><span class="o">.</span><span class="n">O_TRUNC</span><span class="p">,</span> <span class="mo">0o600</span><span class="p">)</span>
         <span class="n">os</span><span class="o">.</span><span class="n">dup2</span><span class="p">(</span><span class="n">fd</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
@@ -453,7 +541,7 @@
 
     <span class="k">def</span><span class="w"> </span><span class="nf">run_target</span><span class="p">(</span><span class="n">proxy</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">worker_fn</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;worker payload was not loaded for this iteration&quot;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">"worker payload was not loaded for this iteration"</span><span class="p">)</span>
         <span class="n">result</span> <span class="o">=</span> <span class="n">worker_fn</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
         <span class="n">_reject_deferred_worker_result</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="nb">repr</span><span class="p">(</span><span class="n">worker_fn</span><span class="p">))</span>
 
@@ -462,9 +550,9 @@
         <span class="k">def</span><span class="w"> </span><span class="nf">refresh_iteration</span><span class="p">(</span><span class="n">iter_msg</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">nonlocal</span> <span class="n">worker_fn</span><span class="p">,</span> <span class="n">state</span>
             <span class="n">_reset_iteration_state</span><span class="p">()</span>
-            <span class="n">encoded</span> <span class="o">=</span> <span class="n">iter_msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;payload&quot;</span><span class="p">)</span>
+            <span class="n">encoded</span> <span class="o">=</span> <span class="n">iter_msg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"payload"</span><span class="p">)</span>
             <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">encoded</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-                <span class="n">worker_fn</span><span class="p">,</span> <span class="n">state</span> <span class="o">=</span> <span class="n">dill</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">base64</span><span class="o">.</span><span class="n">b64decode</span><span class="p">(</span><span class="n">encoded</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;ascii&quot;</span><span class="p">)))</span>
+                <span class="n">worker_fn</span><span class="p">,</span> <span class="n">state</span> <span class="o">=</span> <span class="n">dill</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">base64</span><span class="o">.</span><span class="n">b64decode</span><span class="p">(</span><span class="n">encoded</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">"ascii"</span><span class="p">)))</span>
 
         <span class="n">_serve_persistent</span><span class="p">(</span>
             <span class="n">socket_path</span><span class="p">,</span>
@@ -486,8 +574,8 @@
         <span class="n">_connect_and_serve</span><span class="p">(</span><span class="n">socket_path</span><span class="p">,</span> <span class="n">worker_id</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">MpLauncher</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Spawn Python worker callables via ``multiprocessing`` (the primary backend).</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MpLauncher</span><span class="p">(</span><span class="n">_ProcessLifecycle</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Spawn Python worker callables via ``multiprocessing`` (the primary backend).</span>
 
 <span class="sd">    ``worker_fns`` are callables serialised with dill, so closures and lambdas</span>
 <span class="sd">    work as well as module-level functions (same as thread execution);</span>
@@ -495,7 +583,9 @@
 <span class="sd">    each worker. Uses the ``spawn`` start method and scrubs ``LD_PRELOAD`` /</span>
 <span class="sd">    ``FRONTRUN_IO_FD`` so children do not inherit the C-level I/O preload (whose</span>
 <span class="sd">    event pipe has no reader here).</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
+
+    <span class="n">_ops</span> <span class="o">=</span> <span class="n">_MP_OPS</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
@@ -507,12 +597,12 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_worker_fns</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">worker_fns</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_state_fn</span> <span class="o">=</span> <span class="n">state_fn</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_reuse</span> <span class="o">=</span> <span class="n">reuse</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_ctx</span> <span class="o">=</span> <span class="n">multiprocessing</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s2">&quot;spawn&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ctx</span> <span class="o">=</span> <span class="n">multiprocessing</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s2">"spawn"</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_procs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="c1"># Per-worker temp files capturing each child&#39;s stderr (parallel to the</span>
+        <span class="c1"># Per-worker temp files capturing each child's stderr (parallel to the</span>
         <span class="c1"># launched procs), so diagnose() can surface a pre-HELLO crash the way</span>
         <span class="c1"># SubprocessLauncher does from its stderr pipe. multiprocessing children</span>
-        <span class="c1"># otherwise inherit the parent&#39;s stderr, hiding the real cause.</span>
+        <span class="c1"># otherwise inherit the parent's stderr, hiding the real cause.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">launch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">targets</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">WorkerTarget</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]:</span>
@@ -522,15 +612,15 @@
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reuse</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_procs</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_procs</span>
         <span class="n">targets</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">targets</span><span class="p">)</span>
-        <span class="n">socket_path</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">targets</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="k">if</span> <span class="n">targets</span> <span class="k">else</span> <span class="s2">&quot;&quot;</span>
+        <span class="n">socket_path</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">targets</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="k">if</span> <span class="n">targets</span> <span class="k">else</span> <span class="s2">""</span>
         <span class="n">state</span> <span class="o">=</span> <span class="kc">None</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reuse</span> <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">_state_fn</span><span class="p">()</span>
         <span class="c1"># Fresh per-worker stderr capture files for this launch (drop the</span>
-        <span class="c1"># previous iteration&#39;s so they do not accumulate).</span>
+        <span class="c1"># previous iteration's so they do not accumulate).</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_cleanup_stderr_files</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span> <span class="o">=</span> <span class="p">[</span><span class="n">_make_stderr_file</span><span class="p">(</span><span class="n">target</span><span class="o">.</span><span class="n">worker_id</span><span class="p">)</span> <span class="k">for</span> <span class="n">target</span> <span class="ow">in</span> <span class="n">targets</span><span class="p">]</span>
         <span class="c1"># Serialise with dill up front (raises a clear error for genuinely</span>
         <span class="c1"># unserialisable workers/state) so children receive plain bytes that</span>
-        <span class="c1"># multiprocessing&#39;s own stdlib pickling handles trivially.</span>
+        <span class="c1"># multiprocessing's own stdlib pickling handles trivially.</span>
         <span class="n">procs</span> <span class="o">=</span> <span class="p">[</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span>
                 <span class="n">target</span><span class="o">=</span><span class="n">_mp_worker_entry</span><span class="p">,</span>
@@ -545,17 +635,17 @@
             <span class="p">)</span>
             <span class="k">for</span> <span class="n">idx</span><span class="p">,</span> <span class="n">target</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">targets</span><span class="p">)</span>
         <span class="p">]</span>
-        <span class="c1"># Scrub the C-level preload from the children&#39;s environment. This must</span>
+        <span class="c1"># Scrub the C-level preload from the children's environment. This must</span>
         <span class="c1"># happen parent-side: multiprocessing has no per-child env parameter,</span>
         <span class="c1"># and a child-side scrub would come too late — LD_PRELOAD is consumed</span>
         <span class="c1"># by the dynamic loader at exec, and the preload library reads</span>
         <span class="c1"># FRONTRUN_IO_FD lazily at the first intercepted call (crates/io</span>
-        <span class="c1"># get_pipe_fd), which fires during the child interpreter&#39;s own startup</span>
+        <span class="c1"># get_pipe_fd), which fires during the child interpreter's own startup</span>
         <span class="c1"># file reads, long before any Python-level code runs. The module lock</span>
-        <span class="c1"># serialises concurrent launches so one launch&#39;s restore cannot clobber</span>
-        <span class="c1"># another&#39;s scrub (os.environ is process-global).</span>
+        <span class="c1"># serialises concurrent launches so one launch's restore cannot clobber</span>
+        <span class="c1"># another's scrub (os.environ is process-global).</span>
         <span class="k">with</span> <span class="n">_env_scrub_lock</span><span class="p">:</span>
-            <span class="n">scrubbed</span> <span class="o">=</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">k</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;LD_PRELOAD&quot;</span><span class="p">,</span> <span class="s2">&quot;FRONTRUN_IO_FD&quot;</span><span class="p">)</span> <span class="k">if</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">}</span>
+            <span class="n">scrubbed</span> <span class="o">=</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">k</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"LD_PRELOAD"</span><span class="p">,</span> <span class="s2">"FRONTRUN_IO_FD"</span><span class="p">)</span> <span class="k">if</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">}</span>
             <span class="k">try</span><span class="p">:</span>
                 <span class="n">started</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
                 <span class="k">try</span><span class="p">:</span>
@@ -566,7 +656,7 @@
                     <span class="c1"># A spawn failed mid-loop (e.g. resource exhaustion): the</span>
                     <span class="c1"># already-started children would otherwise leak — their worker</span>
                     <span class="c1"># socket blocks forever awaiting a GRANT — because the exception</span>
-                    <span class="c1"># escapes launch() before returning handles for the caller&#39;s</span>
+                    <span class="c1"># escapes launch() before returning handles for the caller's</span>
                     <span class="c1"># try/finally to join. Reap them here before re-raising.</span>
                     <span class="n">_terminate_procs</span><span class="p">(</span><span class="n">started</span><span class="p">)</span>
                     <span class="k">raise</span>
@@ -577,18 +667,13 @@
         <span class="k">return</span> <span class="n">procs</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">iter_start_message</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">worker_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Build the ITER_START frame for one reused multiprocessing worker.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Build the ITER_START frame for one reused multiprocessing worker."""</span>
         <span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_state_fn</span><span class="p">()</span>
         <span class="n">payload</span> <span class="o">=</span> <span class="n">_dumps_worker</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_worker_fns</span><span class="p">[</span><span class="n">worker_id</span><span class="p">],</span> <span class="n">state</span><span class="p">)</span>
-        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;t&quot;</span><span class="p">:</span> <span class="n">proto</span><span class="o">.</span><span class="n">ITER_START</span><span class="p">,</span> <span class="s2">&quot;payload&quot;</span><span class="p">:</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">payload</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;ascii&quot;</span><span class="p">)}</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">"t"</span><span class="p">:</span> <span class="n">proto</span><span class="o">.</span><span class="n">ITER_START</span><span class="p">,</span> <span class="s2">"payload"</span><span class="p">:</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">payload</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">"ascii"</span><span class="p">)}</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">join</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]:</span>
-        <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span>
-        <span class="n">alive</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
-        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">:</span>
-            <span class="n">proc</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()))</span>
-            <span class="k">if</span> <span class="n">proc</span><span class="o">.</span><span class="n">is_alive</span><span class="p">():</span>
-                <span class="n">alive</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">proc</span><span class="p">)</span>
+        <span class="n">alive</span> <span class="o">=</span> <span class="n">_wait_alive</span><span class="p">(</span><span class="n">handles</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">_MP_OPS</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">alive</span><span class="p">:</span>
             <span class="c1"># Terminate the whole set concurrently, then reap against one</span>
             <span class="c1"># shared deadline; cleanup must not scale as timeout * workers.</span>
@@ -596,87 +681,40 @@
         <span class="k">return</span> <span class="n">alive</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">terminate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Forcibly retire poisoned persistent children so they can be replaced.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Forcibly retire poisoned persistent children so they can be replaced."""</span>
         <span class="n">_terminate_procs</span><span class="p">(</span><span class="n">handles</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">handles</span> <span class="ow">is</span> <span class="bp">self</span><span class="o">.</span><span class="n">_procs</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_procs</span> <span class="o">=</span> <span class="kc">None</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">any_exited</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Non-destructive: has any worker process crashed (nonzero exit)?</span>
-
-<span class="sd">        Only an abnormal exit counts, mirroring ``diagnose``&#39;s nonzero filter: a</span>
-<span class="sd">        worker that connected, ran no scheduled access, and exited cleanly (0)</span>
-<span class="sd">        must not fast-fail the accept loop of a co-worker still sending HELLO.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="n">proc</span><span class="o">.</span><span class="n">exitcode</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">)</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">all_exited</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Non-destructive: has *every* worker process exited (any code)?</span>
-
-<span class="sd">        Unlike ``any_exited`` this counts clean (0) exits too, so the accept loop</span>
-<span class="sd">        can fail fast when a target exits before HELLO (e.g. ``sys.exit(0)`` at</span>
-<span class="sd">        import) instead of waiting the whole connect budget.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">return</span> <span class="nb">all</span><span class="p">(</span><span class="n">proc</span><span class="o">.</span><span class="n">exitcode</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">)</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">diagnose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Describe any worker that exited before connecting (nonzero exit code).</span>
-
-<span class="sd">        When the child&#39;s captured stderr holds a traceback, surface its last</span>
-<span class="sd">        line (e.g. a ``dill.loads``/``ModuleNotFoundError`` failure) instead of a</span>
-<span class="sd">        bare exit code, matching ``SubprocessLauncher.diagnose``.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">parts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
-        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">proc</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">handles</span><span class="p">):</span>
-            <span class="k">if</span> <span class="n">proc</span><span class="o">.</span><span class="n">exitcode</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="mi">0</span><span class="p">):</span>
-                <span class="k">continue</span>
-            <span class="n">path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="k">if</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span>
-            <span class="n">detail</span> <span class="o">=</span> <span class="n">_stderr_last_line</span><span class="p">(</span><span class="n">path</span><span class="p">)</span> <span class="ow">or</span> <span class="sa">f</span><span class="s2">&quot;process exited with code </span><span class="si">{</span><span class="n">proc</span><span class="o">.</span><span class="n">exitcode</span><span class="si">}</span><span class="s2">&quot;</span>
-            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;worker </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-        <span class="k">return</span> <span class="s2">&quot;; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span> <span class="ow">or</span> <span class="kc">None</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup_stderr_files</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Best-effort removal of the previous launch&#39;s stderr capture files.&quot;&quot;&quot;</span>
-        <span class="n">_unlink_all</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span> <span class="o">=</span> <span class="p">[]</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># The per-launch cleanup only runs on the *next* launch, so the final</span>
-        <span class="c1"># iteration&#39;s capture files would leak once the exploration finishes.</span>
-        <span class="c1"># diagnose() may be read after join(), so this finalizer is the earliest</span>
-        <span class="c1"># safe point to drop them.</span>
-        <span class="k">try</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_cleanup_stderr_files</span><span class="p">()</span>
-        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - interpreter-shutdown best effort</span>
-            <span class="k">pass</span>
 
 
 <div class="viewcode-block" id="Subprocess">
 <a class="viewcode-back" href="../../../../api_reference.html#frontrun.Subprocess">[docs]</a>
 <span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">Subprocess</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;A worker to spawn: a ``&quot;module:callable&quot;`` target and its positional args.</span>
+<span class="w">    </span><span class="sd">"""A worker to spawn: a ``"module:callable"`` target and its positional args.</span>
 
 <span class="sd">    ``args`` are passed to the spawned process as JSON through the environment,</span>
 <span class="sd">    so they must be JSON-serialisable **and survive a JSON round-trip**: a tuple</span>
 <span class="sd">    arrives as a list and a dict with non-string keys comes back string-keyed.</span>
 <span class="sd">    Pass plain scalars / lists / string-keyed dicts, or use</span>
-<span class="sd">    ``frontrun.explore(execution=&quot;process&quot;)`` (which pickles) for richer args.</span>
+<span class="sd">    ``frontrun.explore(execution="process")`` (which pickles) for richer args.</span>
 <span class="sd">    The callable must be synchronous; async/awaitable targets are rejected.</span>
-<span class="sd">    It runs in the child with frontrun&#39;s SQL interception routed to the</span>
+<span class="sd">    It runs in the child with frontrun's SQL interception routed to the</span>
 <span class="sd">    coordinator.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="n">target</span><span class="p">:</span> <span class="nb">str</span>
     <span class="n">args</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">tuple</span><span class="p">)</span></div>
 
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">SubprocessLauncher</span><span class="p">:</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SubprocessLauncher</span><span class="p">(</span><span class="n">_ProcessLifecycle</span><span class="p">):</span>
+    <span class="n">_ops</span> <span class="o">=</span> <span class="n">_POPEN_OPS</span>
+
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">specs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Subprocess</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">reuse</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_specs</span> <span class="o">=</span> <span class="n">specs</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_reuse</span> <span class="o">=</span> <span class="n">reuse</span>
-        <span class="c1"># Per-worker temp files capturing each child&#39;s stderr (parallel to the</span>
+        <span class="c1"># Per-worker temp files capturing each child's stderr (parallel to the</span>
         <span class="c1"># launched procs). Files, not PIPEs: an undrained PIPE blocks a child</span>
         <span class="c1"># that writes more than the pipe buffer, deadlocking the exploration.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
@@ -691,15 +729,15 @@
                 <span class="n">socket_path</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">target</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
                 <span class="n">spec</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_specs</span><span class="p">[</span><span class="n">wid</span><span class="p">]</span>
                 <span class="n">env</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">base_env</span><span class="p">)</span>
-                <span class="n">env</span><span class="p">[</span><span class="s2">&quot;FRONTRUN_XPROC_SOCKET&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">socket_path</span>
-                <span class="n">env</span><span class="p">[</span><span class="s2">&quot;FRONTRUN_XPROC_WORKER_ID&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">wid</span><span class="p">)</span>
-                <span class="n">env</span><span class="p">[</span><span class="s2">&quot;FRONTRUN_XPROC_TARGET&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">spec</span><span class="o">.</span><span class="n">target</span>
-                <span class="n">env</span><span class="p">[</span><span class="s2">&quot;FRONTRUN_XPROC_ARGS&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">spec</span><span class="o">.</span><span class="n">args</span><span class="p">))</span>
+                <span class="n">env</span><span class="p">[</span><span class="s2">"FRONTRUN_XPROC_SOCKET"</span><span class="p">]</span> <span class="o">=</span> <span class="n">socket_path</span>
+                <span class="n">env</span><span class="p">[</span><span class="s2">"FRONTRUN_XPROC_WORKER_ID"</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">wid</span><span class="p">)</span>
+                <span class="n">env</span><span class="p">[</span><span class="s2">"FRONTRUN_XPROC_TARGET"</span><span class="p">]</span> <span class="o">=</span> <span class="n">spec</span><span class="o">.</span><span class="n">target</span>
+                <span class="n">env</span><span class="p">[</span><span class="s2">"FRONTRUN_XPROC_ARGS"</span><span class="p">]</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">spec</span><span class="o">.</span><span class="n">args</span><span class="p">))</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reuse</span><span class="p">:</span>
-                    <span class="n">env</span><span class="p">[</span><span class="s2">&quot;FRONTRUN_XPROC_REUSE&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;1&quot;</span>
+                    <span class="n">env</span><span class="p">[</span><span class="s2">"FRONTRUN_XPROC_REUSE"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"1"</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_make_stderr_file</span><span class="p">(</span><span class="n">wid</span><span class="p">))</span>
-                <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">stderr_fh</span><span class="p">:</span>
-                    <span class="n">procs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">([</span><span class="n">sys</span><span class="o">.</span><span class="n">executable</span><span class="p">,</span> <span class="s2">&quot;-m&quot;</span><span class="p">,</span> <span class="n">_WORKER_MODULE</span><span class="p">],</span> <span class="n">env</span><span class="o">=</span><span class="n">env</span><span class="p">,</span> <span class="n">stderr</span><span class="o">=</span><span class="n">stderr_fh</span><span class="p">))</span>
+                <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="s2">"wb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">stderr_fh</span><span class="p">:</span>
+                    <span class="n">procs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">([</span><span class="n">sys</span><span class="o">.</span><span class="n">executable</span><span class="p">,</span> <span class="s2">"-m"</span><span class="p">,</span> <span class="n">_WORKER_MODULE</span><span class="p">],</span> <span class="n">env</span><span class="o">=</span><span class="n">env</span><span class="p">,</span> <span class="n">stderr</span><span class="o">=</span><span class="n">stderr_fh</span><span class="p">))</span>
         <span class="k">except</span> <span class="ne">BaseException</span><span class="p">:</span>
             <span class="c1"># A Popen failed mid-loop: kill and reap the children that did start</span>
             <span class="c1"># so they cannot leak and hang on a GRANT that never arrives (the</span>
@@ -710,118 +748,32 @@
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_reap_partial</span><span class="p">(</span><span class="n">procs</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">[</span><span class="nb">bytes</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">procs</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">proc</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
-            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - best-effort teardown</span>
-                <span class="k">pass</span>
-        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">procs</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">proc</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
-            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - best-effort teardown</span>
-                <span class="k">pass</span>
+        <span class="n">_retire_procs</span><span class="p">(</span><span class="n">procs</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="n">_POPEN_OPS</span><span class="p">,</span> <span class="n">terminate_first</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">join</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">[</span><span class="nb">bytes</span><span class="p">]]:</span>
-        <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span>
-        <span class="n">alive</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">[</span><span class="nb">bytes</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
-        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">proc</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()))</span>
-            <span class="k">except</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">TimeoutExpired</span><span class="p">:</span>
-                <span class="n">alive</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">proc</span><span class="p">)</span>
-        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">alive</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">proc</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
-            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - best-effort; poll below is authoritative</span>
-                <span class="k">pass</span>
-        <span class="n">reap_deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="nb">min</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">timeout</span><span class="p">),</span> <span class="mf">2.0</span><span class="p">)</span>
-        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">alive</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">proc</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">reap_deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()))</span>
-            <span class="k">except</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">TimeoutExpired</span><span class="p">:</span>
-                <span class="k">pass</span>
+        <span class="n">alive</span> <span class="o">=</span> <span class="n">_wait_alive</span><span class="p">(</span><span class="n">handles</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">_POPEN_OPS</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">alive</span><span class="p">:</span>
+            <span class="n">_retire_procs</span><span class="p">(</span><span class="n">alive</span><span class="p">,</span> <span class="nb">min</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">timeout</span><span class="p">),</span> <span class="mf">2.0</span><span class="p">),</span> <span class="n">_POPEN_OPS</span><span class="p">,</span> <span class="n">terminate_first</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">alive</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">terminate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Forcibly retire poisoned persistent children so they can be replaced.&quot;&quot;&quot;</span>
-        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">proc</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
-            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - final poll verifies death</span>
-                <span class="k">pass</span>
-        <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span>
-        <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">proc</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()))</span>
-            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - final poll verifies death</span>
-                <span class="k">pass</span>
-        <span class="n">survivors</span> <span class="o">=</span> <span class="p">[</span><span class="n">proc</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span> <span class="k">if</span> <span class="n">proc</span><span class="o">.</span><span class="n">poll</span><span class="p">()</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">]</span>
-        <span class="k">if</span> <span class="n">survivors</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="n">WorkerTerminationError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">survivors</span><span class="p">)</span><span class="si">}</span><span class="s2"> worker process(es) still alive after kill; refusing to relaunch&quot;</span>
-            <span class="p">)</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">any_exited</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Non-destructive: has any worker process crashed (nonzero exit)?</span>
-
-<span class="sd">        A clean exit (returncode 0) is not a crash and must not fast-fail the</span>
-<span class="sd">        accept loop; only nonzero or signal deaths do, matching ``diagnose``.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="n">proc</span><span class="o">.</span><span class="n">poll</span><span class="p">()</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">)</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">all_exited</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Non-destructive: has *every* worker process exited (any code)?</span>
-
-<span class="sd">        Counts clean (0) exits too, so the accept loop can fail fast when a</span>
-<span class="sd">        target exits before HELLO (e.g. ``sys.exit(0)`` at import) rather than</span>
-<span class="sd">        blocking for the full connect budget.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">return</span> <span class="nb">all</span><span class="p">(</span><span class="n">proc</span><span class="o">.</span><span class="n">poll</span><span class="p">()</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">for</span> <span class="n">proc</span> <span class="ow">in</span> <span class="n">handles</span><span class="p">)</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">diagnose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Recover the real cause when a worker died before connecting.</span>
-
-<span class="sd">        A bad ``module:callable`` target makes the child exit with a traceback on</span>
-<span class="sd">        stderr; surface its last line so the coordinator reports e.g.</span>
-<span class="sd">        ``ModuleNotFoundError`` instead of a bare connection timeout.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">parts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
-        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">proc</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">handles</span><span class="p">):</span>
-            <span class="n">rc</span> <span class="o">=</span> <span class="n">proc</span><span class="o">.</span><span class="n">poll</span><span class="p">()</span>
-            <span class="k">if</span> <span class="n">rc</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">rc</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-                <span class="k">continue</span>
-            <span class="n">path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="k">if</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span>
-            <span class="n">last</span> <span class="o">=</span> <span class="n">_stderr_last_line</span><span class="p">(</span><span class="n">path</span><span class="p">)</span> <span class="ow">or</span> <span class="sa">f</span><span class="s2">&quot;exit code </span><span class="si">{</span><span class="n">rc</span><span class="si">}</span><span class="s2">&quot;</span>
-            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;worker </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">last</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-        <span class="k">return</span> <span class="s2">&quot;; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span> <span class="ow">or</span> <span class="kc">None</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup_stderr_files</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Best-effort removal of the previous launch&#39;s stderr capture files.&quot;&quot;&quot;</span>
-        <span class="n">_unlink_all</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_stderr_files</span> <span class="o">=</span> <span class="p">[]</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># Same finalizer contract as MpLauncher: the per-launch cleanup only</span>
-        <span class="c1"># runs on the next launch, so drop the final launch&#39;s files here.</span>
-        <span class="k">try</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_cleanup_stderr_files</span><span class="p">()</span>
-        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - interpreter-shutdown best effort</span>
-            <span class="k">pass</span>
+<span class="w">        </span><span class="sd">"""Forcibly retire poisoned persistent children so they can be replaced."""</span>
+        <span class="n">_retire_procs</span><span class="p">(</span><span class="n">handles</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">_POPEN_OPS</span><span class="p">,</span> <span class="n">terminate_first</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_child_env_base</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
         <span class="n">env</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">)</span>
         <span class="c1"># Let children import whatever the parent can (target modules on sys.path).</span>
         <span class="n">parent_paths</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">pathsep</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">p</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">sys</span><span class="o">.</span><span class="n">path</span> <span class="k">if</span> <span class="n">p</span><span class="p">)</span>
-        <span class="n">existing</span> <span class="o">=</span> <span class="n">env</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;PYTHONPATH&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>
-        <span class="n">env</span><span class="p">[</span><span class="s2">&quot;PYTHONPATH&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">pathsep</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="p">(</span><span class="n">parent_paths</span><span class="p">,</span> <span class="n">existing</span><span class="p">)</span> <span class="k">if</span> <span class="n">x</span><span class="p">)</span>
+        <span class="n">existing</span> <span class="o">=</span> <span class="n">env</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"PYTHONPATH"</span><span class="p">,</span> <span class="s2">""</span><span class="p">)</span>
+        <span class="n">env</span><span class="p">[</span><span class="s2">"PYTHONPATH"</span><span class="p">]</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">pathsep</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="p">(</span><span class="n">parent_paths</span><span class="p">,</span> <span class="n">existing</span><span class="p">)</span> <span class="k">if</span> <span class="n">x</span><span class="p">)</span>
         <span class="c1"># Phase 1 workers do their interception in Python and talk to the</span>
         <span class="c1"># coordinator over the socket; the LD_PRELOAD C-level interception is</span>
         <span class="c1"># neither needed nor wanted (its event pipe belongs to the parent CLI</span>
         <span class="c1"># wrapper). Scrub it so a worker spawned under `frontrun pytest` cannot</span>
         <span class="c1"># block writing preload events nobody is draining.</span>
-        <span class="n">env</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;LD_PRELOAD&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-        <span class="n">env</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;FRONTRUN_IO_FD&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">env</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">"LD_PRELOAD"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">env</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">"FRONTRUN_IO_FD"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">env</span>
 </pre></div>
         </article>
@@ -855,7 +807,7 @@
       
     </aside>
   </div>
-</div><script src="../../../../_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="../../../../_static/documentation_options.js?v=486e5634"></script>
     <script src="../../../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../../../_static/scripts/furo.js?v=46bd48cc"></script>

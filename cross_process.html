@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Cross-Process Exploration" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/cross_process.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Frontrun’s DPOR, bytecode, and marker approaches all interleave concurrency within a single Python process — across threads or async tasks. Cross-process exploration extends the same idea to separa..." />
+<meta name="description" content="Frontrun’s DPOR, bytecode, and marker approaches all interleave concurrency within a single Python process — across threads or async tasks. Cross-process exploration extends the same idea to separa..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Virtual clock: timeout, retry, and TTL races" href="virtual_clock.html"><link rel="prev" title="Redis Conflict Detection – Technical Details" href="redis.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/cross_process.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Cross-Process Exploration - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Cross-Process Exploration - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -352,26 +360,26 @@ before workers start. Put the test in a <code class="docutils literal notranslat
 <span class="k">def</span><span class="w"> </span><span class="nf">increment</span><span class="p">(</span><span class="n">db_path</span><span class="p">):</span>
     <span class="n">conn</span> <span class="o">=</span> <span class="n">sqlite3</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">db_path</span><span class="p">,</span> <span class="n">isolation_level</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="n">val</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;SELECT val FROM counter WHERE id = 1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
-        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;UPDATE counter SET val = ? WHERE id = 1&quot;</span><span class="p">,</span> <span class="p">(</span><span class="n">val</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,))</span>
+        <span class="n">val</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">"SELECT val FROM counter WHERE id = 1"</span><span class="p">)</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">"UPDATE counter SET val = ? WHERE id = 1"</span><span class="p">,</span> <span class="p">(</span><span class="n">val</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,))</span>
     <span class="k">finally</span><span class="p">:</span>
         <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">read</span><span class="p">(</span><span class="n">db_path</span><span class="p">):</span>
     <span class="n">conn</span> <span class="o">=</span> <span class="n">sqlite3</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">db_path</span><span class="p">,</span> <span class="n">isolation_level</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;SELECT val FROM counter WHERE id = 1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">return</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">"SELECT val FROM counter WHERE id = 1"</span><span class="p">)</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
     <span class="k">finally</span><span class="p">:</span>
         <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_counter_race</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
-    <span class="n">db</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;counter.db&quot;</span><span class="p">)</span>
+    <span class="n">db</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">"counter.db"</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">setup</span><span class="p">():</span>
         <span class="n">conn</span> <span class="o">=</span> <span class="n">sqlite3</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">db</span><span class="p">,</span> <span class="n">isolation_level</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
-        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY, val INTEGER)&quot;</span><span class="p">)</span>
-        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;DELETE FROM counter&quot;</span><span class="p">)</span>
-        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;INSERT INTO counter (id, val) VALUES (1, 0)&quot;</span><span class="p">)</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">"CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY, val INTEGER)"</span><span class="p">)</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">"DELETE FROM counter"</span><span class="p">)</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">"INSERT INTO counter (id, val) VALUES (1, 0)"</span><span class="p">)</span>
         <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
         <span class="k">return</span> <span class="n">db</span>  <span class="c1"># picklable handle passed to each worker(state) and invariant(state)</span>
 
@@ -380,7 +388,7 @@ before workers start. Put the test in a <code class="docutils literal notranslat
         <span class="n">workers</span><span class="o">=</span><span class="n">increment</span><span class="p">,</span>
         <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">state</span><span class="p">:</span> <span class="n">read</span><span class="p">(</span><span class="n">state</span><span class="p">)</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
-        <span class="n">execution</span><span class="o">=</span><span class="s2">&quot;process&quot;</span><span class="p">,</span>
+        <span class="n">execution</span><span class="o">=</span><span class="s2">"process"</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">assert</span> <span class="ow">not</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span>        <span class="c1"># lost-update race found across processes</span>
     <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
@@ -407,20 +415,20 @@ callables, it spawns each worker as a real OS process running a
 <a class="reference internal" href="api_reference.html#frontrun.Subprocess" title="frontrun.Subprocess"><code class="xref py py-class docutils literal notranslate"><span class="pre">frontrun.Subprocess</span></code></a> spec:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
-<span class="n">_TARGET</span> <span class="o">=</span> <span class="s2">&quot;myapp.counter:increment&quot;</span>  <span class="c1"># your importable module-level worker</span>
+<span class="n">_TARGET</span> <span class="o">=</span> <span class="s2">"myapp.counter:increment"</span>  <span class="c1"># your importable module-level worker</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_lost_update_across_processes</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
-    <span class="n">db</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;counter.db&quot;</span><span class="p">)</span>
+    <span class="n">db</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">"counter.db"</span><span class="p">)</span>
     <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore_processes</span><span class="p">(</span>
         <span class="p">{</span>
-            <span class="s2">&quot;w0&quot;</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">,</span> <span class="p">(</span><span class="n">db</span><span class="p">,)),</span>
-            <span class="s2">&quot;w1&quot;</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">,</span> <span class="p">(</span><span class="n">db</span><span class="p">,)),</span>
+            <span class="s2">"w0"</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">,</span> <span class="p">(</span><span class="n">db</span><span class="p">,)),</span>
+            <span class="s2">"w1"</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">,</span> <span class="p">(</span><span class="n">db</span><span class="p">,)),</span>
         <span class="p">},</span>
         <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">reset_counter</span><span class="p">(</span><span class="n">db</span><span class="p">),</span>   <span class="c1"># your DB reset helper</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_state</span><span class="p">:</span> <span class="n">read_counter</span><span class="p">(</span><span class="n">db</span><span class="p">)</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">assert</span> <span class="ow">not</span> <span class="n">result</span><span class="o">.</span><span class="n">ok</span>
-    <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">failure_kind</span> <span class="o">==</span> <span class="s2">&quot;invariant&quot;</span>
+    <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">failure_kind</span> <span class="o">==</span> <span class="s2">"invariant"</span>
     <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">failing_schedule</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
 </pre></div>
 </div>
@@ -457,7 +465,10 @@ that handle is passed to <code class="docutils literal notranslate"><span class=
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ok</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">True</span></code> if the invariant held under every explored interleaving.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">True</span></code> if at least one interleaving completed and no failure was
+found, <code class="docutils literal notranslate"><span class="pre">False</span></code> for a concrete failure, or <code class="docutils literal notranslate"><span class="pre">None</span></code> when no
+interleaving completed (for example, <code class="docutils literal notranslate"><span class="pre">total_timeout</span></code> expired during
+worker startup).  Treat <code class="docutils literal notranslate"><span class="pre">None</span></code> as inconclusive, not as a pass.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">failure</span></code></p></td>
 <td><p>Human-readable description of the first violation, or <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p></td>
@@ -474,7 +485,11 @@ truncated — the reported schedule is the truncated prefix, not a
 verified counterexample), or <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">failing_schedule</span></code></p></td>
-<td><p>The interleaving (a list of worker ids) that triggered the failure.</p></td>
+<td><p>The interleaving (a list of worker ids) that triggered the failure. For
+a deadlock this is the schedulable prefix that led into the detected
+lock cycle; <code class="docutils literal notranslate"><span class="pre">failure</span></code> carries the cycle description. Process mode
+does not yet expose a public <code class="docutils literal notranslate"><span class="pre">run_with_schedule</span></code> replay API, so
+<code class="docutils literal notranslate"><span class="pre">reproduce_on_failure</span></code> is rejected rather than silently ignored.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">worker_labels</span></code></p></td>
 <td><p>For mapping input, the <code class="docutils literal notranslate"><span class="pre">{worker_id:</span> <span class="pre">label}</span></code> mapping that translates
@@ -553,7 +568,7 @@ schedule into a desynchronised protocol stream. Thread execution rejects
 arbitrary stuck thread. Independently, detected thread deadlocks are returned
 as failed <code class="docutils literal notranslate"><span class="pre">InterleavingResult</span></code> values rather than raised directly.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore_processes</span><span class="p">(</span>
-    <span class="p">{</span><span class="s2">&quot;w0&quot;</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">,</span> <span class="p">(</span><span class="n">db</span><span class="p">,)),</span> <span class="s2">&quot;w1&quot;</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">,</span> <span class="p">(</span><span class="n">db</span><span class="p">,))},</span>
+    <span class="p">{</span><span class="s2">"w0"</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">,</span> <span class="p">(</span><span class="n">db</span><span class="p">,)),</span> <span class="s2">"w1"</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">,</span> <span class="p">(</span><span class="n">db</span><span class="p">,))},</span>
     <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">reset_counter</span><span class="p">(</span><span class="n">db</span><span class="p">),</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_state</span><span class="p">:</span> <span class="n">read_counter</span><span class="p">(</span><span class="n">db</span><span class="p">)</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
     <span class="n">reuse_workers</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>          <span class="c1"># spawn each worker once, re-run per interleaving</span>
@@ -575,8 +590,8 @@ none, so the example requires a running Postgres:</p>
     <span class="n">conn</span> <span class="o">=</span> <span class="n">psycopg2</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">dsn</span><span class="p">)</span>
     <span class="n">conn</span><span class="o">.</span><span class="n">autocommit</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="n">cur</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
-    <span class="n">cur</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;SELECT * FROM accounts WHERE id = </span><span class="si">%s</span><span class="s2"> FOR UPDATE&quot;</span><span class="p">,</span> <span class="p">(</span><span class="n">first_id</span><span class="p">,))</span>
-    <span class="n">cur</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;SELECT * FROM accounts WHERE id = </span><span class="si">%s</span><span class="s2"> FOR UPDATE&quot;</span><span class="p">,</span> <span class="p">(</span><span class="n">second_id</span><span class="p">,))</span>
+    <span class="n">cur</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">"SELECT * FROM accounts WHERE id = </span><span class="si">%s</span><span class="s2"> FOR UPDATE"</span><span class="p">,</span> <span class="p">(</span><span class="n">first_id</span><span class="p">,))</span>
+    <span class="n">cur</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">"SELECT * FROM accounts WHERE id = </span><span class="si">%s</span><span class="s2"> FOR UPDATE"</span><span class="p">,</span> <span class="p">(</span><span class="n">second_id</span><span class="p">,))</span>
     <span class="n">conn</span><span class="o">.</span><span class="n">commit</span><span class="p">()</span>
     <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
 </pre></div>
@@ -586,15 +601,15 @@ table-reset helper):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Two workers lock rows 1 and 2 in opposite order: a classic deadlock.</span>
 <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore_processes</span><span class="p">(</span>
     <span class="p">{</span>
-        <span class="s2">&quot;w0&quot;</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="s2">&quot;myapp.transfer:lock_two&quot;</span><span class="p">,</span> <span class="p">(</span><span class="n">dsn</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">)),</span>
-        <span class="s2">&quot;w1&quot;</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="s2">&quot;myapp.transfer:lock_two&quot;</span><span class="p">,</span> <span class="p">(</span><span class="n">dsn</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">)),</span>
+        <span class="s2">"w0"</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="s2">"myapp.transfer:lock_two"</span><span class="p">,</span> <span class="p">(</span><span class="n">dsn</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">)),</span>
+        <span class="s2">"w1"</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="s2">"myapp.transfer:lock_two"</span><span class="p">,</span> <span class="p">(</span><span class="n">dsn</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">)),</span>
     <span class="p">},</span>
     <span class="n">setup</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">reset_accounts</span><span class="p">(</span><span class="n">dsn</span><span class="p">),</span>
     <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_state</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>   <span class="c1"># we are looking for the deadlock, not a data race</span>
     <span class="n">stop_on_first</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="k">assert</span> <span class="ow">not</span> <span class="n">result</span><span class="o">.</span><span class="n">ok</span>
-<span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">failure_kind</span> <span class="o">==</span> <span class="s2">&quot;deadlock&quot;</span>
+<span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">failure_kind</span> <span class="o">==</span> <span class="s2">"deadlock"</span>
 <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">failing_schedule</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
 </pre></div>
 </div>
@@ -610,16 +625,16 @@ allows the concrete deadlock cycle to supersede it.</p>
 performs a racy GET/SET, while the coordinator resets and checks the counter:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
-<span class="n">_TARGET</span> <span class="o">=</span> <span class="s2">&quot;myapp.redis_counter:increment&quot;</span>  <span class="c1"># your importable Redis worker</span>
+<span class="n">_TARGET</span> <span class="o">=</span> <span class="s2">"myapp.redis_counter:increment"</span>  <span class="c1"># your importable Redis worker</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_redis_lost_update</span><span class="p">():</span>
     <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore_processes</span><span class="p">(</span>
-        <span class="p">{</span><span class="s2">&quot;w0&quot;</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">),</span> <span class="s2">&quot;w1&quot;</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">)},</span>
+        <span class="p">{</span><span class="s2">"w0"</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">),</span> <span class="s2">"w1"</span><span class="p">:</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">Subprocess</span><span class="p">(</span><span class="n">_TARGET</span><span class="p">)},</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">reset_redis_counter</span><span class="p">,</span>
         <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_state</span><span class="p">:</span> <span class="n">read_redis_counter</span><span class="p">()</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">assert</span> <span class="ow">not</span> <span class="n">result</span><span class="o">.</span><span class="n">ok</span>
-    <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">failure_kind</span> <span class="o">==</span> <span class="s2">&quot;invariant&quot;</span>
+    <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">failure_kind</span> <span class="o">==</span> <span class="s2">"invariant"</span>
 </pre></div>
 </div>
 <p>Redis exploration requires the <code class="docutils literal notranslate"><span class="pre">redis</span></code> package and a running server (the demo
@@ -631,23 +646,23 @@ each <code class="docutils literal notranslate"><span class="pre">worker(state)<
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">redis</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">frontrun</span>
 
-<span class="n">REDIS_URL</span> <span class="o">=</span> <span class="s2">&quot;redis://127.0.0.1:6379/0&quot;</span>
+<span class="n">REDIS_URL</span> <span class="o">=</span> <span class="s2">"redis://127.0.0.1:6379/0"</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">increment</span><span class="p">(</span><span class="n">url</span><span class="p">):</span>
     <span class="n">r</span> <span class="o">=</span> <span class="n">redis</span><span class="o">.</span><span class="n">Redis</span><span class="o">.</span><span class="n">from_url</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
-    <span class="n">current</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;counter&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="mi">0</span><span class="p">)</span>
-    <span class="n">r</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;counter&quot;</span><span class="p">,</span> <span class="n">current</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="n">current</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"counter"</span><span class="p">)</span> <span class="ow">or</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="n">r</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">"counter"</span><span class="p">,</span> <span class="n">current</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">setup</span><span class="p">():</span>
-    <span class="n">redis</span><span class="o">.</span><span class="n">Redis</span><span class="o">.</span><span class="n">from_url</span><span class="p">(</span><span class="n">REDIS_URL</span><span class="p">)</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;counter&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="n">redis</span><span class="o">.</span><span class="n">Redis</span><span class="o">.</span><span class="n">from_url</span><span class="p">(</span><span class="n">REDIS_URL</span><span class="p">)</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">"counter"</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">REDIS_URL</span>  <span class="c1"># picklable handle passed to each worker(state)/invariant(state)</span>
 
 <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
     <span class="n">setup</span><span class="o">=</span><span class="n">setup</span><span class="p">,</span>
     <span class="n">workers</span><span class="o">=</span><span class="n">increment</span><span class="p">,</span>
     <span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">url</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">redis</span><span class="o">.</span><span class="n">Redis</span><span class="o">.</span><span class="n">from_url</span><span class="p">(</span><span class="n">url</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;counter&quot;</span><span class="p">))</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
-    <span class="n">execution</span><span class="o">=</span><span class="s2">&quot;process&quot;</span><span class="p">,</span>
+    <span class="n">invariant</span><span class="o">=</span><span class="k">lambda</span> <span class="n">url</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">redis</span><span class="o">.</span><span class="n">Redis</span><span class="o">.</span><span class="n">from_url</span><span class="p">(</span><span class="n">url</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"counter"</span><span class="p">))</span> <span class="o">==</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="n">execution</span><span class="o">=</span><span class="s2">"process"</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="k">assert</span> <span class="ow">not</span> <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span>   <span class="c1"># lost update found across processes</span>
 </pre></div>
@@ -742,7 +757,7 @@ installed and a server is reachable.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

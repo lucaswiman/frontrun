@@ -3,9 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../../genindex.html"><link rel="search" title="Search" href="../../../search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/_modules/frontrun/contrib/sqlalchemy.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.contrib.sqlalchemy - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>frontrun.contrib.sqlalchemy - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="../../../index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -243,7 +244,7 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for frontrun.contrib.sqlalchemy</h1><div class="highlight"><pre>
-<span></span><span class="sd">&quot;&quot;&quot;SQLAlchemy helpers for DPOR integration testing (sync and async).</span>
+<span></span><span class="sd">"""SQLAlchemy helpers for DPOR integration testing (sync and async).</span>
 
 <span class="sd">Use ``sqlalchemy_dpor`` for both sync and async code:</span>
 
@@ -267,7 +268,7 @@
 
 <span class="sd">Inside sync threads, use :func:`get_connection`.</span>
 <span class="sd">Inside async tasks, use :func:`get_async_connection`.</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
 
@@ -280,22 +281,22 @@
 <div class="viewcode-block" id="sqlalchemy_dpor">
 <a class="viewcode-back" href="../../../api_reference.html#frontrun.contrib.sqlalchemy.sqlalchemy_dpor">[docs]</a>
 <span class="k">def</span><span class="w"> </span><span class="nf">sqlalchemy_dpor</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Run DPOR with per-thread/task SQLAlchemy connection management.</span>
+<span class="w">    </span><span class="sd">"""Run DPOR with per-thread/task SQLAlchemy connection management.</span>
 
 <span class="sd">    Use ``threads=[...]`` for sync code or ``tasks=[...]`` for async code.</span>
 <span class="sd">    The async form returns an awaitable.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">return</span> <span class="n">dispatch_threads_or_tasks</span><span class="p">(</span>
         <span class="n">_sync_sqlalchemy_dpor</span><span class="p">,</span>
         <span class="n">async_sqlalchemy_dpor</span><span class="p">,</span>
         <span class="o">*</span><span class="n">args</span><span class="p">,</span>
-        <span class="n">api_name</span><span class="o">=</span><span class="s2">&quot;sqlalchemy_dpor&quot;</span><span class="p">,</span>
+        <span class="n">api_name</span><span class="o">=</span><span class="s2">"sqlalchemy_dpor"</span><span class="p">,</span>
         <span class="o">**</span><span class="n">kwargs</span><span class="p">,</span>
     <span class="p">)</span></div>
 
 
 
-<span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;async_sqlalchemy_dpor&quot;</span><span class="p">,</span> <span class="s2">&quot;get_async_connection&quot;</span><span class="p">,</span> <span class="s2">&quot;get_connection&quot;</span><span class="p">,</span> <span class="s2">&quot;sqlalchemy_dpor&quot;</span><span class="p">]</span>
+<span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"async_sqlalchemy_dpor"</span><span class="p">,</span> <span class="s2">"get_async_connection"</span><span class="p">,</span> <span class="s2">"get_connection"</span><span class="p">,</span> <span class="s2">"sqlalchemy_dpor"</span><span class="p">]</span>
 </pre></div>
         </article>
       </div>
@@ -328,7 +329,7 @@
       
     </aside>
   </div>
-</div><script src="../../../_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="../../../_static/documentation_options.js?v=486e5634"></script>
     <script src="../../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../../_static/scripts/furo.js?v=46bd48cc"></script>

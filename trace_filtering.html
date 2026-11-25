@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Trace Filtering" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/trace_filtering.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="By default, frontrun only traces user code — files outside the Python stdlib, site-packages, and frontrun’s own internals. This keeps the per-opcode overhead low and avoids producing thousands of s..." />
+<meta name="description" content="By default, frontrun only traces user code — files outside the Python stdlib, site-packages, and frontrun’s own internals. This keeps the per-opcode overhead low and avoids producing thousands of s..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="How It Works Under the Hood" href="internals.html"><link rel="prev" title="Virtual clock: timeout, retry, and TTL races" href="virtual_clock.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/trace_filtering.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Trace Filtering - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Trace Filtering - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -276,7 +284,7 @@ argument — a list of package-name patterns using <code class="xref py py-mod d
     <span class="n">setup</span><span class="o">=</span><span class="n">make_state</span><span class="p">,</span>
     <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">thread_a</span><span class="p">,</span> <span class="n">thread_b</span><span class="p">],</span>
     <span class="n">invariant</span><span class="o">=</span><span class="n">check_invariant</span><span class="p">,</span>
-    <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;mylib.*&quot;</span><span class="p">,</span> <span class="s2">&quot;django_filters.*&quot;</span><span class="p">],</span>
+    <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">"mylib.*"</span><span class="p">,</span> <span class="s2">"django_filters.*"</span><span class="p">],</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -327,7 +335,7 @@ almost always the desired behaviour.</p>
 <h2>Django integration<a class="headerlink" href="#django-integration" title="Link to this heading">¶</a></h2>
 <p><a class="reference internal" href="api_reference.html#frontrun.contrib.django.django_dpor" title="frontrun.contrib.django.django_dpor"><code class="xref py py-func docutils literal notranslate"><span class="pre">django_dpor()</span></code></a> defaults <code class="docutils literal notranslate"><span class="pre">trace_packages</span></code>
 to <a class="reference internal" href="#frontrun.contrib.django.DJANGO_TRACE_PACKAGES" title="frontrun.contrib.django.DJANGO_TRACE_PACKAGES"><code class="xref py py-data docutils literal notranslate"><span class="pre">DJANGO_TRACE_PACKAGES</span></code></a>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">DJANGO_TRACE_PACKAGES</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;django_*&quot;</span><span class="p">,</span> <span class="s2">&quot;django.contrib.sites.*&quot;</span><span class="p">]</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">DJANGO_TRACE_PACKAGES</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"django_*"</span><span class="p">,</span> <span class="s2">"django.contrib.sites.*"</span><span class="p">]</span>
 </pre></div>
 </div>
 <p>This means Django third-party apps (<code class="docutils literal notranslate"><span class="pre">django_filters</span></code>,
@@ -340,7 +348,7 @@ are traced automatically when using <code class="docutils literal notranslate"><
     <span class="n">setup</span><span class="o">=</span><span class="n">make_state</span><span class="p">,</span>
     <span class="n">threads</span><span class="o">=</span><span class="p">[</span><span class="n">thread_a</span><span class="p">,</span> <span class="n">thread_b</span><span class="p">],</span>
     <span class="n">invariant</span><span class="o">=</span><span class="n">check_invariant</span><span class="p">,</span>
-    <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;django_*&quot;</span><span class="p">,</span> <span class="s2">&quot;django.contrib.sites.*&quot;</span><span class="p">,</span> <span class="s2">&quot;myapp.*&quot;</span><span class="p">],</span>
+    <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">"django_*"</span><span class="p">,</span> <span class="s2">"django.contrib.sites.*"</span><span class="p">,</span> <span class="s2">"myapp.*"</span><span class="p">],</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -361,15 +369,19 @@ list:</p>
 <a class="reference internal" href="#frontrun._tracing.TraceFilter" title="frontrun._tracing.TraceFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">TraceFilter</span></code></a> instance and installs it as the
 active filter for the duration of the exploration.  You can also create
 and inspect <code class="docutils literal notranslate"><span class="pre">TraceFilter</span></code> objects directly:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceFilter</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">site</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 
-<span class="n">filt</span> <span class="o">=</span> <span class="n">TraceFilter</span><span class="p">(</span><span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;django_*&quot;</span><span class="p">,</span> <span class="s2">&quot;mylib.*&quot;</span><span class="p">])</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._tracing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceFilter</span>
+
+<span class="n">filt</span> <span class="o">=</span> <span class="n">TraceFilter</span><span class="p">(</span><span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">"django_*"</span><span class="p">,</span> <span class="s2">"mylib.*"</span><span class="p">])</span>
+<span class="n">site_packages</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">site</span><span class="o">.</span><span class="n">getsitepackages</span><span class="p">()[</span><span class="mi">0</span><span class="p">])</span>
 
 <span class="c1"># Test whether a specific file would be traced:</span>
-<span class="n">filt</span><span class="o">.</span><span class="n">should_trace_file</span><span class="p">(</span><span class="s2">&quot;/path/to/site-packages/django_filters/views.py&quot;</span><span class="p">)</span>
+<span class="n">filt</span><span class="o">.</span><span class="n">should_trace_file</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">site_packages</span> <span class="o">/</span> <span class="s2">"django_filters"</span> <span class="o">/</span> <span class="s2">"views.py"</span><span class="p">))</span>
 <span class="c1"># -&gt; True</span>
 
-<span class="n">filt</span><span class="o">.</span><span class="n">should_trace_file</span><span class="p">(</span><span class="s2">&quot;/path/to/site-packages/requests/api.py&quot;</span><span class="p">)</span>
+<span class="n">filt</span><span class="o">.</span><span class="n">should_trace_file</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">site_packages</span> <span class="o">/</span> <span class="s2">"requests"</span> <span class="o">/</span> <span class="s2">"api.py"</span><span class="p">))</span>
 <span class="c1"># -&gt; False</span>
 </pre></div>
 </div>
@@ -401,8 +413,8 @@ including dots, so <code class="docutils literal notranslate"><span class="pre">
 and <code class="docutils literal notranslate"><span class="pre">django_filters.views</span></code>.</p>
 <p>Example:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Trace user code + any django_* package + myapp.utils</span>
-<span class="n">filt</span> <span class="o">=</span> <span class="n">TraceFilter</span><span class="p">(</span><span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;django_*&quot;</span><span class="p">,</span> <span class="s2">&quot;myapp.*&quot;</span><span class="p">])</span>
-<span class="n">filt</span><span class="o">.</span><span class="n">should_trace_file</span><span class="p">(</span><span class="s2">&quot;/path/to/site-packages/django_filters/views.py&quot;</span><span class="p">)</span>
+<span class="n">filt</span> <span class="o">=</span> <span class="n">TraceFilter</span><span class="p">(</span><span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">"django_*"</span><span class="p">,</span> <span class="s2">"myapp.*"</span><span class="p">])</span>
+<span class="n">filt</span><span class="o">.</span><span class="n">should_trace_file</span><span class="p">(</span><span class="s2">"/path/to/site-packages/django_filters/views.py"</span><span class="p">)</span>
 <span class="c1"># -&gt; True</span>
 </pre></div>
 </div>
@@ -507,7 +519,7 @@ and <code class="docutils literal notranslate"><span class="pre">django_filters.
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

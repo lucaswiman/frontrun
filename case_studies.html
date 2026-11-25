@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Case Studies: Races in Real, Unmodified Libraries" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/case_studies.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="The examples elsewhere in these docs use small, self-contained snippets so the mechanics are easy to follow. This page is different: every race below was found by pointing frontrun.explore() at a r..." />
+<meta name="description" content="The examples elsewhere in these docs use small, self-contained snippets so the mechanics are easy to follow. This page is different: every race below was found by pointing frontrun.explore() at a r..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="DPOR in Practice" href="dpor_guide.html"><link rel="prev" title="How Frontrun Works" href="approaches.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/case_studies.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Case Studies: Races in Real, Unmodified Libraries - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Case Studies: Races in Real, Unmodified Libraries - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -323,29 +331,29 @@ to let DPOR see the conflicting <code class="docutils literal notranslate"><span
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="c1"># one shared client — the documented singleton pattern</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">client</span> <span class="o">=</span> <span class="n">python_http_client</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span>
-            <span class="n">host</span><span class="o">=</span><span class="s2">&quot;http://localhost:9999&quot;</span><span class="p">,</span>
-            <span class="n">request_headers</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;Authorization&quot;</span><span class="p">:</span> <span class="s2">&quot;Bearer test-key&quot;</span><span class="p">},</span>
+            <span class="n">host</span><span class="o">=</span><span class="s2">"http://localhost:9999"</span><span class="p">,</span>
+            <span class="n">request_headers</span><span class="o">=</span><span class="p">{</span><span class="s2">"Authorization"</span><span class="p">:</span> <span class="s2">"Bearer test-key"</span><span class="p">},</span>
             <span class="n">version</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">seen</span> <span class="o">=</span> <span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">]</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">make_worker</span><span class="p">(</span><span class="n">i</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">worker</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
-        <span class="n">s</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">_update_headers</span><span class="p">({</span><span class="s2">&quot;X-Thread-Id&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;thread-</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">})</span>
-        <span class="n">s</span><span class="o">.</span><span class="n">seen</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">request_headers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;X-Thread-Id&quot;</span><span class="p">)</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">_update_headers</span><span class="p">({</span><span class="s2">"X-Thread-Id"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"thread-</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">"</span><span class="p">})</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">seen</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">request_headers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"X-Thread-Id"</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">worker</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">each_worker_sees_own_header</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
     <span class="k">if</span> <span class="n">s</span><span class="o">.</span><span class="n">seen</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">s</span><span class="o">.</span><span class="n">seen</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">True</span>
-    <span class="k">return</span> <span class="n">s</span><span class="o">.</span><span class="n">seen</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;thread-0&quot;</span> <span class="ow">and</span> <span class="n">s</span><span class="o">.</span><span class="n">seen</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;thread-1&quot;</span>
+    <span class="k">return</span> <span class="n">s</span><span class="o">.</span><span class="n">seen</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"thread-0"</span> <span class="ow">and</span> <span class="n">s</span><span class="o">.</span><span class="n">seen</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"thread-1"</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_shared_request_headers_race</span><span class="p">():</span>
     <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">State</span><span class="p">,</span>
         <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">make_worker</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">make_worker</span><span class="p">(</span><span class="mi">1</span><span class="p">)],</span>
         <span class="n">invariant</span><span class="o">=</span><span class="n">each_worker_sees_own_header</span><span class="p">,</span>
-        <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;python_http_client*&quot;</span><span class="p">],</span>
+        <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">"python_http_client*"</span><span class="p">],</span>
     <span class="p">)</span>
     <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>
 </pre></div>
@@ -385,7 +393,7 @@ asking the right question.</p>
 tracks which clients are in which room (<code class="docutils literal notranslate"><span class="pre">socketio/base_manager.py:112-121</span></code>):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">basic_enter_room</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">sid</span><span class="p">,</span> <span class="n">namespace</span><span class="p">,</span> <span class="n">room</span><span class="p">,</span> <span class="n">eio_sid</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
     <span class="k">if</span> <span class="n">eio_sid</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">namespace</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">rooms</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s1">&#39;sid is not connected to requested namespace&#39;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s1">'sid is not connected to requested namespace'</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">namespace</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">rooms</span><span class="p">:</span>            <span class="c1"># CHECK 1</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rooms</span><span class="p">[</span><span class="n">namespace</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>             <span class="c1"># ACT 1  (fresh dict)</span>
     <span class="k">if</span> <span class="n">room</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">rooms</span><span class="p">[</span><span class="n">namespace</span><span class="p">]:</span>      <span class="c1"># CHECK 2</span>
@@ -411,7 +419,7 @@ clients should be registered:</p>
 <span class="k">class</span><span class="w"> </span><span class="nc">State</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">mgr</span> <span class="o">=</span> <span class="n">BaseManager</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">namespace</span> <span class="o">=</span> <span class="s2">&quot;/chat&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">namespace</span> <span class="o">=</span> <span class="s2">"/chat"</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">enter</span><span class="p">(</span><span class="n">sid</span><span class="p">,</span> <span class="n">room</span><span class="p">,</span> <span class="n">eio_sid</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">worker</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
@@ -420,16 +428,16 @@ clients should be registered:</p>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">both_clients_registered</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
     <span class="n">ns</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="n">mgr</span><span class="o">.</span><span class="n">rooms</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">s</span><span class="o">.</span><span class="n">namespace</span><span class="p">,</span> <span class="p">{})</span>
-    <span class="k">return</span> <span class="p">(</span><span class="s2">&quot;room_a&quot;</span> <span class="ow">in</span> <span class="n">ns</span> <span class="ow">and</span> <span class="s2">&quot;sid_a&quot;</span> <span class="ow">in</span> <span class="n">ns</span><span class="p">[</span><span class="s2">&quot;room_a&quot;</span><span class="p">]</span>
-            <span class="ow">and</span> <span class="s2">&quot;room_b&quot;</span> <span class="ow">in</span> <span class="n">ns</span> <span class="ow">and</span> <span class="s2">&quot;sid_b&quot;</span> <span class="ow">in</span> <span class="n">ns</span><span class="p">[</span><span class="s2">&quot;room_b&quot;</span><span class="p">])</span>
+    <span class="k">return</span> <span class="p">(</span><span class="s2">"room_a"</span> <span class="ow">in</span> <span class="n">ns</span> <span class="ow">and</span> <span class="s2">"sid_a"</span> <span class="ow">in</span> <span class="n">ns</span><span class="p">[</span><span class="s2">"room_a"</span><span class="p">]</span>
+            <span class="ow">and</span> <span class="s2">"room_b"</span> <span class="ow">in</span> <span class="n">ns</span> <span class="ow">and</span> <span class="s2">"sid_b"</span> <span class="ow">in</span> <span class="n">ns</span><span class="p">[</span><span class="s2">"room_b"</span><span class="p">])</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_concurrent_enter_room</span><span class="p">():</span>
     <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">State</span><span class="p">,</span>
-        <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">enter</span><span class="p">(</span><span class="s2">&quot;sid_a&quot;</span><span class="p">,</span> <span class="s2">&quot;room_a&quot;</span><span class="p">,</span> <span class="s2">&quot;eio_a&quot;</span><span class="p">),</span>
-                 <span class="n">enter</span><span class="p">(</span><span class="s2">&quot;sid_b&quot;</span><span class="p">,</span> <span class="s2">&quot;room_b&quot;</span><span class="p">,</span> <span class="s2">&quot;eio_b&quot;</span><span class="p">)],</span>
+        <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">enter</span><span class="p">(</span><span class="s2">"sid_a"</span><span class="p">,</span> <span class="s2">"room_a"</span><span class="p">,</span> <span class="s2">"eio_a"</span><span class="p">),</span>
+                 <span class="n">enter</span><span class="p">(</span><span class="s2">"sid_b"</span><span class="p">,</span> <span class="s2">"room_b"</span><span class="p">,</span> <span class="s2">"eio_b"</span><span class="p">)],</span>
         <span class="n">invariant</span><span class="o">=</span><span class="n">both_clients_registered</span><span class="p">,</span>
-        <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;socketio*&quot;</span><span class="p">],</span>
+        <span class="n">trace_packages</span><span class="o">=</span><span class="p">[</span><span class="s2">"socketio*"</span><span class="p">],</span>
     <span class="p">)</span>
     <span class="n">result</span><span class="o">.</span><span class="n">assert_holds</span><span class="p">()</span>
 </pre></div>
@@ -550,7 +558,7 @@ that fails once in a thousand CI runs.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

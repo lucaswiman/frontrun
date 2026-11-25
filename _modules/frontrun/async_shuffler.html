@@ -3,9 +3,10 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/_modules/frontrun/async_shuffler.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>frontrun.async_shuffler - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>frontrun.async_shuffler - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -161,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../../index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="../../index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -182,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -243,7 +244,7 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for frontrun.async_shuffler</h1><div class="highlight"><pre>
-<span></span><span class="sd">&quot;&quot;&quot;</span>
+<span></span><span class="sd">"""</span>
 <span class="sd">Await-point-level deterministic async concurrency testing.</span>
 
 <span class="sd">Uses the shared InterleavedLoop abstraction to control which async task</span>
@@ -282,17 +283,17 @@
 <span class="sd">Any natural ``await`` in user code is a scheduling point.  ``await_point()``</span>
 <span class="sd">is still available as an explicit extra yield when a test wants to force</span>
 <span class="sd">an additional checkpoint.</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncGenerator</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Coroutine</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">asynccontextmanager</span><span class="p">,</span> <span class="n">contextmanager</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
 
-<span class="c1"># Lazy import for async SQL patching — shared with async_dpor.py</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._async_autopause</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">_in_scheduler_pause</span><span class="p">,</span>
     <span class="n">_scheduler_var</span><span class="p">,</span>
@@ -303,9 +304,9 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._async_cooperative</span><span class="w"> </span><span class="kn">import</span> <span class="n">_guard_async_exploration</span><span class="p">,</span> <span class="n">_real_asyncio_sleep</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._certificate</span><span class="w"> </span><span class="kn">import</span> <span class="n">PassEvidence</span><span class="p">,</span> <span class="n">certify_pass</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._random_schedules</span><span class="w"> </span><span class="kn">import</span> <span class="n">burst_round</span><span class="p">,</span> <span class="n">fair_schedule_strategy</span><span class="p">,</span> <span class="n">random_round_robin_schedule</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._sql_cursor_async</span><span class="w"> </span><span class="kn">import</span> <span class="n">patch_sql_async</span><span class="p">,</span> <span class="n">unpatch_sql_async</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._threaded_runner</span><span class="w"> </span><span class="kn">import</span> <span class="n">PatchScope</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._virtual_clock</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">ClockConfig</span><span class="p">,</span>
     <span class="n">ClockMode</span><span class="p">,</span>
     <span class="n">DeadlineCoordinator</span><span class="p">,</span>
     <span class="n">VirtualClock</span><span class="p">,</span>
@@ -313,11 +314,6 @@
     <span class="n">clock_context</span><span class="p">,</span>
     <span class="n">patch_time</span><span class="p">,</span>
     <span class="n">unpatch_time</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_dpor</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">_sql_async_available</span><span class="p">,</span>
-    <span class="n">patch_sql_async</span><span class="p">,</span>
-    <span class="n">unpatch_sql_async</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.async_scheduler</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">InterleavedLoop</span><span class="p">,</span>
@@ -329,7 +325,8 @@
     <span class="n">InterleavingResult</span><span class="p">,</span>
     <span class="n">_call_sync_setup</span><span class="p">,</span>
     <span class="n">check_invariant</span><span class="p">,</span>
-    <span class="n">check_serializability_violation</span><span class="p">,</span>
+    <span class="n">record_serializability_violation</span><span class="p">,</span>
+    <span class="n">validate_random_exploration_params</span><span class="p">,</span>
 <span class="p">)</span>
 
 <span class="c1">#: How long the schedule must be quiescent (no pauses, no schedule progress,</span>
@@ -342,15 +339,15 @@
 <div class="viewcode-block" id="AwaitScheduler">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">AwaitScheduler</span><span class="p">(</span><span class="n">InterleavedLoop</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Controls async task execution at await-point granularity.</span>
+<span class="w">    </span><span class="sd">"""Controls async task execution at await-point granularity.</span>
 
-<span class="sd">    The schedule is a list of task indices. Each entry means &quot;let this</span>
-<span class="sd">    task resume from its next await point.&quot; When the sampled prefix is</span>
+<span class="sd">    The schedule is a list of task indices. Each entry means "let this</span>
+<span class="sd">    task resume from its next await point." When the sampled prefix is</span>
 <span class="sd">    exhausted, it is extended deterministically so tasks remain controlled.</span>
 
 <span class="sd">    Built on the shared InterleavedLoop abstraction, using index-based</span>
 <span class="sd">    scheduling as its policy.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
@@ -360,11 +357,12 @@
         <span class="n">deadlock_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
         <span class="n">detect_sql</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
         <span class="n">virtual_clock</span><span class="p">:</span> <span class="n">VirtualClock</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-        <span class="n">clock_mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;real&quot;</span><span class="p">,</span>
+        <span class="n">clock_mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"real"</span><span class="p">,</span>
         <span class="n">max_ops</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
         <span class="n">extension_seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_event_loop_thread_id</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">get_ident</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span> <span class="o">=</span> <span class="n">schedule</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">num_tasks</span> <span class="o">=</span> <span class="n">num_tasks</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">=</span> <span class="mi">0</span>
@@ -376,8 +374,8 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_detect_sql</span> <span class="o">=</span> <span class="n">detect_sql</span>
         <span class="c1"># Virtual clock (ideas/virtual_clock.md), mirroring the sync</span>
         <span class="c1"># OpcodeScheduler: schedule entries landing on a sleeping task are</span>
-        <span class="c1"># skipped (&quot;virtual&quot;) or advance the clock to that task&#39;s deadline</span>
-        <span class="c1"># (&quot;explored&quot; — the random &quot;maybe advance time&quot; branch); when every</span>
+        <span class="c1"># skipped ("virtual") or advance the clock to that task's deadline</span>
+        <span class="c1"># ("explored" — the random "maybe advance time" branch); when every</span>
         <span class="c1"># live task is deadline-blocked, sleep_until autojumps.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span> <span class="o">=</span> <span class="n">virtual_clock</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">clock_mode</span> <span class="o">=</span> <span class="n">clock_mode</span>
@@ -386,14 +384,14 @@
         <span class="c1"># Tasks parked in a virtual timed wait with no scheduler-side loop</span>
         <span class="c1"># (asyncio.wait_for on a bare future/task).  The schedule skips them</span>
         <span class="c1"># like sleepers; their pending timeout deadline in _deadlines is the</span>
-        <span class="c1"># only thing that can wake them, and the token&#39;s on_fire unparks.</span>
+        <span class="c1"># only thing that can wake them, and the token's on_fire unparks.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_timed_parked</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
         <span class="c1"># Table/row accesses observed via SQL interception, in arrival order.</span>
         <span class="c1"># Exposed so callers can inspect cross-task table conflicts.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">sql_accesses</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_extend_schedule</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Append a deterministic burst round without exceeding max_ops.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Append a deterministic burst round without exceeding max_ops."""</span>
         <span class="n">active</span> <span class="o">=</span> <span class="p">[</span><span class="n">task_id</span> <span class="k">for</span> <span class="n">task_id</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">num_tasks</span><span class="p">)</span> <span class="k">if</span> <span class="n">task_id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tasks_done</span><span class="p">]</span>
         <span class="n">remaining</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_ops</span> <span class="o">-</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">active</span> <span class="ow">or</span> <span class="n">remaining</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
@@ -405,24 +403,24 @@
     <span class="c1"># -- Virtual clock ---------------------------------------------------</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_advance_clock_to</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Jump the clock to *target* and wake every due sleeper.</span>
+<span class="w">        </span><span class="sd">"""Jump the clock to *target* and wake every due sleeper.</span>
 
 <span class="sd">        Caller must hold ``self._condition``.  Returns True when a</span>
 <span class="sd">        ``timeout``-kind deadline fired: its effect (the waiter cancelling the</span>
 <span class="sd">        timed-out awaitable) only lands once the event loop next runs, so an</span>
 <span class="sd">        autojump caller must yield to the loop before advancing further — a</span>
-<span class="sd">        second synchronous hop would let the doomed task&#39;s own later deadline</span>
+<span class="sd">        second synchronous hop would let the doomed task's own later deadline</span>
 <span class="sd">        fire first, completing work a real timeout would have cancelled.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="n">clock</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span>
         <span class="k">if</span> <span class="n">clock</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span>
         <span class="n">fired_timeout</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="k">for</span> <span class="n">event</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">advance_to</span><span class="p">(</span><span class="n">clock</span><span class="p">,</span> <span class="n">target</span><span class="p">):</span>
-            <span class="k">if</span> <span class="n">event</span><span class="o">.</span><span class="n">kind</span> <span class="o">==</span> <span class="s2">&quot;sleep&quot;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">event</span><span class="o">.</span><span class="n">kind</span> <span class="o">==</span> <span class="s2">"sleep"</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">_sleepers</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">event</span><span class="o">.</span><span class="n">actor_id</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-            <span class="k">elif</span> <span class="n">event</span><span class="o">.</span><span class="n">kind</span> <span class="o">==</span> <span class="s2">&quot;timeout&quot;</span><span class="p">:</span>
-                <span class="n">fire</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">event</span><span class="o">.</span><span class="n">token</span><span class="p">,</span> <span class="s2">&quot;fire&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="k">elif</span> <span class="n">event</span><span class="o">.</span><span class="n">kind</span> <span class="o">==</span> <span class="s2">"timeout"</span><span class="p">:</span>
+                <span class="n">fire</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">event</span><span class="o">.</span><span class="n">token</span><span class="p">,</span> <span class="s2">"fire"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
                 <span class="k">if</span> <span class="n">fire</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                     <span class="n">fire</span><span class="p">()</span>
                 <span class="n">fired_timeout</span> <span class="o">=</span> <span class="kc">True</span>
@@ -443,13 +441,13 @@
 <div class="viewcode-block" id="AwaitScheduler.park_timed_wait">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.park_timed_wait">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">park_timed_wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Register *task_id* as parked in a virtual timed wait.</span>
+<span class="w">        </span><span class="sd">"""Register *task_id* as parked in a virtual timed wait.</span>
 
 <span class="sd">        Called by the virtual ``asyncio.wait_for`` wrapper for waits on bare</span>
 <span class="sd">        futures/tasks: the parked task has no further scheduling points, so</span>
 <span class="sd">        the schedule must skip its entries (see ``should_proceed``) and the</span>
 <span class="sd">        clock advance is what wakes it.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_timed_parked</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">task_id</span><span class="p">)</span></div>
 
 
@@ -460,7 +458,7 @@
 
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_advance_clock_for_parked_if_blocked</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Advance to the next deadline when only parked/sleeping tasks remain.</span>
+<span class="w">        </span><span class="sd">"""Advance to the next deadline when only parked/sleeping tasks remain.</span>
 
 <span class="sd">        Caller must hold ``self._condition``.  Sleepers drive their own</span>
 <span class="sd">        autojump loop inside ``sleep_until``, but a task parked in a virtual</span>
@@ -468,7 +466,7 @@
 <span class="sd">        leave only blocked tasks alive (the park itself, or another task</span>
 <span class="sd">        finishing) must advance the clock here, or the run stalls until the</span>
 <span class="sd">        wall-clock watchdog rescues it a ``deadlock_timeout`` later.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_timed_parked</span><span class="p">:</span>
             <span class="k">return</span>
         <span class="n">alive</span> <span class="o">=</span> <span class="p">[</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">num_tasks</span><span class="p">)</span> <span class="k">if</span> <span class="n">t</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tasks_done</span><span class="p">]</span>
@@ -481,12 +479,12 @@
 <div class="viewcode-block" id="AwaitScheduler.kick_stalled_schedule">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.kick_stalled_schedule">[docs]</a>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">kick_stalled_schedule</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Wake schedule progress after *task_id* parked itself in a timed wait.</span>
+<span class="w">        </span><span class="sd">"""Wake schedule progress after *task_id* parked itself in a timed wait.</span>
 
-<span class="sd">        Tasks waiting in ``pause()`` for the parked task&#39;s schedule entries</span>
+<span class="sd">        Tasks waiting in ``pause()`` for the parked task's schedule entries</span>
 <span class="sd">        must re-check ``should_proceed`` (which now skips those entries), and</span>
 <span class="sd">        if every live task is blocked only the clock can move.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="p">:</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_error</span><span class="p">:</span>
                 <span class="k">return</span>
@@ -495,7 +493,7 @@
 
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_mark_done</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Mark a task done; if only parked tasks remain, advance the clock.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Mark a task done; if only parked tasks remain, advance the clock."""</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_progress</span> <span class="o">+=</span> <span class="mi">1</span>
         <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_tasks_done</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">task_id</span><span class="p">)</span>
@@ -514,13 +512,13 @@
 <div class="viewcode-block" id="AwaitScheduler.sleep_until">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.sleep_until">[docs]</a>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">sleep_until</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">deadline</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">duration</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Block *task_id* until the virtual clock reaches *deadline*.</span>
+<span class="w">        </span><span class="sd">"""Block *task_id* until the virtual clock reaches *deadline*.</span>
 
 <span class="sd">        With ``duration=`` the deadline is computed under ``_condition`` after</span>
 <span class="sd">        the fairness yield: the yield spans a full loop pass, during which</span>
-<span class="sd">        another task&#39;s step can advance the clock — a caller-side ``now()``</span>
+<span class="sd">        another task's step can advance the clock — a caller-side ``now()``</span>
 <span class="sd">        read would then register an already-stale deadline.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="n">depth</span> <span class="o">=</span> <span class="n">_in_scheduler_pause</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
         <span class="n">_in_scheduler_pause</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">depth</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
         <span class="k">try</span><span class="p">:</span>
@@ -529,7 +527,7 @@
             <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="p">:</span>
                 <span class="k">if</span> <span class="n">deadline</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                     <span class="k">if</span> <span class="n">duration</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;sleep_until needs either deadline= or duration= (with a virtual clock)&quot;</span><span class="p">)</span>
+                        <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">"sleep_until needs either deadline= or duration= (with a virtual clock)"</span><span class="p">)</span>
                     <span class="n">deadline</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span><span class="o">.</span><span class="n">now</span><span class="p">())</span> <span class="o">+</span> <span class="n">duration</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_error</span><span class="p">:</span>
                     <span class="k">return</span>
@@ -540,7 +538,7 @@
                     <span class="c1"># with the clock frozen (a silently truncated sleep).</span>
                     <span class="k">if</span> <span class="n">deadline</span> <span class="o">==</span> <span class="n">math</span><span class="o">.</span><span class="n">inf</span><span class="p">:</span>
                         <span class="bp">self</span><span class="o">.</span><span class="n">_error</span> <span class="o">=</span> <span class="n">SchedulerTimeoutError</span><span class="p">(</span>
-                            <span class="sa">f</span><span class="s2">&quot;Deadlock: task </span><span class="si">{</span><span class="n">task_id</span><span class="si">}</span><span class="s2"> is blocked on a perpetual virtual sleep&quot;</span>
+                            <span class="sa">f</span><span class="s2">"Deadlock: task </span><span class="si">{</span><span class="n">task_id</span><span class="si">}</span><span class="s2"> is blocked on a perpetual virtual sleep"</span>
                         <span class="p">)</span>
                         <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
                         <span class="k">return</span>
@@ -560,7 +558,7 @@
                             <span class="n">sleep_deadline</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deadlines</span><span class="o">.</span><span class="n">sleep_deadline</span><span class="p">(</span><span class="n">task_id</span><span class="p">)</span>
                             <span class="k">if</span> <span class="n">sleep_deadline</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                                 <span class="bp">self</span><span class="o">.</span><span class="n">_error</span> <span class="o">=</span> <span class="n">SchedulerTimeoutError</span><span class="p">(</span>
-                                    <span class="sa">f</span><span class="s2">&quot;Deadlock: task </span><span class="si">{</span><span class="n">task_id</span><span class="si">}</span><span class="s2"> is blocked on a perpetual virtual sleep&quot;</span>
+                                    <span class="sa">f</span><span class="s2">"Deadlock: task </span><span class="si">{</span><span class="n">task_id</span><span class="si">}</span><span class="s2"> is blocked on a perpetual virtual sleep"</span>
                                 <span class="p">)</span>
                                 <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
                                 <span class="k">return</span>
@@ -589,10 +587,10 @@
                         <span class="n">quiescence_slice</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">_QUIESCENCE_SLICE</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="mf">0.001</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span> <span class="o">/</span> <span class="mf">2.0</span><span class="p">))</span>
                         <span class="k">try</span><span class="p">:</span>
                             <span class="k">await</span> <span class="n">frontrun_wait_for</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">wait</span><span class="p">(),</span> <span class="n">timeout</span><span class="o">=</span><span class="n">quiescence_slice</span><span class="p">)</span>
-                        <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">TimeoutError</span><span class="p">:</span>
+                        <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
                             <span class="k">if</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_progress</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tasks_done</span><span class="p">))</span> <span class="o">==</span> <span class="n">snapshot</span><span class="p">:</span>
                                 <span class="c1"># Quiescent: the remaining tasks are parked on</span>
-                                <span class="c1"># something the scheduler can&#39;t see (e.g. an</span>
+                                <span class="c1"># something the scheduler can't see (e.g. an</span>
                                 <span class="c1"># unpatched asyncio.Lock whose holder is this</span>
                                 <span class="c1"># sleeper).  Advancing time is the only way</span>
                                 <span class="c1"># forward; without it the run dies by wall</span>
@@ -604,7 +602,7 @@
                                     <span class="k">continue</span>
                             <span class="k">if</span> <span class="n">_real_monotonic</span><span class="p">()</span> <span class="o">-</span> <span class="n">wait_started</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">deadlock_timeout</span><span class="p">:</span>
                                 <span class="bp">self</span><span class="o">.</span><span class="n">_error</span> <span class="o">=</span> <span class="n">SchedulerTimeoutError</span><span class="p">(</span>
-                                    <span class="sa">f</span><span class="s2">&quot;Deadlock: task </span><span class="si">{</span><span class="n">task_id</span><span class="si">}</span><span class="s2"> sleeping until t=</span><span class="si">{</span><span class="n">deadline</span><span class="si">}</span><span class="s2"> was never woken&quot;</span>
+                                    <span class="sa">f</span><span class="s2">"Deadlock: task </span><span class="si">{</span><span class="n">task_id</span><span class="si">}</span><span class="s2"> sleeping until t=</span><span class="si">{</span><span class="n">deadline</span><span class="si">}</span><span class="s2"> was never woken"</span>
                                 <span class="p">)</span>
                                 <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
                                 <span class="k">return</span>
@@ -627,17 +625,17 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">+=</span> <span class="mi">1</span>
                 <span class="k">continue</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">virtual_clock</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="p">(</span><span class="n">entry</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sleepers</span> <span class="ow">or</span> <span class="n">entry</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_timed_parked</span><span class="p">):</span>
-                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">clock_mode</span> <span class="o">==</span> <span class="s2">&quot;explored&quot;</span><span class="p">:</span>
-                    <span class="c1"># &quot;Maybe advance&quot;: the random schedule picked a sleeping</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">clock_mode</span> <span class="o">==</span> <span class="s2">"explored"</span><span class="p">:</span>
+                    <span class="c1"># "Maybe advance": the random schedule picked a sleeping</span>
                     <span class="c1"># (or timed-parked) task — let time pass toward its</span>
                     <span class="c1"># deadline; the woken task then consumes this entry.  Each</span>
                     <span class="c1"># speculative hop is clamped to the *earliest* pending</span>
                     <span class="c1"># deadline so an earlier timed wait fires (and wakes its</span>
                     <span class="c1"># waiter) at its own clock value, never at a later</span>
-                    <span class="c1"># sleeper&#39;s target.  Convergence is automatic: control</span>
+                    <span class="c1"># sleeper's target.  Convergence is automatic: control</span>
                     <span class="c1"># returns to the event loop after each hop — letting the</span>
                     <span class="c1"># woken waiter run first — and the next should_proceed</span>
-                    <span class="c1"># call re-advances until the scheduled sleeper&#39;s own</span>
+                    <span class="c1"># call re-advances until the scheduled sleeper's own</span>
                     <span class="c1"># deadline is reached.  A timed-parked entry has no</span>
                     <span class="c1"># _sleepers deadline; its own timeout is pending in the</span>
                     <span class="c1"># coordinator, so the earliest-deadline clamp is the hop.</span>
@@ -679,24 +677,33 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">+=</span> <span class="mi">1</span></div>
 
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_handle_timeout</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">marker</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">needed</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_index</span><span class="p">]</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">)</span> <span class="k">else</span> <span class="s2">&quot;?&quot;</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_handle_timeout</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">marker</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_classify_unmanaged_stall_as_deadlock</span><span class="p">:</span>
+            <span class="c1"># The scheduled task has not reached its pause point: it is off on</span>
+            <span class="c1"># an awaitable the scheduler does not manage (a real timer, socket,</span>
+            <span class="c1"># or externally-completed Future), which is a slow run, not a proven</span>
+            <span class="c1"># deadlock.  Decline so pause() keeps waiting until the overall run</span>
+            <span class="c1"># timeout, which the caller reports as inconclusive — mirroring</span>
+            <span class="c1"># _wait_watching_progress and avoiding a fabricated counterexample.</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="n">needed</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_index</span><span class="p">]</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_index</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">)</span> <span class="k">else</span> <span class="s2">"?"</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_error</span> <span class="o">=</span> <span class="n">SchedulerTimeoutError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;Deadlock: schedule wants task </span><span class="si">{</span><span class="n">needed</span><span class="si">}</span><span class="s2"> at index </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_index</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="sa">f</span><span class="s2">"Deadlock: schedule wants task </span><span class="si">{</span><span class="n">needed</span><span class="si">}</span><span class="s2"> at index </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_index</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">schedule</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span>
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+        <span class="k">return</span> <span class="kc">True</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_rescue_stalled_pause</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Advance a pending virtual deadline instead of declaring a stall.</span>
+<span class="w">        </span><span class="sd">"""Advance a pending virtual deadline instead of declaring a stall.</span>
 
 <span class="sd">        The random runtime patches only sleep/timeouts/time — a task suspended</span>
 <span class="sd">        on a *stock* primitive (e.g. asyncio.Event) inside ``asyncio.timeout``</span>
 <span class="sd">        is invisible to the schedule, so the head stalls on it and every other</span>
-<span class="sd">        task lands in ``pause()``&#39;s watchdog.  If a virtual deadline is</span>
+<span class="sd">        task lands in ``pause()``'s watchdog.  If a virtual deadline is</span>
 <span class="sd">        pending, firing it (cancelling the guarded wait) is exactly the</span>
 <span class="sd">        recovery the real program performs at that timeout; scoring the stall</span>
 <span class="sd">        as a deadlock/crash counterexample would be a false report.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_advance_virtual_deadline_for_idle</span><span class="p">():</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_condition</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
             <span class="k">return</span> <span class="kc">True</span>
@@ -714,7 +721,7 @@
         <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._io_detection</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
             <span class="n">set_dpor_scheduler_task</span><span class="p">,</span>
             <span class="n">set_dpor_thread_id_task</span><span class="p">,</span>
-            <span class="n">set_io_reporter</span><span class="p">,</span>
+            <span class="n">set_io_reporter_task</span><span class="p">,</span>
             <span class="n">set_tx_store_task</span><span class="p">,</span>
         <span class="p">)</span>
 
@@ -726,18 +733,15 @@
             <span class="n">current</span> <span class="o">=</span> <span class="n">_task_id_var</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">sql_accesses</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">current</span> <span class="k">if</span> <span class="n">current</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">task_id</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">,</span> <span class="n">kind</span><span class="p">))</span>
 
-        <span class="n">set_io_reporter</span><span class="p">(</span><span class="n">_io_reporter</span><span class="p">)</span>
+        <span class="n">set_io_reporter_task</span><span class="p">(</span><span class="n">_io_reporter</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup_task_context</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_id</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_detect_sql</span><span class="p">:</span>
-            <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._io_detection</span><span class="w"> </span><span class="kn">import</span> <span class="n">set_dpor_scheduler_task</span><span class="p">,</span> <span class="n">set_dpor_thread_id_task</span><span class="p">,</span> <span class="n">set_io_reporter</span>
+            <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._io_detection</span><span class="w"> </span><span class="kn">import</span> <span class="n">set_dpor_scheduler_task</span><span class="p">,</span> <span class="n">set_dpor_thread_id_task</span><span class="p">,</span> <span class="n">set_io_reporter_task</span>
 
             <span class="n">set_dpor_scheduler_task</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
             <span class="n">set_dpor_thread_id_task</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
-            <span class="c1"># Reporter is per-OS-thread (shared by all tasks); only clear when</span>
-            <span class="c1"># all tasks are done so remaining tasks keep reporting.</span>
-            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tasks_done</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_tasks</span><span class="p">:</span>
-                <span class="n">set_io_reporter</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
+            <span class="n">set_io_reporter_task</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
         <span class="n">_scheduler_var</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
         <span class="n">_task_id_var</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
 
@@ -746,24 +750,24 @@
 <div class="viewcode-block" id="AwaitScheduler.report_and_wait">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.report_and_wait">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">report_and_wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_frame</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">_thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op scheduling hook called by async SQL interception.</span>
+<span class="w">        </span><span class="sd">"""No-op scheduling hook called by async SQL interception.</span>
 
-<span class="sd">        Scheduling already happens at the patched cursor&#39;s own await points,</span>
+<span class="sd">        Scheduling already happens at the patched cursor's own await points,</span>
 <span class="sd">        so this just lets the SQL call proceed.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">return</span> <span class="kc">True</span></div>
 
 
 <div class="viewcode-block" id="AwaitScheduler.acquire_row_locks">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.acquire_row_locks">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">acquire_row_locks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">_resource_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op: random exploration does not arbitrate SQL row locks.&quot;&quot;&quot;</span></div>
+<span class="w">        </span><span class="sd">"""No-op: random exploration does not arbitrate SQL row locks."""</span></div>
 
 
 <div class="viewcode-block" id="AwaitScheduler.release_row_locks">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.AwaitScheduler.release_row_locks">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">release_row_locks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_thread_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">_resources</span><span class="p">:</span> <span class="nb">object</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;No-op: random exploration does not arbitrate SQL row locks.&quot;&quot;&quot;</span></div>
+<span class="w">        </span><span class="sd">"""No-op: random exploration does not arbitrate SQL row locks."""</span></div>
 
 
 <div class="viewcode-block" id="AwaitScheduler.pause">
@@ -780,7 +784,7 @@
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">had_error</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if an error occurred during execution.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Check if an error occurred during execution."""</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_error</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span></div>
 
 
@@ -788,12 +792,12 @@
 <div class="viewcode-block" id="AsyncShuffler">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.AsyncShuffler">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">AsyncShuffler</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Run concurrent async functions with await-point-level interleaving control.</span>
+<span class="w">    </span><span class="sd">"""Run concurrent async functions with await-point-level interleaving control.</span>
 
 <span class="sd">    Creates asyncio tasks for each function and delegates to the</span>
 <span class="sd">    AwaitScheduler (an InterleavedLoop subclass) for execution and</span>
 <span class="sd">    context setup.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">scheduler</span><span class="p">:</span> <span class="n">AwaitScheduler</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span> <span class="o">=</span> <span class="n">scheduler</span>
@@ -814,14 +818,14 @@
         <span class="o">*</span><span class="p">,</span>
         <span class="n">detect_external_deadlock</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run async functions concurrently with controlled interleaving.</span>
+<span class="w">        </span><span class="sd">"""Run async functions concurrently with controlled interleaving.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            funcs: One async callable per task.</span>
 <span class="sd">            args: Per-task positional args.</span>
 <span class="sd">            kwargs: Per-task keyword args.</span>
 <span class="sd">            timeout: Max wait time for all tasks.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">if</span> <span class="n">args</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">args</span> <span class="o">=</span> <span class="p">[()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">funcs</span><span class="p">]</span>
         <span class="k">if</span> <span class="n">kwargs</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
@@ -829,7 +833,7 @@
 
         <span class="n">task_funcs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="kc">None</span><span class="p">]]]</span> <span class="o">=</span> <span class="p">{</span>
             <span class="n">i</span><span class="p">:</span> <span class="p">(</span><span class="k">lambda</span> <span class="n">f</span><span class="o">=</span><span class="n">func</span><span class="p">,</span> <span class="n">a</span><span class="o">=</span><span class="n">a</span><span class="p">,</span> <span class="n">kw</span><span class="o">=</span><span class="n">kw</span><span class="p">:</span> <span class="n">f</span><span class="p">(</span><span class="o">*</span><span class="n">a</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">))</span>  <span class="c1"># type: ignore[assignment]</span>
-            <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">kw</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">funcs</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">))</span>
+            <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">kw</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">funcs</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">))</span>
         <span class="p">}</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">timed_out</span> <span class="o">=</span> <span class="kc">False</span>
@@ -859,7 +863,7 @@
 <span class="p">):</span>
     <span class="n">restore_loop_time</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="k">with</span> <span class="n">PatchScope</span><span class="p">()</span> <span class="k">as</span> <span class="n">patch_scope</span><span class="p">:</span>
-        <span class="n">patch_scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">patch_sql_async</span><span class="p">,</span> <span class="n">unpatch_sql_async</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="n">detect_sql</span> <span class="ow">and</span> <span class="n">_sql_async_available</span><span class="p">)</span>
+        <span class="n">patch_scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">patch_sql_async</span><span class="p">,</span> <span class="n">unpatch_sql_async</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="n">detect_sql</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">patch_sleep</span><span class="p">:</span>
             <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun._async_virtual_timeouts</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
                 <span class="n">_patch_asyncio_sleep</span><span class="p">,</span>
@@ -871,7 +875,7 @@
             <span class="n">patch_scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">_patch_asyncio_sleep</span><span class="p">,</span> <span class="n">_unpatch_asyncio_sleep</span><span class="p">)</span>
             <span class="n">patch_scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">_patch_asyncio_timeouts</span><span class="p">,</span> <span class="n">_unpatch_asyncio_timeouts</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="n">virtual_time</span><span class="p">)</span>
         <span class="n">patch_scope</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">patch_time</span><span class="p">,</span> <span class="n">unpatch_time</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="n">virtual_time</span><span class="p">)</span>
-        <span class="c1"># Pin the loop&#39;s own clock to real monotonic time while time.monotonic</span>
+        <span class="c1"># Pin the loop's own clock to real monotonic time while time.monotonic</span>
         <span class="c1"># is patched (see the matching comment in async_dpor._explore_async_dpor).</span>
         <span class="k">if</span> <span class="n">pin_loop_time</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">restore_loop_time</span> <span class="o">=</span> <span class="n">_pin_loop_time</span><span class="p">(</span><span class="n">pin_loop_time</span><span class="p">)</span>
@@ -886,11 +890,10 @@
 <a class="viewcode-back" href="../../api_reference.html#frontrun.controlled_interleaving">[docs]</a>
 <span class="nd">@asynccontextmanager</span>
 <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">controlled_interleaving</span><span class="p">(</span><span class="n">schedule</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="n">num_tasks</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncGenerator</span><span class="p">[</span><span class="n">AsyncShuffler</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Context manager for running async code under a specific interleaving.</span>
+<span class="w">    </span><span class="sd">"""Context manager for running async code under a specific interleaving.</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        schedule: List of task indices controlling await-point execution order.</span>
-<span class="sd">        num_tasks: Number of tasks.</span>
 
 <span class="sd">    Yields:</span>
 <span class="sd">        AsyncShuffler runner.</span>
@@ -898,7 +901,7 @@
 <span class="sd">    Example:</span>
 <span class="sd">        &gt;&gt;&gt; async with controlled_interleaving([0, 1, 0, 1], num_tasks=2) as runner:</span>
 <span class="sd">        ...     await runner.run([coro1, coro2])</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">scheduler</span> <span class="o">=</span> <span class="n">AwaitScheduler</span><span class="p">(</span><span class="n">schedule</span><span class="p">,</span> <span class="n">num_tasks</span><span class="p">)</span>
     <span class="n">runner</span> <span class="o">=</span> <span class="n">AsyncShuffler</span><span class="p">(</span><span class="n">scheduler</span><span class="p">)</span>
     <span class="k">yield</span> <span class="n">runner</span></div>
@@ -920,7 +923,7 @@
     <span class="n">deadlock_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
     <span class="n">detect_sql</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Run one async interleaving and return the state object.</span>
+<span class="w">    </span><span class="sd">"""Run one async interleaving and return the state object.</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        schedule: Await-point-level schedule (list of task indices).</span>
@@ -936,7 +939,7 @@
 
 <span class="sd">    Returns:</span>
 <span class="sd">        The state object after execution.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">with</span> <span class="n">_patch_async_runtime</span><span class="p">(</span><span class="n">detect_sql</span><span class="o">=</span><span class="n">detect_sql</span><span class="p">):</span>
         <span class="n">state</span><span class="p">,</span> <span class="n">runner</span> <span class="o">=</span> <span class="k">await</span> <span class="n">_run_with_schedule_status</span><span class="p">(</span>
             <span class="n">schedule</span><span class="p">,</span> <span class="n">setup</span><span class="p">,</span> <span class="n">tasks</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span> <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span> <span class="n">detect_sql</span><span class="o">=</span><span class="n">detect_sql</span>
@@ -944,7 +947,7 @@
         <span class="k">if</span> <span class="n">runner</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">runner</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span>
         <span class="k">if</span> <span class="n">runner</span><span class="o">.</span><span class="n">timed_out</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="n">SchedulerTimeoutError</span><span class="p">(</span><span class="s2">&quot;Async schedule replay timed out before all tasks completed&quot;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">SchedulerTimeoutError</span><span class="p">(</span><span class="s2">"Async schedule replay timed out before all tasks completed"</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">state</span></div>
 
 
@@ -957,14 +960,14 @@
     <span class="n">deadlock_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
     <span class="n">detect_sql</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">AsyncShuffler</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Run one interleaving and return ``(state, runner)``.</span>
+<span class="w">    </span><span class="sd">"""Run one interleaving and return ``(state, runner)``.</span>
 
 <span class="sd">    The runner exposes ``timed_out`` / ``scheduler.had_error`` so callers can</span>
 <span class="sd">    tell whether the run completed normally or was cut short by a</span>
 <span class="sd">    timeout/deadlock (in which case ``state`` is partial and must not be</span>
 <span class="sd">    evaluated as a normal completion).  Assumes the async runtime is already</span>
 <span class="sd">    patched by the caller.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">scheduler</span> <span class="o">=</span> <span class="n">AwaitScheduler</span><span class="p">(</span><span class="n">schedule</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">tasks</span><span class="p">),</span> <span class="n">deadlock_timeout</span><span class="o">=</span><span class="n">deadlock_timeout</span><span class="p">,</span> <span class="n">detect_sql</span><span class="o">=</span><span class="n">detect_sql</span><span class="p">)</span>
     <span class="n">runner</span> <span class="o">=</span> <span class="n">AsyncShuffler</span><span class="p">(</span><span class="n">scheduler</span><span class="p">)</span>
 
@@ -994,10 +997,10 @@
     <span class="n">serializable_invariant</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">error_on_any_race</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">total_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="n">clock</span><span class="p">:</span> <span class="n">ClockMode</span> <span class="o">=</span> <span class="s2">&quot;real&quot;</span><span class="p">,</span>
+    <span class="n">clock</span><span class="p">:</span> <span class="n">ClockMode</span> <span class="o">=</span> <span class="s2">"real"</span><span class="p">,</span>
     <span class="n">clock_diagnostics</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">InterleavingResult</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Search for async interleavings that violate an invariant.</span>
+<span class="w">    </span><span class="sd">"""Search for async interleavings that violate an invariant.</span>
 
 <span class="sd">    Generates random await-point-level schedules and tests whether the</span>
 <span class="sd">    invariant holds under each one. If a violation is found, returns</span>
@@ -1029,13 +1032,13 @@
 <span class="sd">            The async shuffler operates at await-point granularity and</span>
 <span class="sd">            does not perform file-level tracing.</span>
 <span class="sd">        patch_sleep: If True (default), ``asyncio.sleep`` yields to the</span>
-<span class="sd">            scheduler instead of waiting.  Required for ``clock != &quot;real&quot;``.</span>
+<span class="sd">            scheduler instead of waiting.  Required for ``clock != "real"``.</span>
 <span class="sd">        serializable_invariant: Check serializability against sequential</span>
 <span class="sd">            runs.  Cannot be combined with a virtual clock.</span>
 <span class="sd">        error_on_any_race: Not supported here — requires the DPOR strategy.</span>
-<span class="sd">        clock: ``&quot;real&quot;`` (default), ``&quot;virtual&quot;`` (autojump virtual clock:</span>
+<span class="sd">        clock: ``"real"`` (default), ``"virtual"`` (autojump virtual clock:</span>
 <span class="sd">            time reads are virtual, ``asyncio.sleep`` costs zero wall time),</span>
-<span class="sd">            or ``&quot;explored&quot;`` (schedule entries landing on a sleeping task</span>
+<span class="sd">            or ``"explored"`` (schedule entries landing on a sleeping task</span>
 <span class="sd">            advance the clock, exploring early timer firings).  Tasks that</span>
 <span class="sd">            block on primitives the scheduler cannot see (e.g. a raw</span>
 <span class="sd">            ``asyncio.Lock``) are handled by a quiescence heuristic; prefer</span>
@@ -1049,12 +1052,13 @@
 <span class="sd">    Returns:</span>
 <span class="sd">        InterleavingResult with the outcome.  The ``unique_interleavings``</span>
 <span class="sd">        field reports how many distinct schedule orderings were observed.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">if</span> <span class="n">max_attempts</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;max_attempts must be positive&quot;</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">error_on_any_race</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;error_on_any_race requires DPOR (use frontrun.explore with strategy=&#39;dpor&#39; instead)&quot;</span><span class="p">)</span>
-    <span class="n">clock_config</span> <span class="o">=</span> <span class="n">ClockConfig</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="n">clock</span><span class="p">,</span> <span class="n">diagnostics</span><span class="o">=</span><span class="n">clock_diagnostics</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span>
+<span class="sd">    """</span>
+    <span class="n">clock_config</span> <span class="o">=</span> <span class="n">validate_random_exploration_params</span><span class="p">(</span>
+        <span class="n">max_attempts</span><span class="o">=</span><span class="n">max_attempts</span><span class="p">,</span>
+        <span class="n">total_timeout</span><span class="o">=</span><span class="n">total_timeout</span><span class="p">,</span>
+        <span class="n">error_on_any_race</span><span class="o">=</span><span class="n">error_on_any_race</span><span class="p">,</span>
+        <span class="n">clock</span><span class="o">=</span><span class="n">clock</span><span class="p">,</span>
+        <span class="n">clock_diagnostics</span><span class="o">=</span><span class="n">clock_diagnostics</span><span class="p">,</span>
         <span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">,</span>
         <span class="n">serializable_invariant</span><span class="o">=</span><span class="n">serializable_invariant</span><span class="p">,</span>
     <span class="p">)</span>
@@ -1063,8 +1067,8 @@
         <span class="c1"># The async random strategy operates at await-point granularity and does</span>
         <span class="c1"># not trace worker opcodes, so it cannot detect captured time references.</span>
         <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
-            <span class="s2">&quot;clock_diagnostics is not supported for the async random strategy &quot;</span>
-            <span class="s2">&quot;(it does not trace worker opcodes); use strategy=&#39;dpor&#39; for diagnostics&quot;</span><span class="p">,</span>
+            <span class="s2">"clock_diagnostics is not supported for the async random strategy "</span>
+            <span class="s2">"(it does not trace worker opcodes); use strategy='dpor' for diagnostics"</span><span class="p">,</span>
             <span class="ne">RuntimeWarning</span><span class="p">,</span>
             <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
         <span class="p">)</span>
@@ -1078,8 +1082,8 @@
     <span class="k">with</span> <span class="n">_patch_async_runtime</span><span class="p">(</span>
         <span class="n">detect_sql</span><span class="o">=</span><span class="n">detect_sql</span><span class="p">,</span>
         <span class="n">patch_sleep</span><span class="o">=</span><span class="n">patch_sleep</span><span class="p">,</span>
-        <span class="n">virtual_time</span><span class="o">=</span><span class="n">clock</span> <span class="o">!=</span> <span class="s2">&quot;real&quot;</span><span class="p">,</span>
-        <span class="n">pin_loop_time</span><span class="o">=</span><span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span> <span class="k">if</span> <span class="n">clock</span> <span class="o">!=</span> <span class="s2">&quot;real&quot;</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">virtual_time</span><span class="o">=</span><span class="n">clock</span> <span class="o">!=</span> <span class="s2">"real"</span><span class="p">,</span>
+        <span class="n">pin_loop_time</span><span class="o">=</span><span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span> <span class="k">if</span> <span class="n">clock</span> <span class="o">!=</span> <span class="s2">"real"</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
 
@@ -1104,7 +1108,7 @@
 
             <span class="c1"># setup() runs OUTSIDE the crash handler below: a broken setup or</span>
             <span class="c1"># test harness is an error that must propagate, not a</span>
-            <span class="c1"># &quot;counterexample&quot;.  Only exceptions from the task bodies are turned</span>
+            <span class="c1"># "counterexample".  Only exceptions from the task bodies are turned</span>
             <span class="c1"># into findings.  (Mirrors _run_with_schedule_status construction.)</span>
             <span class="n">attempt_clock</span> <span class="o">=</span> <span class="n">clock_config</span><span class="o">.</span><span class="n">new_clock</span><span class="p">()</span>
             <span class="n">scheduler</span> <span class="o">=</span> <span class="n">AwaitScheduler</span><span class="p">(</span>
@@ -1127,7 +1131,7 @@
                     <span class="n">idx</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">task</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="kc">None</span><span class="p">]],</span> <span class="n">s</span><span class="p">:</span> <span class="n">Any</span>
                 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="kc">None</span><span class="p">]]:</span>
                     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">wrapper</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="c1"># Pass-certificate evidence: this task&#39;s body was entered.</span>
+                        <span class="c1"># Pass-certificate evidence: this task's body was entered.</span>
                         <span class="n">workers_entered</span><span class="p">[</span><span class="n">idx</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
                         <span class="k">await</span> <span class="n">task</span><span class="p">(</span><span class="n">s</span><span class="p">)</span>
 
@@ -1156,7 +1160,7 @@
                     <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
                     <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
                     <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="p">(</span>
-                        <span class="sa">f</span><span class="s2">&quot;Task crash in execution </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">task_err</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">task_err</span><span class="si">}</span><span class="s2">&quot;</span>
+                        <span class="sa">f</span><span class="s2">"Task crash in execution </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">task_err</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">task_err</span><span class="si">}</span><span class="s2">"</span>
                     <span class="p">)</span>
                     <span class="k">return</span> <span class="n">result</span>
                 <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span> <span class="o">+=</span> <span class="mi">1</span>
@@ -1181,8 +1185,8 @@
                     <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
                     <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
                     <span class="n">sched_err</span> <span class="o">=</span> <span class="n">runner</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">_error</span>
-                    <span class="n">detail</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">sched_err</span><span class="p">)</span> <span class="k">if</span> <span class="n">sched_err</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="s2">&quot;tasks did not complete within the timeout&quot;</span>
-                    <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;Deadlock detected after </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2"> interleaving(s).</span><span class="se">\n\n</span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">&quot;</span>
+                    <span class="n">detail</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">sched_err</span><span class="p">)</span> <span class="k">if</span> <span class="n">sched_err</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="s2">"tasks did not complete within the timeout"</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"Deadlock detected after </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2"> interleaving(s).</span><span class="se">\n\n</span><span class="si">{</span><span class="n">detail</span><span class="si">}</span><span class="s2">"</span>
                     <span class="k">return</span> <span class="n">result</span>
                 <span class="k">if</span> <span class="n">runner</span><span class="o">.</span><span class="n">timed_out</span><span class="p">:</span>
                     <span class="n">inconclusive_timeouts</span> <span class="o">+=</span> <span class="mi">1</span>
@@ -1191,16 +1195,15 @@
                 <span class="n">decisive_executions</span> <span class="o">+=</span> <span class="mi">1</span>
 
                 <span class="c1"># --- serializable_invariant check ---</span>
-                <span class="k">if</span> <span class="n">serial_valid_states</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                    <span class="n">explanation</span> <span class="o">=</span> <span class="n">check_serializability_violation</span><span class="p">(</span>
-                        <span class="n">state</span><span class="p">,</span> <span class="n">serial_valid_states</span><span class="p">,</span> <span class="n">serial_hash_fn</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">num_explored</span>
-                    <span class="p">)</span>
-                    <span class="k">if</span> <span class="n">explanation</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="n">result</span><span class="o">.</span><span class="n">property_holds</span> <span class="o">=</span> <span class="kc">False</span>
-                        <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
-                        <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
-                        <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="n">explanation</span>
-                        <span class="k">return</span> <span class="n">result</span>
+                <span class="k">if</span> <span class="n">record_serializability_violation</span><span class="p">(</span>
+                    <span class="n">result</span><span class="p">,</span>
+                    <span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="p">,</span>
+                    <span class="n">serial_valid_states</span><span class="o">=</span><span class="n">serial_valid_states</span><span class="p">,</span>
+                    <span class="n">serial_hash_fn</span><span class="o">=</span><span class="n">serial_hash_fn</span><span class="p">,</span>
+                    <span class="n">schedule</span><span class="o">=</span><span class="n">schedule</span><span class="p">,</span>
+                    <span class="n">unique_interleavings</span><span class="o">=</span><span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">),</span>
+                <span class="p">):</span>
+                    <span class="k">return</span> <span class="n">result</span>
 
                 <span class="n">invariant_failed</span><span class="p">,</span> <span class="n">assertion_msg</span> <span class="o">=</span> <span class="n">check_invariant</span><span class="p">(</span><span class="n">invariant</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
                 <span class="k">if</span> <span class="n">invariant_failed</span><span class="p">:</span>
@@ -1208,9 +1211,9 @@
                     <span class="n">result</span><span class="o">.</span><span class="n">counterexample</span> <span class="o">=</span> <span class="n">schedule</span>
                     <span class="n">result</span><span class="o">.</span><span class="n">unique_interleavings</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">seen_schedule_hashes</span><span class="p">)</span>
                     <span class="n">result</span><span class="o">.</span><span class="n">explanation</span> <span class="o">=</span> <span class="p">(</span>
-                        <span class="sa">f</span><span class="s2">&quot;AssertionError: </span><span class="si">{</span><span class="n">assertion_msg</span><span class="si">}</span><span class="s2">&quot;</span>
+                        <span class="sa">f</span><span class="s2">"AssertionError: </span><span class="si">{</span><span class="n">assertion_msg</span><span class="si">}</span><span class="s2">"</span>
                         <span class="k">if</span> <span class="n">assertion_msg</span>
-                        <span class="k">else</span> <span class="sa">f</span><span class="s2">&quot;Invariant violated after </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2"> interleaving(s); schedule: </span><span class="si">{</span><span class="n">schedule</span><span class="si">}</span><span class="s2">&quot;</span>
+                        <span class="k">else</span> <span class="sa">f</span><span class="s2">"Invariant violated after </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">num_explored</span><span class="si">}</span><span class="s2"> interleaving(s); schedule: </span><span class="si">{</span><span class="n">schedule</span><span class="si">}</span><span class="s2">"</span>
                     <span class="p">)</span>
                     <span class="k">return</span> <span class="n">result</span>
 
@@ -1219,13 +1222,13 @@
         <span class="c1"># certify (or honestly refuse to certify) the pass.</span>
         <span class="n">details</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="k">if</span> <span class="n">inconclusive_timeouts</span><span class="p">:</span>
-            <span class="n">details</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">inconclusive_timeouts</span><span class="si">}</span><span class="s2"> timed out&quot;</span><span class="p">)</span>
+            <span class="n">details</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">inconclusive_timeouts</span><span class="si">}</span><span class="s2"> timed out"</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">max_ops_truncations</span><span class="p">:</span>
-            <span class="n">details</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">max_ops_truncations</span><span class="si">}</span><span class="s2"> exhausted max_ops&quot;</span><span class="p">)</span>
+            <span class="n">details</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">max_ops_truncations</span><span class="si">}</span><span class="s2"> exhausted max_ops"</span><span class="p">)</span>
         <span class="n">degradation_message</span> <span class="o">=</span> <span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;Async random exploration completed </span><span class="si">{</span><span class="n">decisive_executions</span><span class="si">}</span><span class="s2"> interleaving(s), but &quot;</span>
-            <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">details</span><span class="p">)</span><span class="si">}</span><span class="s2"> before completion. The search is inconclusive and cannot prove the property; &quot;</span>
-            <span class="s2">&quot;increase timeout_per_run or max_ops, or remove unmanaged blocking from explored tasks.&quot;</span>
+            <span class="sa">f</span><span class="s2">"Async random exploration completed </span><span class="si">{</span><span class="n">decisive_executions</span><span class="si">}</span><span class="s2"> interleaving(s), but "</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">', '</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">details</span><span class="p">)</span><span class="si">}</span><span class="s2"> before completion. The search is inconclusive and cannot prove the property; "</span>
+            <span class="s2">"increase timeout_per_run or max_ops, or remove unmanaged blocking from explored tasks."</span>
         <span class="p">)</span>
         <span class="k">return</span> <span class="n">certify_pass</span><span class="p">(</span>
             <span class="n">result</span><span class="o">=</span><span class="n">result</span><span class="p">,</span>
@@ -1236,8 +1239,8 @@
                 <span class="n">vacuous_reason</span><span class="o">=</span><span class="n">degradation_message</span>
                 <span class="k">if</span> <span class="n">details</span>
                 <span class="k">else</span> <span class="p">(</span>
-                    <span class="sa">f</span><span class="s2">&quot;total_timeout=</span><span class="si">{</span><span class="n">total_timeout</span><span class="si">!r}</span><span class="s2">s elapsed before any interleaving completed; &quot;</span>
-                    <span class="s2">&quot;increase total_timeout or reduce the workload&quot;</span>
+                    <span class="sa">f</span><span class="s2">"total_timeout=</span><span class="si">{</span><span class="n">total_timeout</span><span class="si">!r}</span><span class="s2">s elapsed before any interleaving completed; "</span>
+                    <span class="s2">"increase total_timeout or reduce the workload"</span>
                 <span class="p">),</span>
             <span class="p">),</span>
         <span class="p">)</span></div>
@@ -1247,7 +1250,7 @@
 <div class="viewcode-block" id="schedule_strategy">
 <a class="viewcode-back" href="../../api_reference.html#frontrun.schedule_strategy">[docs]</a>
 <span class="k">def</span><span class="w"> </span><span class="nf">schedule_strategy</span><span class="p">(</span><span class="n">num_tasks</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">max_ops</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>  <span class="c1"># type: ignore[name-defined]</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Hypothesis strategy for generating fair await-point schedules.</span>
+<span class="w">    </span><span class="sd">"""Hypothesis strategy for generating fair await-point schedules.</span>
 
 <span class="sd">    Generates schedules as a sequence of rounds, where each round is a</span>
 <span class="sd">    random permutation of all task indices.  This guarantees every task</span>
@@ -1267,7 +1270,7 @@
 <span class="sd">    Note: max_ops defaults to 100 (vs 300 for bytecode.py) because async</span>
 <span class="sd">    code has far fewer interleaving points. Each schedule entry corresponds</span>
 <span class="sd">    to one await_point() call, not one bytecode opcode.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">return</span> <span class="n">fair_schedule_strategy</span><span class="p">(</span><span class="n">num_tasks</span><span class="p">,</span> <span class="n">max_ops</span><span class="p">)</span></div>
 
 </pre></div>
@@ -1302,7 +1305,7 @@
       
     </aside>
   </div>
-</div><script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="../../_static/documentation_options.js?v=486e5634"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>

@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Examples" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/examples.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Practical examples of using Frontrun to test concurrent code. Bank Account Transfer (Lost Update): Two concurrent transfers each read the balance before either writes. The second write overwrites t..." />
+<meta name="description" content="Practical examples of using Frontrun to test concurrent code. Bank Account Transfer (Lost Update): Two concurrent transfers each read the balance before either writes. The second write overwrites t..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="SQLAlchemy Lost-Update Race Condition" href="orm_race.html"><link rel="prev" title="Search Strategies" href="search.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/examples.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Examples - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Examples - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -277,16 +285,16 @@ The second write overwrites the first, losing one transfer:</p>
 
 <span class="c1"># Both threads read before either writes</span>
 <span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;transfer1&quot;</span><span class="p">,</span> <span class="s2">&quot;read_balance&quot;</span><span class="p">),</span>    <span class="c1"># T1 reads 100</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;transfer2&quot;</span><span class="p">,</span> <span class="s2">&quot;read_balance&quot;</span><span class="p">),</span>    <span class="c1"># T2 reads 100</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;transfer1&quot;</span><span class="p">,</span> <span class="s2">&quot;write_balance&quot;</span><span class="p">),</span>   <span class="c1"># T1 writes 150</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;transfer2&quot;</span><span class="p">,</span> <span class="s2">&quot;write_balance&quot;</span><span class="p">),</span>   <span class="c1"># T2 writes 150</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"transfer1"</span><span class="p">,</span> <span class="s2">"read_balance"</span><span class="p">),</span>    <span class="c1"># T1 reads 100</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"transfer2"</span><span class="p">,</span> <span class="s2">"read_balance"</span><span class="p">),</span>    <span class="c1"># T2 reads 100</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"transfer1"</span><span class="p">,</span> <span class="s2">"write_balance"</span><span class="p">),</span>   <span class="c1"># T1 writes 150</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"transfer2"</span><span class="p">,</span> <span class="s2">"write_balance"</span><span class="p">),</span>   <span class="c1"># T2 writes 150</span>
 <span class="p">])</span>
 
 <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
 <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-    <span class="s2">&quot;transfer1&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
-    <span class="s2">&quot;transfer2&quot;</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
+    <span class="s2">"transfer1"</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
+    <span class="s2">"transfer2"</span><span class="p">:</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">(</span><span class="mi">50</span><span class="p">),</span>
 <span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
 
 <span class="k">assert</span> <span class="n">account</span><span class="o">.</span><span class="n">balance</span> <span class="o">==</span> <span class="mi">150</span>  <span class="c1"># should be 200; one transfer lost</span>
@@ -440,16 +448,16 @@ state in C extensions), but the error traces are less interpretable:</p>
 <span class="n">account</span> <span class="o">=</span> <span class="n">AsyncBankAccount</span><span class="p">(</span><span class="n">balance</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
 
 <span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task1&quot;</span><span class="p">,</span> <span class="s2">&quot;read_balance&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task2&quot;</span><span class="p">,</span> <span class="s2">&quot;read_balance&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task1&quot;</span><span class="p">,</span> <span class="s2">&quot;write_balance&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task2&quot;</span><span class="p">,</span> <span class="s2">&quot;write_balance&quot;</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"task1"</span><span class="p">,</span> <span class="s2">"read_balance"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"task2"</span><span class="p">,</span> <span class="s2">"read_balance"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"task1"</span><span class="p">,</span> <span class="s2">"write_balance"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"task2"</span><span class="p">,</span> <span class="s2">"write_balance"</span><span class="p">),</span>
 <span class="p">])</span>
 
 <span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
 <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-    <span class="s2">&quot;task1&quot;</span><span class="p">:</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">,</span> <span class="mi">50</span><span class="p">),</span>
-    <span class="s2">&quot;task2&quot;</span><span class="p">:</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">,</span> <span class="mi">50</span><span class="p">),</span>
+    <span class="s2">"task1"</span><span class="p">:</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">,</span> <span class="mi">50</span><span class="p">),</span>
+    <span class="s2">"task2"</span><span class="p">:</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">account</span><span class="o">.</span><span class="n">transfer</span><span class="p">,</span> <span class="mi">50</span><span class="p">),</span>
 <span class="p">})</span>
 
 <span class="k">assert</span> <span class="n">account</span><span class="o">.</span><span class="n">balance</span> <span class="o">==</span> <span class="mi">150</span>  <span class="c1"># one transfer lost</span>
@@ -493,7 +501,7 @@ calling <code class="docutils literal notranslate"><span class="pre">frontrun.ex
         <span class="n">accounts</span><span class="o">.</span><span class="n">b</span> <span class="o">-=</span> <span class="mi">80</span>
         <span class="n">accounts</span><span class="o">.</span><span class="n">c</span> <span class="o">+=</span> <span class="mi">80</span>
 
-<span class="n">frontrun</span><span class="o">.</span><span class="n">_report</span><span class="o">.</span><span class="n">_global_report_path</span> <span class="o">=</span> <span class="s2">&quot;dpor_report.html&quot;</span>
+<span class="n">frontrun</span><span class="o">.</span><span class="n">_report</span><span class="o">.</span><span class="n">_global_report_path</span> <span class="o">=</span> <span class="s2">"dpor_report.html"</span>
 <span class="k">try</span><span class="p">:</span>
     <span class="n">result</span> <span class="o">=</span> <span class="n">frontrun</span><span class="o">.</span><span class="n">explore</span><span class="p">(</span>
         <span class="n">setup</span><span class="o">=</span><span class="n">Accounts</span><span class="p">,</span>
@@ -528,11 +536,11 @@ A single <code class="docutils literal notranslate"><span class="pre">UPDATE</sp
 Three philosophers always grab the left fork first, creating a circular wait.</p></li>
 </ul>
 <p>Run any example directly to regenerate its report:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_bank_transfer</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span>
-<span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_bank_transfer_locked</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span>
-<span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_sqlite_counter</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span>
-<span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_sqlite_counter</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span> <span class="n">fixed</span>
-<span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_dining_philosophers</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">frontrun</span> <span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_bank_transfer</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span>
+<span class="n">frontrun</span> <span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_bank_transfer_locked</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span>
+<span class="n">frontrun</span> <span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_sqlite_counter</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span>
+<span class="n">frontrun</span> <span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_sqlite_counter</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span> <span class="n">fixed</span>
+<span class="n">frontrun</span> <span class="n">python</span> <span class="n">examples</span><span class="o">/</span><span class="n">dpor_dining_philosophers</span><span class="o">.</span><span class="n">py</span> <span class="n">my_report</span><span class="o">.</span><span class="n">html</span>
 </pre></div>
 </div>
 <section id="locking-and-path-reduction">
@@ -634,7 +642,7 @@ interception via <code class="docutils literal notranslate"><span class="pre">LD
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

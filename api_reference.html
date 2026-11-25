@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="API Reference" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/api_reference.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Common Data Structures: Shared data structures for frontrun. Unified Exploration Entry Points: Virtual Clock: See Virtual clock: timeout, retry, and TTL races for a guide. frontrun.explore(..., clo..." />
+<meta name="description" content="Common Data Structures: Shared data structures for frontrun. Unified Exploration Entry Points: Virtual Clock: See Virtual clock: timeout, retry, and TTL races for a guide. frontrun.explore(..., clo..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="prev" title="How It Works Under the Hood" href="internals.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/api_reference.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>API Reference - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>API Reference - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -755,6 +763,63 @@ when it returns <code class="docutils literal notranslate"><span class="pre">Non
 </dl>
 </dd></dl>
 
+<dl class="py function">
+<dt class="sig sig-object py" id="frontrun.common.validate_random_exploration_params">
+<span class="sig-prename descclassname"><span class="pre">frontrun.common.</span></span><span class="sig-name descname"><span class="pre">validate_random_exploration_params</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_attempts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_timeout</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error_on_any_race</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clock</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clock_diagnostics</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patch_sleep</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serializable_invariant</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/common.html#validate_random_exploration_params"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.common.validate_random_exploration_params" title="Link to this definition">¶</a></dt>
+<dd><p>Validate the shared input prologue for the random explorers.</p>
+<p>Shared by <code class="docutils literal notranslate"><span class="pre">explore_random</span></code> (bytecode.py) and <code class="docutils literal notranslate"><span class="pre">explore_async_random</span></code>
+(async_shuffler.py): rejects a non-positive <code class="docutils literal notranslate"><span class="pre">max_attempts</span></code>, a
+non-positive/non-finite <code class="docutils literal notranslate"><span class="pre">total_timeout</span></code>, and <code class="docutils literal notranslate"><span class="pre">error_on_any_race</span></code>
+(which requires DPOR), then validates the clock configuration.</p>
+<p>Returns the validated <code class="xref py py-class docutils literal notranslate"><span class="pre">ClockConfig</span></code>;
+callers read <code class="docutils literal notranslate"><span class="pre">.mode</span></code> for the normalized clock value.  The sync caller
+keeps its own <code class="docutils literal notranslate"><span class="pre">_require_frontrun_env</span></code> guard ahead of this call.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>max_attempts</strong> (<em>int</em>)</p></li>
+<li><p><strong>total_timeout</strong> (<em>float</em><em> | </em><em>None</em>)</p></li>
+<li><p><strong>error_on_any_race</strong> (<em>bool</em>)</p></li>
+<li><p><strong>clock</strong> (<em>Literal</em><em>[</em><em>'real'</em><em>, </em><em>'virtual'</em><em>, </em><em>'explored'</em><em>]</em>)</p></li>
+<li><p><strong>clock_diagnostics</strong> (<em>bool</em>)</p></li>
+<li><p><strong>patch_sleep</strong> (<em>bool</em>)</p></li>
+<li><p><strong>serializable_invariant</strong> (<em>object</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><em>ClockConfig</em></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="frontrun.common.record_serializability_violation">
+<span class="sig-prename descclassname"><span class="pre">frontrun.common.</span></span><span class="sig-name descname"><span class="pre">record_serializability_violation</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">result</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serial_valid_states</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serial_hash_fn</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">schedule</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">unique_interleavings</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/common.html#record_serializability_violation"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.common.record_serializability_violation" title="Link to this definition">¶</a></dt>
+<dd><p>Fail-closed serializability check shared by both random explorers.</p>
+<p>When a serializability violation is detected against the sequential
+baseline, stamps the failure verdict onto <em>result</em>
+(<code class="docutils literal notranslate"><span class="pre">property_holds=False</span></code> + counterexample) and returns <code class="docutils literal notranslate"><span class="pre">True</span></code> so the
+caller can early-return.  Returns <code class="docutils literal notranslate"><span class="pre">False</span></code> when there is no baseline
+(<code class="docutils literal notranslate"><span class="pre">serial_valid_states</span> <span class="pre">is</span> <span class="pre">None</span></code>) or the state is serializable.</p>
+<p>This is the failure path of result construction: it only ever sets
+<code class="docutils literal notranslate"><span class="pre">property_holds=False</span></code>, never certifies a pass.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>result</strong> (<a class="reference internal" href="#frontrun.common.InterleavingResult" title="frontrun.common.InterleavingResult"><em>InterleavingResult</em></a>)</p></li>
+<li><p><strong>state</strong> (<em>Any</em>)</p></li>
+<li><p><strong>serial_valid_states</strong> (<em>set</em><em>[</em><em>Any</em><em>] </em><em>| </em><em>None</em>)</p></li>
+<li><p><strong>serial_hash_fn</strong> (<em>Callable</em><em>[</em><em>[</em><em>Any</em><em>]</em><em>, </em><em>Any</em><em>]</em>)</p></li>
+<li><p><strong>schedule</strong> (<em>Any</em>)</p></li>
+<li><p><strong>unique_interleavings</strong> (<em>int</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>bool</p>
+</dd>
+</dl>
+</dd></dl>
+
 </section>
 <section id="unified-exploration-entry-points">
 <h2>Unified Exploration Entry Points<a class="headerlink" href="#unified-exploration-entry-points" title="Link to this heading">¶</a></h2>
@@ -1142,7 +1207,7 @@ coordinator.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>ok</strong> (<em>bool</em>)</p></li>
+<li><p><strong>ok</strong> (<em>bool</em><em> | </em><em>None</em>)</p></li>
 <li><p><strong>iterations</strong> (<em>int</em>)</p></li>
 <li><p><strong>exhausted</strong> (<em>bool</em>)</p></li>
 <li><p><strong>failing_schedule</strong> (<em>list</em><em>[</em><em>int</em><em>] </em><em>| </em><em>None</em>)</p></li>
@@ -1209,19 +1274,16 @@ maintains a mapping from (filename, line_number) to marker names.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="frontrun.trace_markers.MarkerRegistry.get_marker">
 <span class="sig-name descname"><span class="pre">get_marker</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">filename</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lineno</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/_marker_coordination.html#MarkerRegistry.get_marker"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.trace_markers.MarkerRegistry.get_marker" title="Link to this definition">¶</a></dt>
-<dd><p>Get the marker name for a specific file location.</p>
+<dd><p>Return the marker name for a source location, or None.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>filename</strong> (<em>str</em>) – The source file path</p></li>
-<li><p><strong>lineno</strong> (<em>int</em>) – The line number</p></li>
+<li><p><strong>filename</strong> (<em>str</em>)</p></li>
+<li><p><strong>lineno</strong> (<em>int</em>)</p></li>
 </ul>
 </dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>The marker name if found, None otherwise</p>
-</dd>
-<dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>str | None</p>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>str | None</p>
 </dd>
 </dl>
 </dd></dl>
@@ -1275,17 +1337,6 @@ calling this method.</p>
 </dl>
 </dd></dl>
 
-<dl class="py method">
-<dt class="sig sig-object py" id="frontrun.trace_markers.ThreadCoordinator.is_finished">
-<span class="sig-name descname"><span class="pre">is_finished</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/frontrun/_marker_coordination.html#ThreadCoordinator.is_finished"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#frontrun.trace_markers.ThreadCoordinator.is_finished" title="Link to this definition">¶</a></dt>
-<dd><p>Check if the schedule has completed or encountered an error.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>bool</p>
-</dd>
-</dl>
-</dd></dl>
-
 </dd></dl>
 
 <dl class="py class">
@@ -1296,12 +1347,12 @@ calling this method.</p>
 <p>Pass a dict mapping thread/task names to zero-argument callables (sync
 or async).  <code class="docutils literal notranslate"><span class="pre">run</span></code> starts every worker and waits for them in one call:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="n">worker1</span><span class="p">,</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="n">worker2</span><span class="p">})</span>
+<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">"t1"</span><span class="p">:</span> <span class="n">worker1</span><span class="p">,</span> <span class="s2">"t2"</span><span class="p">:</span> <span class="n">worker2</span><span class="p">})</span>
 </pre></div>
 </div>
 <p>Async usage accepts the async-task mapping the same way:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span> <span class="o">=</span> <span class="n">TraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
-<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">&quot;task1&quot;</span><span class="p">:</span> <span class="n">coro1</span><span class="p">,</span> <span class="s2">&quot;task2&quot;</span><span class="p">:</span> <span class="n">coro2</span><span class="p">})</span>
+<span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">"task1"</span><span class="p">:</span> <span class="n">coro1</span><span class="p">,</span> <span class="s2">"task2"</span><span class="p">:</span> <span class="n">coro2</span><span class="p">})</span>
 </pre></div>
 </div>
 <dl class="field-list simple">
@@ -1318,7 +1369,7 @@ or async).  <code class="docutils literal notranslate"><span class="pre">run</sp
 <dd><p>Run all named workers under schedule control and wait for completion.</p>
 <p>Pass a dict mapping thread/task names to zero-argument callables.
 <code class="docutils literal notranslate"><span class="pre">run</span></code> starts every worker and joins them in a single call:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">&quot;thread1&quot;</span><span class="p">:</span> <span class="n">fn1</span><span class="p">,</span> <span class="s2">&quot;thread2&quot;</span><span class="p">:</span> <span class="n">fn2</span><span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span><span class="s2">"thread1"</span><span class="p">:</span> <span class="n">fn1</span><span class="p">,</span> <span class="s2">"thread2"</span><span class="p">:</span> <span class="n">fn2</span><span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>Async coroutines in the dict are dispatched to the async executor.</p>
@@ -1380,7 +1431,7 @@ or async).  <code class="docutils literal notranslate"><span class="pre">run</sp
 
 <dl class="py property">
 <dt class="sig sig-object py" id="frontrun.trace_markers.TraceExecutor.task_errors">
-<span class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></span><span class="sig-name descname"><span class="pre">task_errors</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Exception</span><span class="p"><span class="pre">]</span></span></span><a class="headerlink" href="#frontrun.trace_markers.TraceExecutor.task_errors" title="Link to this definition">¶</a></dt>
+<span class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></span><span class="sig-name descname"><span class="pre">task_errors</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">BaseException</span><span class="p"><span class="pre">]</span></span></span><a class="headerlink" href="#frontrun.trace_markers.TraceExecutor.task_errors" title="Link to this definition">¶</a></dt>
 <dd></dd></dl>
 
 </dd></dl>
@@ -1410,7 +1461,7 @@ of marker names.</p>
 </dl>
 <p>Example:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">schedules</span> <span class="o">=</span> <span class="n">all_marker_schedules</span><span class="p">(</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">],</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">,</span> <span class="s2">&quot;y&quot;</span><span class="p">]},</span>
+    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">"t1"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"a"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">],</span> <span class="s2">"t2"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"x"</span><span class="p">,</span> <span class="s2">"y"</span><span class="p">]},</span>
 <span class="p">)</span>
 <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">schedules</span><span class="p">)</span> <span class="o">==</span> <span class="mi">6</span>  <span class="c1"># C(4,2)</span>
 </pre></div>
@@ -1501,7 +1552,7 @@ meaningful interleavings at the marker granularity.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>threads</strong> (<em>dict</em><em>[</em><em>str</em><em>, </em><em>list</em><em>[</em><em>str</em><em>]</em><em>]</em>) – <p>Mapping from thread/execution names to their ordered list
 of marker names.  Example:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">],</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">]}</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">"t1"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read"</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">],</span> <span class="s2">"t2"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read"</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">]}</span>
 </pre></div>
 </div>
 </p>
@@ -1518,7 +1569,7 @@ of marker names.  Example:</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">marker_schedule_strategy</span>
 
 <span class="nd">@given</span><span class="p">(</span><span class="n">schedule</span><span class="o">=</span><span class="n">marker_schedule_strategy</span><span class="p">(</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;w1&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">],</span> <span class="s2">&quot;w2&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">]},</span>
+    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">"w1"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read"</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">],</span> <span class="s2">"w2"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read"</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">]},</span>
 <span class="p">))</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">test_no_lost_update</span><span class="p">(</span><span class="n">schedule</span><span class="p">):</span>
     <span class="o">...</span>
@@ -1541,7 +1592,7 @@ meaningful interleavings at the marker granularity.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>threads</strong> (<em>dict</em><em>[</em><em>str</em><em>, </em><em>list</em><em>[</em><em>str</em><em>]</em><em>]</em>) – <p>Mapping from thread/execution names to their ordered list
 of marker names.  Example:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">],</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">]}</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">"t1"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read"</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">],</span> <span class="s2">"t2"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read"</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">]}</span>
 </pre></div>
 </div>
 </p>
@@ -1558,7 +1609,7 @@ of marker names.  Example:</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">frontrun.trace_markers</span><span class="w"> </span><span class="kn">import</span> <span class="n">marker_schedule_strategy</span>
 
 <span class="nd">@given</span><span class="p">(</span><span class="n">schedule</span><span class="o">=</span><span class="n">marker_schedule_strategy</span><span class="p">(</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;w1&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">],</span> <span class="s2">&quot;w2&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;write&quot;</span><span class="p">]},</span>
+    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">"w1"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read"</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">],</span> <span class="s2">"w2"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"read"</span><span class="p">,</span> <span class="s2">"write"</span><span class="p">]},</span>
 <span class="p">))</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">test_no_lost_update</span><span class="p">(</span><span class="n">schedule</span><span class="p">):</span>
     <span class="o">...</span>
@@ -1591,7 +1642,7 @@ of marker names.</p>
 </dl>
 <p>Example:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">schedules</span> <span class="o">=</span> <span class="n">all_marker_schedules</span><span class="p">(</span>
-    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">],</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">,</span> <span class="s2">&quot;y&quot;</span><span class="p">]},</span>
+    <span class="n">threads</span><span class="o">=</span><span class="p">{</span><span class="s2">"t1"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"a"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">],</span> <span class="s2">"t2"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"x"</span><span class="p">,</span> <span class="s2">"y"</span><span class="p">]},</span>
 <span class="p">)</span>
 <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">schedules</span><span class="p">)</span> <span class="o">==</span> <span class="mi">6</span>  <span class="c1"># C(4,2)</span>
 </pre></div>
@@ -1677,23 +1728,23 @@ it only executes after the scheduler approves this task at this marker.</p>
     <span class="k">await</span> <span class="n">write_data</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
 
 <span class="n">schedule</span> <span class="o">=</span> <span class="n">Schedule</span><span class="p">([</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task1&quot;</span><span class="p">,</span> <span class="s2">&quot;read_data&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task2&quot;</span><span class="p">,</span> <span class="s2">&quot;read_data&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task1&quot;</span><span class="p">,</span> <span class="s2">&quot;write_data&quot;</span><span class="p">),</span>
-    <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;task2&quot;</span><span class="p">,</span> <span class="s2">&quot;write_data&quot;</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"task1"</span><span class="p">,</span> <span class="s2">"read_data"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"task2"</span><span class="p">,</span> <span class="s2">"read_data"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"task1"</span><span class="p">,</span> <span class="s2">"write_data"</span><span class="p">),</span>
+    <span class="n">Step</span><span class="p">(</span><span class="s2">"task2"</span><span class="p">,</span> <span class="s2">"write_data"</span><span class="p">),</span>
 <span class="p">])</span>
 
 <span class="n">executor</span> <span class="o">=</span> <span class="n">AsyncTraceExecutor</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
 <span class="n">executor</span><span class="o">.</span><span class="n">run</span><span class="p">({</span>
-    <span class="s1">&#39;task1&#39;</span><span class="p">:</span> <span class="n">worker_function</span><span class="p">,</span>
-    <span class="s1">&#39;task2&#39;</span><span class="p">:</span> <span class="n">worker_function</span><span class="p">,</span>
+    <span class="s1">'task1'</span><span class="p">:</span> <span class="n">worker_function</span><span class="p">,</span>
+    <span class="s1">'task2'</span><span class="p">:</span> <span class="n">worker_function</span><span class="p">,</span>
 <span class="p">})</span>
 </pre></div>
 </div>
 <p>Or using the convenience function:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">async_frontrun</span><span class="p">(</span>
     <span class="n">schedule</span><span class="o">=</span><span class="n">schedule</span><span class="p">,</span>
-    <span class="n">tasks</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;task1&#39;</span><span class="p">:</span> <span class="n">worker1</span><span class="p">,</span> <span class="s1">&#39;task2&#39;</span><span class="p">:</span> <span class="n">worker2</span><span class="p">},</span>
+    <span class="n">tasks</span><span class="o">=</span><span class="p">{</span><span class="s1">'task1'</span><span class="p">:</span> <span class="n">worker1</span><span class="p">,</span> <span class="s1">'task2'</span><span class="p">:</span> <span class="n">worker2</span><span class="p">},</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -1749,6 +1800,8 @@ in C extensions (NumPy, database queries, network I/O).</p></li>
 </dd>
 <dt class="field-even">Raises<span class="colon">:</span></dt>
 <dd class="field-even"><ul class="simple">
+<li><p><strong>ValueError</strong> – If <em>tasks</em> is empty</p></li>
+<li><p><strong>TypeError</strong> – If any value in <em>tasks</em> is not callable</p></li>
 <li><p><strong>TimeoutError</strong> – If tasks don’t complete within the timeout</p></li>
 <li><p><strong>Any exception that occurred in a task during execution</strong> – </p></li>
 </ul>
@@ -1803,11 +1856,11 @@ in C extensions (NumPy, database queries, network I/O).</p></li>
 
 <span class="n">async_frontrun</span><span class="p">(</span>
     <span class="n">schedule</span><span class="o">=</span><span class="n">Schedule</span><span class="p">([</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;t1&quot;</span><span class="p">,</span> <span class="s2">&quot;before_deposit&quot;</span><span class="p">),</span>
-        <span class="n">Step</span><span class="p">(</span><span class="s2">&quot;t2&quot;</span><span class="p">,</span> <span class="s2">&quot;before_deposit&quot;</span><span class="p">)</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"t1"</span><span class="p">,</span> <span class="s2">"before_deposit"</span><span class="p">),</span>
+        <span class="n">Step</span><span class="p">(</span><span class="s2">"t2"</span><span class="p">,</span> <span class="s2">"before_deposit"</span><span class="p">)</span>
     <span class="p">]),</span>
-    <span class="n">tasks</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="n">worker</span><span class="p">},</span>
-    <span class="n">task_args</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;t1&quot;</span><span class="p">:</span> <span class="p">(</span><span class="n">account</span><span class="p">,</span> <span class="mi">50</span><span class="p">),</span> <span class="s2">&quot;t2&quot;</span><span class="p">:</span> <span class="p">(</span><span class="n">account</span><span class="p">,</span> <span class="mi">50</span><span class="p">)},</span>
+    <span class="n">tasks</span><span class="o">=</span><span class="p">{</span><span class="s2">"t1"</span><span class="p">:</span> <span class="n">worker</span><span class="p">,</span> <span class="s2">"t2"</span><span class="p">:</span> <span class="n">worker</span><span class="p">},</span>
+    <span class="n">task_args</span><span class="o">=</span><span class="p">{</span><span class="s2">"t1"</span><span class="p">:</span> <span class="p">(</span><span class="n">account</span><span class="p">,</span> <span class="mi">50</span><span class="p">),</span> <span class="s2">"t2"</span><span class="p">:</span> <span class="p">(</span><span class="n">account</span><span class="p">,</span> <span class="mi">50</span><span class="p">)},</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -2141,7 +2194,7 @@ context setup.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>schedule</strong> (<em>list</em><em>[</em><em>int</em><em>]</em>) – List of task indices controlling await-point execution order.</p></li>
-<li><p><strong>num_tasks</strong> (<em>int</em>) – Number of tasks.</p></li>
+<li><p><strong>num_tasks</strong> (<em>int</em>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Yields<span class="colon">:</span></dt>
@@ -3332,6 +3385,8 @@ The async form returns an awaitable.</p>
 <li><a class="reference internal" href="#frontrun.common.compute_serializable_states_async"><code class="docutils literal notranslate"><span class="pre">compute_serializable_states_async()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.common.resolve_serializable_hash_fn"><code class="docutils literal notranslate"><span class="pre">resolve_serializable_hash_fn()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.common.check_serializability_violation"><code class="docutils literal notranslate"><span class="pre">check_serializability_violation()</span></code></a></li>
+<li><a class="reference internal" href="#frontrun.common.validate_random_exploration_params"><code class="docutils literal notranslate"><span class="pre">validate_random_exploration_params()</span></code></a></li>
+<li><a class="reference internal" href="#frontrun.common.record_serializability_violation"><code class="docutils literal notranslate"><span class="pre">record_serializability_violation()</span></code></a></li>
 </ul>
 </li>
 <li><a class="reference internal" href="#unified-exploration-entry-points">Unified Exploration Entry Points</a><ul>
@@ -3356,7 +3411,6 @@ The async form returns an awaitable.</p>
 <li><a class="reference internal" href="#frontrun.trace_markers.ThreadCoordinator"><code class="docutils literal notranslate"><span class="pre">ThreadCoordinator</span></code></a><ul>
 <li><a class="reference internal" href="#frontrun.trace_markers.ThreadCoordinator.wait_for_turn"><code class="docutils literal notranslate"><span class="pre">ThreadCoordinator.wait_for_turn()</span></code></a></li>
 <li><a class="reference internal" href="#frontrun.trace_markers.ThreadCoordinator.report_error"><code class="docutils literal notranslate"><span class="pre">ThreadCoordinator.report_error()</span></code></a></li>
-<li><a class="reference internal" href="#frontrun.trace_markers.ThreadCoordinator.is_finished"><code class="docutils literal notranslate"><span class="pre">ThreadCoordinator.is_finished()</span></code></a></li>
 </ul>
 </li>
 <li><a class="reference internal" href="#frontrun.trace_markers.TraceExecutor"><code class="docutils literal notranslate"><span class="pre">TraceExecutor</span></code></a><ul>
@@ -3521,7 +3575,7 @@ The async form returns an awaitable.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>

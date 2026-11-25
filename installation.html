@@ -3,10 +3,18 @@
   <head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Installation" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://lucaswiman.github.io/frontrun/installation.html" />
+<meta property="og:site_name" content="Frontrun" />
+<meta property="og:description" content="Frontrun requires Python 3.11 or later. Optional extras: The ergonomic frontrun.explore(execution=&quot;process&quot;) entry point serialises worker callables and setup() state with dill, shipped a..." />
+<meta name="description" content="Frontrun requires Python 3.11 or later. Optional extras: The ergonomic frontrun.explore(execution=&quot;process&quot;) entry point serialises worker callables and setup() state with dill, shipped a..." />
+<meta name="twitter:card" content="summary">
 <link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Quick Start" href="quickstart.html"><link rel="prev" title="Frontrun Documentation" href="index.html">
+        <link rel="canonical" href="https://lucaswiman.github.io/frontrun/installation.html">
 
-    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Installation - Frontrun 0.7.0 documentation</title>
+    <!-- Generated with Sphinx 9.1.1 and Furo 2025.12.19 -->
+        <title>Installation - Frontrun 0.8.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
@@ -162,7 +170,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="index.html"><div class="brand">Frontrun 0.7.0 documentation</div></a>
+      <a href="index.html"><div class="brand">Frontrun 0.8.0 documentation</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +191,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
   
-  <span class="sidebar-brand-text">Frontrun 0.7.0 documentation</span>
+  <span class="sidebar-brand-text">Frontrun 0.8.0 documentation</span>
   
 </a><form class="sidebar-search-container" method="get" action="search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -255,7 +263,7 @@
         <article role="main" id="furo-main-content">
           <section id="installation">
 <h1>Installation<a class="headerlink" href="#installation" title="Link to this heading">¶</a></h1>
-<p>Frontrun requires Python 3.10 or later.</p>
+<p>Frontrun requires Python 3.11 or later.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>frontrun
 </pre></div>
 </div>
@@ -263,7 +271,7 @@
 <h2>Optional extras<a class="headerlink" href="#optional-extras" title="Link to this heading">¶</a></h2>
 <p>The ergonomic <code class="docutils literal notranslate"><span class="pre">frontrun.explore(execution=&quot;process&quot;)</span></code> entry point serialises
 worker callables and <code class="docutils literal notranslate"><span class="pre">setup()</span></code> state with <a class="reference external" href="https://pypi.org/project/dill/">dill</a>, shipped as the <code class="docutils literal notranslate"><span class="pre">process</span></code> extra:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;frontrun[process]&quot;</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"frontrun[process]"</span>
 </pre></div>
 </div>
 <p>The lower-level <code class="docutils literal notranslate"><span class="pre">frontrun.explore_processes()</span></code> entry point uses importable
@@ -277,10 +285,15 @@ It wraps any command with I/O interception:</p>
 frontrun<span class="w"> </span>python<span class="w"> </span>examples/orm_race.py<span class="w">  </span><span class="c1"># run a script with I/O interception</span>
 </pre></div>
 </div>
-<section id="building-the-i-o-library">
-<h3>Building the I/O Library<a class="headerlink" href="#building-the-i-o-library" title="Link to this heading">¶</a></h3>
-<p>For C-level I/O interception (required for opaque database drivers, Redis
-clients, etc.), build the native <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code> library:</p>
+<section id="building-the-i-o-library-from-source">
+<h3>Building the I/O Library from source<a class="headerlink" href="#building-the-i-o-library-from-source" title="Link to this heading">¶</a></h3>
+<p>Binary wheels already bundle the native I/O interception library. No Rust
+toolchain or separate build step is needed after a normal <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span></code>.
+Source distributions build the library during package installation and require
+a Rust toolchain, but no separate command.</p>
+<p>When installing from a source checkout, build the native <code class="docutils literal notranslate"><span class="pre">LD_PRELOAD</span></code> library
+for C-level I/O interception (required for opaque database drivers, Redis
+clients, etc.):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>build-io<span class="w">    </span><span class="c1"># requires Rust toolchain</span>
 </pre></div>
 </div>
@@ -366,7 +379,7 @@ confusing failures when the environment isn’t properly set up.</p>
 <li><a class="reference internal" href="#">Installation</a><ul>
 <li><a class="reference internal" href="#optional-extras">Optional extras</a></li>
 <li><a class="reference internal" href="#cli-setup">CLI Setup</a><ul>
-<li><a class="reference internal" href="#building-the-i-o-library">Building the I/O Library</a></li>
+<li><a class="reference internal" href="#building-the-i-o-library-from-source">Building the I/O Library from source</a></li>
 </ul>
 </li>
 <li><a class="reference internal" href="#pytest-plugin">Pytest Plugin</a></li>
@@ -381,7 +394,7 @@ confusing failures when the environment isn’t properly set up.</p>
       
     </aside>
   </div>
-</div><script src="_static/documentation_options.js?v=fe7df9b0"></script>
+</div><script src="_static/documentation_options.js?v=486e5634"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/scripts/furo.js?v=46bd48cc"></script>
