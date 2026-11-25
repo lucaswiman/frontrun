@@ -46,7 +46,7 @@ jobs:
         include:
           - { os: ubuntu-latest, target: x86_64, label: "Linux x86_64" }
           - { os: ubuntu-24.04-arm, target: aarch64, label: "Linux aarch64" }
-          - { os: macos-14, target: aarch64, label: "macOS aarch64" }
+          - { os: macos-15, target: aarch64, label: "macOS aarch64" }
     steps:
       - uses: actions/checkout@v7
 
@@ -107,7 +107,7 @@ jobs:
 
   macos-python315:
     name: "macOS aarch64 (Python ${{ matrix.python-version }})"
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
